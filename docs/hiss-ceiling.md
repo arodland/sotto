@@ -238,3 +238,39 @@ Round 17: https://claude.ai/artifact/DNbbfjC8gFmaMzQv5sztav, `tools/listening/re
 key `ab-17-key.json`. soft vs hard (4 pairs), soft vs soft + z exemption (3; two of them differ
 very little), ceiling vs ceiling + soft on the MP3-cut voices 777 and 3170 (2), v3.8 vs soft on
 446 MHz / 60 km/h / 52 dB-Hz fading (1, 7% frames lost), null pair 1.
+
+**Round 17 result (Jeff, 2026-11-02):** `sotto-ab-17 1:= 2:= 3:= 4:= 5:= 6:A 7:= 8:= 9:= 10:A 11:B`.
+Soft won the one decided soft-vs-hard pair (10); the other three tied. Leaving z uncapped lost
+pair 6 (the capped side had "much less high frequency rattle"); two ties. On the MP3-cut voices
+the ceiling alone beat ceiling + cap on 777 (pair 11) and tied on 3170. The fading pair tied.
+Null pair correct. Jeff on pair 5 (652, capped): "really good. Better than other turns in
+recollection."
+
+## v3.9 candidate
+
+`sim/hiss_v39.py` (`SottoV39`, same constructor arguments as `SottoV38`) puts the two layers
+together:
+
+- **Ceiling.** The encoder measures the cut-off causally: bright frames (above the running median
+  energy, 4-8 kHz within 20 dB of 0-1 kHz) add their 16-bin 4-8 kHz shape to a running sum; after
+  10 such frames each window fits a line and a line plus each ceiling (fc 4.25-7.75 kHz, S 48 or
+  96 dB/kHz) and declares the best ceiling when it cuts the misfit by 3 dB. The decision goes out
+  on the side channel (masked-CRC message, in place of that window's vowel message) when it changes
+  and every 5 windows after. Under a ceiling, the UU hiss index is searched against the 250 Hz
+  bins the decoder will make. On the two MP3-cut voices the decoder has the ceiling from
+  3.8 s (3170: 7 kHz, 48 dB/kHz) and 5.2 s (777: 6.75 kHz, 96 dB/kHz).
+- **Soft cap.** Decoder only, as `nons_cap.py` soft (5 kHz, 24 dB/kHz, at most 40 dB, 3-frame
+  smoothing, z included), but applied to the 4-8 kHz layer before synthesis. That layer reads
+  about 2 dB hotter than the decoded output, so the margin is 1 dB; it caps the same fraction of
+  frames as the 3 dB output rule (within 0.01-0.03 on five voices). Off while a ceiling is in force.
+- A voice with no ceiling gets exactly v3.8's bits (checked on all 11 clean test voices), so
+  v3.8 and v3.9 decoders interoperate; a v3.8 decoder ignores the ceiling message.
+
+The cap lowers WB-PESQ (11 clean voices, mean 1.65 -> 1.58) and leaves NB-PESQ unchanged. PESQ
+rewards matching the original's 4-8 kHz energy; rounds 16-17 preferred less synthetic hiss in
+sh/f/th/z even at the original's level.
+
+Side-by-side page https://claude.ai/artifact/N1PnNCzuRPsACvQPUqjfks (labelled, original / v3.8 / v3.9, 17 rows: 11 clean voices, two low-passed,
+the two MP3-cut voices, 2 m and 70 cm fading): `tools/listening/render_v39_compare.py`, built
+with `tools/listening/build_compare.py`, key `cmp-v39-key.json`. On the low-passed rows WB-PESQ rises 0.15-0.18;
+on the MP3-cut rows it is flat. The C port and the C55x cost wait for Jeff's listen.
