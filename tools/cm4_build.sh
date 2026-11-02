@@ -21,7 +21,7 @@ if [ "${VARIANT:-v3.7}" = v3.8 ] || [ "${VARIANT:-v3.7}" = v3.9 ]; then
   SRCS="$SRCS sotto_fx_hiss"
   VFLAGS="$VFLAGS -DSOTTO_V38 -DFX_PCT_MAX=3000"
   [ "$VARIANT" = v3.9 ] && VFLAGS="$VFLAGS -DSOTTO_V39"
-  SYMS="-u sotto_enc16_create -u sotto_encode16 -u sotto_enc16_flush -u sotto_dec16_create -u sotto_decode16 -u sotto_dec16_flush"
+  SYMS="-u sotto_enc16_create -u sotto_encode16 -u sotto_enc16_flush -u sotto_dec16_create -u sotto_decode16 -u sotto_dec16_flush -u sotto_dec16_delay_frames"
 fi
 RES=$("$CC" -print-resource-dir)
 CFLAGS="--target=thumbv7em-none-eabi -mcpu=cortex-m4 -mthumb -mfloat-abi=soft -munaligned-access -nostdinc

@@ -232,7 +232,10 @@ def main():
     if a.bits:
         open(a.bits, 'wb').write(bits)
     if a.pcm:                                           # as sotto_dec_fx [-16] writes it
-        y = b''.join(out_pcm[5 if a.k16 else 1:])
+        skip = 1
+        if a.k16:                                       # 5 frames in v3.8, 6 in v3.9
+            skip = m4.call('sotto_dec16_delay_frames')[0] if 'sotto_dec16_delay_frames' in m4.sym else 5
+        y = b''.join(out_pcm[skip:])
         while out_pcm:
             r, _ = m4.call(f'sotto_dec{sfx}_flush', dec, IO + 0x2000)
             if a.k16 and not r:

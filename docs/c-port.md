@@ -167,6 +167,56 @@ fields. The running percentile of the side channel keeps every frame level so fa
 Python does); a 1 dB histogram would replace it on the DSP, changing a vowel-frame
 decision only when a level sits within the bin.
 
+## v3.9: the hiss ceiling and the non-s cap
+
+`make VARIANT=v3.9` (and `make VARIANT=v3.9 fixed`) adds the two layers of
+`sim/hiss_v39.py` (docs/hiss-ceiling.md) to the v3.8 layer, in `sotto_hiss.c` and
+`fixed/sotto_fx_hiss.c` under `SOTTO_V39`:
+
+- **Encoder.** Each input STFT frame above the running median level (the same sorted history
+  as the 60th percentile, queried twice) whose 4-8 kHz level is within 20 dB of its 0-1 kHz
+  level adds its 16-bin 4-8 kHz shape, re its 4-6 kHz mean, to a running sum. At each window
+  the sum is fitted with a line and with a line plus each of the 30 ceilings (cut-off 4.25-7.75
+  kHz, 48 or 96 dB/kHz); a ceiling that cuts the rms misfit by 3 dB is sent in place of that
+  window's speaker-shape message (masked CRC), when it changes and every 5 windows after.
+  Under a ceiling, an unvoiced frame's hiss index is searched against the 16 bins the decoder
+  will make (64 candidates x 16 bins x 2 STFT frames). The fixed-point fit is an exact integer
+  least-squares line.
+- **Decoder.** The ceiling message sets a per-bin gain on the 4-8 kHz layer from the frame
+  that completes it. The non-s cap compares the layer's 4-8 kHz power plus the decoded
+  output's with the output's 2-4 kHz level and lowers the layer above 5 kHz by 24 dB/kHz (at
+  most 40 dB), smoothed over 3 frames, so each frame waits for the next frame's decision:
+  the 16 kHz decoder is 6 frames late instead of 5 (`SOTTO_DEC16_DELAY_FRAMES`, and
+  `sotto_dec16_delay_frames()` for programs built without the library's flags).
+- A voice with no ceiling gets v3.8's exact frames.
+
+Checks (`tools/check_c_port38.py --v39`, 13 clips plus two low-passed and two with 10% loss;
+`tools/check_fx.py --v38` against the v3.9 float build):
+
+| | float C vs Python | fixed vs float C |
+|---|---|---|
+| encoder frames identical | 99.8-100 % (as v3.8) | 92-98 % (near-ties, as v3.8) |
+| first ceiling (frame, fc, S) | identical on all 4 ceiling clips | identical; one near-tie (3170) switches 6.75 kHz a window early |
+| 4-8 kHz level per frame, mean abs. diff | 0.7-1.0 dB (v3.8 port: 0.7-0.9) | 0.4-0.5 dB |
+| PESQ-NB | equal | equal within 0.03 |
+
+**Cortex-M4 cost** (`VARIANT=v3.9 sh tools/cm4_build.sh`, `run.py --16k`, -O2, MHz mean /
+worst frame; bits and samples equal the x86 build):
+
+| clip | encoder v3.8 | encoder v3.9 | decoder v3.8 | decoder v3.9 |
+|---|---:|---:|---:|---:|
+| p020 (no ceiling) | 118.8 / 133.6 | 118.8 / 133.6 | 36.3 / 42.7 | 36.9 / 43.5 |
+| 777 (MP3-cut, ceiling from 5.2 s) | 120.3 / 134.0 | 120.8 / 139.5 | 37.8 / 42.7 | 38.7 / 43.8 |
+| 8842 low-passed 5.5 kHz (ceiling from 2.9 s) | 117.0 / 132.8 | 117.6 / 135.4 | 35.5 / 42.7 | 36.6 / 44.1 |
+
+The encoder's worst frame rises by up to 5.5 MHz under a ceiling (the index search); with
+the flash wait states (+10) that is about 150 of 168 MHz. The decoder costs about 1 MHz more.
+State: +2 KB (the decoder's waiting frame, the 64 x 16 search table); flash +9 KB.
+
+**C55x:** not measured yet; the TI tools have to be reinstalled in each new container
+(c/fixed/c55x/README.md). By the Cortex-M4 ratio, expect the 16 kHz encoder's worst frame
+about 5 MHz above v3.8's 157 and the decoder about 1-2 MHz above 64, both inside 200.
+
 ## Fixed point: status
 
 The fixed-point build is in `c/fixed/` (`make fixed`). It is new MIT code, written from the
