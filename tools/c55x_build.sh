@@ -4,7 +4,8 @@
 # Usage: C55X_CGT=/path/to/c5500_4.4.1 sh tools/c55x_build.sh [extra cl55 options]
 #        C55X_MAIN=fxtest sh tools/c55x_build.sh   builds fxtest.out (primitive checksums)
 #        sh tools/c55x_build.sh -DBENCH16           bench.out for 16 kHz in.raw through the v3.8 layer
-# The build is v3.8 (SOTTO_V38: the fixed/sotto_fx_hiss.c layer); C55X_VARIANT=v3.7 leaves it out.
+# The build is v3.8 (SOTTO_V38: the fixed/sotto_fx_hiss.c layer); C55X_VARIANT=v3.7 leaves it out,
+# C55X_VARIANT=v3.9 adds the hiss ceiling and the non-s cap (SOTTO_V39).
 # Run make -C c fixed first, for c/fixed/fx_tables.c.
 # SPDX-License-Identifier: MIT
 set -e
@@ -22,7 +23,8 @@ VFLAGS="-DSOTTO_PITCH_THIRD"
 # the codebook one value per word (29 KB more) for the dual-MAC search in c55x/cb_dots.asm;
 # C55X_PACKED=1 keeps the packed codebook and the C search
 [ -n "$C55X_PACKED" ] || VFLAGS="$VFLAGS -DFX_CB_UNPACKED"
-if [ "$VARIANT" = v3.8 ]; then SRCS="$SRCS sotto_fx_hiss"; VFLAGS="$VFLAGS -DSOTTO_V38"; fi
+if [ "$VARIANT" = v3.8 ] || [ "$VARIANT" = v3.9 ]; then SRCS="$SRCS sotto_fx_hiss"; VFLAGS="$VFLAGS -DSOTTO_V38"; fi
+if [ "$VARIANT" = v3.9 ]; then VFLAGS="$VFLAGS -DSOTTO_V39"; fi
 # the 16 kHz layer's states need a larger heap, outside DARAM (bench16.cmd). No object may
 # cross a 64K-word page, so the heap is one page, and the bench (both directions allocated)
 # keeps 30 s of percentile history (-DFX_PCT_MAX=3000, 36 KB less than the default 120 s):

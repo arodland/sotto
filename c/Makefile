@@ -76,7 +76,7 @@ all: libsotto.so libsotto.a sotto_enc sotto_dec
 # overflow the C55x's 40-bit accumulator
 FXFLAGS ?= -DFX_CHECK
 FX_OBJS = fixed/fx_math.o fixed/fx_tables.o
-ifeq ($(VARIANT),v3.8)
+ifneq ($(filter v3.8 v3.9,$(VARIANT)),)
 FX_OBJS += fixed/sotto_fx_hiss.o fixed/sotto_fx_dec.o fixed/sotto_fx_enc.o
 else
 FX_ENC_OBJS = fixed/sotto_fx_enc.o

@@ -297,3 +297,41 @@ def test_v38_unvoiced_frames_decode_at_50_hz_spacing():
     m = hb.SottoV38(vowel="speaker", vowel_shape="fine", blend=True).decode(bits)
     assert np.all(m["voiced"] == 0)
     assert np.allclose(m["Wo"], hb.W50) and np.all(m["L"] == 80)
+
+
+def test_v39_ceiling_message_round_trip_and_v38_skips_it():
+    """v3.9's ceiling message rides the speaker-shape side channel with a masked CRC: it
+    decodes to its own codes, and a v3.8 reader (hiss_band.unpack_pc) rejects it."""
+    import hiss_band as hb
+    import hiss_v39 as h9
+    for c in [None, (4250.0, 48.0), (6750.0, 96.0), (7750.0, 48.0)]:
+        b = h9.pack_ceiling(c)
+        assert h9.unpack_ceiling(b) == c
+        assert hb.unpack_pc(b) is None
+    assert h9.unpack_ceiling(hb.pack_pc(np.zeros(3))) is False
+
+
+def test_v39_fit_ceiling_finds_a_cut_off():
+    import hiss_v39 as h9
+    f = h9.FC / 1000.0
+    flat = 10 ** ((-3.0 * (f - 4)) / 10)                     # gentle tilt, no ceiling
+    assert h9.fit_ceiling(flat * 20, 20) is None
+    cut = flat * 10 ** (h9.ceil_gain_db(h9.FC, (6000.0, 96.0)) / 10)
+    assert h9.fit_ceiling(cut * 20, 20) == (6000.0, 96.0)
+    assert h9.fit_ceiling(cut * 5, 5) is None                # too few bright frames yet
+
+
+def test_v39_without_a_ceiling_sends_v38_bits():
+    """A voice with no ceiling gets exactly v3.8's frames (sim/hiss_v39.py)."""
+    import hiss_band as hb
+    import hiss_v39 as h9
+    from scipy import signal
+    x8 = _ve9qrp(3.0)
+    hiss = signal.sosfilt(signal.butter(6, 4500, "highpass", fs=16000, output="sos"),
+                          np.random.default_rng(1).standard_normal(2 * len(x8)))
+    x = signal.resample_poly(x8, 2, 1) + 0.05 * hiss
+    x = x[:len(x) // 320 * 320]
+    kw = dict(vowel="speaker", whisper=True, vsmooth=True, sib_db=-10.0, sib_voiced=True)
+    b9 = h9.SottoV39(**kw).encode(x)
+    assert np.array_equal(b9, hb.SottoV38(**kw).encode(x))
+    assert all(c is None for c in h9.SottoV39().frame_ceiling(b9))

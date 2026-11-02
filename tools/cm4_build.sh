@@ -4,7 +4,7 @@
 # Usage: sh tools/cm4_build.sh [extra clang options, e.g. -Os or -DFX_SPLIT_MUL]
 #        CM4_OUT=dir sh tools/cm4_build.sh ...
 # Default -O2 (OpenRTX builds with -Os; pass -Os to see that), unaligned access on (as GCC
-# does for the Cortex-M4). VARIANT=v3.6 drops the pitch third; VARIANT=v3.8 adds the 16 kHz
+# does for the Cortex-M4). VARIANT=v3.6 drops the pitch third; VARIANT=v3.8 (or v3.9) adds the 16 kHz
 # hiss band (fixed/sotto_fx_hiss.c, 30 s of percentile history as on the C55x bench; run.py
 # --16k times it). Needs clang and ld.lld (any recent LLVM; tested with 18) and nothing from ARM.
 # SPDX-License-Identifier: MIT
@@ -17,9 +17,10 @@ VFLAGS="-DSOTTO_V36"
 [ "${VARIANT:-v3.7}" = v3.6 ] || VFLAGS="$VFLAGS -DSOTTO_PITCH_THIRD"
 SRCS="fx_math fx_tables sotto_fx_enc sotto_fx_dec"
 SYMS=""
-if [ "${VARIANT:-v3.7}" = v3.8 ]; then
+if [ "${VARIANT:-v3.7}" = v3.8 ] || [ "${VARIANT:-v3.7}" = v3.9 ]; then
   SRCS="$SRCS sotto_fx_hiss"
   VFLAGS="$VFLAGS -DSOTTO_V38 -DFX_PCT_MAX=3000"
+  [ "$VARIANT" = v3.9 ] && VFLAGS="$VFLAGS -DSOTTO_V39"
   SYMS="-u sotto_enc16_create -u sotto_encode16 -u sotto_enc16_flush -u sotto_dec16_create -u sotto_decode16 -u sotto_dec16_flush"
 fi
 RES=$("$CC" -print-resource-dir)

@@ -16,6 +16,8 @@
  *    agree sample for sample within rounding.
  * The hiss index and the side channel can differ from the float layer's for near-ties
  * (tools/check_fx.py --v38 counts them); the output levels agree within a fraction of a dB.
+ * v3.9 (SOTTO_V39): the hiss ceiling and the non-s cap of ../sotto_hiss.c, in dB Q8; the
+ * ceiling fit's line is an exact integer least-squares fit over the 250 Hz bins.
  * SPDX-License-Identifier: MIT */
 #define SOTTO_BUILD
 #include <stdlib.h>
@@ -53,6 +55,18 @@
 #define SIDE_MIN_FRAMES 20
 #define DB_FLOOR DB(-120)                   /* 10 log10(1e-12), the float layer's power floor */
 #define MASK3_DB 2443                       /* 20 log10(3), Q8: mixed frames' consonant layer */
+#ifdef SOTTO_V39
+#define CEIL_NONE 15                        /* cut-off code 15: no ceiling */
+#define CEIL_DEPTH DB(60)
+#define CEIL_REPEAT 5                       /* windows between repeats of an unchanged ceiling */
+#define CEIL_MIN 10                         /* bright frames before the first decision */
+#define CEIL_GAIN DB(3)                     /* dB the fit must improve to declare a ceiling */
+#define CAP_K0 101                          /* the non-s cap: 24 dB/kHz above bin 100 (5 kHz), */
+#define CAP_DEPTH DB(40)                    /* at most 40 dB, on frames whose hiss sits */
+#define CAP_MARGIN DB(1)                    /* CAP_MARGIN dB under their 2-4 kHz level */
+#define LOG81_DB 4773                       /* 10 log10(81), Q8: the 81 bins at 4-8 kHz */
+#define LOG8_DB 2312                        /* 10 log10(8), Q8 */
+#endif
 #ifndef SOTTO_RULE_LAG
 #define SOTTO_RULE_LAG 10                   /* frames of look-ahead for the encoder rules */
 #endif
@@ -317,6 +331,104 @@ static int unpack_pc(const int16_t *b, int32_t *pc) {
   return 1;
 }
 
+#ifdef SOTTO_V39
+/* ------------------------------------------------------------------ v3.9 hiss ceiling */
+static const int16_t ceil_mask[4] = {1, 0, 1, 0};
+static const int16_t ceil_slope[4] = {48, 96, 48, 96};      /* steepness codes, dB/kHz */
+
+/* hiss_v39.ceil_gain_db at f_hz (dB Q8, <= 0): -min(S (f - fc), 60) above cut-off code fi */
+static int32_t ceil_gain(int32_t f_hz, int fi, int si) {
+  int32_t g;
+  if (fi == CEIL_NONE) return 0;
+  g = (f_hz - (4250 + 250 * fi)) * ceil_slope[si];         /* dB / 1000, < 2^20 */
+  if (g <= 0) return 0;
+  g = (int32_t)(((fx_acc)g * 256 + 500) / 1000);
+  return g >= CEIL_DEPTH ? -CEIL_DEPTH : -g;
+}
+
+/* hiss_v39.pack_ceiling / unpack_ceiling (masked CRC) */
+static void pack_ceiling(int fi, int si, int16_t *b) {
+  int i;
+  for (i = 0; i < 4; i++) b[i] = (int16_t)((fi >> (3 - i)) & 1);
+  for (i = 0; i < 2; i++) b[4 + i] = (int16_t)((si >> (1 - i)) & 1);
+  for (i = 6; i < 12; i++) b[i] = 0;
+  crc4(b, 12, b + 12);
+  for (i = 0; i < 4; i++) b[12 + i] ^= ceil_mask[i];
+}
+static int unpack_ceiling(const int16_t *b, int *fi, int *si) {
+  int i;
+  int16_t c[4];
+  crc4(b, 12, c);
+  for (i = 0; i < 4; i++)
+    if ((c[i] ^ ceil_mask[i]) != b[12 + i]) return 0;
+  *fi = (b[0] << 3) | (b[1] << 2) | (b[2] << 1) | b[3];
+  *si = (b[4] << 1) | b[5];
+  return 1;
+}
+
+/* hiss_v39.fit_ceiling.misfit, x 16 squared (dB Q8 squared summed over the 16 bins): a line
+   fitted to m over the bins nfit (all 16, or the bins under the cut-off, G = 0 there), plus
+   the ceiling gains G, both sides floored at fl. Bins are the line's x (the 250 Hz bin
+   centres, equally spaced), the fit exact in integers. */
+static fx_uacc ceil_sse(const int32_t *m, const int32_t *mc, const int32_t *G, int nfit, int32_t fl) {
+  fx_acc sx = 0, sxx = 0, sm = 0, sxm = 0, den, num;
+  fx_uacc e = 0;
+  int b;
+  if (nfit < 3) return (fx_uacc)1 << 38;
+  for (b = 0; b < nfit; b++) sx += b, sxx += b * b, sm += m[b], sxm += (fx_acc)b * m[b];
+  den = nfit * sxx - sx * sx;                              /* > 0, <= 5440 */
+  num = nfit * sxm - sx * sm;                              /* slope x den */
+  for (b = 0; b < 16; b++) {
+    /* line(b) = (sm den + num (nfit b - sx)) / (nfit den), rounded */
+    fx_acc l = sm * den + num * (nfit * b - sx), q = (fx_acc)nfit * den, v;
+    int32_t d;
+    v = (l >= 0 ? l + q / 2 : l - q / 2) / q + G[b];
+    d = (int32_t)(v > fl ? v : fl) - mc[b];
+    e += (fx_uacc)((fx_acc)d * d);
+  }
+  return e;
+}
+
+/* integer square root of a 40-bit value */
+static uint32_t isqrt40(fx_uacc v) {
+  fx_uacc r = 0, bit = (fx_uacc)1 << 38;
+  while (bit > v) bit >>= 2;
+  while (bit) {
+    if (v >= r + bit) v -= r + bit, r = (r >> 1) + bit;
+    else r >>= 1;
+    bit >>= 2;
+  }
+  return (uint32_t)r;
+}
+
+/* hiss_v39.fit_ceiling: the summed bright-frame shapes (16 bins, linear) -> the ceiling
+   codes, or CEIL_NONE when no ceiling cuts the rms misfit by CEIL_GAIN. The level of the sum
+   does not matter (the line takes it up), so the bins are taken in dB as they are. */
+static void fit_ceiling(const fx_uacc *Fsum, int32_t n, int *fi, int *si) {
+  int32_t m[16], mc[16], G[16], mx = INT32_MIN, fl;
+  fx_uacc base, best = 0;
+  int b, f, sl, bf = CEIL_NONE, bs = 0;
+  *fi = CEIL_NONE, *si = 0;
+  if (n < CEIL_MIN) return;
+  for (b = 0; b < 16; b++) {
+    m[b] = Fsum[b] ? fx_log2_to_db_pow(fx_log2_acc(Fsum[b])) : DB(-200);
+    if (m[b] > mx) mx = m[b];
+  }
+  fl = mx - DB(50);
+  for (b = 0; b < 16; b++) mc[b] = m[b] > fl ? m[b] : fl, G[b] = 0;
+  base = ceil_sse(m, mc, G, 16, fl);
+  for (f = 0; f < 15; f++)
+    for (sl = 0; sl < 2; sl++) {
+      fx_uacc e;
+      for (b = 0; b < 16; b++) G[b] = ceil_gain(4125 + 250 * b, f, sl);
+      e = ceil_sse(m, mc, G, f + 1, fl);                    /* G > -1 dB: the bins b <= f */
+      if (bf == CEIL_NONE || e < best) best = e, bf = f, bs = sl;
+    }
+  /* rms = sqrt(sse / 16) = sqrt(sse) / 4; declare when rms(base) - rms(best) >= 3 dB */
+  if ((int32_t)isqrt40(base) - (int32_t)isqrt40(best) >= 4 * CEIL_GAIN) *fi = bf, *si = bs;
+}
+#endif
+
 static int frame_code(const unsigned char *bits) { return bits[0] >> 6; }
 static int frame_bit(const unsigned char *bits, int pos) { return (bits[pos >> 3] >> (7 - (pos & 7))) & 1; }
 static void set_bit(unsigned char *bits, int pos, int v) {
@@ -361,6 +473,11 @@ static void up2(const int16_t *x, int16_t *y) {
 typedef struct {
   int16_t cls, mask, want;
   int32_t p[4], vt[16], fade;               /* dB Q8 */
+#ifdef SOTTO_V39
+  int16_t cfi, csi, code;                   /* ceiling in force, voicing code of its frame */
+  int32_t yhi, mid;                         /* decoded 0-4 kHz output: mean power over the bins
+                                               at 4-8 kHz, and its 2-4 kHz level (dB Q8) */
+#endif
 } tframe_t;
 
 struct sotto_dec16 {
@@ -387,6 +504,13 @@ struct sotto_dec16 {
   int32_t out[ORING];                       /* hiss overlap-add, samples Q4, out[j] at j & (ORING-1) */
   int32_t outn;                             /* samples handed out */
   uint32_t rng;
+#ifdef SOTTO_V39
+  int16_t cfi, csi;                         /* the ceiling in force (hiss_v39.frame_ceiling) */
+  int16_t gcfi[GRING], gcsi[GRING];         /* ... per codec frame */
+  int32_t pm[NBIN];                         /* frame tb - 1's noise levels (dB Q8), waiting */
+  int16_t pend, pq;                         /* for frame tb's non-s decision; its scale q */
+  int16_t nons[2];                          /* non-s decisions of frames tb - 2, tb - 1 */
+#endif
 };
 
 struct sotto_dec16 *sotto_dec16_create(void) {
@@ -399,6 +523,9 @@ struct sotto_dec16 *sotto_dec16_create(void) {
   d->last_true = -1;
   d->ok = 1;
   d->rng = 0x9E3779B9u;
+#ifdef SOTTO_V39
+  d->cfi = CEIL_NONE;
+#endif
   return d;
 }
 
@@ -475,6 +602,11 @@ static void dec_stage_a(struct sotto_dec16 *d, int32_t t) {
   for (i = 0; i < HN; i++) x[i] = d->y16[(HH * t + i) & (DY16 - 1)];
   stft_power(&d->w, x, P, &ex);
   fine_predict(P, ex, pr, &ref);
+#ifdef SOTTO_V39
+  s->cfi = d->gcfi[f % GRING], s->csi = d->gcsi[f % GRING], s->code = (int16_t)code;
+  s->yhi = bins_db(P, ex, 80, NBIN);
+  s->mid = band_db(P, ex, 2000, 4000);
+#endif
   pc = d->pc[f % GRING];
   for (b = 0; b < 16; b++) {
     fx_acc corr = (fx_acc)fx_hs_fine_m0[b] * 16384;
@@ -496,42 +628,14 @@ static int dec_want_bridged(struct sotto_dec16 *d, int32_t t) {
   return 0;
 }
 
-/* stage B: the two hiss layers of frame t, blended, into the output overlap-add */
-static void dec_stage_b(struct sotto_dec16 *d, int32_t t) {
-  tframe_t *s = &d->tf[t % TRING];
-  int want = dec_want_bridged(d, t), b, k, i, q;
-  int32_t lvo[16], mdb[NBIN], mx = INT32_MIN, wv_db = 0, l2;
-  if (s->want) d->last_true = t;
-  if (t == 0)
-    memcpy(d->lv, s->vt, sizeof d->lv);
-  else
-    for (b = 0; b < 16; b++) d->lv[b] = fx_rshr((fx_acc)SMOOTH_A * d->lv[b] + (fx_acc)SMOOTH_B * s->vt[b], 15);
-  d->wv = fx_rshr((fx_acc)SMOOTH_A * d->wv + (want ? (fx_acc)SMOOTH_B * 32768 : 0), 15);
-  if (d->wv > 32767) d->wv = 32767;
-  if (d->wv > 0) wv_db = fx_log2_to_db_amp(fx_log2((uint32_t)d->wv) - 15 * 65536);
-  for (b = 0; b < 16; b++) lvo[b] = d->lv[b] + s->fade + VOICED_TRIM;
-  /* level per bin: max of the consonant layer (p x mask) and the vowel layer (lvo x wv), x ramp */
-  for (k = 0; k < NBIN; k++) {
-    int32_t m = INT32_MIN;
-    if (k >= RAMP0) {
-      if (s->mask) m = interp4(s->p, k) + (s->mask == 3 ? MASK3_DB : 0);
-      if (d->wv > 0) {
-        int32_t m2 = interp16(lvo, k) + wv_db;
-        if (m2 > m) m = m2;
-      }
-      if (m != INT32_MIN && k < RAMP0 + 3) m += ramp_db[k - RAMP0];
-    }
-    mdb[k] = m;
-    if (m > mx) mx = m;
-  }
-  if (mx < DB(-200)) {                       /* nothing to add (the phases are still drawn) */
+/* the noise of frame t from its per-bin levels mdb (dB Q8, INT32_MIN for none) at the
+   amplitude scale 2^q, with random phases, into the overlap-add */
+static void dec_synth_q(struct sotto_dec16 *d, int32_t t, const int32_t *mdb, int q) {
+  int k, i;
+  if (q < 0) {                               /* nothing to add (the phases are still drawn) */
     for (k = 0; k < NBIN; k++) rng_next(&d->rng);
     return;
   }
-  /* amplitudes 2^q x the linear level, the largest just below 2^20, with random phases */
-  l2 = fx_db_to_log2_amp(mx);
-  q = 20 - (int)((l2 + 65535) >> 16);
-  if (q < 2) q = 2;
   for (k = 0; k < NBIN; k++) {
     uint32_t ph = rng_next(&d->rng);         /* Q32 turns */
     int32_t a;
@@ -556,6 +660,12 @@ static void dec_stage_b(struct sotto_dec16 *d, int32_t t) {
     v = fx_rshr(v, 15) * (fx_acc)26214;
     FX_ACC_CHECK(v);
     RING_CHECK(j, d->outn, ORING, "out");
+#ifdef FX_CHECK
+    if (j < d->outn) {
+      fprintf(stderr, "fx hiss: noise frame %ld after its output\n", (long)t);
+      abort();
+    }
+#endif
     d->out[j & (ORING - 1)] += q > 2 ? fx_rshr(v, q - 2) : (int32_t)v;
   }
   FX_PROF(34, 0);
@@ -564,6 +674,89 @@ static void dec_stage_b(struct sotto_dec16 *d, int32_t t) {
    y_short = Re(out) (win_q15 / 2^15) 2^(15 - q) / 5 = Re(out) win_q15 2^-q / 5, and with
    1/5 = 26214 / 2^17: y_short = (Re(out) win_q15 / 2^15) 26214 2^(-2 - q); in Q4 (x 16) the
    shift right is q - 2. */
+
+#ifdef SOTTO_V39
+/* the waiting frame t (levels d->pm, scale d->pq) with the non-s cap at nsum / 3 of its depth */
+static void dec_synth(struct sotto_dec16 *d, int32_t t, int nsum) {
+  int k;
+  if (nsum && d->pq >= 0)
+    for (k = CAP_K0; k < NBIN; k++) {
+      int32_t c = ((int32_t)(k - 100) * 1536 + 2) / 5;        /* 24 dB/kHz: 1.2 dB a bin, Q8 */
+      if (d->pm[k] == INT32_MIN) continue;
+      if (c > CAP_DEPTH) c = CAP_DEPTH;
+      d->pm[k] -= (c * nsum + 1) / 3;
+    }
+  dec_synth_q(d, t, d->pm, d->pq);
+  d->pend = 0;
+}
+#endif
+
+/* stage B: the two hiss layers of frame t, blended, into the output overlap-add */
+static void dec_stage_b(struct sotto_dec16 *d, int32_t t) {
+  tframe_t *s = &d->tf[t % TRING];
+  int want = dec_want_bridged(d, t), b, k, q;
+  int32_t lvo[16], mdb[NBIN], mx = INT32_MIN, wv_db = 0, l2;
+  if (s->want) d->last_true = t;
+  if (t == 0)
+    memcpy(d->lv, s->vt, sizeof d->lv);
+  else
+    for (b = 0; b < 16; b++) d->lv[b] = fx_rshr((fx_acc)SMOOTH_A * d->lv[b] + (fx_acc)SMOOTH_B * s->vt[b], 15);
+  d->wv = fx_rshr((fx_acc)SMOOTH_A * d->wv + (want ? (fx_acc)SMOOTH_B * 32768 : 0), 15);
+  if (d->wv > 32767) d->wv = 32767;
+  if (d->wv > 0) wv_db = fx_log2_to_db_amp(fx_log2((uint32_t)d->wv) - 15 * 65536);
+  for (b = 0; b < 16; b++) lvo[b] = d->lv[b] + s->fade + VOICED_TRIM;
+  /* level per bin: max of the consonant layer (p x mask) and the vowel layer (lvo x wv), x ramp */
+  for (k = 0; k < NBIN; k++) {
+    int32_t m = INT32_MIN;
+    if (k >= RAMP0) {
+      if (s->mask) m = interp4(s->p, k) + (s->mask == 3 ? MASK3_DB : 0);
+      if (d->wv > 0) {
+        int32_t m2 = interp16(lvo, k) + wv_db;
+        if (m2 > m) m = m2;
+      }
+      if (m != INT32_MIN && k < RAMP0 + 3) m += ramp_db[k - RAMP0];
+    }
+    mdb[k] = m;
+    if (m > mx) mx = m;
+  }
+#ifdef SOTTO_V39
+  {   /* hiss_v39._post_hiss: the non-s test on the blended layer, then the ceiling gain;
+         the cap needs the next frame's decision, so frame t - 1 is synthesised now */
+    int32_t hv[2], hi, l81[NBIN - 80];
+    int nons;
+    for (k = 80; k < NBIN; k++) l81[k - 80] = mdb[k] == INT32_MIN ? DB(-200) : mdb[k];
+    hv[0] = fx_db_power_sum(l81, NBIN - 80) - LOG81_DB;      /* mean |X|^2 at 4-8 kHz */
+    hv[1] = s->yhi;
+    hi = mx < DB(-200) ? s->yhi : fx_db_power_sum(hv, 2);
+    nons = s->code != 1 && hi < s->mid - CAP_MARGIN && s->cfi == CEIL_NONE;
+    if (s->cfi != CEIL_NONE)
+      for (k = RAMP0; k < NBIN; k++)
+        if (mdb[k] != INT32_MIN) mdb[k] += ceil_gain(50 * k, s->cfi, s->csi);
+    if (d->pend) dec_synth(d, t - 1, d->nons[0] + d->nons[1] + nons);
+    d->nons[0] = d->nons[1], d->nons[1] = (int16_t)nons;
+    memcpy(d->pm, mdb, sizeof d->pm);
+    q = -1;                                  /* nothing to add */
+    if (mx >= DB(-200)) {
+      l2 = fx_db_to_log2_amp(mx);
+      q = 20 - (int)((l2 + 65535) >> 16);
+      if (q < 2) q = 2;
+    }
+    d->pq = (int16_t)q;
+    d->pend = 1;
+  }
+#else
+  if (mx < DB(-200)) {                       /* nothing to add (the phases are still drawn) */
+    for (k = 0; k < NBIN; k++) rng_next(&d->rng);
+    return;
+  }
+  /* amplitudes 2^q x the linear level, the largest just below 2^20, with random phases */
+  l2 = fx_db_to_log2_amp(mx);
+  q = 20 - (int)((l2 + 65535) >> 16);
+  if (q < 2) q = 2;
+  dec_synth_q(d, t, mdb, q);
+#endif
+}
+
 
 /* run stages A and B as far as the inputs allow */
 static void dec_run(struct sotto_dec16 *d) {
@@ -594,6 +787,10 @@ static void dec_run(struct sotto_dec16 *d) {
     FX_PROF(27, 0);
     d->tb++;
   }
+#ifdef SOTTO_V39
+  if (d->pend && d->nend >= 0 && d->tb > tmax)       /* the last frame: no next decision */
+    dec_synth(d, d->tb - 1, d->nons[0] + d->nons[1]);
+#endif
 }
 
 /* y16 + hiss for samples [outn, outn + 320) */
@@ -646,13 +843,24 @@ void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PE
     else if (frame_code(in) == 0) {
       d->got[d->ngot++] = (int16_t)frame_bit(in, 8);
       if (d->ngot == MSG_BITS && unpack_pc(d->got, d->cur)) memcpy(d->pc[n % GRING], d->cur, sizeof d->cur);
+#ifdef SOTTO_V39
+      else if (d->ngot == MSG_BITS) {          /* hiss_v39.frame_ceiling */
+        int fi, si;
+        if (unpack_ceiling(d->got, &fi, &si)) d->cfi = (int16_t)fi, d->csi = (int16_t)si;
+      }
+#endif
     }
   }
+#ifdef SOTTO_V39
+  d->gcfi[n % GRING] = d->cfi, d->gcsi[n % GRING] = d->csi;
+#endif
   d->n++;
   dec_run(d);
   if (d->n > SOTTO_DEC16_DELAY_FRAMES) dec_output(d, speech);
   else memset(speech, 0, N16 * sizeof(short));
 }
+
+int sotto_dec16_delay_frames(void) { return SOTTO_DEC16_DELAY_FRAMES; }
 
 /* the end of the stream: returns 1 and 320 samples while output remains */
 int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAME_16K]) {
@@ -679,6 +887,10 @@ int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAM
 typedef struct {                            /* features of one STFT frame of the input, dB Q8 */
   int32_t top, low, one, b2530, tot, hb[4], Y[16];
   int16_t vow;
+#ifdef SOTTO_V39
+  int32_t ref;                              /* 3.0-3.5 kHz level: Y[b] + ref is the bin level */
+  int16_t bright;                           /* hiss_v39.ceiling_schedule's bright frames */
+#endif
 } sframe_t;
 
 typedef struct {                            /* one core frame in the rule ring */
@@ -722,6 +934,15 @@ struct sotto_enc16 {
   unsigned char outq[OUTQ][SOTTO_BYTES_PER_FRAME];
   int16_t qh, qn;
   int16_t code[FRING], c0[FRING];           /* rule scratch */
+#ifdef SOTTO_V39
+  fx_uacc cacc[16];                         /* summed bright-frame shapes, Q12 each */
+  int32_t ccnt;
+  int32_t tceil;                            /* STFT frames accumulated: 0 .. tceil - 1 */
+  int16_t dfi, dsi;                         /* the encoder's ceiling decision */
+  int32_t clast;                            /* window that last sent it */
+  int16_t mceil, mfi, msi;                  /* this window's message is a ceiling (codes) */
+  int16_t cfi, csi;                         /* the ceiling in force at the decoder */
+#endif
 };
 
 struct sotto_enc16 *sotto_enc16_create(void) {
@@ -733,6 +954,10 @@ struct sotto_enc16 *sotto_enc16_create(void) {
   e->nend = -1;
   e->lkmax = -1;
   e->msgpos = MSG_BITS;
+#ifdef SOTTO_V39
+  e->dfi = e->cfi = CEIL_NONE;
+  e->clast = -99;
+#endif
   return e;
 }
 
@@ -744,25 +969,35 @@ void sotto_enc16_destroy(struct sotto_enc16 *e) {
 }
 unsigned sotto_fx_enc16_bytes(void) { return (unsigned)sizeof(struct sotto_enc16); }
 
-/* np.percentile(v, 60) of the levels so far, then insert the new one: v > q, exactly, with
-   q = a0 + frac (a1 - a0) at position 0.6 n of the n + 1 values */
-static int enc_above_pct(struct sotto_enc16 *e, int32_t v) {
-  int above = 0;
-  if (e->npct) {
-    int32_t n = e->npct, i = 6 * n / 10, frac10 = 6 * n - 10 * i, a[2], lo = 0, hi = n;
-    int r;
-    while (lo < hi) {                                       /* below = stored values < v (sorted) */
-      int32_t mid = lo + (hi - lo) / 2;
-      if (e->pct[mid] < v) lo = mid + 1; else hi = mid;
-    }
-    for (r = 0; r < 2; r++) {
-      int32_t rank = i + r, below = lo;
-      if (rank > n) rank = n;
-      a[r] = rank < below ? e->pct[rank] : rank == below ? v : e->pct[rank - 1];
-    }
-    if (i + 1 <= n) above = (fx_acc)(v - a[0]) * 10 > (fx_acc)frac10 * (a[1] - a[0]);
-    else above = v > a[0];
+/* v > np.percentile(v[:t+1], 10 q10 %) over the stored levels plus v, exactly, with
+   q = a0 + frac (a1 - a0) at position q10 n / 10 of the n + 1 values; below = stored values < v */
+static int pct_above(const struct sotto_enc16 *e, int32_t v, int32_t below, int q10) {
+  int32_t n = e->npct, i = q10 * n / 10, frac10 = q10 * n - 10 * i, a[2];
+  int r;
+  if (!n) return 0;
+  for (r = 0; r < 2; r++) {
+    int32_t rank = i + r;
+    if (rank > n) rank = n;
+    a[r] = rank < below ? e->pct[rank] : rank == below ? v : e->pct[rank - 1];
   }
+  if (i + 1 <= n) return (fx_acc)(v - a[0]) * 10 > (fx_acc)frac10 * (a[1] - a[0]);
+  return v > a[0];
+}
+
+/* np.percentile(v, 60) of the levels so far (and the median in v3.9), then insert the new one */
+static int enc_above_pct(struct sotto_enc16 *e, int32_t v, int *above50) {
+  int above;
+  int32_t lo = 0, hi = e->npct;
+  while (lo < hi) {                                         /* below = stored values < v (sorted) */
+    int32_t mid = lo + (hi - lo) / 2;
+    if (e->pct[mid] < v) lo = mid + 1; else hi = mid;
+  }
+  above = pct_above(e, v, lo, 6);
+#ifdef SOTTO_V39
+  *above50 = pct_above(e, v, lo, 5);
+#else
+  *above50 = 0;
+#endif
   if (e->npct < FX_PCT_MAX) {
     int32_t i = e->npct;
     while (i > 0 && e->pct[i - 1] > v) e->pct[i] = e->pct[i - 1], i--;
@@ -778,7 +1013,7 @@ static void enc_input_stft(struct sotto_enc16 *e, int32_t t) {
   int16_t x[HN];
   uint32_t P[NBIN];
   int32_t ref;
-  int i, b, ex, above;
+  int i, b, ex, above, above50;
   for (i = 0; i < HN; i++) x[i] = e->x16[(HH * t + i) & (EX16 - 1)];
   stft_power(&e->w, x, P, &ex);
   s->top = band_db(P, ex, 4000, 8000);
@@ -789,8 +1024,12 @@ static void enc_input_stft(struct sotto_enc16 *e, int32_t t) {
   for (b = 0; b < 4; b++) s->hb[b] = band_db(P, ex, 4000 + 1000 * b, 5000 + 1000 * b);
   ref = band_db(P, ex, 3000, 3500);
   for (b = 0; b < 16; b++) s->Y[b] = band_db(P, ex, 4000 + 250 * b, 4250 + 250 * b) - ref;
-  above = enc_above_pct(e, s->tot);
+  above = enc_above_pct(e, s->tot, &above50);
   s->vow = (int16_t)((s->one - s->b2530 > DB(10)) && t >= PCT_WARM && above);
+#ifdef SOTTO_V39
+  s->ref = ref;
+  s->bright = (int16_t)(t >= PCT_WARM && above50 && s->top > s->one - DB(20));
+#endif
 }
 
 /* ---- the rules over the ring (hiss_band.encode_low) ---- */
@@ -983,11 +1222,91 @@ static void enc_accumulate(struct sotto_enc16 *e, int32_t tmax) {
   }
 }
 
+#ifdef SOTTO_V39
+/* hiss_v39.ceiling_schedule: add the bright frames up to STFT frame tmax to the shape sum,
+   each as 16 bins of power re its 4-6 kHz mean, Q12 */
+static void enc_ceil_accumulate(struct sotto_enc16 *e, int32_t tmax) {
+  while (e->tceil <= tmax && e->tceil < e->nst) {
+    const sframe_t *s = &e->sf[e->tceil++ % SRING];
+    int32_t ref8;
+    int b;
+    if (!s->bright) continue;
+    ref8 = fx_db_power_sum(s->Y, 8) - LOG8_DB;
+    for (b = 0; b < 16; b++) {
+      int32_t f = s->Y[b] - ref8;
+      if (f > DB(60)) f = DB(60);                            /* < 2^32 in Q12 */
+      e->cacc[b] += (fx_uacc)fx_exp2(fx_db_to_log2_pow(f), 12);
+    }
+    e->ccnt++;
+  }
+}
+
+/* np.interp of the 4 band levels (centres 4.5 .. 7.5 kHz) at bin b's centre 4125 + 250 b */
+static int32_t interp_bin16(const int32_t *p, int b) {
+  int32_t f = 4125 + 250 * b, sg;
+  if (f <= 4500) return p[0];
+  if (f >= 7500) return p[3];
+  sg = (f - 4500) / 1000;
+  return p[sg] + fx_rshr((fx_acc)(p[sg + 1] - p[sg]) * ((f - 4500 - 1000 * sg) * 65536 / 1000), 16);
+}
+
+/* hiss_v39.SottoV39._index_search for frame g under the ceiling in force: the index whose
+   16-bin spectrum (4-band line + ceiling) best matches the input's, each STFT frame floored
+   40 dB under its peak (dB Q8) */
+static int enc_index_ceiling(struct sotto_enc16 *e, int32_t g) {
+  static int16_t D[64][16];                 /* cb6 interpolated onto the 16 bins, dB Q8 */
+  static int ready;
+  fx_acc err[64];
+  int32_t G[16], t;
+  int i, b, best = 0;
+  if (!ready) {
+    for (i = 0; i < 64; i++) {
+      int32_t p[4], j;
+      for (j = 0; j < 4; j++) p[j] = fx_hs_cb6[i * 4 + j];
+      for (b = 0; b < 16; b++) D[i][b] = (int16_t)interp_bin16(p, b);
+    }
+    ready = 1;
+  }
+  for (i = 0; i < 64; i++) err[i] = 0;
+  for (b = 0; b < 16; b++) G[b] = ceil_gain(4125 + 250 * b, e->cfi, e->csi);
+  for (t = 2 * g - 2; t <= 2 * g - 1; t++) {
+    int32_t k = t + HB_LAG, p[4], pb[16], T[16], fl = INT32_MIN;
+    const sframe_t *s;
+    if (t < 0 || t >= e->nst) continue;
+    if (k > e->lkmax) k = e->lkmax;
+    guess(0, e->lenv[k % MRING], p);
+    s = &e->sf[t % SRING];
+    for (b = 0; b < 16; b++) {
+      pb[b] = interp_bin16(p, b) + G[b];
+      T[b] = s->Y[b] + s->ref;
+      if (T[b] > fl) fl = T[b];
+    }
+    fl -= DB(40);
+    for (b = 0; b < 16; b++) if (T[b] < fl) T[b] = fl;
+    for (i = 0; i < 64; i++) {
+      fx_acc a = 0;
+      for (b = 0; b < 16; b++) {               /* misses beyond 128 dB clipped: 16 x 16 products */
+        int32_t v = pb[b] + D[i][b], x = (v > fl ? v : fl) - T[b];
+        int16_t x16 = (int16_t)(x > 32767 ? 32767 : x < -32767 ? -32767 : x);
+        a += (fx_acc)x16 * x16;
+      }
+      err[i] += a;
+    }
+  }
+  for (i = 1; i < 64; i++)
+    if (err[i] < err[best]) best = i;
+  return best;
+}
+#endif
+
 /* finish frame g: the 6-bit index of an all-unvoiced frame and its side-channel bit */
 static void enc_finish(struct sotto_enc16 *e, int32_t g) {
   rframe_t *r = &e->rf[g % FRING];
   int i, b, c;
   enc_accumulate(e, 2 * g - 3);
+#ifdef SOTTO_V39
+  enc_ceil_accumulate(e, 2 * g - 3);
+#endif
   if (g % WIN_FRAMES == 0) {                 /* a new window: its message from the frames before it */
     int32_t pc[3] = {0, 0, 0};
     if (e->cnt >= SIDE_MIN_FRAMES)
@@ -1001,7 +1320,29 @@ static void enc_finish(struct sotto_enc16 *e, int32_t g) {
       }
     pack_pc(pc, e->msg);
     e->msgpos = 0;
+#ifdef SOTTO_V39
+    {   /* the ceiling decided from the windows before; sent instead of the speaker shape
+           when it changes, then every CEIL_REPEAT windows */
+      int32_t w = g / WIN_FRAMES;
+      int fi, si, send;
+      fit_ceiling(e->cacc, e->ccnt, &fi, &si);
+      send = fi != e->dfi || si != e->dsi || (fi != CEIL_NONE && w - e->clast >= CEIL_REPEAT);
+      e->dfi = (int16_t)fi, e->dsi = (int16_t)si;
+      e->mceil = (int16_t)send;
+      if (send) {
+        e->clast = w;
+        e->mfi = (int16_t)fi, e->msi = (int16_t)si;
+        pack_ceiling(fi, si, e->msg);
+      }
+    }
+#endif
   }
+#ifdef SOTTO_V39
+  if (r->code == 0 && e->msgpos < MSG_BITS) {   /* side bit first: the ceiling a message brings */
+    set_bit(r->bits, 8, e->msg[e->msgpos++]);   /* applies from the frame that completes it */
+    if (e->msgpos == MSG_BITS && e->mceil) e->cfi = e->mfi, e->csi = e->msi;
+  }
+#endif
   if (r->code == 0) {
     int32_t res[4] = {0, 0, 0, 0}, t;
     int nt = 0, best = 0;
@@ -1024,8 +1365,13 @@ static void enc_finish(struct sotto_enc16 *e, int32_t g) {
         if (i == 0 || d < bd) bd = d, best = i;
       }
     }
+#ifdef SOTTO_V39
+    if (e->cfi != CEIL_NONE && nt) best = enc_index_ceiling(e, g);
+#endif
     for (i = 0; i < 6; i++) set_bit(r->bits, 2 + i, (best >> (5 - i)) & 1);
+#ifndef SOTTO_V39
     if (e->msgpos < MSG_BITS) set_bit(r->bits, 8, e->msg[e->msgpos++]);
+#endif
   }
   memcpy(e->outq[(e->qh + e->qn++) % OUTQ], r->bits, SOTTO_BYTES_PER_FRAME);
 }
