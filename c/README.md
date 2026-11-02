@@ -1,10 +1,10 @@
 # sotto in C
 
-A C port of the sotto codec (`sim/vocoder_lab.py`), floating point. It builds v3.7 (`SottoV37`: the
-29 KB codebook for the radio's DSP, and v3.6's frames with a better pitch tracker) by default,
-v3.6 (`SottoV36`) with `make VARIANT=v3.6`, and v3.5 (`SottoV35`) with `make VARIANT=v3.5`.
-It encodes 8 kHz speech into 48-bit frames every 20 ms (2400 bit/s) and decodes them back,
-with the same bits as the Python model.
+A C port of the sotto codec (`sim/vocoder_lab.py`, `sim/hiss_band.py`), floating point. It
+builds v3.8 by default (`SottoV38`: v3.7's frames plus the 4-8 kHz hiss band, 16 kHz in and
+out, `sotto_hiss.c`), v3.7 (`SottoV37`, 8 kHz, the 29 KB codebook for the radio's DSP) with
+`make VARIANT=v3.7`, and v3.6 and v3.5 likewise. It encodes speech into 48-bit frames every
+20 ms (2400 bit/s) and decodes them back, with the same bits as the Python model.
 
 The port reuses Codec 2's sinusoidal analysis and synthesis by linking `libcodec2` (LGPL-2.1,
 built from `codec/codec2/` by `tools/build_codec2.sh`). The code in this directory is MIT.
@@ -17,7 +17,9 @@ The top-level `make` does the first two steps (see the main README). By hand:
 tools/build_codec2.sh          # once: builds build/codec2/src/libcodec2.so
 make -C c                      # needs python3 + numpy to generate the codebook source
 make -C c check                # API test against libsotto.so
-c/sotto_enc in.raw out.bit     # 8 kHz, 16-bit mono raw in; 6 bytes per frame out
+c/sotto_enc -16 in.raw out.bit   # 16 kHz, 16-bit mono raw in; 6 bytes per frame out (v3.8)
+c/sotto_dec -16 out.bit dec.raw [good.u8]
+c/sotto_enc in.raw out.bit       # without -16: the 8 kHz v3.7 encoder and decoder
 c/sotto_dec out.bit dec.raw [good.u8]
 make -C c install PREFIX=/usr/local
 ```
@@ -27,16 +29,19 @@ header `sotto.h` and a pkg-config file (`pkg-config --cflags --libs sotto`). The
 library exports only the `sotto_*` functions in `sotto.h`. It needs `libcodec2` at run time:
 the build-tree copy is found through an rpath, and an installed copy through the system's
 library path. `sotto_format()` names the bitstream the library speaks, for example
-`sotto v3.6, shape 9-9-8-8`. A library built with another codebook can't decode its frames.
+`sotto v3.8, shape 9-9-8-8`. A library built with another codebook can't decode its frames.
+`make -C c RULE_LAG=5` trades the v3.8 encoder's look-ahead (frames, default 10) for
+latency; `docs/c-port.md` has the table.
 
 ## Fixed point
 
 `make -C c fixed` builds `c/fixed/sotto_enc_fx` and `c/fixed/sotto_dec_fx`, an integer-only
 encoder and decoder for the radio's DSP with the same API (`c/fixed/sotto_fx_enc.c`,
-`c/fixed/sotto_fx_dec.c`). Their tables come from `tools/gen_fx_tables.py`.
-`tools/check_fx.py` compares them with the float port (`--enc` for the encoder), and
-`tools/fx_profile.sh` counts their inner loops. Results and the cycle estimate are in
-`docs/c-port.md`.
+`c/fixed/sotto_fx_dec.c`, and the v3.8 16 kHz layer in `c/fixed/sotto_fx_hiss.c`, so the
+tools take `-16` as the float ones do). Their tables come from `tools/gen_fx_tables.py`.
+`tools/check_fx.py` compares them with the float port (`--enc` for the encoder, `--v38` for
+the 16 kHz layer), and `tools/fx_profile.sh` counts their inner loops. Results and the C55x
+measurements are in `docs/c-port.md`.
 
 ## Input level
 
@@ -52,10 +57,14 @@ conceals those frames as v3.5 and v3.6 do (hold 40 ms, fade 6 dB per 20 ms, sile
 
 ## API
 
-See `sotto.h`. The encoder takes 160 samples per call and returns a frame once its pitch
-tracker has 80 ms of look-ahead (the first frame comes on the 6th call); `sotto_enc_flush`
-returns the rest at the end of the stream. The decoder returns 160 samples per frame, 20 ms
-late, because each odd 10 ms half is interpolated with the next frame.
+See `sotto.h`. The 8 kHz encoder takes 160 samples per call and returns a frame once its
+pitch tracker has 80 ms of look-ahead (the first frame comes on the 6th call);
+`sotto_enc_flush` returns the rest at the end of the stream. The 8 kHz decoder returns 160
+samples per frame, 20 ms late, because each odd 10 ms half is interpolated with the next
+frame. The v3.8 pair (`sotto_enc16_*`, `sotto_dec16_*`) works in 320-sample blocks at
+16 kHz: the encoder's first frame comes on the 17th call (the voicing rules look
+`SOTTO_RULE_LAG` frames ahead), and the decoder's output is `SOTTO_DEC16_DELAY_FRAMES`
+(5) frames late, with `sotto_dec16_flush` draining them at the end.
 
 ## Checked against Python
 
@@ -72,6 +81,9 @@ random 10% frame loss). On 19 voices with v3.5 (`docs/results/c_port_check.json`
   decoders within 96 dB.
 - v3.7 (`docs/results/c_port_check_v37.json`): again 11,170 of 11,173 frames bit-exact,
   decoders within 98 dB.
+- v3.8 (`tools/check_c_port38.py`, `docs/results/c_port38_lag10.json`): bit-exact with the
+  Python on five 7 s clips but one shape near-tie; the hiss band's level per frame agrees as
+  well as two Python seeds do. `docs/c-port.md` has the look-ahead sweep.
 
 ## Speed
 

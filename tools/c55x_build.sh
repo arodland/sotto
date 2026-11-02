@@ -3,6 +3,8 @@
 # c/fixed/c55x/build/bench.out, plus the assembly listings (.asm) and the link map.
 # Usage: C55X_CGT=/path/to/c5500_4.4.1 sh tools/c55x_build.sh [extra cl55 options]
 #        C55X_MAIN=fxtest sh tools/c55x_build.sh   builds fxtest.out (primitive checksums)
+#        sh tools/c55x_build.sh -DBENCH16           bench.out for 16 kHz in.raw through the v3.8 layer
+# The build is v3.8 (SOTTO_V38: the fixed/sotto_fx_hiss.c layer); C55X_VARIANT=v3.7 leaves it out.
 # Run make -C c fixed first, for c/fixed/fx_tables.c.
 # SPDX-License-Identifier: MIT
 set -e
@@ -14,12 +16,19 @@ mkdir -p "$OUT"
 cd "$OUT"
 # -vcpu:3.3: the C5517's CPU revision; large memory model; --gcc for aggregate initialisers
 # that aren't constant; -k keeps the assembly
-OPTS="-vcpu:3.3 --memory_model=large -O3 --gcc -k -DSOTTO_PITCH_THIRD -I$CGT/include -I$ROOT/c $*"
-for f in fx_math fx_tables sotto_fx_enc sotto_fx_dec; do
+VARIANT=${C55X_VARIANT:-v3.8}
+SRCS="fx_math fx_tables sotto_fx_enc sotto_fx_dec"
+VFLAGS="-DSOTTO_PITCH_THIRD"
+if [ "$VARIANT" = v3.8 ]; then SRCS="$SRCS sotto_fx_hiss"; VFLAGS="$VFLAGS -DSOTTO_V38"; fi
+OPTS="-vcpu:3.3 --memory_model=large -O3 --gcc -k $VFLAGS -I$CGT/include -I$ROOT/c $*"
+OBJS=""
+for f in $SRCS; do
   "$CGT/bin/cl55" $OPTS --diag_suppress=1173 -c "$ROOT/c/fixed/$f.c"
+  OBJS="$OBJS $f.obj"
 done
 "$CGT/bin/cl55" $OPTS -c "$ROOT/c/fixed/c55x/$MAIN.c"
-"$CGT/bin/cl55" $OPTS -z --rom_model --stack_size=0x2000 --sys_stacksize=0x1000 --heap_size=0x8000 -o $MAIN.out -m $MAIN.map -i"$CGT/lib" \
-  $MAIN.obj fx_math.obj fx_tables.obj sotto_fx_enc.obj sotto_fx_dec.obj \
+# the v3.8 layer's states (two cores plus their rings) are allocated from the heap: 0x10000 words
+"$CGT/bin/cl55" $OPTS -z --rom_model --stack_size=0x2000 --sys_stacksize=0x1000 --heap_size=0x10000 -o $MAIN.out -m $MAIN.map -i"$CGT/lib" \
+  $MAIN.obj $OBJS \
   "$ROOT/c/fixed/c55x/bench.cmd" -lrts55x.lib
 echo "built $OUT/$MAIN.out"

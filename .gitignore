@@ -11,3 +11,4 @@ build/
 !docs/course/audio/*.flac
 c/fixed/c55x/build*/
 c/fixed/c55x/run*/
+c/sotto_hiss_tables.c

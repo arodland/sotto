@@ -3,7 +3,8 @@
 #   make check           API test against the shared library
 #   make install PREFIX=/usr/local   library, header and pkg-config file
 #   make CODEC2_SRC=... CODEC2_LIB=...   to use another Codec 2 tree
-#   make clean all VARIANT=v3.6   for v3.6's pitch tracker (VARIANT=v3.5: the 152 KB 12+11+11 codebook)
+#   make clean all VARIANT=v3.7   for the 8 kHz v3.7 library (VARIANT=v3.6, v3.5: older variants)
+#   make clean all RULE_LAG=5     v3.8 encoder look-ahead in frames (default 10)
 #   make clean all CODEBOOK=sim/data/shape_msvq_9988.npz   for another codebook
 CODEC2_SRC ?= ../codec/codec2/src
 CODEC2_LIB ?= ../build/codec2/src
@@ -11,8 +12,17 @@ PYTHON ?= python3
 # VARIANT=v3.6: 9+9+8+8 codebook in 8-bit values, energy from the rate-K envelope
 # VARIANT=v3.7: v3.6 plus a pitch candidate at a third of Codec 2's estimate (encoder only,
 #               same frames as v3.6)
-VARIANT ?= v3.7
-ifeq ($(VARIANT),v3.7)
+# VARIANT=v3.8: v3.7 plus the 16 kHz hiss band (sotto_hiss.c, sim/hiss_band.py)
+VARIANT ?= v3.8
+ifeq ($(VARIANT),v3.8)
+CODEBOOK ?= sim/data/shape_msvq_9988.npz
+CBROUND = --round 8
+CFLAGS_VARIANT = -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DSOTTO_V38
+ifdef RULE_LAG
+CFLAGS_VARIANT += -DSOTTO_RULE_LAG=$(RULE_LAG)
+endif
+HISS_OBJS = sotto_hiss.o sotto_hiss_tables.o
+else ifeq ($(VARIANT),v3.7)
 CODEBOOK ?= sim/data/shape_msvq_9988.npz
 CBROUND = --round 8
 CFLAGS_VARIANT = -DSOTTO_V36 -DSOTTO_PITCH_THIRD
@@ -38,31 +48,43 @@ C2LIBS = -L$(CODEC2_LIB) -Wl,-rpath,$(abspath $(CODEC2_LIB)) -lcodec2 -lm
 
 all: libsotto.so libsotto.a sotto_enc sotto_dec
 
-# fixed-point build (fixed/), integer only, v3.6 codebook; FX_CHECK aborts if a sum would
+# fixed-point build (fixed/), integer only, v3.6 codebook, the same VARIANT flags (v3.8 adds
+# fixed/sotto_fx_hiss.c and the -16 mode of the tools); FX_CHECK aborts if a sum would
 # overflow the C55x's 40-bit accumulator
 FX_CODEBOOK = sim/data/shape_msvq_9988.npz
 FXFLAGS ?= -DFX_CHECK
 FX_OBJS = fixed/fx_math.o fixed/fx_tables.o
+ifeq ($(VARIANT),v3.8)
+FX_OBJS += fixed/sotto_fx_hiss.o fixed/sotto_fx_dec.o fixed/sotto_fx_enc.o
+else
+FX_ENC_OBJS = fixed/sotto_fx_enc.o
+FX_DEC_OBJS = fixed/sotto_fx_dec.o
+endif
 fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx
-fixed/fx_tables.c: ../$(FX_CODEBOOK) ../tools/gen_fx_tables.py
+fixed/fx_tables.c: ../$(FX_CODEBOOK) ../tools/gen_fx_tables.py ../sim/data/hiss_band.npz ../sim/data/hiss_vowel_fine.npz
 	cd .. && $(PYTHON) tools/gen_fx_tables.py --codebook $(FX_CODEBOOK) c/fixed/fx_tables.c
-fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h sotto.h
+fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h
 	$(CC) $(CFLAGS) $(FXFLAGS) -c -o $@ $<
-fixed/sotto_dec_fx: sotto_dec.o fixed/sotto_fx_dec.o $(FX_OBJS)
+fixed/sotto_dec_fx: sotto_dec.o $(FX_DEC_OBJS) $(FX_OBJS)
 	$(CC) -o $@ $^
-fixed/sotto_enc_fx: sotto_enc.o fixed/sotto_fx_enc.o $(FX_OBJS)
+fixed/sotto_enc_fx: sotto_enc.o $(FX_ENC_OBJS) $(FX_OBJS)
 	$(CC) -o $@ $^
 
 sotto_codebook.c: ../$(CODEBOOK) ../tools/export_codebook_c.py
 	cd .. && $(PYTHON) tools/export_codebook_c.py $(CBROUND) $(CODEBOOK) c/sotto_codebook.c
 
-sotto.o: sotto.c sotto.h sotto_codebook.h
+sotto_hiss_tables.c: ../sim/data/hiss_band.npz ../sim/data/hiss_vowel_fine.npz ../tools/export_hiss_c.py
+	cd .. && $(PYTHON) tools/export_hiss_c.py c/sotto_hiss_tables.c
+
+sotto.o: sotto.c sotto.h sotto_codebook.h sotto_internal.h
+sotto_hiss.o: sotto_hiss.c sotto.h sotto_internal.h sotto_hiss_tables.h
+sotto_hiss_tables.o: sotto_hiss_tables.c sotto_hiss_tables.h
 sotto_codebook.o: sotto_codebook.c sotto_codebook.h
 
-libsotto.a: sotto.o sotto_codebook.o
+libsotto.a: sotto.o sotto_codebook.o $(HISS_OBJS)
 	$(AR) rcs $@ $^
 
-libsotto.so.$(VERSION): sotto.o sotto_codebook.o
+libsotto.so.$(VERSION): sotto.o sotto_codebook.o $(HISS_OBJS)
 	$(CC) -shared -Wl,-soname,$(SONAME) -o $@ $^ $(C2LIBS)
 libsotto.so: libsotto.so.$(VERSION)
 	ln -sf $< $(SONAME)
@@ -96,7 +118,7 @@ install: libsotto.so libsotto.a sotto.pc
 	install -m 644 sotto.pc $(DESTDIR)$(LIBDIR)/pkgconfig/
 
 clean:
-	rm -f *.o libsotto.a libsotto.so* sotto_enc sotto_dec test_api sotto_codebook.c sotto.pc
+	rm -f *.o libsotto.a libsotto.so* sotto_enc sotto_dec test_api sotto_codebook.c sotto_hiss_tables.c sotto.pc
 	rm -f fixed/*.o fixed/fx_tables.c fixed/sotto_dec_fx fixed/sotto_enc_fx
 
 .PHONY: all fixed check install clean

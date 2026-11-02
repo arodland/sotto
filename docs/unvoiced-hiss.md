@@ -550,3 +550,24 @@ v3.7 decode is bit-identical. The z fix is in the candidate: `sib_voiced=True` w
 unchanged by it and is parked as a frame-size limit (the hiss there now matches the
 original within 2-3 dB per 5 ms, so whatever cue is missing sits in the 0-4 kHz vowel
 offset). The sections above keep the dead ends as a record.
+
+## C port (2 Nov)
+
+Jeff heard the round-2 page (ten fresh phrases) as "everything sounds great", which fixed
+the candidate as the reference for the port. The float C port is `c/sotto_hiss.c` on top of
+the v3.7 core, 16 kHz in and out, with the encoder rules recomputed over a ring of frames
+with a look-ahead the Python mirrors (`SottoV38(whisper_lag=...)`). At the default
+look-ahead of 10 frames it is bit-exact with the Python on five clips (one shape near-tie
+aside) and the hiss levels agree within the random-phase spread. The cost is latency:
+320 ms in the encoder and 100 ms in the decoder against 90 and 20 for v3.7. The numbers,
+the look-ahead sweep and what the DSP will need are in `docs/c-port.md`.
+
+The same day the layer went into the fixed-point build (`c/fixed/sotto_fx_hiss.c`, integer
+only, with a 5 × 64 FFT for the 320-point STFT): 95% of frames identical to the float port
+on the five clips, the hiss band within 0.3 dB on average, PESQ equal. Jeff kept the
+10-frame look-ahead.
+
+Found on the way: the cleanup of the same morning had dropped the `_model_hook` call from
+`vocoder_lab.SottoV0.decode`, so the round-2 rows were first rendered with unvoiced frames
+at the pitch their hiss index spelled. Restored in PR #13 with a regression test; the page
+was re-rendered before Jeff listened.

@@ -45,6 +45,39 @@ int main(void) {
   double li = rms_dbfs(in + 1600, len), lo = rms_dbfs(out + skip, len);
   printf("frames %d (%d before flush), input %.1f dBFS, output %.1f dBFS\n", nf, early, li, lo);
   int ok = nf == N && early == N - 5 && fabs(lo - li) < 3.0;
+#ifdef SOTTO_V38
+  {   /* the 16 kHz path: the same tone with a hiss burst, upsampled by sample repetition
+         (its images above 4 kHz are what the high band has to code) */
+    static short in16[N * SOTTO_SAMPLES_PER_FRAME_16K], out16[(N + 8) * SOTTO_SAMPLES_PER_FRAME_16K];
+    unsigned s = 12345;
+    for (int i = 0; i < N * SOTTO_SAMPLES_PER_FRAME_16K; i++) {
+      int burst = i >= N * SOTTO_SAMPLES_PER_FRAME_16K / 2 && i < N * SOTTO_SAMPLES_PER_FRAME_16K * 3 / 4;
+      s = s * 1103515245u + 12345u;
+      in16[i] = burst ? (short)(((int)(s >> 16) - 32768) / 8) : in[i / 2];
+    }
+    struct sotto_enc16 *e16 = sotto_enc16_create();
+    int nf16 = 0, early16;
+    for (int f = 0; f < N; f++) nf16 += sotto_encode16(e16, in16 + f * SOTTO_SAMPLES_PER_FRAME_16K, bits[nf16]);
+    early16 = nf16;
+    while (sotto_enc16_flush(e16, bits[nf16])) nf16++;
+    sotto_enc16_destroy(e16);
+    struct sotto_dec16 *d16 = sotto_dec16_create();
+    int no = 0;
+    for (int f = 0; f < nf16; f++) sotto_decode16(d16, bits[f], 1, out16 + (no++) * SOTTO_SAMPLES_PER_FRAME_16K);
+    while (sotto_dec16_flush(d16, out16 + no * SOTTO_SAMPLES_PER_FRAME_16K)) no++;
+    sotto_dec16_destroy(d16);
+    /* output starts SOTTO_DEC16_DELAY_FRAMES frames late; compare the tone's level and the
+       hiss burst's level (the burst is white, so its 4-8 kHz half must come back) */
+    int d0 = SOTTO_DEC16_DELAY_FRAMES * SOTTO_SAMPLES_PER_FRAME_16K;
+    int q = N * SOTTO_SAMPLES_PER_FRAME_16K / 4;
+    double ti = rms_dbfs(in16 + 3200, q - 6400), to = rms_dbfs(out16 + d0 + 3200, q - 6400);
+    double bi = rms_dbfs(in16 + 2 * q + 1600, q - 3200), bo = rms_dbfs(out16 + d0 + 2 * q + 1600, q - 3200);
+    printf("16 kHz: frames %d (%d before flush), %d blocks out; tone %.1f -> %.1f dBFS, hiss burst %.1f -> %.1f dBFS\n",
+           nf16, early16, no, ti, to, bi, bo);
+    int ok16 = nf16 == N && no == N + SOTTO_DEC16_DELAY_FRAMES && fabs(to - ti) < 3.0 && fabs(bo - bi) < 4.0;
+    ok = ok && ok16;
+  }
+#endif
   printf(ok ? "PASS\n" : "FAIL\n");
   return !ok;
 }

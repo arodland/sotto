@@ -17,7 +17,8 @@ that the DSP output is bit-identical to the x86 build. Results are in `docs/c-po
 
 ```sh
 make -C c fixed                                  # generates c/fixed/fx_tables.c
-sh tools/c55x_build.sh                           # c/fixed/c55x/build/bench.out
+sh tools/c55x_build.sh                           # c/fixed/c55x/build/bench.out (v3.8 core, 8 kHz bench)
+sh tools/c55x_build.sh -DBENCH16                 # 16 kHz in.raw through the v3.8 layer (not yet run)
 cd c/fixed/c55x/build
 head -c 16000 ../../../../codec/codec2/raw/ve9qrp_10s.raw > in.raw    # 1 s
 /opt/ti/dss.sh 'Z:\path\to\sotto\c\fixed\c55x\bench.js' \

@@ -32,6 +32,36 @@ def rnd(x):
     return np.floor(np.asarray(x, float) + 0.5).astype(np.int64)
 
 
+def hiss_tables(f):
+    """v3.8 hiss band (c/fixed/sotto_fx_hiss.c), from sim/data/hiss_band.npz and
+    sim/data/hiss_vowel_fine.npz, as tools/export_hiss_c.py writes them in double."""
+    import os
+    from scipy.signal import firwin
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    z = np.load(os.path.join(root, "sim", "data", "hiss_band.npz"), allow_pickle=True)
+    W = z["W"].item()
+    fine = np.load(os.path.join(root, "sim", "data", "hiss_vowel_fine.npz"))
+    assert all(W[c].shape == (8, 4) for c in range(3)) and z["cb6"].shape == (64, 4)
+    assert fine["W"].shape == (16, 16) and fine["m0"].shape == (16,) and fine["Vt"].shape == (3, 16)
+    f.write("/* ---- v3.8 hiss band ---- */\n")
+    n = np.arange(320)
+    arr(f, "int16_t", "fx_hs_win", rnd(np.sqrt(0.5 - 0.5 * np.cos(2 * np.pi * n / 320)) * 32767), per_line=16,
+        comment="sqrt-Hann STFT window, 320 points, Q15 (peak 32767)")
+    arr(f, "int16_t", "fx_cos320", rnd(np.minimum(np.cos(2 * np.pi * n / 320) * 32768, 32767)), per_line=16,
+        comment="cos(2 pi i / 320), Q15, twiddles of the 320-point FFT")
+    arr(f, "int32_t", "fx_hs_guess_w", rnd(np.stack([W[c] for c in range(3)]) * 16384), per_line=4,
+        comment="hiss_band guess weights [class][feature][band], Q14 (features in dB: 1, E[0..5] - E[6], E[6])")
+    arr(f, "int16_t", "fx_hs_cb6", rnd(z["cb6"] * 256), per_line=4,
+        comment="6-bit residual codebook of all-unvoiced frames, 64 x 4 bands, dB Q8")
+    arr(f, "int32_t", "fx_hs_fine_w", rnd(fine["W"] * 16384), per_line=8,
+        comment="vowel-following predictor [feature][band], Q14 (features in dB: 1, 15 band levels re 3.0-3.5 kHz)")
+    arr(f, "int32_t", "fx_hs_fine_m0", rnd(fine["m0"] * 256), per_line=8, comment="mean speaker miss per band, dB Q8")
+    arr(f, "int16_t", "fx_hs_fine_vt", rnd(fine["Vt"] * 16384), per_line=8, comment="speaker-shape PCA axes [3][16], Q14")
+    taps = firwin(41, 0.5, window=("kaiser", 5.0))        # scipy.signal._design_resample_poly
+    arr(f, "int32_t", "fx_hs_taps", rnd(taps * 2 ** 19), per_line=6,
+        comment="half-band FIR of scipy.signal.resample_poly(x, 2, 1) and (x, 1, 2): 41 taps, Kaiser 5.0, Q19")
+
+
 def main(cb_path, out):
     a, b = mel(200.0), mel(3700.0)
     m = np.array([b if k == K - 1 else a + k * (b - a) / (K - 1) for k in range(K)])
@@ -130,7 +160,8 @@ def main(cb_path, out):
         f.write("const int32_t *const fx_cb_e2[] = {%s};\n" % ", ".join("fx_cb%d_e2" % s for s in range(len(bits))))
         f.write("/* value of one codebook step, dB x 2^16, and its inverse, x 2^22 / dB Q8 */\n")
         f.write("const int32_t fx_cb_step[] = {%s};\n" % ", ".join(str(int(rnd(s * 65536))) for s in scales))
-        f.write("const int32_t fx_cb_istep[] = {%s};\n" % ", ".join(str(int(rnd(2 ** 22 / (s * 256)))) for s in scales))
+        f.write("const int32_t fx_cb_istep[] = {%s};\n\n" % ", ".join(str(int(rnd(2 ** 22 / (s * 256)))) for s in scales))
+        hiss_tables(f)
 
 
 if __name__ == "__main__":

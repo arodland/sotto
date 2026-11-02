@@ -14,13 +14,25 @@
  *    postfilter that randomises harmonics below the noise estimate;
  *  - synthesis: each harmonic is placed on its 512-point DFT bin, and only the 160 output
  *    samples the 10 ms triangular overlap-add needs are computed, as direct sums.
+ * With SOTTO_V38 (sotto_fx_hiss.c): unvoiced halves are synthesised with harmonics 50 Hz
+ * apart whatever their pitch field says (it carries a hiss index), upward-tilted ones 3 dB
+ * louder, a voiced second half between two unvoiced frames keeps its own pitch, and the
+ * envelope at the hiss band's reference frequencies is kept for the layer (fx_dec_info_t).
  * SPDX-License-Identifier: MIT */
 #define SOTTO_BUILD
 #include <stdlib.h>
 #include <string.h>
 #include "../sotto.h"
 #include "fx.h"
+#include "fx_internal.h"
 #include "fx_tables.h"
+
+#ifdef SOTTO_V38
+#define V38 1
+#else
+#define V38 0
+#endif
+#define UV_GAIN DB(3)
 
 #define NSAMP 80
 #define K FX_K
@@ -55,7 +67,22 @@ struct sotto_dec {
   int16_t have_last, run, prev_v;
   int32_t n;                  /* frames received */
   dframe_t prev;
+  fx_dec_info_t info;
 };
+
+const fx_dec_info_t *sotto_dec_info(const struct sotto_dec *d) { return &d->info; }
+static const int32_t fb_q4[FX_NFB] = {1250 * 16, 1750 * 16, 2250 * 16, 2750 * 16, 3250 * 16, 3600 * 16, 3800 * 16};
+
+/* mean rk below 1 kHz minus mean rk above 2 kHz, dB Q8 (hiss_band: rk[KLO].mean() - rk[KHI].mean()) */
+static int32_t rk_tilt(const int32_t *rk) {
+  int k, nlo = 0, nhi = 0;
+  int32_t lo = 0, hi = 0;
+  for (k = 0; k < K; k++) {
+    if (fx_kfreq[k] < 1000 * 16) lo += rk[k], nlo++;
+    if (fx_kfreq[k] > 2000 * 16) hi += rk[k], nhi++;
+  }
+  return lo / nlo - hi / nhi;
+}
 
 struct sotto_dec *sotto_dec_create(void) {
   struct sotto_dec *d = calloc(1, sizeof *d);
@@ -173,17 +200,32 @@ static void min_phase(const int32_t *A, int L, uint32_t wo, uint32_t *ph) {
 
 /* one 10 ms half */
 static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, int32_t en, int32_t g,
-                  short *out) {
+                  short *out, int half) {
   int h, i, j;
   int32_t A[MAXL + 1] = {0};                 /* harmonic levels, dB Q8 */
   uint32_t phi[MAXL + 1], ph[NBIN];
-  if (!v && wo < WO_MIN) wo = WO_MIN;
+  if (!v && (V38 || wo < WO_MIN)) wo = WO_MIN;   /* v3.8: unvoiced noise harmonics 50 Hz apart */
   int L = (int)(0x80000000u / wo);          /* 8 (500 Hz) .. 80 */
   if (L > MAXL) L = MAXL;
   for (h = 1; h <= L; h++)
     A[h] = env_at(rk, (int32_t)(((fx_uacc)h * wo * 125) >> 22));   /* h f0, Hz Q4 */
   int32_t gain = en - fx_db_power_sum(A + 1, L) + g;
+  if (V38 && !v && rk_tilt(rk) < 0) gain += UV_GAIN;   /* a real fricative */
   for (h = 1; h <= L; h++) A[h] += gain;
+  {   /* for the hiss band: the levels interpolated at FB (hiss_band.model_env), and the class */
+    int32_t f0 = (int32_t)(((fx_uacc)wo * 125) >> 22);   /* Hz Q4, >= 800 */
+    for (j = 0; j < FX_NFB; j++) {
+      int32_t fb = fb_q4[j];
+      int32_t hh = fb / f0;                  /* harmonic at or below fb */
+      if (hh < 1) d->info.env[half][j] = A[1];
+      else if (hh >= L) d->info.env[half][j] = A[L];
+      else {
+        uint32_t fr = (((uint32_t)(fb - hh * f0)) << 16) / (uint32_t)f0;   /* Q16 */
+        d->info.env[half][j] = A[hh] + (int32_t)(((fx_acc)(A[hh + 1] - A[hh]) * (int32_t)fr + 32768) >> 16);
+      }
+    }
+    d->info.cls[half] = (int16_t)v;
+  }
   int vc = v > 0;                            /* voiced harmonics: all (1), none (0), m < vc */
   if (v == MIXED) {
     vc = (int)(0x20000000u / wo) + 1;        /* 1 kHz / f0 + 1 */
@@ -250,7 +292,7 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
 
 static void synth_pair(struct sotto_dec *d, const dframe_t *p, const dframe_t *n, short *out) {
   int k;
-  synth(d, p->wo, p->v[0], p->rk, p->en, p->g[0], out);
+  synth(d, p->wo, p->v[0], p->rk, p->en, p->g[0], out, 0);
   /* odd half: interpolated with the next frame */
   const dframe_t *q = n ? n : p;
   int32_t rk[K];
@@ -258,9 +300,9 @@ static void synth_pair(struct sotto_dec *d, const dframe_t *p, const dframe_t *n
   int va = p->v[0], vi = p->v[1], vb = n ? n->v[0] : p->v[1];
   for (k = 0; k < K; k++) rk[k] = (p->rk[k] + q->rk[k]) >> 1;
   if (vi && va && vb) wo = (p->wo >> 1) + (q->wo >> 1) + (p->wo & q->wo & 1);
-  else if (vi) wo = va ? p->wo : q->wo;
+  else if (vi) wo = (va || (V38 && !vb)) ? p->wo : q->wo;   /* interp_wo, guard in v3.8 */
   else wo = WO_UV;
-  synth(d, wo, vi, rk, (p->en + q->en) >> 1, p->g[1], out + NSAMP);
+  synth(d, wo, vi, rk, (p->en + q->en) >> 1, p->g[1], out + NSAMP, 1);
 }
 
 /* concealment gain, dB Q8: hold 2 frames, then 6 dB per frame, silent after 4 */
@@ -284,6 +326,8 @@ void sotto_decode(struct sotto_dec *d, const unsigned char in[SOTTO_BYTES_PER_FR
     if (d->have_last) b = d->last;
   }
   dframe_t f;
+  memcpy(d->info.b2, b, SOTTO_BYTES_PER_FRAME);
+  d->info.run = d->run;
   FX_PROF(10, 1);
   unpack(d, b, &f);
   FX_PROF(10, 0);

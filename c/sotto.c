@@ -20,6 +20,7 @@
 #include "sine.h"
 #include "sotto.h"
 #include "sotto_codebook.h"
+#include "sotto_internal.h"
 
 #define FS 8000
 #define NSAMP 80          /* 10 ms analysis frame */
@@ -78,6 +79,17 @@
 #else
 #define N_MU 3
 #endif
+/* v3.8 (make VARIANT=v3.8): the v3.7 frame with a 4-8 kHz hiss band (sotto_hiss.c). In the
+   core: unvoiced halves are synthesised 50 Hz apart whatever the pitch field says (it carries
+   a hiss index in all-unvoiced frames), upward-tilted ones 3 dB louder, and a voiced second
+   half between two unvoiced frames keeps its own pitch (hiss_band.SottoV38._model_hook,
+   vocoder_lab.interp_wo guard). */
+#ifdef SOTTO_V38
+#define V38 1
+#else
+#define V38 0
+#endif
+#define UV_GAIN_DB 3.0
 
 static const double PI_D = 3.14159265358979323846;
 #define WO_MIN (2 * PI_D / 160)
@@ -87,7 +99,9 @@ static const double PI_D = 3.14159265358979323846;
 static double kfreq[K];   /* Hz, vocoder_lab.KFREQ */
 static double dct[K][K];  /* orthonormal DCT-II, vocoder_lab.DCT */
 static double pre[K];     /* postfilter pre-emphasis */
+static int klo[K], khi[K];  /* KFREQ < 1000 Hz, > 2000 Hz (hiss_band.KLO, KHI) */
 static int tables_ready;
+static const double fb_hz[SOTTO_NFB] = {1250, 1750, 2250, 2750, 3250, 3600, 3800};   /* hiss_band.FB */
 
 static double mel(double f) { return floor(2595 * log10(1 + f / 700) + 0.5); }
 
@@ -98,6 +112,8 @@ static void init_tables(void) {
     double m = (k == K - 1) ? b : a + k * (b - a) / (K - 1);
     kfreq[k] = 700 * (pow(10, m / 2595) - 1);
     pre[k] = 20 * log10(kfreq[k] / 300.0);
+    klo[k] = kfreq[k] < 1000;
+    khi[k] = kfreq[k] > 2000;
     for (int n = 0; n < K; n++)
       dct[k][n] = sqrt(2.0 / K) * cos(PI_D * (n + 0.5) * k / K) / (k == 0 ? sqrt(2.0) : 1.0);
   }
@@ -131,6 +147,19 @@ static void postfilter_rk(double *v, double gain) {
 
 static double wo_hz(double wo) { return wo * FS / (2 * PI_D); }
 
+double sotto_env_db(const double *rk, double hz) { return interp(hz, kfreq, rk, K); }
+
+/* mean rk below 1 kHz minus mean rk above 2 kHz (hiss_band: rk[KLO].mean() - rk[KHI].mean()) */
+static double rk_tilt(const double *rk) {
+  double lo = 0, hi = 0;
+  int nlo = 0, nhi = 0;
+  for (int k = 0; k < K; k++) {
+    if (klo[k]) lo += rk[k], nlo++;
+    if (khi[k]) hi += rk[k], nhi++;
+  }
+  return lo / nlo - hi / nhi;
+}
+
 /* sinusoid.n_harm: Codec 2's harmonic count, in float like Codec 2 */
 static int n_harm(float wo) {
   int L = (int)floorf((float)M_PI / wo);
@@ -140,7 +169,7 @@ static int n_harm(float wo) {
 const char *sotto_format(void) {
   static char buf[64];
   if (!buf[0]) {
-    int n = snprintf(buf, sizeof buf, "sotto %s, shape ", SOTTO_ENERGY_RK ? "v3.6" : "v3.5");
+    int n = snprintf(buf, sizeof buf, "sotto %s, shape ", V38 ? "v3.8" : SOTTO_ENERGY_RK ? "v3.6" : "v3.5");
     for (int s = 0; s < sotto_cb_stages && n < (int)sizeof buf; s++)
       n += snprintf(buf + n, sizeof buf - n, s ? "-%d" : "%d", sotto_cb_bits[s]);
   }
@@ -173,7 +202,9 @@ struct sotto_enc {
   float wo_e;
   double en_e;
   int idx_e[SOTTO_CB_MAX_STAGES], cls_e;
-  unsigned char q[8][SOTTO_BYTES_PER_FRAME];
+  sotto_enc_frame_t cur;           /* the frame being built: per-half features for v3.8 */
+  double peak;                     /* causal loudness reference (hiss_band._onsets) */
+  sotto_enc_frame_t q[8];
   int q_head, q_n, flushed;
 };
 
@@ -454,6 +485,20 @@ static void decide(struct sotto_enc *e, long t, int k) {
     else if (snr < MIXED_SNR) cls = MIXED;
   }
 
+  {   /* per-half features of the v3.8 encoder rules (hiss_band._onsets, _whisper) */
+    double rk[K], mean = 0;
+    int h = (int)(t % 2);
+    to_rate_k(&m, rk);
+    for (int i = 0; i < K; i++) mean += rk[i];
+    mean /= K;
+    e->peak = fmax(mean, e->peak - 0.05);
+    e->cur.en[h] = mean;
+    e->cur.loud[h] = mean > e->peak - 6.0 - 10.0;
+    e->cur.tilt[h] = rk_tilt(rk);
+    e->cur.snr[h] = cls ? low_snr(f->Sw, e->W, wo) : NAN;
+    e->cur.lwo[h] = log(wd);
+  }
+
   if (t % 2 == 0) {
     double rk[K], mean = 0, c[NC];
     to_rate_k(&m, rk);
@@ -485,8 +530,10 @@ static void decide(struct sotto_enc *e, long t, int k) {
 static void emit(struct sotto_enc *e, int cls) {
   {
     int a = e->cls_e, b = cls, code = a == b ? a : (a == 0 || b == 0) ? 3 : 1;
-    unsigned char *out = e->q[(e->q_head + e->q_n++) % 8];
+    sotto_enc_frame_t *fr = &e->q[(e->q_head + e->q_n++) % 8];
+    unsigned char *out = fr->bits;
     int pos = 0;
+    *fr = e->cur;
     memset(out, 0, SOTTO_BYTES_PER_FRAME);
     put_bits(out, &pos, code, 2);
     put_bits(out, &pos, q_index(logf(e->wo_e), log(WO_MIN), log(WO_HI), 7), 7);
@@ -515,6 +562,7 @@ struct sotto_enc *sotto_enc_create(void) {
   make_analysis_window(&e->c2, e->fft, e->w, e->W);
   for (int i = 0; i < MPITCH; i++) e->Sn[i] = 1.0f;
   e->prev_f0 = 1 / P_MAX_S;
+  e->peak = -1e9;
   return e;
 }
 
@@ -548,13 +596,22 @@ static void analyse_10ms(struct sotto_enc *e, const short *x) {
   }
 }
 
-static int pop(struct sotto_enc *e, unsigned char *out) {
+int sotto_enc_pop_frame(struct sotto_enc *e, sotto_enc_frame_t *f) {
   if (!e->q_n) return 0;
-  memcpy(out, e->q[e->q_head], SOTTO_BYTES_PER_FRAME);
+  *f = e->q[e->q_head];
   e->q_head = (e->q_head + 1) % 8;
   e->q_n--;
   return 1;
 }
+
+static int pop(struct sotto_enc *e, unsigned char *out) {
+  sotto_enc_frame_t f;
+  if (!sotto_enc_pop_frame(e, &f)) return 0;
+  memcpy(out, f.bits, SOTTO_BYTES_PER_FRAME);
+  return 1;
+}
+
+void sotto_enc_analyse_block(struct sotto_enc *e, const short x8[NSAMP]) { analyse_10ms(e, x8); }
 
 int sotto_encode(struct sotto_enc *e, const short speech[SOTTO_SAMPLES_PER_FRAME],
                  unsigned char out[SOTTO_BYTES_PER_FRAME]) {
@@ -567,7 +624,7 @@ void sotto_encode_half(struct sotto_enc *e, const short speech[SOTTO_SAMPLES_PER
   analyse_10ms(e, speech);
 }
 
-int sotto_enc_flush(struct sotto_enc *e, unsigned char out[SOTTO_BYTES_PER_FRAME]) {
+void sotto_enc_flush_core(struct sotto_enc *e) {
   if (!e->flushed && e->n_an > 0) {
     long n = e->n_an;
     frame_costs(e, n - 1, 0);
@@ -576,6 +633,10 @@ int sotto_enc_flush(struct sotto_enc *e, unsigned char out[SOTTO_BYTES_PER_FRAME
     if (n % 2) emit(e, e->cls_e);    /* odd frame count: the last half repeated */
     e->flushed = 1;
   }
+}
+
+int sotto_enc_flush(struct sotto_enc *e, unsigned char out[SOTTO_BYTES_PER_FRAME]) {
+  sotto_enc_flush_core(e);
   return pop(e, out);
 }
 
@@ -595,7 +656,10 @@ struct sotto_dec {
   int have_last, run, prev_v;
   long n;              /* frames received */
   dframe_t prev;       /* frame n-1 */
+  sotto_dec_info_t info;
 };
+
+const sotto_dec_info_t *sotto_dec_info(const struct sotto_dec *d) { return &d->info; }
 
 struct sotto_dec *sotto_dec_create(void) {
   struct sotto_dec *d = calloc(1, sizeof *d);
@@ -642,11 +706,11 @@ static void unpack(struct sotto_dec *d, const unsigned char *b, dframe_t *f) {
 /* model for one 10 ms half (set_wo, from_rate_k, set_energy, mixed cutoff, concealment
    gain), then Codec 2's phase0 synthesis and postfilter as c2sim runs them */
 static void synth(struct sotto_dec *d, double wo, int v, const double *rk, double en, float g,
-                  short *out) {
+                  short *out, int half) {
   MODEL m;
   COMP H[MAX_AMP + 1];
   memset(&m, 0, sizeof m);
-  if (!v && wo < WO_MIN) wo = WO_MIN;
+  if (!v && (V38 || wo < WO_MIN)) wo = WO_MIN;    /* v3.8: unvoiced noise harmonics 50 Hz apart */
   m.Wo = (float)wo;
   m.L = (int)floor(PI_D / wo);
   m.voiced = v > 0;
@@ -657,7 +721,17 @@ static void synth(struct sotto_dec *d, double wo, int v, const double *rk, doubl
     s += m.A[h] * m.A[h];
   }
   double gain = sqrt(pow(10, en / 10) / ((double)s + 1e-12));
+  if (V38 && !v && rk_tilt(rk) < 0) gain *= pow(10, UV_GAIN_DB / 20);   /* a real fricative */
   for (int h = 1; h <= m.L; h++) m.A[h] = (float)(m.A[h] * gain) * g;
+  {   /* for the hiss band: envelope at FB (hiss_band.model_env) and class */
+    double f[MAX_AMP], a[MAX_AMP];
+    for (int h = 1; h <= m.L; h++) {
+      f[h - 1] = h * (double)m.Wo * FS / (2 * PI_D);
+      a[h - 1] = 20 * log10(m.A[h] + 1e-9);
+    }
+    for (int j = 0; j < SOTTO_NFB; j++) d->info.env[half][j] = interp(fb_hz[j], f, a, m.L);
+    d->info.cls[half] = v == MIXED ? 2 : v;
+  }
   if (v == MIXED) {
     int c = (int)(MIX_HZ / (m.Wo * FS / (float)(2 * PI_D))) + 1;
     m.voiced = c > 2 ? c : 2;
@@ -674,7 +748,7 @@ static void synth(struct sotto_dec *d, double wo, int v, const double *rk, doubl
 
 /* synthesise frame p (both halves); n is the next frame, or NULL at the end */
 static void synth_pair(struct sotto_dec *d, const dframe_t *p, const dframe_t *n, short *out) {
-  synth(d, p->wo, p->v[0], p->rk, p->en, p->g[0], out);
+  synth(d, p->wo, p->v[0], p->rk, p->en, p->g[0], out, 0);
   /* odd half: interpolated with the next frame (decimate_interp, interp_wo) */
   double rk[K], en, wo;
   const dframe_t *q = n ? n : p;
@@ -682,9 +756,9 @@ static void synth_pair(struct sotto_dec *d, const dframe_t *p, const dframe_t *n
   for (int k = 0; k < K; k++) rk[k] = 0.5 * (p->rk[k] + q->rk[k]);
   en = 0.5 * (p->en + q->en);
   if (vi && va && vb) wo = 0.5 * (p->wo + q->wo);
-  else if (vi) wo = va ? p->wo : q->wo;
+  else if (vi) wo = (va || (V38 && !vb)) ? p->wo : q->wo;   /* interp_wo, guard in v3.8 */
   else wo = WO_MIN * 2;
-  synth(d, wo, vi, rk, en, p->g[1], out + NSAMP);
+  synth(d, wo, vi, rk, en, p->g[1], out + NSAMP, 1);
 }
 
 static float conceal_gain(int run, int half) {
@@ -706,6 +780,8 @@ void sotto_decode(struct sotto_dec *d, const unsigned char in[SOTTO_BYTES_PER_FR
     if (d->have_last) b = d->last;
   }
   dframe_t f;
+  memcpy(d->info.b2, b, SOTTO_BYTES_PER_FRAME);
+  d->info.run = d->run;
   unpack(d, b, &f);
   for (int h = 0; h < 2; h++) {
     f.g[h] = conceal_gain(d->run, h);

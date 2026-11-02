@@ -45,4 +45,13 @@ extern const int16_t fx_nlp_win[64];
 extern const int16_t fx_nlp_bmin[65];
 extern const int16_t fx_nlp_bmax[65];
 extern const uint32_t fx_wo_thr[127];
+/* v3.8 hiss band (sotto_fx_hiss.c) */
+extern const int16_t fx_hs_win[320];
+extern const int16_t fx_cos320[320];
+extern const int32_t fx_hs_guess_w[3 * 8 * 4];
+extern const int16_t fx_hs_cb6[64 * 4];
+extern const int32_t fx_hs_fine_w[16 * 16];
+extern const int32_t fx_hs_fine_m0[16];
+extern const int16_t fx_hs_fine_vt[3 * 16];
+extern const int32_t fx_hs_taps[41];
 #endif

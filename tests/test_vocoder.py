@@ -210,9 +210,12 @@ def test_header_level_constants_match_energy_field():
 @pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "c", "fixed", "sotto_dec_fx")),
                     reason="fixed-point decoder not built (make -C c fixed)")
 def test_fixed_point_decoder_matches_float():
-    """c/fixed/sotto_dec_fx (integer only) against the float decoder, same bits. The two
-    drift apart only where a harmonic sits on the postfilter's noise threshold and the
-    random-phase sequences fall out of step, so most 10 ms segments match closely."""
+    """c/fixed/sotto_dec_fx (integer only) against the float decoder, same bits. Their
+    harmonic levels agree to a few hundredths of a dB, but where a harmonic sits on the
+    postfilter's noise threshold one decoder randomises its phase and the other doesn't, and
+    the random-phase sequences fall out of step (in v3.8 builds, whose unvoiced halves have
+    80 random-phase harmonics, that happens within the first frames of a quiet start). So the
+    outputs are compared by level: 500 Hz bands over 80 ms windows, and the total energy."""
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import check_c_port as cc
     import check_fx
@@ -223,9 +226,17 @@ def test_fixed_point_decoder_matches_float():
     yf = cc.c_decode(bits, good)
     yx = check_fx.run_dec(os.path.join(ROOT, "c", "fixed", "sotto_dec_fx"), bits, good)
     assert len(yx) == len(yf)
-    seg = [cc.snr_db(yf[i:i + 80], yx[i:i + 80]) for i in range(0, len(yf) - 80, 80)
-           if np.sum(yf[i:i + 80] ** 2) > 1e-6]
-    assert np.median(seg) > 40
+    win, hop = 640, 320
+    w = np.hanning(win)
+    f = np.fft.rfftfreq(win, 1 / 8000)
+    bf, bx = [], []
+    for i in range(0, len(yf) - win, hop):
+        for y, out in ((yf, bf), (yx, bx)):
+            X = np.abs(np.fft.rfft(y[i:i + win] * w)) ** 2
+            out.append([10 * np.log10(X[(f >= lo) & (f < lo + 500)].sum() + 1e-12) for lo in range(0, 4000, 500)])
+    bf, bx = np.array(bf), np.array(bx)
+    d = np.abs(bf - bx)[bf > -60]
+    assert np.median(d) < 1.0 and np.mean(d) < 1.5
     assert abs(10 * np.log10(np.sum(yx ** 2) / np.sum(yf ** 2))) < 0.5
 
 
