@@ -5,6 +5,7 @@
 #   make            sotto.wasm
 #   make install    copies it to docs/sotto.wasm (the file the page loads)
 #   make check      decodes with node and compares against c/sotto_dec -16
+#   make sotto_fx.wasm   the fixed-point codec (c/fixed) behind the same entry points
 CC_WASM ?= clang
 WASI_SYSROOT ?=
 C2SRC = ../../codec/codec2/src
@@ -34,6 +35,26 @@ obj/sine.o: CFLAGS += -Dcodec2_rand=codec2_rand_32bit
 obj:
 	mkdir -p obj
 
+# the fixed-point codec (c/fixed, as on the C5517) with the same entry points: sotto_fx.wasm,
+# for comparing fixed-point versions in the browser
+FX_SRCS = sotto_wasm.c ../fixed/fx_math.c ../fixed/fx_tables.c ../fixed/sotto_fx_enc.c \
+          ../fixed/sotto_fx_dec.c ../fixed/sotto_fx_hiss.c
+FX_OBJS = $(patsubst %.c,objfx/%.o,$(notdir $(FX_SRCS)))
+FX_CFLAGS = $(TARGET) -O2 -std=gnu99 -ffunction-sections -fdata-sections -DSOTTO_FX \
+            -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DSOTTO_V38 -I.. -I../fixed -w
+
+sotto_fx.wasm: $(FX_OBJS)
+	$(CC_WASM) $(TARGET) -mexec-model=reactor -Wl,--gc-sections -Wl,--strip-all \
+	  -Wl,-z,stack-size=1048576 -Wl,--initial-memory=8388608 -Wl,--max-memory=268435456 \
+	  -o $@ $(FX_OBJS)
+
+objfx/%.o: %.c | objfx
+	$(CC_WASM) $(FX_CFLAGS) -c -o $@ $<
+objfx/%.o: ../fixed/%.c | objfx
+	$(CC_WASM) $(FX_CFLAGS) -c -o $@ $<
+objfx:
+	mkdir -p objfx
+
 install: sotto.wasm
 	cp sotto.wasm ../../docs/sotto.wasm
 
@@ -41,5 +62,5 @@ check: sotto.wasm
 	cd ../.. && node c/wasm/check_wasm.mjs
 
 clean:
-	rm -rf obj sotto.wasm
+	rm -rf obj objfx sotto.wasm sotto_fx.wasm
 .PHONY: install check clean

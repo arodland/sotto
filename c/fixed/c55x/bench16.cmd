@@ -21,7 +21,9 @@ SECTIONS
     .bss      > DARAM | SARAM0 | SARAM2
     .sysmem   > SARAMP
     .cinit    > SARAM0 | SARAM2
-    .const    > SARAM0 | SARAM2 | DARAM
+    .const:_fx_cos512 > DARAM  /* see bench.cmd */
+    .const:.string > DARAM   /* see bench.cmd */
+    .const    >> SARAM0 | SARAM2 | DARAM   /* split: the unpacked codebook makes it larger than one range */
     .switch   > SARAM0 | SARAM2
     .text     > SARAM2 | SARAM0
 }

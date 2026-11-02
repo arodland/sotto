@@ -13,3 +13,9 @@ c/fixed/c55x/build*/
 c/fixed/c55x/run*/
 c/sotto_hiss_tables.c
 c/fixed/c55x/b3*/
+c/fixed/c55x/o_*/
+c/fixed/c55x/f8/
+c/fixed/c55x/f16/
+c/fixed/c55x/*.buildlog
+c/wasm/objfx/
+c/wasm/sotto_fx.wasm

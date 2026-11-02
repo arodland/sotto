@@ -170,31 +170,65 @@ static void min_phase(const int32_t *A, int L, uint32_t wo, uint32_t *ph) {
     int32_t tt = (int32_t)(((fx_acc)t * t) >> 16);
     G[i] = y2 + (int32_t)(((fx_acc)t * (y3 - y1)) >> 17) + (int32_t)(((fx_acc)tt * (y3 - 2 * y2 + y1)) >> 17);
   }
-  /* real cepstrum (x 128): c[n] = G0 + (-1)^n G64 + 2 sum_j G_j cos(2 pi j n / 128), Q4 */
-  for (n = 1; n < 64; n++) {
-    fx_acc a = (fx_acc)(G[0] + ((n & 1) ? -G[64] : G[64])) * 32768, ah = 0, al = 0;
-    for (j = 1; j < 64; j++) {                 /* 2 G[j] cos(...), as two 16 x 16 products */
-      int16_t c = fx_cos512[((j * n) & 127) * 4];
-      ah += (fx_acc)FX_HI(G[j]) * c;
-      al += (fx_acc)FX_LO(G[j]) * c;
+  /* real cepstrum (x 128): c[n] = G0 + (-1)^n G64 + 2 sum_j G_j cos(2 pi j n / 128), Q4.
+     Each 32 x 16 product as two 16 x 16 ones (G = hi 2^15 + lo); the cos values come from
+     fx_mp_cos, row n holding the even j then the odd j, and row 64 - n is row n with the odd
+     j negated: one pass over a row gives c[n] and c[64 - n] (the same integer sums as a loop
+     over j with the cos table) */
+  {
+    int16_t gh[63], gl[63];                  /* G[2], G[4], .. G[62], then G[1], G[3], .. G[63] */
+    for (j = 0; j < 31; j++) gh[j] = FX_HI(G[2 * j + 2]), gl[j] = FX_LO(G[2 * j + 2]);
+    for (j = 0; j < 32; j++) gh[31 + j] = FX_HI(G[2 * j + 1]), gl[31 + j] = FX_LO(G[2 * j + 1]);
+    for (n = 1; n <= 32; n++) {
+      const int16_t *row = fx_mp_cos + (n - 1) * 63;
+      fx_acc eh = 0, el = 0, oh = 0, ol = 0, a;
+      for (j = 0; j < 31; j++) eh += (fx_acc)gh[j] * row[j], el += (fx_acc)gl[j] * row[j];
+      for (j = 31; j < 63; j++) oh += (fx_acc)gh[j] * row[j], ol += (fx_acc)gl[j] * row[j];
+      a = (fx_acc)(G[0] + ((n & 1) ? -G[64] : G[64])) * 32768 + FX_JOIN(eh + oh, el + ol) * 2;
+      FX_ACC_CHECK(a);
+      cc[n] = fx_rshr(a, 19);
+      if (n < 32) {                          /* 64 - n has the parity of n */
+        a = (fx_acc)(G[0] + ((n & 1) ? -G[64] : G[64])) * 32768 + FX_JOIN(eh - oh, el - ol) * 2;
+        FX_ACC_CHECK(a);
+        cc[64 - n] = fx_rshr(a, 19);
+      }
     }
-    a += FX_JOIN(ah, al) * 2;
-    FX_ACC_CHECK(a);
-    cc[n] = fx_rshr(a, 19);
   }
   /* folded cepstrum back to phase: phi_k = -2 / (128 * 20 / ln 10) sum_n c[n] sin(2 pi k n / 128)
-     radians; in Q32 turns from Q19 sums that is x -2.34542 (153709 in Q16) */
-  for (i = 0; i < NBIN; i++) {
-    fx_acc a, ah = 0, al = 0;
-    for (n = 1; n < 64; n++) {
-      int16_t c = fx_cos512[(((i * n) & 127) * 4 - 128) & 511];
-      ah += (fx_acc)FX_HI(cc[n]) * c;
-      al += (fx_acc)FX_LO(cc[n]) * c;
+     radians; in Q32 turns from Q19 sums that is x -2.34542 (153709 in Q16). The sin values
+     come from fx_mp_sin (rows i = 1..32, the even n then the odd n); row 64 - i is row i with
+     the even n negated, except that the table's sin = 1 is 32767 but sin = -1 is -32768: for
+     i = 2^a u (u odd, a <= 4) the even n = 2^(5-a) w (w odd) get one more -cc[n] (checked
+     against the direct sums by tools/gen_fx_tables.py). Bins 0 and 64 have sin = 0. */
+  {
+    int16_t ch[63], cl[63];                  /* cc[2], .. cc[62], then cc[1], .. cc[63] */
+    for (n = 0; n < 31; n++) ch[n] = FX_HI(cc[2 * n + 2]), cl[n] = FX_LO(cc[2 * n + 2]);
+    for (n = 0; n < 32; n++) ch[31 + n] = FX_HI(cc[2 * n + 1]), cl[31 + n] = FX_LO(cc[2 * n + 1]);
+    ph[0] = ph[64] = 0;
+    for (i = 1; i <= 32; i++) {
+      const int16_t *row = fx_mp_sin + (i - 1) * 63;
+      fx_acc eh = 0, el = 0, oh = 0, ol = 0;
+      int r;
+      for (n = 0; n < 31; n++) eh += (fx_acc)ch[n] * row[n], el += (fx_acc)cl[n] * row[n];
+      for (n = 31; n < 63; n++) oh += (fx_acc)ch[n] * row[n], ol += (fx_acc)cl[n] * row[n];
+      for (r = 0; r < 2; r++) {
+        fx_acc a;
+        int k = r ? 64 - i : i;
+        if (r && i == 32) break;
+        if (!r) a = FX_JOIN(eh + oh, el + ol);
+        else {
+          fx_acc fh = oh - eh, fl = ol - el;
+          int sa = 0;
+          while (!((i >> sa) & 1)) sa++;
+          if (sa <= 4)
+            for (n = 32 >> sa; n < 64; n += 64 >> sa) fh -= FX_HI(cc[n]), fl -= FX_LO(cc[n]);
+          a = FX_JOIN(fh, fl);
+        }
+        FX_ACC_CHECK(a);
+        /* -((a x 153709) >> 16) mod 2^32: split a so no product needs more than 40 bits */
+        ph[k] = (uint32_t)0 - ((uint32_t)(a >> 16) * 153709u + (uint32_t)(((a & 0xFFFF) * 153709) >> 16));
+      }
     }
-    a = FX_JOIN(ah, al);
-    FX_ACC_CHECK(a);
-    /* -((a x 153709) >> 16) mod 2^32: split a so no product needs more than 40 bits */
-    ph[i] = (uint32_t)0 - ((uint32_t)(a >> 16) * 153709u + (uint32_t)(((a & 0xFFFF) * 153709) >> 16));
   }
 }
 

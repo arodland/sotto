@@ -19,6 +19,9 @@ cd "$OUT"
 VARIANT=${C55X_VARIANT:-v3.8}
 SRCS="fx_math fx_tables sotto_fx_enc sotto_fx_dec"
 VFLAGS="-DSOTTO_PITCH_THIRD"
+# the codebook one value per word (29 KB more) for the dual-MAC search in c55x/cb_dots.asm;
+# C55X_PACKED=1 keeps the packed codebook and the C search
+[ -n "$C55X_PACKED" ] || VFLAGS="$VFLAGS -DFX_CB_UNPACKED"
 if [ "$VARIANT" = v3.8 ]; then SRCS="$SRCS sotto_fx_hiss"; VFLAGS="$VFLAGS -DSOTTO_V38"; fi
 OPTS="-vcpu:3.3 --memory_model=large -O3 --gcc -k $VFLAGS -I$CGT/include -I$ROOT/c $*"
 OBJS=""
@@ -27,6 +30,10 @@ for f in $SRCS; do
   OBJS="$OBJS $f.obj"
 done
 "$CGT/bin/cl55" $OPTS -c "$ROOT/c/fixed/c55x/$MAIN.c"
+for f in cb_dots hsum nlp_dft; do                  # assembly kernels (C versions elsewhere)
+  "$CGT/bin/cl55" $OPTS -c "$ROOT/c/fixed/c55x/$f.asm"
+  OBJS="$OBJS $f.obj"
+done
 # the 16 kHz layer's states need a larger heap, outside DARAM (bench16.cmd)
 CMD=bench.cmd HEAP=0x8000                  # heap size in bytes
 case " $* " in *-DBENCH16*) CMD=bench16.cmd HEAP=0x1F000;; esac   # bytes

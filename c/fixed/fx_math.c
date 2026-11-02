@@ -87,10 +87,27 @@ fx_uacc fx_udiv_shl(fx_uacc a, int sh, fx_uacc d, fx_uacc *rem) {
   return q;
 }
 
+/* one radix-2 butterfly: b *= W (W = c - j s), then a, b = (a + b) / 2, (a - b) / 2, rounded.
+   round((br c + bi s) / 2^15) and round((bi c - br s) / 2^15), each 32 x 16 product as two
+   16 x 16 ones: x = hi 2^15 + lo, so round(x c / 2^15) = hi c + round(lo c / 2^15), exactly,
+   in 32 bits (|lo|, |c|, |s| <= 32767), so no 40-bit arithmetic, which the C55x compiler
+   handles by switching modes */
+static inline void bfly(int32_t *ar, int32_t *ai, int32_t *br, int32_t *bi, int16_t c, int16_t s) {
+  int16_t rh = FX_HI(*br), rl = FX_LO(*br), ih = FX_HI(*bi), il = FX_LO(*bi);
+  int32_t xr = (int32_t)rh * c + (int32_t)ih * s + (((int32_t)rl * c + (int32_t)il * s + 16384) >> 15);
+  int32_t xi = (int32_t)ih * c - (int32_t)rh * s + (((int32_t)il * c - (int32_t)rl * s + 16384) >> 15);
+  int32_t a0 = *ar, a1 = *ai;
+  *ar = (a0 + xr + 1) >> 1; *ai = (a1 + xi + 1) >> 1;
+  *br = (a0 - xr + 1) >> 1; *bi = (a1 - xi + 1) >> 1;
+}
+
 /* in-place radix-2 FFT, decimation in time, forward (e^-j), every stage halves, so the
-   output is the DFT / n. |input| <= 2^23 keeps every product inside 40 bits. */
+   output is the DFT / n. |input| <= 2^23 keeps every sum inside 32 bits. The early stages
+   (few twiddles) loop over the groups inside each twiddle, the later ones over the twiddles
+   inside each group, so the inner loop is long and walks memory in steps of one either way;
+   the arithmetic is the same butterfly in the same order within each group. */
 void fx_fft(int32_t *re, int32_t *im, int n) {
-  int i, j, len, k;
+  int i, j, len, k, step;
   for (i = 0, j = 0; i < n; i++) {        /* bit reversal */
     if (i < j) {
       int32_t t = re[i]; re[i] = re[j]; re[j] = t;
@@ -100,24 +117,85 @@ void fx_fft(int32_t *re, int32_t *im, int n) {
     while (m >= 1 && (j & m)) { j ^= m; m >>= 1; }
     j |= m;
   }
-  for (len = 2; len <= n; len <<= 1) {
-    int step = 512 / len, half = len >> 1;
-    for (k = 0; k < half; k++) {                /* one twiddle factor, every group */
-      int16_t c = fx_cos512[(k * step) & 511], s = fx_cos512[((k * step) - 128) & 511];
-      int32_t *ar = &re[k], *ai = &im[k], *br = &re[k + half], *bi = &im[k + half];
-      for (i = k; i < n; i += len, ar += len, ai += len, br += len, bi += len) {
-        /* round((br c + bi s) / 2^15) and round((bi c - br s) / 2^15), each 32 x 16 product
-           as two 16 x 16 ones: x = hi 2^15 + lo, so round(x c / 2^15) = hi c + round(lo c / 2^15),
-           exactly, in 32 bits (|lo|, |c|, |s| <= 32767: |c| < 32768 for k step < 256), so no
-           40-bit arithmetic, which the C55x compiler handles by switching modes */
-        int16_t rh = FX_HI(*br), rl = FX_LO(*br), ih = FX_HI(*bi), il = FX_LO(*bi);
-        int32_t xr = (int32_t)rh * c + (int32_t)ih * s + (((int32_t)rl * c + (int32_t)il * s + 16384) >> 15);
-        int32_t xi = (int32_t)ih * c - (int32_t)rh * s + (((int32_t)il * c - (int32_t)rl * s + 16384) >> 15);
-        int32_t a0 = *ar, a1 = *ai;
-        *ar = (a0 + xr + 1) >> 1; *ai = (a1 + xi + 1) >> 1;
-        *br = (a0 - xr + 1) >> 1; *bi = (a1 - xi + 1) >> 1;
+  for (len = 2, step = 256; len <= n; len <<= 1, step >>= 1) {
+    int half = len >> 1;
+    if (half < 8) {
+      for (k = 0; k < half; k++) {              /* one twiddle factor, every group */
+        int16_t c = fx_cos512[k * step], s = fx_cos512[(k * step + 384) & 511];
+        int32_t *ar = &re[k], *ai = &im[k], *br = &re[k + half], *bi = &im[k + half];
+        for (i = k; i < n; i += len, ar += len, ai += len, br += len, bi += len) bfly(ar, ai, br, bi, c, s);
+      }
+    } else {
+      int g, q = half >> 1;                     /* k step < 128 for k < q: sin index k step + 384 */
+      for (g = 0; g < n; g += len) {
+        int32_t *ar = &re[g], *ai = &im[g], *br = &re[g + half], *bi = &im[g + half];
+        const int16_t *cp = fx_cos512, *sp = fx_cos512 + 384;
+        for (k = 0; k < q; k++, cp += step, sp += step) bfly(ar++, ai++, br++, bi++, *cp, *sp);
+        sp = fx_cos512;
+        for (k = q; k < half; k++, cp += step, sp += step) bfly(ar++, ai++, br++, bi++, *cp, *sp);
       }
     }
+  }
+}
+
+/* the FFT of n real samples in re[0..n) (n = 2 n2) through an n2-point complex FFT:
+   deinterleave z[m] = x[2m] + j x[2m+1] into re/im[0..n2) (im on input is ignored). */
+void fx_rfft_pack(int32_t *re, int32_t *im, int n2) {
+  int m;
+  for (m = 0; m < n2; m++) {
+    im[m] = re[2 * m + 1];
+    re[m] = re[2 * m];
+  }
+}
+
+/* the split after fx_rfft_pack and an n2-point FFT Z of the packed samples: writes bins
+   X[0..n2] of the real input into re/im[0..n2], as (Z[k] + Z*[n2-k] + W^k (Z[k] - Z*[n2-k]) / j) / 4,
+   W = e^(-2 pi j / n): for Z = DFT / n2 that is the n-point DFT / n. ct: cos(2 pi i / n),
+   i < n, Q15 (n a multiple of 4). |Z| < 2^28. */
+void fx_rfft_split(int32_t *re, int32_t *im, int n2, const int16_t *ct, int n) {
+  int k, q3 = 3 * (n >> 2);
+  int32_t z0r = re[0], z0i = im[0];
+  for (k = 1; k < n2 - k; k++) {
+    int j = n2 - k;
+    int16_t c = ct[k], s = ct[k + q3 < n ? k + q3 : k + q3 - n];
+    int32_t ar = re[k] + re[j], ai = im[k] - im[j];         /* A = Z[k] + Z*[j] */
+    int32_t br = re[k] - re[j], bi = im[k] + im[j];         /* B = Z[k] - Z*[j], D = B / j = (bi, -br) */
+    int32_t wr = fx_q15_mac2(bi, c, -br, s), wi = fx_q15_mac2(-br, c, -bi, s);   /* W^k D */
+    re[k] = (ar + wr + 2) >> 2, im[k] = (ai + wi + 2) >> 2;
+    re[j] = (ar - wr + 2) >> 2, im[j] = (wi - ai + 2) >> 2; /* W^j D' = (-wr, wi) for X[j] */
+  }
+  if (k == n2 - k) re[k] = (re[k] + 1) >> 1, im[k] = (1 - im[k]) >> 1;   /* X[n2/2] = Z*[n2/2] / 2 */
+  re[0] = (z0r + z0i + 1) >> 1, im[0] = 0;
+  re[n2] = (z0r - z0i + 1) >> 1, im[n2] = 0;
+}
+
+/* the inverse direction: from bins Y[0..n2] of a Hermitian spectrum (the rest implied),
+   Z[k] = (G[k] + j H[k]) / 2 for k < n2, G = Y[k] + Y*[n2-k], H = (Y[k] - Y*[n2-k]) W^k.
+   The n2-point FFT of Z, as DFT / n2, then holds v[2m] in re[m] and v[2m+1] in im[m], where
+   v = the n-point DFT of Y / n (real); fx_rfft_unpack interleaves it into re[0..n). */
+void fx_irfft_pre(int32_t *re, int32_t *im, int n2, const int16_t *ct, int n) {
+  int k, q3 = 3 * (n >> 2);
+  {
+    int32_t gr = re[0] + re[n2], gi = im[0] - im[n2], er = re[0] - re[n2], ei = im[0] + im[n2];
+    re[0] = (gr - ei + 1) >> 1, im[0] = (gi + er + 1) >> 1;
+  }
+  for (k = 1; k < n2 - k; k++) {
+    int j = n2 - k;
+    int16_t c = ct[k], s = ct[k + q3 < n ? k + q3 : k + q3 - n];
+    int32_t gr = re[k] + re[j], gi = im[k] - im[j];         /* G = Y[k] + Y*[j] */
+    int32_t er = re[k] - re[j], ei = im[k] + im[j];         /* E = Y[k] - Y*[j], H = E W^k */
+    int32_t hr = fx_q15_mac2(er, c, ei, s), hi = fx_q15_mac2(ei, c, -er, s);
+    re[k] = (gr - hi + 1) >> 1, im[k] = (gi + hr + 1) >> 1;
+    re[j] = (gr + hi + 1) >> 1, im[j] = (hr - gi + 1) >> 1; /* G' = G*, H' = (hr, -hi) */
+  }
+  /* k = n2/2: Z = Y */
+}
+
+void fx_rfft_unpack(int32_t *re, const int32_t *im, int n2) {
+  int m;
+  for (m = n2 - 1; m >= 0; m--) {
+    re[2 * m + 1] = im[m];
+    re[2 * m] = re[m];
   }
 }
 
