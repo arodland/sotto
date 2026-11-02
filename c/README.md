@@ -37,10 +37,11 @@ latency; `docs/c-port.md` has the table.
 
 `make -C c fixed` builds `c/fixed/sotto_enc_fx` and `c/fixed/sotto_dec_fx`, an integer-only
 encoder and decoder for the radio's DSP with the same API (`c/fixed/sotto_fx_enc.c`,
-`c/fixed/sotto_fx_dec.c`). Their tables come from `tools/gen_fx_tables.py`.
-`tools/check_fx.py` compares them with the float port (`--enc` for the encoder), and
-`tools/fx_profile.sh` counts their inner loops. Results and the cycle estimate are in
-`docs/c-port.md`.
+`c/fixed/sotto_fx_dec.c`, and the v3.8 16 kHz layer in `c/fixed/sotto_fx_hiss.c`, so the
+tools take `-16` as the float ones do). Their tables come from `tools/gen_fx_tables.py`.
+`tools/check_fx.py` compares them with the float port (`--enc` for the encoder, `--v38` for
+the 16 kHz layer), and `tools/fx_profile.sh` counts their inner loops. Results and the C55x
+measurements are in `docs/c-port.md`.
 
 ## Input level
 

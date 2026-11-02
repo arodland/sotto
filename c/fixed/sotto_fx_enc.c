@@ -15,12 +15,15 @@
  *    and the energy measured on the envelope (v3.6).
  * Where float compares near-equal values (pitch near-ties, bins on a rounding edge) the
  * two can decide differently; tools/check_fx.py counts the frames that differ.
+ * Each frame also carries the per-half features the v3.8 layer's rules read
+ * (fx_enc_frame_t, sotto_fx_hiss.c): envelope mean and tilt, harmonic SNR, pitch, loudness.
  * SPDX-License-Identifier: MIT */
 #define SOTTO_BUILD
 #include <stdlib.h>
 #include <string.h>
 #include "../sotto.h"
 #include "fx.h"
+#include "fx_internal.h"
 #include "fx_tables.h"
 
 #define NSAMP 80
@@ -83,7 +86,9 @@ struct sotto_enc {
   uint32_t wo_e;
   int32_t en_e;
   int16_t idx_e[5], cls_e;
-  unsigned char q[8][SOTTO_BYTES_PER_FRAME];
+  fx_enc_frame_t cur;         /* the frame being built: per-half features for v3.8 */
+  int32_t peak;               /* causal loudness reference, dB Q16 (hiss_band._onsets) */
+  fx_enc_frame_t q[8];
   int16_t q_head, q_n, flushed;
 };
 
@@ -712,12 +717,13 @@ static void decide(struct sotto_enc *e, int32_t t, int k) {
   /* unvoice_tails, then voicing_classes */
   e->ehist[t % (TAIL_HOLD + 1)] = en;
   int cls = k > 0;
+  int32_t snr = INT32_MAX;
   if (cls) {
     int32_t emax = INT32_MIN;
     for (u = t - TAIL_HOLD < 0 ? 0 : t - TAIL_HOLD; u <= t; u++)
       if (e->ehist[u % (TAIL_HOLD + 1)] > emax) emax = e->ehist[u % (TAIL_HOLD + 1)];
     /* mean harmonic SNR below 1 kHz, dB Q8 */
-    int32_t snr = INT32_MAX, sum = 0, n = 0;
+    int32_t sum = 0, n = 0;
     for (l = 1; l <= L; l++) {
       if ((fx_uacc)l * wo >= ((fx_uacc)1 << 29)) break;          /* 1 kHz */
       fx_acc sig, err = harm_fit(sp, wo, l, &sig);
@@ -729,24 +735,41 @@ static void decide(struct sotto_enc *e, int32_t t, int k) {
     else if (snr < DB(8)) cls = MIXED;
   }
 
+  /* the rate-K envelope of every half: the shape of even halves, the v3.8 features of both */
+  int32_t a[MAXH], amax = INT32_MIN, rk[K], sum = 0;
+  for (h = 1; h <= L; h++) {
+    a[h - 1] = A2[h] > 0 ? power_db(ex, A2[h], 0) : DB(-320);
+    if (a[h - 1] > amax) amax = a[h - 1];
+  }
+  for (h = 0; h < L; h++)
+    if (a[h] < amax - DB(50)) a[h] = amax - DB(50);
+  /* np.interp of the harmonic levels at the rate-K frequencies (harmonic h at h f0) */
+  for (j = 0; j < K; j++) {
+    fx_uacc u = fx_udiv_shl((fx_uacc)fx_kfreq[j], 38, (fx_uacc)wo * 125, NULL);   /* kfreq 2^41 / (1000 wo): harmonics, Q16 */
+    int32_t ui = (int32_t)(u >> 16), fr = (int32_t)(u & 0xFFFF);
+    if (ui < 1) rk[j] = a[0];
+    else if (ui >= L) rk[j] = a[L - 1];
+    else rk[j] = a[ui - 1] + (int32_t)(((fx_acc)(a[ui] - a[ui - 1]) * fr + 32768) >> 16);
+  }
+  for (i = 0; i < K; i++) sum += rk[i];
+  {   /* per-half features of the v3.8 encoder rules (hiss_band._onsets, _whisper) */
+    int hf = (int)(t % 2), nlo = 0, nhi = 0;
+    int32_t mean = (sum + (sum >= 0 ? K / 2 : -(K / 2))) / K, lo = 0, hi = 0;
+    int32_t m16 = mean * 256, dec = e->peak - 3277;      /* peak falls 0.05 dB a half */
+    e->peak = m16 > dec ? m16 : dec;
+    e->cur.en[hf] = mean;
+    e->cur.loud[hf] = (int16_t)(m16 > e->peak - DB(16) * 256);
+    for (i = 0; i < K; i++) {
+      if (fx_kfreq[i] < 1000 * 16) lo += rk[i], nlo++;
+      if (fx_kfreq[i] > 2000 * 16) hi += rk[i], nhi++;
+    }
+    e->cur.tilt[hf] = lo / nlo - hi / nhi;
+    e->cur.snr[hf] = cls ? snr : FX_SNR_NONE;
+    e->cur.lwo[hf] = ln_wo(wo);
+  }
+
   if (t % 2 == 0) {
-    int32_t a[MAXH], amax = INT32_MIN, rk[K];
-    for (h = 1; h <= L; h++) {
-      a[h - 1] = A2[h] > 0 ? power_db(ex, A2[h], 0) : DB(-320);
-      if (a[h - 1] > amax) amax = a[h - 1];
-    }
-    for (h = 0; h < L; h++)
-      if (a[h] < amax - DB(50)) a[h] = amax - DB(50);
-    /* np.interp of the harmonic levels at the rate-K frequencies (harmonic h at h f0) */
-    for (j = 0; j < K; j++) {
-      fx_uacc u = fx_udiv_shl((fx_uacc)fx_kfreq[j], 38, (fx_uacc)wo * 125, NULL);   /* kfreq 2^41 / (1000 wo): harmonics, Q16 */
-      int32_t ui = (int32_t)(u >> 16), fr = (int32_t)(u & 0xFFFF);
-      if (ui < 1) rk[j] = a[0];
-      else if (ui >= L) rk[j] = a[L - 1];
-      else rk[j] = a[ui - 1] + (int32_t)(((fx_acc)(a[ui] - a[ui - 1]) * fr + 32768) >> 16);
-    }
-    int32_t sum = 0, c[NC];
-    for (i = 0; i < K; i++) sum += rk[i];
+    int32_t c[NC];
     for (j = 1; j < K; j++) {                            /* DCT of rk - mean, dB Q16 */
       fx_acc v = 0;
       for (i = 0; i < K; i++) v += fx_mul32x16(rk[i] * 20 - sum, fx_dct[j * K + i]);
@@ -770,7 +793,9 @@ static void decide(struct sotto_enc *e, int32_t t, int k) {
 static void emit(struct sotto_enc *e, int cls) {
   int s;
   int a = e->cls_e, b = cls, code = a == b ? a : (a == 0 || b == 0) ? 3 : 1;
-  unsigned char *out = e->q[(e->q_head + e->q_n++) % 8];
+  fx_enc_frame_t *q = &e->q[(e->q_head + e->q_n++) % 8];
+  unsigned char *out = q->bits;
+  *q = e->cur;
   int pos = 0, wi = 0, ei;
   while (wi < 127 && fx_wo_thr[wi] <= e->wo_e) wi++;
   int32_t num = (e->en_e - DB(10)) * 31;                     /* rint((en - 10) / 70 x 31) */
@@ -802,6 +827,7 @@ struct sotto_enc *sotto_enc_create(void) {
   if (!e) return NULL;
   for (i = 0; i < HIST; i++) e->hist[i] = 1;
   e->prev_bin = 16;                                          /* 50 Hz */
+  e->peak = INT32_MIN / 2;
   return e;
 }
 
@@ -845,13 +871,22 @@ static void analyse_10ms(struct sotto_enc *e, const short *x) {
   }
 }
 
-static int pop(struct sotto_enc *e, unsigned char *out) {
+int sotto_enc_pop_frame(struct sotto_enc *e, fx_enc_frame_t *f) {
   if (!e->q_n) return 0;
-  memcpy(out, e->q[e->q_head], SOTTO_BYTES_PER_FRAME);
+  *f = e->q[e->q_head];
   e->q_head = (int16_t)((e->q_head + 1) % 8);
   e->q_n--;
   return 1;
 }
+
+static int pop(struct sotto_enc *e, unsigned char *out) {
+  fx_enc_frame_t f;
+  if (!sotto_enc_pop_frame(e, &f)) return 0;
+  memcpy(out, f.bits, SOTTO_BYTES_PER_FRAME);
+  return 1;
+}
+
+void sotto_enc_analyse_block(struct sotto_enc *e, const short x8[NSAMP]) { analyse_10ms(e, x8); }
 
 int sotto_encode(struct sotto_enc *e, const short speech[SOTTO_SAMPLES_PER_FRAME],
                  unsigned char out[SOTTO_BYTES_PER_FRAME]) {
@@ -864,14 +899,18 @@ void sotto_encode_half(struct sotto_enc *e, const short speech[SOTTO_SAMPLES_PER
   analyse_10ms(e, speech);
 }
 
-int sotto_enc_flush(struct sotto_enc *e, unsigned char out[SOTTO_BYTES_PER_FRAME]) {
+void sotto_enc_flush_core(struct sotto_enc *e) {
   if (!e->flushed && e->n_an > 0) {
     int32_t n = e->n_an;
     frame_costs(e, n - 1, 0);
     viterbi_step(e, n - 1);
     while (e->n_dec < n) decide_from(e, e->n_dec++, n - 1);
-    if (n % 2) emit(e, e->cls_e);
+    if (n % 2) emit(e, e->cls_e);                            /* odd frame count: the last half repeated */
     e->flushed = 1;
   }
+}
+
+int sotto_enc_flush(struct sotto_enc *e, unsigned char out[SOTTO_BYTES_PER_FRAME]) {
+  sotto_enc_flush_core(e);
   return pop(e, out);
 }

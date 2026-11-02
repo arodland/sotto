@@ -40,9 +40,12 @@ void fx_acc_check(fx_acc a);
 #define FX_ACC_CHECK(a) ((void)0)
 #endif
 
-/* sizes of the encoder and decoder states, in bytes (C55x: 16-bit words) */
+/* sizes of the encoder and decoder states, in bytes (C55x: 16-bit words); the 16 kHz
+   v3.8 layer's states hold their own core */
 unsigned sotto_fx_enc_bytes(void);
 unsigned sotto_fx_dec_bytes(void);
+unsigned sotto_fx_enc16_bytes(void);
+unsigned sotto_fx_dec16_bytes(void);
 
 /* optional per-block cycle counts (c55x/bench.c): FX_PROF(id, 1) starts block id,
    FX_PROF(id, 0) ends it */

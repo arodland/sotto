@@ -562,6 +562,11 @@ aside) and the hiss levels agree within the random-phase spread. The cost is lat
 320 ms in the encoder and 100 ms in the decoder against 90 and 20 for v3.7. The numbers,
 the look-ahead sweep and what the DSP will need are in `docs/c-port.md`.
 
+The same day the layer went into the fixed-point build (`c/fixed/sotto_fx_hiss.c`, integer
+only, with a 5 × 64 FFT for the 320-point STFT): 95% of frames identical to the float port
+on the five clips, the hiss band within 0.3 dB on average, PESQ equal. Jeff kept the
+10-frame look-ahead.
+
 Found on the way: the cleanup of the same morning had dropped the `_model_hook` call from
 `vocoder_lab.SottoV0.decode`, so the round-2 rows were first rendered with unvoiced frames
 at the pitch their hiss index spelled. Restored in PR #13 with a regression test; the page

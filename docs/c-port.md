@@ -234,6 +234,67 @@ top of `c/fixed/fx.h`.
   4 KB of FFT scratch). The tables are shared with the decoder, 43 KB in all with the 6 KB
   of codebook lengths.
 
+**v3.8 layer: done** (`c/fixed/sotto_fx_hiss.c`, the same `sotto_enc16_*` / `sotto_dec16_*`
+API as the float layer, `make fixed` with the default `VARIANT=v3.8`; `-16` on the tools).
+*2026-11-02.*
+
+- It follows `c/sotto_hiss.c` call for call: the same rings, the same look-ahead
+  (`SOTTO_RULE_LAG`, 320 ms in the encoder, 100 ms in the decoder), the same rules, side
+  channel and blend. The core changes of v3.8 are in the fixed core too: unvoiced halves at
+  50 Hz spacing, +3 dB for upward-tilted ones, the voiced-second-half guard, the envelope at
+  the hiss band's reference frequencies and the per-half rule features (`fx_internal.h`).
+- Integers: the 320-point STFT is a 5 × 64 FFT (five 64-point `fx_fft`s and radix-5
+  butterflies with Q15 twiddles) in block floating point, each frame scaled to 22 bits and
+  its bin powers carrying one exponent; band levels are dB Q8 from `fx_log2`, the
+  regression weights Q14, the pitch logs Q16, the two 30 ms one-poles Q15, the resamplers
+  the same 41 half-band taps in Q19, and the running 60th percentile is exact (an integer
+  comparison instead of the interpolated value). The noise band is synthesised by the same
+  FFT on the conjugate spectrum, with the float layer's phase sequence (xorshift32 read as
+  Q32 turns), so the two hiss bands agree sample for sample within rounding.
+- Checked against the float port on the same five 7 s clips as the float-vs-Python check
+  (`tools/check_fx.py --v38`, `docs/results/fx38_check.json`):
+
+  | | 2428 m | p020 m | 6313 f | whisper (Jeff) | whisper (wife) | all |
+  |---|---:|---:|---:|---:|---:|---:|
+  | Frames whose 48 bits match | 95.1% | 91.1% | 97.4% | 94.6% | 97.5% | 95.1% |
+  | Differing in voicing / index / side bit / energy / shape | 4/6/10/0/5 | 0/9/5/4/28 | 0/3/3/1/4 | 0/5/9/1/7 | 0/2/3/0/5 | 4/25/30/6/49 |
+  | 4-8 kHz level, mean / 95th pct. difference per 10 ms (dB) | 0.38 / 1.82 | 0.35 / 1.53 | 0.57 / 1.91 | 0.12 / 0.37 | 0.13 / 0.38 | 0.31 / 1.20 |
+  | PESQ, float encoder + float decoder | 3.208 | 3.028 | 2.536 | 2.258 | 2.529 | 2.712 |
+  | PESQ, float encoder + fixed decoder | 3.196 | 3.092 | 2.551 | 2.340 | 2.384 | 2.713 |
+  | PESQ, fixed encoder + fixed decoder | 3.261 | 3.017 | 2.571 | 2.330 | 2.385 | 2.713 |
+
+  The frames that differ are near-ties again, now in more places: the 8 kHz core sees the
+  fixed resampler's output (Q19 taps, rounded to 16 bits, so a few samples differ by one
+  LSB from the float's double-precision ones), the hiss index is a 64-way nearest-vector
+  choice on four band levels, and a speaker-shape coefficient on a 4 dB step boundary
+  changes the whole 16-bit message of its window (the "side" column). The same clips at
+  8 kHz give 96.9% matching frames with this build, against the 97.5% of the 19-voice check.
+  The FFT, band levels and resamplers were also checked one primitive at a time against
+  numpy: FFT bins to 4 × 10⁻⁵ relative, band levels to 0.005 dB, the decimator exact and the
+  interpolator within one LSB.
+- The two decoders' 0-4 kHz outputs agree in level, not in samples. Their harmonic levels
+  match to 0.02 dB on average, but with 80 random-phase harmonics in every unvoiced half the
+  background-noise postfilter's threshold decisions put the two phase generators out of step
+  within the first frames of a quiet start, so the sample SNR between them is 2 to 20 dB
+  where it was 10 to 65 dB for v3.7. Compared by level (500 Hz bands over 80 ms windows) the
+  two differ by 0.3 to 0.6 dB median and 0 to 0.14 dB in total energy; `tests/test_vocoder.py`
+  now checks that instead of the sample SNR.
+- Stress signals (silence, full-scale noise and square waves, clicks, a chirp, a 1 ms
+  input, an input that is not a multiple of 320, speech, random bits with 30-50% losses and
+  with every frame after the first lost) run clean under AddressSanitizer,
+  UndefinedBehaviorSanitizer and `FX_CHECK`.
+- Size on x86: 19 KB of code and 2.6 KB more tables (the hiss weights, codebook, resampler
+  taps and the 320-point window and twiddles). State: 23.5 KB for the 16 kHz decoder (its
+  core, 2 KB of overlap-add in 32 bits, a 4 KB 16 kHz ring, 5 KB of FFT work) and 78 KB for
+  the encoder, 48 KB of which is the running percentile's sorted history (`FX_PCT_MAX`,
+  12,000 frames = 120 s, as the Python keeps everything; 3,000 frames would do on the DSP
+  and saves 36 KB). All ring sizes are checked at run time under `FX_CHECK`.
+- Not yet measured on the C55x simulator (the TI tools are not installed in this session);
+  `tools/c55x_build.sh` now builds the v3.8 layer in, and `-DBENCH16` makes `bench.c` run
+  16 kHz audio through it. From the float layer's operation count the layer should add
+  about 5 to 10 MHz to the decoder and a little more to the encoder, which also runs a
+  second core decoder (about 40 MHz).
+
 ## Fixed point on the C55x: measured
 
 *2026-11-02.* Built with TI's C5500 compiler 4.4.1 (`-O3`, large memory model, the C5517's

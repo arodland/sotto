@@ -48,19 +48,26 @@ C2LIBS = -L$(CODEC2_LIB) -Wl,-rpath,$(abspath $(CODEC2_LIB)) -lcodec2 -lm
 
 all: libsotto.so libsotto.a sotto_enc sotto_dec
 
-# fixed-point build (fixed/), integer only, v3.6 codebook; FX_CHECK aborts if a sum would
+# fixed-point build (fixed/), integer only, v3.6 codebook, the same VARIANT flags (v3.8 adds
+# fixed/sotto_fx_hiss.c and the -16 mode of the tools); FX_CHECK aborts if a sum would
 # overflow the C55x's 40-bit accumulator
 FX_CODEBOOK = sim/data/shape_msvq_9988.npz
 FXFLAGS ?= -DFX_CHECK
 FX_OBJS = fixed/fx_math.o fixed/fx_tables.o
+ifeq ($(VARIANT),v3.8)
+FX_OBJS += fixed/sotto_fx_hiss.o fixed/sotto_fx_dec.o fixed/sotto_fx_enc.o
+else
+FX_ENC_OBJS = fixed/sotto_fx_enc.o
+FX_DEC_OBJS = fixed/sotto_fx_dec.o
+endif
 fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx
-fixed/fx_tables.c: ../$(FX_CODEBOOK) ../tools/gen_fx_tables.py
+fixed/fx_tables.c: ../$(FX_CODEBOOK) ../tools/gen_fx_tables.py ../sim/data/hiss_band.npz ../sim/data/hiss_vowel_fine.npz
 	cd .. && $(PYTHON) tools/gen_fx_tables.py --codebook $(FX_CODEBOOK) c/fixed/fx_tables.c
-fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h sotto.h
+fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h
 	$(CC) $(CFLAGS) $(FXFLAGS) -c -o $@ $<
-fixed/sotto_dec_fx: sotto_dec.o fixed/sotto_fx_dec.o $(FX_OBJS)
+fixed/sotto_dec_fx: sotto_dec.o $(FX_DEC_OBJS) $(FX_OBJS)
 	$(CC) -o $@ $^
-fixed/sotto_enc_fx: sotto_enc.o fixed/sotto_fx_enc.o $(FX_OBJS)
+fixed/sotto_enc_fx: sotto_enc.o $(FX_ENC_OBJS) $(FX_OBJS)
 	$(CC) -o $@ $^
 
 sotto_codebook.c: ../$(CODEBOOK) ../tools/export_codebook_c.py

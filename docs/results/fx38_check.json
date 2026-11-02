@@ -1,0 +1,142 @@
+[
+ {
+  "clip": "librispeech_2428_m.wav",
+  "frames": [
+   350,
+   350
+  ],
+  "enc_bit_exact": 0.9514,
+  "field_mismatch": {
+   "voicing": 4,
+   "index": 6,
+   "side": 10,
+   "energy": 0,
+   "shape": 5
+  },
+  "dec_low_snr_db": 11.8,
+  "dec_full_snr_db": 11.8,
+  "dec_hiss_level_diff_db": [
+   0.38,
+   1.82
+  ],
+  "dec_low_band_diff_db": [
+   1.61,
+   5.2
+  ],
+  "pesq_float": 3.208,
+  "pesq_fixed_dec": 3.196,
+  "pesq_fixed": 3.261
+ },
+ {
+  "clip": "ears_p020_m.wav",
+  "frames": [
+   350,
+   350
+  ],
+  "enc_bit_exact": 0.9114,
+  "field_mismatch": {
+   "voicing": 0,
+   "index": 9,
+   "side": 5,
+   "energy": 4,
+   "shape": 28
+  },
+  "dec_low_snr_db": 20.6,
+  "dec_full_snr_db": 20.5,
+  "dec_hiss_level_diff_db": [
+   0.35,
+   1.53
+  ],
+  "dec_low_band_diff_db": [
+   1.41,
+   4.8
+  ],
+  "pesq_float": 3.028,
+  "pesq_fixed_dec": 3.092,
+  "pesq_fixed": 3.017
+ },
+ {
+  "clip": "librispeech_6313_f.wav",
+  "frames": [
+   350,
+   350
+  ],
+  "enc_bit_exact": 0.9743,
+  "field_mismatch": {
+   "voicing": 0,
+   "index": 3,
+   "side": 3,
+   "energy": 1,
+   "shape": 4
+  },
+  "dec_low_snr_db": 1.7,
+  "dec_full_snr_db": 1.7,
+  "dec_hiss_level_diff_db": [
+   0.57,
+   1.91
+  ],
+  "dec_low_band_diff_db": [
+   1.92,
+   5.66
+  ],
+  "pesq_float": 2.536,
+  "pesq_fixed_dec": 2.551,
+  "pesq_fixed": 2.571
+ },
+ {
+  "clip": "jeffwhisper.wav",
+  "frames": [
+   350,
+   350
+  ],
+  "enc_bit_exact": 0.9457,
+  "field_mismatch": {
+   "voicing": 0,
+   "index": 5,
+   "side": 9,
+   "energy": 1,
+   "shape": 7
+  },
+  "dec_low_snr_db": 1.9,
+  "dec_full_snr_db": 1.9,
+  "dec_hiss_level_diff_db": [
+   0.12,
+   0.37
+  ],
+  "dec_low_band_diff_db": [
+   2.43,
+   6.37
+  ],
+  "pesq_float": 2.258,
+  "pesq_fixed_dec": 2.34,
+  "pesq_fixed": 2.33
+ },
+ {
+  "clip": "wifewhisper.wav",
+  "frames": [
+   280,
+   280
+  ],
+  "enc_bit_exact": 0.975,
+  "field_mismatch": {
+   "voicing": 0,
+   "index": 2,
+   "side": 3,
+   "energy": 0,
+   "shape": 5
+  },
+  "dec_low_snr_db": -2.2,
+  "dec_full_snr_db": -1.5,
+  "dec_hiss_level_diff_db": [
+   0.13,
+   0.38
+  ],
+  "dec_low_band_diff_db": [
+   2.46,
+   6.23
+  ],
+  "pesq_float": 2.529,
+  "pesq_fixed_dec": 2.384,
+  "pesq_fixed": 2.385
+ }
+]
