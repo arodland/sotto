@@ -98,10 +98,11 @@ SOTTO_API void sotto_dec_flush(struct sotto_dec *d, short speech[SOTTO_SAMPLES_P
  * functions above still work in a v3.8 build: sotto_encode is the plain v3.7 encoder, and
  * sotto_decode decodes v3.7 or v3.8 streams at 8 kHz.
  *
- * Encoder: feed 320 samples (20 ms at 16 kHz) per call. Frames come out about
- * 7 + SOTTO_RULE_LAG + 1 calls after the speech went in (the core's 90 ms, 10 ms for the
- * resampler, then SOTTO_RULE_LAG frames of look-ahead for the voicing rules and one more for
- * the index); call sotto_enc16_flush until it returns 0 at the end.
+ * Encoder: feed 320 samples (20 ms at 16 kHz) per call. Frames come out 5 + SOTTO_RULE_LAG + 1
+ * calls after the speech went in (the core's 90 ms plus 10 ms for the resampler, then
+ * SOTTO_RULE_LAG frames of look-ahead for the voicing rules and one more for the index: the
+ * first frame on the 17th call with the default lag of 10); call sotto_enc16_flush until it
+ * returns 0 at the end.
  * Decoder: one call per received frame; each returns 320 samples SOTTO_DEC16_DELAY_FRAMES
  * frames behind the encoder's input (the first calls return silence). Call sotto_dec16_flush
  * until it returns 0 to drain the last frames. */

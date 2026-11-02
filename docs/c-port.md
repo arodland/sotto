@@ -85,6 +85,88 @@ beats another.
   answered correctly. The small codebook can become v3.6.
 - Rounding to 8 bits costs about 0.01 PESQ. Rounding to 6 bits costs about 0.02.
 
+## v3.8: the 16 kHz layer
+
+*2026-11-02.* `c/sotto_hiss.c` adds the v3.8 hiss band (`sim/hiss_band.py`, `docs/unvoiced-hiss.md`)
+to the float port. `make -C c` builds it by default (`VARIANT=v3.8`); `VARIANT=v3.7` gives the
+8 kHz library as before. The frame is v3.7's, so a v3.7 decoder plays a v3.8 stream without
+the high band, and the 8 kHz functions keep working in a v3.8 build.
+
+**What the layer does.** The encoder takes 16 kHz speech, decimates it for the core
+(scipy's `resample_poly` filter, 41 taps, run with its 20 samples of look-ahead so the two
+sides see the same 8 kHz samples), and runs the v3.8 voicing rules over a ring of the
+core's frames: onset recoding, the whisper rule, voicing smoothing, the burst rule and the
+sibilant rule. All-unvoiced frames then get the 6-bit 4-8 kHz index in their pitch field
+and one bit of the speaker-shape side channel. Both are measured against the encoder's
+own decoder, a second core decoder inside the encoder, as the Python's `_low16` does. The
+decoder upsamples the core's output and adds a 4-8 kHz noise band per 10 ms STFT frame:
+consonant hiss from the index, a vowel-following layer from the decoded 0-4 kHz spectrum
+and the speaker shape, blended per bin. The core itself changed in three places for v3.8:
+unvoiced halves are synthesised 50 Hz apart whatever the pitch field says, upward-tilted
+ones 3 dB louder, and a voiced second half between two unvoiced frames keeps its own pitch.
+
+**Delay.** The Python model is not causal, and the port keeps its behaviour at the price
+of look-ahead:
+
+| Stage | v3.7 | v3.8 |
+|---|---|---|
+| Encoder: pitch tracker | 90 ms | 90 ms |
+| Encoder: resampler | - | 10 ms |
+| Encoder: voicing rules (`SOTTO_RULE_LAG` frames) and the index | - | 220 ms (lag 10) |
+| Decoder: interpolation | 20 ms | 20 ms |
+| Decoder: predictor on the decoded audio, frame lag, flicker bridging | - | 80 ms |
+| **Codec in all** | **110 ms** | **420 ms** |
+
+The 16 kHz encoder emits its first frame on the 17th call and the decoder's output is
+5 frames late (`SOTTO_DEC16_DELAY_FRAMES`); the `-16` tools remove that delay. The rule
+look-ahead is a build option: `make -C c RULE_LAG=5`. The whisper rule is what needs it: the
+Python judges a run of mixed frames on the whole run, the C on its first `RULE_LAG + 1`
+frames, and `SottoV38(whisper_lag=...)` makes the Python do the same so the two can be
+compared. The other rules look at most 3 frames ahead and the index one frame.
+
+**Checked against Python** (`tools/check_c_port38.py`, 7 s of five clips: three test voices
+and the two whispered bench recordings, `docs/results/c_port38_lag*.json`). "Lag" is the
+share of frames whose 48 bits match the Python with the same whisper look-ahead; "full" the
+share against the Python as Jeff heard it (whole-run whisper judgement):
+
+| `RULE_LAG` | Encoder delay | 2428 m | p020 m | 6313 f | whisper (Jeff) | whisper (wife) |
+|---|---|---|---|---|---|---|
+| 20 | 520 ms | 100 / 100 | 98.3 / 98.3 | 100 / 100 | 100 / 83.4 | 100 / 100 |
+| **10 (default)** | **320 ms** | 100 / 100 | 98.3 / 98.3 | 100 / 100 | 100 / 100 | 100 / 100 |
+| 5 | 220 ms | 92.9 / 92.9 | 97.4 / 97.4 | 100 / 100 | 89.1 / 89.1 | 90.0 / 90.0 |
+| 3 | 180 ms | 93.1 / 89.1 | 96.6 / 96.6 | 100 / 100 | 82.9 / 77.7 | 87.9 / 87.9 |
+| 1 | 140 ms | 96.9 / 86.3 | 96.3 / 96.3 | 97.7 / 97.7 | 73.1 / 73.1 | 85.4 / 72.9 |
+
+- At lag 10 the encoder is bit-exact with its Python counterpart on all five clips, and on
+  these clips also with the whole-run Python. The 1.7% on p020 is one shape near-tie (as in
+  the v3.5 check) whose different decoded envelope moves the side-channel message by a
+  step: 1 index and 4 side-channel bits.
+- Below lag 10 the whisper rule no longer sees a whole 10-frame run before the first frame
+  leaves, so whispered stretches start as mixed frames (the hum v3.8 set out to remove) and
+  7 to 27% of their frames differ. PESQ barely moves (it does not hear the hum), so the
+  choice is Jeff's ears against 100 ms of latency per 5 frames.
+- Decoder: given the same bits, the 0-4 kHz band of the two outputs agrees to 32-41 dB SNR
+  (the hiss near 4 kHz leaks into the measurement with its random phase; the 8 kHz core
+  alone agrees to 100 dB). The 4-8 kHz level per 10 ms frame differs by 0.7 dB mean and
+  1.6-1.9 dB at the 95th percentile, which is exactly the spread between two Python seeds
+  (0.73 and 1.92 dB): the two decoders differ only in their random phases. PESQ of the C
+  encoder and decoder together equals the Python's on 4 of 5 clips and is 0.04 lower on p020.
+
+**Kept as the Python has it.** Two things in the Python look accidental but are part of
+the sound Jeff approved, so the C keeps them: mixed frames' consonant hiss is scaled by
+their mask value (3, so -3 dB + 9.5 dB), and the concealment fade is applied twice to the
+consonant layer (through the decoded envelope and again explicitly).
+
+**For the DSP.** The layer adds, per 10 ms, two 320-point real FFTs in the decoder (one on
+the decoded audio for the predictor, one inverse for the hiss) and in the encoder one on
+the input, one on the local decoder's output, plus the whole core decoder running inside
+the encoder. The radio is half duplex, so the encoder's local decoder reuses the decoder's
+cycles; the FFTs are a few MHz on the C5517's accelerator. The encoder's ring of 128 frames
+and 64 STFT frames of features is about 40 KB as doubles and would shrink to 16-bit
+fields. The running percentile of the side channel keeps every frame level so far (the
+Python does); a 1 dB histogram would replace it on the DSP, changing a vowel-frame
+decision only when a level sits within the bin.
+
 ## Fixed point: status
 
 The fixed-point build is in `c/fixed/` (`make fixed`). It is new MIT code, written from the
