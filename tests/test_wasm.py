@@ -1,4 +1,4 @@
-"""The page's WebAssembly decoder (docs/sotto_dec.wasm) against the native v3.8 decoder."""
+"""The page's WebAssembly codec (docs/sotto.wasm) against the native v3.8 encoder and decoder."""
 import os, shutil, subprocess
 import pytest
 
