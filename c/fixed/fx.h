@@ -24,6 +24,7 @@
 #ifndef SOTTO_FX_H
 #define SOTTO_FX_H
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __TMS320C55X__
 typedef long long fx_acc;              /* 40 bits */
@@ -56,6 +57,66 @@ void fx_prof(int id, int start);
 #define FX_PROF(id, start) ((void)0)
 #endif
 
+/* Cortex-M4/M7 (FX_ARM_DSP, on by default with the ARM DSP extension; -DFX_ARM_DSP tests the
+   same code on x86, -DFX_NO_ARM_DSP turns it off): one-cycle 32 x 32 -> 64-bit products
+   (SMULL, SMLAL), so FX_WIDE_MUL takes the products below directly instead of as 16 x 16
+   pieces (the same integers), the codebook is unpacked (FX_CB_UNPACKED) and its search uses
+   SMLAD, two 16 x 16 products per instruction (fx_smlad). FX_WIDE_MUL alone works anywhere. */
+#if defined(__ARM_FEATURE_DSP) && !defined(FX_NO_ARM_DSP) && !defined(FX_ARM_DSP)
+#define FX_ARM_DSP
+#endif
+#ifdef FX_ARM_DSP
+#ifndef FX_WIDE_MUL
+#define FX_WIDE_MUL
+#endif
+#ifndef FX_CB_UNPACKED
+#define FX_CB_UNPACKED
+#endif
+#ifdef __ARM_FEATURE_DSP
+#include <arm_acle.h>
+#define fx_smlad(x, y, a) ((int32_t)__smlad((x), (y), (a)))
+#define fx_smlald(x, y, a) ((fx_acc)__smlald((x), (y), (a)))
+#define fx_smlsld(x, y, a) ((fx_acc)__smlsld((x), (y), (a)))
+#else
+/* a + the products of the low and of the high 16-bit halves of x and y (SMLAD; SMLALD
+   with a 64-bit a) */
+static inline int32_t fx_smlad(uint32_t x, uint32_t y, int32_t a) {
+  return (int32_t)((uint32_t)a + (uint32_t)((int32_t)(int16_t)x * (int16_t)y)
+                   + (uint32_t)((int32_t)(int16_t)(x >> 16) * (int16_t)(y >> 16)));
+}
+static inline fx_acc fx_smlald(uint32_t x, uint32_t y, fx_acc a) {
+  return a + (int32_t)(int16_t)x * (int16_t)y + (int32_t)(int16_t)(x >> 16) * (int16_t)(y >> 16);
+}
+/* a + the low halves' product - the high halves' product (SMLSLD) */
+static inline fx_acc fx_smlsld(uint32_t x, uint32_t y, fx_acc a) {
+  return a + (int32_t)(int16_t)x * (int16_t)y - (int32_t)(int16_t)(x >> 16) * (int16_t)(y >> 16);
+}
+#endif
+/* the dot product of two int16 vectors, two products per SMLALD */
+static inline fx_acc fx_dot16(const int16_t *a, const int16_t *b, int n) {
+  fx_acc s = 0;
+  int j;
+  for (j = 0; j + 1 < n; j += 2) {
+    uint32_t x, y;
+    memcpy(&x, a + j, 4), memcpy(&y, b + j, 4);
+    s = fx_smlald(x, y, s);
+  }
+  if (j < n) s += (int32_t)a[j] * b[j];
+  return s;
+}
+/* cos and sin in one word: fx_cs512()[i] = fx_cos512[i] | fx_cos512[(i - 128) & 511] << 16 */
+const uint32_t *fx_cs512(void);
+/* fx_oa_pair with the harmonics as ri[j] = re[j] | -im[j] << 16 (16-bit halves) */
+fx_acc fx_oa_pair_ri(const int16_t *bin, const uint32_t *ri, int nb, int n, fx_acc *a1);
+#else
+static inline fx_acc fx_dot16(const int16_t *a, const int16_t *b, int n) {
+  fx_acc s = 0;
+  int j;
+  for (j = 0; j < n; j++) s += (fx_acc)a[j] * b[j];
+  return s;
+}
+#endif
+
 /* 32 x 16-bit products as two 16 x 16-bit ones, exactly: the C55x multiplies 17 x 17 bits
    in one cycle, but its compiler turns any wider product into a library call. A v with
    |v| < 2^30 is FX_HI(v) 2^15 + FX_LO(v), both halves signed 16-bit values (an unsigned
@@ -69,6 +130,13 @@ int16_t fx_hi_check(int32_t v);
 #endif
 #define FX_LO(v) ((int16_t)((v) & 0x7FFF))
 #define FX_JOIN(hi, lo) ((hi) * 32768 + (lo))
+#ifdef FX_WIDE_MUL
+/* the same values as the split forms below, which hold for these input ranges (FX_HI checks
+   them under FX_CHECK) */
+static inline fx_acc fx_mul32x16(int32_t a, int16_t b) { (void)FX_HI(a); return (fx_acc)a * b; }
+static inline fx_acc fx_sq32(int32_t a) { (void)FX_HI(a); FX_ACC_CHECK((fx_acc)a * a * 2); return (fx_acc)a * a; }
+static inline fx_acc fx_mul32(int32_t a, int32_t b) { (void)FX_HI(a); (void)FX_HI(b); return (fx_acc)a * b; }
+#else
 static inline fx_acc fx_mul32x16(int32_t a, int16_t b) {
   return FX_JOIN((fx_acc)FX_HI(a) * b, (fx_acc)FX_LO(a) * b);
 }
@@ -86,6 +154,7 @@ static inline fx_acc fx_mul32(int32_t a, int32_t b) {
   int16_t ah = FX_HI(a), al = FX_LO(a), bh = FX_HI(b), bl = FX_LO(b);
   return ((fx_acc)ah * bh * 32768 + (fx_acc)ah * bl + (fx_acc)al * bh) * 32768 + (fx_acc)al * bl;
 }
+#endif
 
 /* round-to-nearest right shift (n >= 1) */
 static inline int32_t fx_rshr(fx_acc x, int n) { return (int32_t)((x + ((fx_acc)1 << (n - 1))) >> n); }
@@ -94,7 +163,12 @@ static inline int32_t fx_rshr(fx_acc x, int n) { return (int32_t)((x + ((fx_acc)
    (al c + bl s), and both brackets fit 32 bits. No 40-bit sum, so the C55x compiler
    needn't switch accumulator modes inside a loop. */
 static inline int32_t fx_q15_mac2(int32_t a, int16_t c, int32_t b, int16_t s) {
+#ifdef FX_WIDE_MUL
+  (void)FX_HI(a); (void)FX_HI(b);
+  return (int32_t)(((fx_acc)a * c + (fx_acc)b * s + 16384) >> 15);
+#else
   return (int32_t)FX_HI(a) * c + (int32_t)FX_HI(b) * s + (((int32_t)FX_LO(a) * c + (int32_t)FX_LO(b) * s + 16384) >> 15);
+#endif
 }
 /* the same for a 32-bit x (|x| < 2^31 - 1) by a variable n >= 1, with 32-bit shifts only:
    floor((floor(x / 2^(n-1)) + 1) / 2) = floor((x + 2^(n-1)) / 2^n). On the C55x a variable

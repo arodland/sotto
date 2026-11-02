@@ -53,6 +53,12 @@
   .grid2 { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 0 16px; }
   .grid2 .voice { margin: 8px 0; }
   .grid2 .row { grid-template-columns: 1fr auto 200px; }
+  .tablewrap { overflow-x: auto; margin: 12px 0; }
+  table.cmp { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 0.95rem; }
+  table.cmp th, table.cmp td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.cmp th { color: var(--muted); font-weight: 600; font-size: 0.88rem; }
+  table.cmp td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.cmp tr.best td { background: var(--accent-soft); }
   @media (max-width: 680px) {
     .grid2 { grid-template-columns: 1fr; }
     .grid2 .row { grid-template-columns: 1fr auto; }
@@ -66,6 +72,19 @@
   <h1>sotto</h1>
   <p class="lede">Open 2400 bit/s digital voice for FM radios: a vocoder, error correction and a C4FM modem path, built for small fixed-point DSPs.</p>
   <p>New to vocoders? <a href="course/">How sotto works</a> is a short illustrated course (written for high-school students) on pitch, envelopes, quantization, synthesis and the radio link.</p>
+
+  <h2 style="margin-top:24px">Why sotto</h2>
+  <p>Open digital voice on ham radio mostly means Codec 2, whose low-rate modes are no longer being developed, while every Fusion, D-STAR and DMR radio carries a closed AMBE vocoder. The newest open voice codecs are neural networks, which need far more processing than the radios people already own. sotto is built for those radios: the TI C5517 DSP inside a Yaesu FTM-300D, and the 168 MHz Cortex-M4 in OpenRTX handhelds such as the TYT MD-UV380, which the M17 project uses. In simulation its v3.8 encoder and decoder fit both chips (on average, C5517: 137 and 55 MHz of 200; Cortex-M4: 118 and 36 MHz of 168), and it is MIT-licensed.</p>
+  <p>Is a small codec giving up much? We tested sotto against FARGAN, the neural vocoder in Opus, decoding the same 2400 bit/s bits. Stock FARGAN came out level with sotto's own decoder, at several times the compute and eight times the memory, too much for either radio. Remove sotto's hiss index (the 4-8 kHz band carried in bits sotto already sends) and FARGAN gets worse, so that idea helps a neural decoder too. Listen in <a href="#part4">Part 4</a>; details in <a href="https://github.com/baitisj/sotto/blob/main/docs/fargan-study.md">fargan-study.md</a>.</p>
+  <div class="tablewrap"><table class="cmp">
+    <thead><tr><th>Decoder of the same sotto v3.8 bits</th><th>Compute</th><th>Weights and tables</th><th>WB PESQ</th></tr></thead>
+    <tbody>
+      <tr class="best"><td>sotto v3.8 decoder</td><td>55 MHz on the C5517, 36 MHz on the Cortex-M4</td><td>under 100 KB</td><td class="num">1.78</td></tr>
+      <tr><td>FARGAN (Opus), with sotto's hiss index</td><td>about 305 million multiply-adds/s: fits neither radio</td><td>811 KB</td><td class="num">1.77</td></tr>
+      <tr><td>FARGAN, 4-8 kHz guessed without the hiss index</td><td>the same</td><td>811 KB</td><td class="num">1.63</td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">Wideband PESQ (0-8 kHz), mean of 10 clean voices, no radio channel. FARGAN fed the original speech's own features scores 2.72, but those take far more than 2400 bit/s to send; the gap is mostly sotto's 34-bit envelope, and closing it would mean retraining a network for each target, on hardware this project doesn't assume.</p>
 
   <h2 style="margin-top:24px">Try it with your own voice</h2>
   <section class="try" aria-labelledby="try-h">
@@ -105,6 +124,10 @@
 
   <div id="voices"></div>
 
+
+  <h2 id="part4">Part 4: sotto's decoder against a neural vocoder</h2>
+  <p>The same v3.8 bits (no radio channel), decoded four ways. FARGAN is Opus's neural vocoder with its stock weights; it gets the features of sotto's decoded speech, so its top bands carry sotto's 4-8 kHz hiss index. The last row is FARGAN fed the original speech's own features, which no 2400 bit/s link could carry: it shows how good the vocoder itself is. Scores here are wideband PESQ (0-8 kHz).</p>
+  <div id="neural" class="grid2"></div>
 
   <h2>What you're hearing</h2>
   <p><b>sotto v3.8</b> (Part 1) describes the spectrum with 20 mel-spaced amplitudes, quantized with 34 bits by a four-stage codebook trained on 632 speakers (Google's Speech Commands volunteers and LibriSpeech readers), plus a formant postfilter and a frame-energy field, where Codec 2 uses a 10th-order LPC filter. The codebook is stored as 8-bit values in 29 KB, so it fits in the radio's DSP alongside the modem, and the energy field measures only the band the envelope covers, so a low hum doesn't turn into buzz. Its tracker starts from Codec 2's pitch estimate and fixes octave errors (pitch reported at double or half its true value), which Codec 2 makes most often on higher voices. The same tracker decides which frames are voiced, follows pitch up to 500 Hz, and avoids the warbling that wandering pitch causes in quiet transitions. Breathy sounds like the "v" in "five" get harmonics only below 1 kHz with noise above, at no extra bits. Pauses decode as true silence. When a frame is lost, it holds the last sound for 40 ms and fades it out within 80 ms, which a listener preferred to repeating and cutting. It keeps Codec 2's synthesis. It needs no memory between frames, so a lost frame doesn't damage the next one.</p>
@@ -203,6 +226,27 @@
     card.append(row);
     pending.push({ row, short: true, bit: `${base}.bit`, good: null });
     mhost.append(card);
+  }
+  // Part 4: sotto's decoder against FARGAN (scores: docs/results/fargan_study.json, wideband PESQ)
+  const neural = [
+    { id: "male_libri3436_15s", name: "Male voice (LibriSpeech reader 3436, 15 s)", wb: { v38: 2.39, fargan_v38: 2.38, fargan_v38_blindhf: 2.04, fargan_ceiling: 3.54 } },
+    { id: "female_libri198_14s", name: "Female voice (LibriSpeech reader 198, 14 s)", wb: { v38: 1.48, fargan_v38: 1.47, fargan_v38_blindhf: 1.47, fargan_ceiling: 2.70 } },
+  ];
+  const nrows = [
+    { k: "fargan_v38", title: "FARGAN, with sotto's hiss index", sub: "same bits, neural vocoder" },
+    { k: "fargan_v38_blindhf", title: "FARGAN, 4-8 kHz guessed", sub: "same bits, hiss index ignored" },
+    { k: "fargan_ceiling", title: "FARGAN, the original's features", sub: "not sendable at 2400 bit/s" },
+  ];
+  const wb = (row, x) => { row.querySelector(".score").textContent = `WB PESQ ${x.toFixed(2)}`; return row; };
+  const nhost = document.getElementById("neural");
+  for (const v of neural) {
+    const card = el("section", "voice"); card.append(el("h3", null, v.name));
+    card.append(clip("Original", "16 kHz", null, `samples/v38/${v.id}__original16.flac`));
+    const row = wb(clip("sotto v3.8 decoder", "<i>decoding…</i>", 0, null, true), v.wb.v38);
+    card.append(row);
+    pending.push({ row, short: true, bit: `samples/v38/${v.id}__No_radio_channel.bit`, good: null });
+    for (const r of nrows) card.append(wb(clip(r.title, r.sub, 0, `samples/fargan/${v.id}__${r.k}.flac`), v.wb[r.k]));
+    nhost.append(card);
   }
   const status = document.getElementById("wasm-status");
   const bytes = async u => { const r = await fetch(u); if (!r.ok) throw new Error(`${u}: ${r.status}`); return new Uint8Array(await r.arrayBuffer()); };

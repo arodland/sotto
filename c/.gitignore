@@ -10,3 +10,6 @@ test_api
 fixed/sotto_dec_fx
 fixed/sotto_enc_fx
 fixed/test_fx
+fixed/sotto_enc_fx_arm
+fixed/sotto_dec_fx_arm
+fixed/arm/

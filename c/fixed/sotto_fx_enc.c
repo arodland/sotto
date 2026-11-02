@@ -237,6 +237,24 @@ static inline int32_t shift(int32_t x, int s) { return s > 0 ? fx_rshr32(x, s) :
    rounded right by 15 (c55x/nlp_dft.asm on the C5517: circular addressing, dual MAC) */
 #if defined(__TMS320C55X__) && !defined(FX_NLP_DFT_C)
 void fx_nlp_dft(const int16_t *x, const int16_t *cos512, int32_t *rr, int32_t *qq, int k0, int k1);
+#elif defined(FX_ARM_DSP) && !defined(FX_NLP_DFT_C)
+/* x[n] in both halves against cos | sin (fx_cs512): SMLALD sums r + q, SMLSLD r - q */
+static void fx_nlp_dft(const int16_t *x, const int16_t *cos512, int32_t *rr, int32_t *qq, int k0, int k1) {
+  const uint32_t *cs = fx_cs512();
+  uint32_t xx[64];
+  int k, n;
+  (void)cos512;
+  for (n = 0; n < 64; n++) xx[n] = (uint32_t)(uint16_t)x[n] * 0x10001u;
+  for (k = k0; k < k1; k++) {
+    fx_acc sum = 0, dif = 0;
+    unsigned i = 0;
+    for (n = 0; n < 64; n++, i = (i + (unsigned)k) & 511u) {
+      sum = fx_smlald(xx[n], cs[i], sum);
+      dif = fx_smlsld(xx[n], cs[i], dif);
+    }
+    rr[k] = fx_rshr((sum + dif) >> 1, 15), qq[k] = fx_rshr((sum - dif) >> 1, 15);
+  }
+}
 #else
 static void fx_nlp_dft(const int16_t *x, const int16_t *cos512, int32_t *rr, int32_t *qq, int k0, int k1) {
   int k, n;
@@ -667,6 +685,26 @@ static void put_bits(unsigned char *out, int *pos, int v, int nb) {
    r padded to FX_CBW with 0); c55x/cb_dots.asm on the C5517 */
 #if defined(__TMS320C55X__) && !defined(FX_CB_DOTS_C)
 void fx_cb_dots(const int16_t *r, const int16_t *cb, int n, const int32_t *e2, int32_t *h);
+#elif defined(FX_ARM_DSP) && !defined(FX_CB_DOTS_C)
+/* Cortex-M4: SMLAD, two products a cycle, on value pairs (FX_CBW is even), two vectors at a
+   time so each pair of r is loaded once (n is even); the same 32-bit sums */
+static void fx_cb_dots(const int16_t *r, const int16_t *cb, int n, const int32_t *e2, int32_t *h) {
+  uint32_t rp[FX_CBW / 2], y0, y1, x;
+  int v, k;
+  memcpy(rp, r, sizeof rp);
+  for (v = 0; v < n; v += 2, cb += 2 * FX_CBW) {
+    int32_t a0 = 0, a1 = 0;
+    for (k = 0; k < FX_CBW / 2; k++) {
+      x = rp[k];
+      memcpy(&y0, cb + 2 * k, 4);
+      memcpy(&y1, cb + FX_CBW + 2 * k, 4);
+      a0 = fx_smlad(x, y0, a0);
+      a1 = fx_smlad(x, y1, a1);
+    }
+    h[v] = e2[v] * 32 - a0;
+    h[v + 1] = e2[v + 1] * 32 - a1;
+  }
+}
 #else
 static void fx_cb_dots(const int16_t *r, const int16_t *cb, int n, const int32_t *e2, int32_t *h) {
   int v, k;
