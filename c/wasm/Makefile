@@ -1,7 +1,7 @@
 # WebAssembly build of the sotto v3.8 decoder for the listening page (docs/index.html).
 # Needs clang and wasm-ld with a wasm32-wasi sysroot (Debian/Ubuntu: apt install clang lld
-# wasi-libc libclang-rt-dev-wasm32). Run `make` in c/ first: it generates the codebook and
-# hiss tables, and build/codec2 holds Codec 2's generated codebooks.
+# wasi-libc libclang-rt-dev-wasm32). Run `make` in the repository root first: build/codec2 holds
+# Codec 2's generated codebooks (sotto's own tables are committed in c/).
 #   make            sotto.wasm
 #   make install    copies it to docs/sotto.wasm (the file the page loads)
 #   make check      decodes with node and compares against c/sotto_dec -16

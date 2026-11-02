@@ -1,4 +1,5 @@
-sotto_codebook.c
+sotto_codebook_gen.c
+tables.chk/
 *.o
 libsotto.a
 libsotto.so*
@@ -6,7 +7,6 @@ sotto.pc
 sotto_enc
 sotto_dec
 test_api
-fixed/fx_tables.c
 fixed/sotto_dec_fx
 fixed/sotto_enc_fx
 fixed/test_fx
