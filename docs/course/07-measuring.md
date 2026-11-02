@@ -4,7 +4,7 @@ title: "7. How we measure \"better\""
 
 # 7. How we measure "better"
 
-Previous: [Across the radio](06-radio.md) · [Course home](README.md) · Next: [Glossary](glossary.md)
+Previous: [Across the radio](06-radio.md) · [Course home](README.md) · Next: [The hiss band](08-hiss-band.md)
 
 ## Big idea
 
@@ -104,6 +104,7 @@ Listening found things PESQ missed:
 - "five-anuh" in the "v" of "five", which led to mixed voicing and a lighter postfilter.
 - Dropouts that sounded *worse* with a long fade, even though PESQ scored the long fade higher. That led to v3.5's short concealment (chapter 6).
 - A voice at 390 Hz recorded on a poor microphone, where listeners twice preferred Codec 2. That one is still open.
+- Dull "s" and "sh" sounds, a warble under whispers and a "z" heard as "th", which led to v3.8's hiss band (chapter 8). There PESQ was no help at all: it can't hear above 4,000 Hz.
 
 ## Being honest about the results
 
@@ -112,13 +113,13 @@ Good science says what it *didn't* test, and fixes its own mistakes:
 - **A scoring bug.** PESQ and ESTOI compare the decoded clip with the original, so the two must be lined up in time. The scripts used to line them up by matching waveforms, but vocoders with made-up phases don't follow the original waveform, so the match picked delays anywhere from 50 to 180 samples when the right answer is about 160. That made scores wrong by up to ±0.1 (and ESTOI too low). Now every codec is scored with the same fixed delay of 160 samples. Old write-ups got their rankings right but some numbers wrong, and the course uses the corrected numbers.
 - **Few listeners.** Most listening rounds had one listener. That's enough to find problems, not to prove small differences.
 - **Training speech.** The codebook is trained on CC BY speech only, so it can be shipped. Another collection (EARS) is used only for testing because its license doesn't allow shipping.
-- **Not on the radio yet.** sotto now has a C version (`c/`) that gives the same bits as the Python on 99.97% of frames, but it still uses floating-point math. The radio's chip needs a fixed-point version, which isn't written yet.
+- **Not on the radio yet.** sotto now has a C version (`c/`) that gives the same bits as the Python on 99.97% of frames, and a fixed-point version (`c/fixed/`) for the radio's chip. On TI's simulator of that chip, the fixed-point decoder needs about 37 MHz of the chip's 200 MHz, but the encoder needs about 188 MHz on average and 212 MHz on its worst frame: too much, so it still has to get faster. None of it has run on a real radio.
 
 ## What's next for sotto
 
 From `docs/encoder-v1.md`:
 
-1. Turning the C version (now v3.6, with the smaller codebook from chapter 4) into fixed-point code for the radio's DSP chip, a TI C5517.
+1. Making the fixed-point encoder fast enough for the radio's DSP chip, a TI C5517 (the target is about 100 MHz), and measuring v3.8's hiss band on it.
 2. Deciding whether to spread each frame's bits across *two* radio frames (200 ms). It's built, and PESQ says it helps from 30 km/h up, but in the first listening round it won 3, lost 2 and tied 1, so more tests come first.
 3. Retraining the codebook on more speech when it's available.
 4. Working out, by ear, what listeners want for very high voices.

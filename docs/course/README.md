@@ -26,7 +26,8 @@ Every picture in the course is drawn from real recordings and from the real sott
 5. [Synthesis: rebuilding the voice](05-synthesis.md): adding up sine waves, mixed voicing, and seven listening demos.
 6. [Across the radio](06-radio.md): C4FM, error-correcting codes, fading, spreading and hiding lost frames.
 7. [How we measure "better"](07-measuring.md): PESQ, oracles, the quantization ladder and listening tests.
-8. [Glossary](glossary.md): every term used in the code and the design notes, in plain words.
+8. [The hiss band: s, sh and whispers](08-hiss-band.md): sotto v3.8's 4,000 to 8,000 Hz hiss, the spare bits it hides in, and what the team learned building it.
+9. [Glossary](glossary.md): every term used in the code and the design notes, in plain words.
 
 Each chapter ends with **Try it** questions. Answers to the number questions are at the bottom of each chapter.
 
@@ -34,11 +35,14 @@ Each chapter ends with **Try it** questions. Answers to the number questions are
 
 sotto is a research project and it is changing quickly. This course describes **sotto v3.5** (October 2026), as described in [`docs/encoder-v0.md`](../encoder-v0.md) and [`docs/encoder-v1.md`](../encoder-v1.md) (which covers v1 through v3.5). sotto is a Python prototype built on [Codec 2](https://github.com/drowe67/codec2), an older open-source vocoder, and borrows its analysis and synthesizer. sotto's own parts are a pitch and voicing tracker (chapter 2), mixed voicing (chapters 2 and 5), the 20-point envelope and its trained vector quantizer (chapters 3 and 4), and concealment of lost frames (chapter 6). It has been tested in simulation and by ear in a radio club's listening rounds, not yet on the air.
 
+Chapters 1 to 7 and their demos stay on v3.5. Since then: v3.6 shrank the codebook for the radio's chip (chapter 4); v3.7 gave the pitch tracker one more candidate, a third of Codec 2's estimate, which fixed some high-pitched pops; and **v3.8** (November 2026) added the 4,000 to 8,000 Hz hiss band, which has its own chapter (chapter 8, from [`docs/unvoiced-hiss.md`](../unvoiced-hiss.md)). All of them keep the same 48-bit, 20 ms frame. There is now also a C version of sotto, in floating point and in fixed point for the radio's DSP chip ([`docs/c-port.md`](../c-port.md)).
+
 ## Rebuilding the figures
 
 ```sh
 ./tools/build_codec2.sh            # builds c2sim, c2enc, c2dec
+make -C c                          # the v3.8 C tools, for chapter 8's figure and clips
 python tools/course_figures.py     # rewrites docs/course/figures/*.svg and docs/course/audio/*.flac
 ```
 
-The script reads the clips in `docs/samples/` and the results in `docs/results/`.
+The script reads the clips in `docs/samples/` and the results in `docs/results/`. `python tools/course_figures.py --hiss-only` remakes just chapter 8's figure and clips.
