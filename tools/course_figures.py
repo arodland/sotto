@@ -4,12 +4,16 @@ Every plot is drawn from real speech in docs/samples/ and from the real sotto co
 (sim/vocoder_lab.py, modem/). Needs the Codec 2 build (tools/build_codec2.sh) and
 numpy, scipy, soundfile, matplotlib. pesq is not needed.
 
-Usage: python tools/course_figures.py [--out docs/course]
+The hiss-band figure and clips (chapter 8) also need the v3.8 C tools: `make -C c`.
+`--hiss-only` makes just those.
+
+Usage: python tools/course_figures.py [--out docs/course] [--hiss-only]
 """
-import argparse, os, sys, types
+import argparse, os, subprocess, sys, tempfile, types
 import numpy as np
 import soundfile as sf
 from scipy import signal
+from scipy.signal import resample_poly
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -648,6 +652,67 @@ def demos(out, x):
         write_flac(os.path.join(d, f"{name}.flac"), np.clip(y, -1, 1), FS)
         print("wrote audio/", name)
 
+# ---------------------------------------------------------------- chapter 8: the hiss band
+HISS_VOICE, HISS_T0, HISS_T1 = "librispeech_8842_f", 7.8, 9.6   # a phrase with a strong hiss at 8.7 s
+
+
+def sotto_v38_c(x16):
+    """Encode and decode 16 kHz speech with the C port's v3.8 tools (c/sotto_enc -16,
+    c/sotto_dec -16, default VARIANT=v3.8 build). The output is aligned with the input."""
+    enc, dec = os.path.join(ROOT, "c", "sotto_enc"), os.path.join(ROOT, "c", "sotto_dec")
+    with tempfile.TemporaryDirectory() as d:
+        raw, bit, outp = (os.path.join(d, n) for n in ("in.raw", "x.bit", "out.raw"))
+        (np.clip(x16, -1, 1) * 32767).astype("<i2").tofile(raw)
+        subprocess.run([enc, "-16", raw, bit], check=True)
+        subprocess.run([dec, "-16", bit, outp], check=True)
+        return np.fromfile(outp, "<i2") / 32768.0
+
+
+def fig_hiss(out):
+    """The same phrase as the 16 kHz original, sotto v3.7 (8 kHz, Python reference) and sotto
+    v3.8 (16 kHz, C port), drawn 0-8 kHz; and the three as short 16 kHz demo clips."""
+    x16, fs = sf.read(os.path.join(SAMPLES, "v38", HISS_VOICE + "__original16.flac"))
+    assert fs == 16000
+    x8 = resample_poly(x16, 1, 2)
+    y37 = np.asarray(vl.SottoV37().decode_audio(vl.SottoV37().encode(x8)))
+    y37 = y37[best_lag(x8, y37):]
+    y38 = sotto_v38_c(x16)
+    rows = [("Original speech, 16,000 samples per second", x16, 16000),
+            ("sotto v3.7: 8,000 samples per second, nothing above 4,000 Hz", y37, 8000),
+            ("sotto v3.8: still 48 bits per frame, plus the 4,000-8,000 Hz hiss band", y38, 16000)]
+    t0, t1 = HISS_T0, HISS_T1
+    fig, axs = plt.subplots(3, 1, figsize=(9, 8.2), sharex=True, gridspec_kw=dict(hspace=0.34))
+    top = None
+    for ax, (title, y, r) in zip(axs, rows):
+        f, t, S = signal.spectrogram(y[int(t0 * r):int(t1 * r)], r, window="hann",
+                                     nperseg=r // 31, noverlap=r // 31 * 7 // 8, nfft=1024)
+        S = 10 * np.log10(S + 1e-12)
+        top = S.max() if top is None else top
+        ax.pcolormesh(t, f, S, cmap=SPEC, vmin=top - 70, vmax=top, shading="auto", rasterized=True)
+        ax.axhline(4000, color=ORANGE, lw=1.2, ls="--")
+        ax.set_ylim(0, 8000)
+        ax.set_xlim(0, t1 - t0)
+        ax.grid(False)
+        ax.set_title(title)
+        ax.set_ylabel("Hz")
+    axs[0].annotate("the hiss of a fricative", xy=(0.93, 5600), xytext=(1.2, 7000), color=INK,
+                    arrowprops=dict(arrowstyle="->", color=INK))
+    axs[1].text(0.02, 6000, "nothing is sent up here", color=INK2)
+    axs[-1].set_xlabel("time (seconds)")
+    ticks = np.arange(0, t1 - t0 + 0.01, 0.4)
+    axs[-1].set_xticks(ticks)
+    axs[-1].set_xticklabels([f"{t0 + v:.1f}" for v in ticks])
+    save(fig, out, "hiss.svg")
+
+    d = os.path.join(out, "audio")
+    os.makedirs(d, exist_ok=True)
+    y37_16 = resample_poly(y37, 2, 1)
+    for name, y in (("hiss_original", x16), ("hiss_v37", y37_16), ("hiss_v38", y38)):
+        y = np.asarray(y)[int(t0 * 16000):int(t1 * 16000)]
+        y = 0.6 * y / (np.abs(x16[int(t0 * 16000):int(t1 * 16000)]).max() + 1e-12)
+        write_flac(os.path.join(d, f"{name}.flac"), np.clip(y, -1, 1), 16000)
+        print("wrote audio/", name)
+
 
 def main(out):
     os.makedirs(os.path.join(out, "figures"), exist_ok=True)
@@ -671,9 +736,16 @@ def main(out):
     fig_conceal(out)
     print("spread demo (plain, spread):", *fig_spread(out))
     demos(out, xm)
+    fig_hiss(out)
 
 
 if __name__ == "__main__":
     a = argparse.ArgumentParser()
     a.add_argument("--out", default=os.path.join(ROOT, "docs", "course"))
-    main(a.parse_args().out)
+    a.add_argument("--hiss-only", action="store_true", help="only the chapter 8 figure and clips")
+    args = a.parse_args()
+    if args.hiss_only:
+        os.makedirs(os.path.join(args.out, "figures"), exist_ok=True)
+        fig_hiss(args.out)
+    else:
+        main(args.out)

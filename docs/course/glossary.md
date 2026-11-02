@@ -17,6 +17,8 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 
 **AMBE / AMBE+2** (say *AM-bee, AM-bee plus two*): the closed, licensed vocoder used by Yaesu System Fusion and other digital radios. sotto aims to match its quality with open code.
 
+**Aspiration** (say *as-puh-RAY-shun*): the breathy puff of hiss after a "t", "p" or "k" burst, before the vowel's buzz starts. [8]
+
 ### B
 **Band voicing**: mixed voicing done simply: harmonics below a cutoff frequency are voiced and those above it get random phases. Tested for v1 with no PESQ gain, then brought back in v3.2 after listeners heard "five-anuh". sotto's cutoff is 1,000 Hz (`MIX_HZ`, `mixed_cutoff()`). See mixed voicing. [2, 5]
 
@@ -27,6 +29,10 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 **Blind A/B test**: a listening test where the listener hears two versions of a clip, labeled only A and B, and says which is better or that they're the same. They don't know which codec is which. See listening round. [7]
 
 **Bit rate**: bits per second. sotto's vocoder runs at 2,400 bits per second; the radio carries 9,600. [1, 6]
+
+**Blend (hiss blend)**: in the v3.8 decoder, one hiss layer above 4,000 Hz made from the louder of the consonant hiss and the vowel layer at each frequency, so the hiss doesn't pop on and off when frames flicker between unvoiced and mixed (`blend=True`). [8]
+
+**Burst (stop burst)**: the short pop of air when a "t", "p" or "k" is released, about 10 ms long. The v3.8 **burst rule** sends a frame where 4,000 to 8,000 Hz jumps by more than 12 dB in 10 ms as U U, so it gets a hiss index. See stop consonant. [8]
 
 ### C
 **CC BY**: a Creative Commons license that lets anyone reuse a work if they credit the authors. sotto's codebook is trained only on CC BY speech, so it can be shipped. [4, 7]
@@ -49,7 +55,7 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 
 **Convolutional code**: an error-correcting code in which every output bit mixes the last several input bits (7 for sotto: "K = 7"). Decoded with the Viterbi algorithm. [6]
 
-**CRC (CRC-8, CRC-16)**: "cyclic redundancy check". A short fingerprint (8 or 16 bits) computed from a block of data, which lets the receiver tell whether the block arrived intact. It detects errors but doesn't fix them. [6]
+**CRC (CRC-4, CRC-8, CRC-16)**: "cyclic redundancy check". A short fingerprint (4, 8 or 16 bits) computed from a block of data, which lets the receiver tell whether the block arrived intact. It detects errors but doesn't fix them. The speaker side channel uses a 4-bit one. [6, 8]
 
 ### D
 **dB (decibel)** (dB is said as letters; decibel is *DESS-uh-bel*): a scale for loudness or power that works by ratios. +10 dB is 10 times the power; +6 dB is about 4 times; +3 dB is about 2 times. [3, 4]
@@ -112,6 +118,10 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 ### H
 **Harmonics** (say *har-MON-iks*): sine waves at whole-number multiples of the pitch. A voiced sound is the sum of its harmonics. [2]
 
+**Hiss band (high band)**: sotto v3.8's 4,000 to 8,000 Hz layer of shaped noise, added on top of the normal 0 to 4,000 Hz output. It needs 16,000 samples per second in and out, but no extra bits (`SottoV38` in `sim/hiss_band.py`, `c/sotto_hiss.c`). [8]
+
+**Hiss index**: the 6 bits in a U U frame's pitch field that describe the hiss band: one of 64 patterns of corrections to the decoder's free guess of four band levels (4 to 5, 5 to 6, 6 to 7 and 7 to 8 kHz). [8]
+
 **Held out**: test data kept out of training, so the test is fair. sotto's codebook is tested on 16 held-out voices. [4, 7]
 
 **Hold and fade**: the two halves of sotto's concealment: *hold* repeats the last good frame for a short time, *fade* then lowers it step by step. [6]
@@ -131,7 +141,7 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 
 **LLR (log-likelihood ratio)** (said as letters): a soft bit: a number saying how sure the receiver is that a bit is 0 (positive) or 1 (negative). Bigger means more sure. [6]
 
-**Lookahead**: how far into the future an encoder must see before deciding about the present. sotto's tracker can search the whole recording, but tests showed 80 ms of look-ahead loses only 0.003 PESQ, so the real-time version will use 80 ms (`lag` in `track_pitch_voicing()`). See Viterbi algorithm. [2, 7]
+**Lookahead**: how far into the future an encoder must see before deciding about the present. sotto's tracker can search the whole recording, but tests showed 80 ms of look-ahead loses only 0.003 PESQ, so the real-time version will use 80 ms (`lag` in `track_pitch_voicing()`). v3.8's voicing rules need more: its encoder looks 10 frames (about 320 ms in all) ahead (`SOTTO_RULE_LAG` in the C port). See Viterbi algorithm. [2, 7, 8]
 
 **LPC / LPC-10**: linear prediction. Codec 2 2400's way of describing the envelope, with 10 numbers that define a smooth curve. The quantization ladder showed it's Codec 2's biggest quality loss for male voices. [3, 7]
 
@@ -153,9 +163,13 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 ### N
 **newamp1** (say *new-amp-one*): an experimental Codec 2 mode that introduced the rate-K mel envelope and the formant postfilter that sotto builds on. [3]
 
+**Narrowband / wideband**: speech at 8,000 samples per second (up to 4,000 Hz, like a phone call) or at 16,000 (up to 8,000 Hz). sotto up to v3.7 is narrowband; v3.8 plays wideband. PESQ comes in both kinds (PESQ-NB and PESQ-WB). [1, 8]
+
 **NLP**: "non-linear pitch". Codec 2's pitch tracker. sotto v0 used it as is; later versions start from its answers and correct octave errors. [2]
 
 **Null pair**: a listening-test pair where A and B are the same clip. A careful listener calls it a tie; a listener who picks a winner is probably guessing elsewhere too. [7]
+
+**Nyquist frequency** (say *NY-kwist*): half the sample rate: the highest frequency a recording can hold. 4,000 Hz at 8,000 samples per second, 8,000 Hz at 16,000. [1, 8]
 
 ### O
 **Octave error**: a pitch tracker reporting double or half the true pitch. [2]
@@ -168,8 +182,12 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 
 **Oracle lab**: `sim/vocoder_lab.py`: tools for editing Codec 2's model in Python and listening to the result. [7]
 
+**Overlap-add** (say *OH-ver-lap add*): building a long sound from short pieces that overlap, fading each one out as the next fades in. For noise it loses 1.76 dB of power, because random phases add by power, not like waves. [5, 8]
+
 ### P
 **Payload** (say *PAY-lode*): the part of a frame that carries the actual data (as opposed to sync and headers). In System Fusion, 720 bits per 100 ms. [6]
+
+**PCA (principal component analysis)** (said as letters; principal is *PRIN-suh-pul*): a way of finding the few patterns that explain most of the differences in a big table of numbers. In v3.8, three patterns describe 92% of how speakers' high bands differ, so a speaker's shape is just 3 numbers. [8]
 
 **PESQ** (say *PESK*): "perceptual evaluation of speech quality". A computer score that predicts how listeners would rate quality, from about 1 (bad) to 4.5 (perfect). [7]
 
@@ -182,6 +200,12 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 **Pitch oracle**: an oracle test for pitch: the decoder is given the true (or carefully checked) pitch instead of the rounded or estimated one, to measure how much pitch errors cost. [7]
 
 **Pitch tracker (pitch estimator)**: the part of the encoder that measures pitch. Errors where it reports double or half the true pitch are called **octave errors**. See sotto tracker. [2]
+
+**Pitch-field leak**: a v3.8 bug. When the decoder filled in a voiced 10 ms piece after an unvoiced half, it borrowed the next frame's pitch; if that frame was U U, its pitch field held a hiss index, so the piece was played at a random pitch. Fixed by keeping the frame's own pitch (`UU_WO_GUARD`, `interp_wo()`). [8]
+
+**Plate reverb** (reverb is *REE-verb*): an old studio echo effect made with a big vibrating metal sheet. A listener's description of a 20 ms hiss fade-out, which v3.8 then dropped. [8]
+
+**Plosive** (say *PLOH-siv*): see stop consonant.
 
 **pYIN** (say *pee-YIN*): a well-known offline pitch tracker, used as a reference to count Codec 2's octave errors. Not perfect either. [2]
 
@@ -209,8 +233,12 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 
 **RRC filter**: "root-raised-cosine". The filter that smooths the C4FM hops at the transmitter and matches them at the receiver. [6]
 
+**Regression** (say *rih-GRESH-un*): two meanings. (1) In software, a bug that breaks something that used to work, like the v3.8 cleanup that lost the 50 Hz noise spacing. A **regression test** checks it can't happen again. (2) In statistics, fitting a formula that predicts one set of numbers from another. A **ridge regression** adds a penalty that keeps the formula's weights small so it doesn't over-fit; v3.8's vowel layer uses one. [8]
+
+**Resonance** (say *REZ-uh-nunce*): a frequency where a space rings louder, like a bottle when you blow across it. Formants are resonances of the mouth; vowels also have one between about 4,300 and 7,300 Hz that moves with the vowel. [3, 8]
+
 ### S
-**Sample / sample rate**: one measurement of the microphone signal. sotto uses 8,000 per second. [1]
+**Sample / sample rate**: one measurement of the microphone signal. sotto uses 8,000 per second; v3.8 takes in and plays out 16,000, for the hiss band. [1, 8]
 
 **Scrambling**: mixing the bits with a known pseudo-random pattern (PN9) to avoid long runs of one symbol. Undone at the receiver. [6]
 
@@ -220,13 +248,19 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 
 **Shape quantizer**: the part of sotto that squeezes the envelope shape into 34 bits. Since v3 it's a multistage vector quantizer (`ShapeMSVQ`) with 45% less error than before: 3 stages in `sim/data/shape_msvq_34.npz` up to v3.5, 4 smaller stages in `sim/data/shape_msvq_9988.npz` from v3.6. Up to v2 it was `ShapeQ`, a scalar quantizer: it took the DCT of the shape, gave each cosine-wave size its own uniform quantizer with a trained step size, and split the bits by greedy allocation (5, 4, 3, 3, 2, ... bits). [4]
 
+**Shape measured / over the air**: two rows on the v3.8 listening page. "Shape measured" uses a speaker shape taken straight from the original recording (the best possible); "over the air" uses the shape as the side channel delivers it. If the side channel works, they sound the same. [8]
+
+**Sibilant** (say *SIB-uh-lunt*): a hissing fricative: "s", "sh", "z", "zh". Most of an "s" is above 4,000 Hz. The v3.8 **sibilant rule** sends a frame whose 4,000 to 8,000 Hz band is loud compared with its 0 to 1,000 Hz band as U U, so it gets a hiss index (`sib_db`; see z fix). [8]
+
+**Side channel**: a slow, separate path for data inside the stream. In v3.8, one bit of every U U frame's pitch field carries a 16-bit message per 2-second window (three 4-bit speaker numbers plus a CRC-4). [8]
+
 **Silence (true silence)**: since v3, energy code 0 tells the decoder to output nothing at all, instead of a faint buzz or hiss. Listeners had heard a "floor" of noise between words. [4]
 
 **sotto** (say *SOT-toh*): the name of this vocoder. It's an Italian word meaning "under"; speaking *sotto voce* means speaking quietly. [1]
 
 **sotto tracker**: sotto's joint pitch and voicing tracker (`track_pitch_voicing()` in `sim/sinusoid.py`). For every 10 ms frame it lists "unvoiced" plus several pitch candidates (Codec 2's estimates nearby, doubled and halved), adds up six kinds of cost (bad fit, low pitch, disagreeing with Codec 2's voicing, switching, jumping, missing odd harmonics), and uses the Viterbi algorithm to pick the cheapest path. Pitch is kept between 70 Hz (for doubled and halved candidates) and 500 Hz. v1 had a simpler pitch-only version, `track_pitch()`. [2]
 
-**sotto v0 to v3.6**: versions of the sotto encoder, all with the same 48-bit, 20 ms frame. v0: the 20-point envelope. v1: the octave-correcting pitch tracker (`SottoV0(pitch="tracked")` in the code). v2: joint pitch and voicing tracking, and a 500 Hz pitch limit. v3: the trained vector quantizer and true silence. v3.1: the tail rule. v3.2: mixed voicing. v3.3: odd/even check. v3.4: concealment in the decoder. v3.5: lighter postfilter (1.35) and short concealment; `SottoV35` in `sim/vocoder_lab.py`. v3.6: the smaller 29 KB codebook for the radio's chip, and energy measured only over the envelope's 200 to 3,700 Hz; `SottoV36`, the C port's default. [1, 2, 4, 6]
+**sotto v0 to v3.8**: versions of the sotto encoder, all with the same 48-bit, 20 ms frame. v0: the 20-point envelope. v1: the octave-correcting pitch tracker (`SottoV0(pitch="tracked")` in the code). v2: joint pitch and voicing tracking, and a 500 Hz pitch limit. v3: the trained vector quantizer and true silence. v3.1: the tail rule. v3.2: mixed voicing. v3.3: odd/even check. v3.4: concealment in the decoder. v3.5: lighter postfilter (1.35) and short concealment; `SottoV35` in `sim/vocoder_lab.py`. v3.6: the smaller 29 KB codebook for the radio's chip, and energy measured only over the envelope's 200 to 3,700 Hz; `SottoV36`. v3.7: one more pitch candidate in the tracker, a third of Codec 2's estimate (`SottoV37`). v3.8: the hiss band, with 16 kHz in and out (`SottoV38` in `sim/hiss_band.py`; the C port's default). [1, 2, 4, 6, 8]
 
 **Sine wave**: the smoothest possible repeating wiggle, with a frequency, amplitude and phase. [2]
 
@@ -237,6 +271,8 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 **Soft bits**: see LLR.
 
 **Speech Commands**: a large collection of short spoken words from thousands of people (CC BY 4.0). Part of the training speech for sotto's codebook, and the source of the counting clips used for testing. [4, 7]
+
+**Speaker shape**: three numbers (from PCA) that say how one speaker's and microphone's high band differs from the average. Sent over the side channel; until the first message arrives, the decoder uses the average speaker. [8]
 
 **Springs**: listeners' word for the twangy sound when a decoder holds a buzzy vowel steady through a lost signal. v3.5's short concealment avoids it. [6]
 
@@ -250,6 +286,8 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 
 **Step size**: the distance between two neighboring levels of a uniform quantizer. [4]
 
+**Stop consonant (plosive)** (plosive is *PLOH-siv*): a consonant made by closing the mouth completely and then releasing the air in a burst: "t", "p", "k", "d", "b", "g". [8]
+
 **Sync**: a fixed bit pattern at the start of each radio frame that the receiver searches for. [6]
 
 **Synthesis** (say *SIN-thuh-sis*): the decoder's last job: turning the model back into sound by adding up sine waves. [5]
@@ -261,9 +299,13 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 
 **Tail-biting**: a way of running a convolutional code on a block so the end wraps around to the start, wasting no bits on start-up and shut-down. [6]
 
+**Time index**: the exact time in a clip, in seconds, where a listener hears a problem. Get it and repeat it back before analyzing anything: twice the team analyzed the wrong word without one. [8]
+
 **Training**: tuning a quantizer's settings by running it on lots of real speech. The old scalar quantizer trained step sizes and bit allocation (`training_set()`); the vector quantizer's codebooks are trained with k-means on about 480,000 frames from more than 600 speakers. [4]
 
 ### U
+**U U frame (all-unvoiced frame)**: a frame whose voicing code says both 10 ms halves are hiss. About 24% of frames. Since v3.8 their noise harmonics are always 50 Hz apart, so their 7 pitch bits carry a 6-bit hiss index and one side-channel bit instead. [2, 8]
+
 **Unvoiced**: a sound made by hissing air with no vocal-cord buzz, like "s", "f", "sh", or whispering. The hissing consonants are called fricatives. [2]
 
 ### V
@@ -279,5 +321,14 @@ Terms used in the sotto code, the design notes in `docs/`, and this course, in p
 
 **Voicing**: whether a frame is buzz, hiss or both. sotto sends 2 bits per 20 ms frame as one of four codes: U U, V V, M M, or an edge between U and M. Up to v3.1 the 2 bits were one yes/no for each 10 ms half. In the model it's the `voiced` value: 0, 1, or 2 and up for mixed (the harmonic where the noise starts). [2, 4]
 
+**Voicing smoothing** (`vsmooth`): a v3.8 encoder rule that turns short voiced/mixed/edge flickers inside a voiced run into mixed frames, which removed a stutter in the "zh" of "division". [8]
+
+**Vowel layer**: the quiet hiss v3.8 adds above 4,000 Hz under vowels, predicted in sixteen 250 Hz bands from the shape of the decoded 0 to 4,000 Hz spectrum, then corrected by the speaker shape (`vowel_shape="fine"`). [8]
+
 ### W
 **Wo** ("omega-zero", said *oh-MAY-guh ZEER-oh*): the pitch written as an angle per sample: Wo = 2π × pitch ÷ 8000. sotto sends it with 7 bits, from 50 to 500 Hz in steps of 1.83% (400 Hz and 1.65% in v0 and v1). [2, 4]
+
+**Whisper rule**: a v3.8 encoder rule. A run of at least 10 mixed frames with weak harmonics and a jumpy "pitch" is really a whisper, so it's sent as U U instead of playing wandering harmonics. [8]
+
+### Z
+**z fix**: the v3.8 rule that sends any frame whose 4,000 to 8,000 Hz band comes within 10 dB of its 0 to 1,000 Hz band as U U with a hiss index, even if it's voiced (`sib_voiced=True`, `sib_db=-10`). It fixed "prism" sounding like "prith-um". [8]

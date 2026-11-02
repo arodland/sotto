@@ -111,6 +111,8 @@ There's no room for more bits, so sotto reuses the 2 voicing bits. Before, they 
 
 One more rule handles the quiet ends of sounds: a voiced frame with a weak fit that is more than 20 dB quieter than the last 300 ms is sent as unvoiced (the *tail* rule, from v3.1). Without it, a fading "v" could be tracked down to a junk low pitch and buzz for 200 ms.
 
+Chapter 8 adds a twist to all of this. In v3.8, a "z" whose hiss is nearly as loud as its buzz is sent as U U after all, because the hiss tells the listener far more about which consonant it is than the buzz does.
+
 ## How pitch is written in the code
 
 The code doesn't store pitch in hertz. It uses **Wo** ("omega-zero"), the pitch written as an angle per sample:
