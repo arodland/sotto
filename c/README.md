@@ -15,7 +15,7 @@ The top-level `make` does the first two steps (see the main README). By hand:
 
 ```sh
 tools/build_codec2.sh          # once: builds build/codec2/src/libcodec2.so
-make -C c                      # needs python3 + numpy to generate the codebook source
+make -C c                      # no Python needed: the generated tables are committed
 make -C c check                # API test against libsotto.so
 c/sotto_enc -16 in.raw out.bit   # 16 kHz, 16-bit mono raw in; 6 bytes per frame out (v3.8)
 c/sotto_dec -16 out.bit dec.raw [good.u8]
@@ -33,12 +33,19 @@ library path. `sotto_format()` names the bitstream the library speaks, for examp
 `make -C c RULE_LAG=5` trades the v3.8 encoder's look-ahead (frames, default 10) for
 latency; `docs/c-port.md` has the table.
 
+`sotto_codebook.c`, `sotto_hiss_tables.c` and `fixed/fx_tables.c` are generated from
+`sim/data/*.npz` by `tools/export_codebook_c.py`, `tools/export_hiss_c.py` and
+`tools/gen_fx_tables.py`, and committed so that the build needs no Python. `make -C c tables`
+rewrites them (needs numpy and scipy); `make -C c check-tables` fails if the committed copies
+differ from what the generators write now. `VARIANT=v3.5` or another `CODEBOOK=` generates its
+own `sotto_codebook_gen.c` at build time, with Python and numpy.
+
 ## Fixed point
 
 `make -C c fixed` builds `c/fixed/sotto_enc_fx` and `c/fixed/sotto_dec_fx`, an integer-only
 encoder and decoder for the radio's DSP with the same API (`c/fixed/sotto_fx_enc.c`,
 `c/fixed/sotto_fx_dec.c`, and the v3.8 16 kHz layer in `c/fixed/sotto_fx_hiss.c`, so the
-tools take `-16` as the float ones do). Their tables come from `tools/gen_fx_tables.py`.
+tools take `-16` as the float ones do). Their tables are the committed `c/fixed/fx_tables.c`, from `tools/gen_fx_tables.py`.
 `tools/check_fx.py` compares them with the float port (`--enc` for the encoder, `--v38` for
 the 16 kHz layer), and `tools/fx_profile.sh` counts their inner loops. Results and the C55x
 measurements are in `docs/c-port.md`.

@@ -10,12 +10,13 @@ Compare sotto with Codec 2 and with Fusion-style protection over a simulated wea
 
 ## Build libsotto
 
-You need a C compiler, `make`, `cmake`, and Python 3 with numpy (the build generates the
-codebook source from `sim/data/`). From the top of the repository:
+You need a C compiler, `make` and `cmake`. Python is not needed: the C tables generated from
+`sim/data/` (codebook, hiss band, fixed-point tables) are committed. From the top of the
+repository:
 
 ```sh
 make                      # Codec 2 fork into build/codec2, then libsotto and the tools in c/
-make check                # C API test, then the Python tests (needs the Python dependencies below)
+make check                # C API test, table check, then the Python tests (needs the Python dependencies below)
 sudo make install         # PREFIX=/usr/local by default; then run sudo ldconfig on Linux
 ```
 
@@ -37,11 +38,15 @@ the API and the input level the codec expects (speech near −26 dBFS).
   Codec 2 already on your system, install to its own prefix, for example
   `make install PREFIX=/opt/sotto`, and set `PKG_CONFIG_PATH=/opt/sotto/lib/pkgconfig` and
   `LD_LIBRARY_PATH=/opt/sotto/lib`.
-- If `python3` has no numpy, point the build at a Python that does: `make PYTHON=.venv/bin/python`.
+- The committed `c/sotto_codebook.c`, `c/sotto_hiss_tables.c` and `c/fixed/fx_tables.c` are
+  written by `tools/export_codebook_c.py`, `tools/export_hiss_c.py` and `tools/gen_fx_tables.py`.
+  After changing a generator or its `.npz` data, run `make tables` (needs numpy and scipy) and
+  commit the result; `make check-tables` (also part of `make check` and CI) fails when they
+  disagree. `make PYTHON=.venv/bin/python` picks the Python for these targets.
 - The library speaks one bitstream, v3.6 by default (`sotto_format()` says which). Its
   encoder is v3.7, which only tracks pitch better, so v3.6 and v3.7 frames are the same
   format. `make clean all VARIANT=v3.6` builds v3.6's encoder, `VARIANT=v3.5` the older
-  bitstream.
+  bitstream (its codebook is generated at build time, so it needs Python with numpy).
 - `make distclean` also removes the Codec 2 build. More detail is in `c/README.md`.
 
 ## Contents
