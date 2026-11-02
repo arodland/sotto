@@ -6,9 +6,10 @@ that the DSP output is bit-identical to the x86 build. Results are in `docs/c-po
 
 | File | What it is |
 |---|---|
-| `bench.c` | Encodes `in.raw` (16-bit, 8 kHz, up to 30 s) and writes `out.bit`, then decodes it and writes `out.raw`, using CIO file I/O on the host. Prints the cycles per frame (mean, minimum, maximum), the state sizes and the stack high-water marks. Build it with `-DFX_PROFILE` for a breakdown by block (the `FX_PROF` marks in the codec), and with `-DFFT_BENCH` for the 512-point FFT alone. |
+| `bench.c` | Encodes `in.raw` (16-bit, 8 kHz, up to 30 s) and writes `out.bit`, then decodes it and writes `out.raw`, using CIO file I/O on the host. Prints the cycles per frame (mean, minimum, maximum), the state sizes and the stack high-water marks. Build it with `-DFX_PROFILE` for a breakdown by block (the `FX_PROF` marks in the codec), with `-DFFT_BENCH` for the 512-point FFT alone, and with `-DBENCH16` to run 16 kHz audio through the v3.8 layer (`out.raw` is then 16 kHz, 5 frames later than `sotto_dec -16`'s output, which removes the layer's delay). |
 | `fxtest.c` | Checksums of the arithmetic primitives in `fx.h` and `fx_math.c`. Its output must match the same file built with gcc. |
-| `bench.cmd` | Linker memory map: 64K words of dual-access RAM (DARAM) and 256K words of single-access RAM (SARAM), as on the C5517. |
+| `bench.cmd` | Linker memory map: 32K words of dual-access RAM (DARAM) and 128K words of single-access RAM (SARAM), as on the C5517. |
+| `bench16.cmd` | The same for `-DBENCH16`: v3.8's states don't fit DARAM, so the heap gets a 64K-word page of SARAM. `c55x_build.sh` picks it. |
 | `bench.js` | Debug Server Scripting (DSS) script: loads the program, enables the profile clock that `clock()` reads, and runs to exit. |
 | `tisim_c55x30_ca.ccxml` | Target configuration: C55xx Rev 3.0 CPU cycle-accurate simulator. |
 | `../../../tools/c55x_build.sh` | Compiles and links (`-O3`, large memory model, `-vcpu:3.3`). |
@@ -18,7 +19,7 @@ that the DSP output is bit-identical to the x86 build. Results are in `docs/c-po
 ```sh
 make -C c fixed                                  # generates c/fixed/fx_tables.c
 sh tools/c55x_build.sh                           # c/fixed/c55x/build/bench.out (v3.8 core, 8 kHz bench)
-sh tools/c55x_build.sh -DBENCH16                 # 16 kHz in.raw through the v3.8 layer (not yet run)
+sh tools/c55x_build.sh -DBENCH16                 # 16 kHz in.raw through the v3.8 layer
 cd c/fixed/c55x/build
 head -c 16000 ../../../../codec/codec2/raw/ve9qrp_10s.raw > in.raw    # 1 s
 /opt/ti/dss.sh 'Z:\path\to\sotto\c\fixed\c55x\bench.js' \

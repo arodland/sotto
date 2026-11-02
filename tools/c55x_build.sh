@@ -27,8 +27,10 @@ for f in $SRCS; do
   OBJS="$OBJS $f.obj"
 done
 "$CGT/bin/cl55" $OPTS -c "$ROOT/c/fixed/c55x/$MAIN.c"
-# the v3.8 layer's states (two cores plus their rings) are allocated from the heap: 0x10000 words
-"$CGT/bin/cl55" $OPTS -z --rom_model --stack_size=0x2000 --sys_stacksize=0x1000 --heap_size=0x10000 -o $MAIN.out -m $MAIN.map -i"$CGT/lib" \
+# the 16 kHz layer's states need a larger heap, outside DARAM (bench16.cmd)
+CMD=bench.cmd HEAP=0x8000                  # heap size in bytes
+case " $* " in *-DBENCH16*) CMD=bench16.cmd HEAP=0x1F000;; esac   # bytes
+"$CGT/bin/cl55" $OPTS -z --rom_model --stack_size=0x2000 --sys_stacksize=0x1000 --heap_size=$HEAP -o $MAIN.out -m $MAIN.map -i"$CGT/lib" \
   $MAIN.obj $OBJS \
-  "$ROOT/c/fixed/c55x/bench.cmd" -lrts55x.lib
+  "$ROOT/c/fixed/c55x/$CMD" -lrts55x.lib
 echo "built $OUT/$MAIN.out"

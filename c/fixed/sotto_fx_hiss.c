@@ -115,7 +115,6 @@ static void ring_check(long j, long oldest, int size, const char *what) {
 #define S5_1 31164                          /* sin(2 pi / 5) */
 #define S5_2 19261                          /* sin(4 pi / 5) */
 
-static int32_t q15(fx_acc a) { return fx_rshr(a, 15); }
 
 /* in place, decimation in time as 5 x 64: output = DFT / 64. Inputs: |re|, |im| <= 2^22,
    so every twiddled sum stays below 2^39 and the output below 2^25. sr, si: 320 words of
@@ -134,9 +133,7 @@ static void fft320(int32_t *re, int32_t *im, int32_t *sr, int32_t *si) {
       int m = n1 * k2;                           /* < 320 */
       int16_t c = fx_cos320[m], s = fx_cos320[(m + 240) % 320];
       int32_t yr = sr[64 * n1 + k2], yi = si[64 * n1 + k2];
-      fx_acc pr = fx_mul32x16(yr, c) + fx_mul32x16(yi, s), pi = fx_mul32x16(yi, c) - fx_mul32x16(yr, s);
-      FX_ACC_CHECK(pr); FX_ACC_CHECK(pi);
-      zr[n1] = q15(pr), zi[n1] = q15(pi);
+      zr[n1] = fx_q15_mac2(yr, c, yi, s), zi[n1] = fx_q15_mac2(yi, c, -yr, s);   /* |c| + |s| < 46342; s may be -32768 */
     }
     t1r = zr[1] + zr[4], t1i = zi[1] + zi[4];
     t2r = zr[2] + zr[3], t2i = zi[2] + zi[3];
@@ -144,14 +141,14 @@ static void fft320(int32_t *re, int32_t *im, int32_t *sr, int32_t *si) {
     t4r = zr[2] - zr[3], t4i = zi[2] - zi[3];
     re[k2] = zr[0] + t1r + t2r;
     im[k2] = zi[0] + t1i + t2i;
-    a1r = zr[0] + q15(fx_mul32x16(t1r, C5_1) + fx_mul32x16(t2r, C5_2));
-    a1i = zi[0] + q15(fx_mul32x16(t1i, C5_1) + fx_mul32x16(t2i, C5_2));
-    a2r = zr[0] + q15(fx_mul32x16(t1r, C5_2) + fx_mul32x16(t2r, C5_1));
-    a2i = zi[0] + q15(fx_mul32x16(t1i, C5_2) + fx_mul32x16(t2i, C5_1));
-    b1r = q15(fx_mul32x16(t3r, S5_1) + fx_mul32x16(t4r, S5_2));
-    b1i = q15(fx_mul32x16(t3i, S5_1) + fx_mul32x16(t4i, S5_2));
-    b2r = q15(fx_mul32x16(t3r, S5_2) - fx_mul32x16(t4r, S5_1));
-    b2i = q15(fx_mul32x16(t3i, S5_2) - fx_mul32x16(t4i, S5_1));
+    a1r = zr[0] + fx_q15_mac2(t1r, C5_1, t2r, C5_2);   /* fx_q15_mac2 = q15 of the two products, exactly */
+    a1i = zi[0] + fx_q15_mac2(t1i, C5_1, t2i, C5_2);
+    a2r = zr[0] + fx_q15_mac2(t1r, C5_2, t2r, C5_1);
+    a2i = zi[0] + fx_q15_mac2(t1i, C5_2, t2i, C5_1);
+    b1r = fx_q15_mac2(t3r, S5_1, t4r, S5_2);
+    b1i = fx_q15_mac2(t3i, S5_1, t4i, S5_2);
+    b2r = fx_q15_mac2(t3r, S5_2, t4r, -S5_1);
+    b2i = fx_q15_mac2(t3i, S5_2, t4i, -S5_1);
     /* X1 = a1 - j b1, X4 = a1 + j b1, X2 = a2 - j b2, X3 = a2 + j b2 */
     re[64 + k2] = a1r + b1i, im[64 + k2] = a1i - b1r;
     re[256 + k2] = a1r - b1i, im[256 + k2] = a1i + b1r;
@@ -400,10 +397,13 @@ static void dec_advance_y16(struct sotto_dec16 *d) {
     int32_t n = d->y16n / 2;
     int16_t x[21], y[2];
     int i;
-    for (i = 0; i < 21; i++) {
-      int32_t j = n - 10 + i;
-      x[i] = j < 0 ? 0 : d->y8[j & (DY8 - 1)];
-    }
+    if (n >= 10)
+      for (i = 0; i < 21; i++) x[i] = d->y8[(n - 10 + i) & (DY8 - 1)];
+    else
+      for (i = 0; i < 21; i++) {
+        int32_t j = n - 10 + i;
+        x[i] = j < 0 ? 0 : d->y8[j & (DY8 - 1)];
+      }
     up2(x, y);
     RING_CHECK(d->y16n + 1, d->outn < HH * d->ta ? d->outn : HH * d->ta, DY16, "y16");
     d->y16[d->y16n & (DY16 - 1)] = y[0];
@@ -549,7 +549,9 @@ static void dec_stage_b(struct sotto_dec16 *d, int32_t t) {
 /* run stages A and B as far as the inputs allow */
 static void dec_run(struct sotto_dec16 *d) {
   int32_t nlast, tmax;
+  FX_PROF(25, 1);
   dec_advance_y16(d);
+  FX_PROF(25, 0);
   nlast = d->nend >= 0 ? d->nend - 1 : d->n - 1;          /* last codec frame received */
   tmax = d->nend >= 0 ? 2 * d->nend - 2 : INT32_MAX;       /* nfr - 1 */
   for (;;) {
@@ -559,14 +561,18 @@ static void dec_run(struct sotto_dec16 *d) {
     if (d->nend < 0 && (k > d->kmax || f + 1 > nlast)) break;
     if (d->nend >= 0 && k > d->kmax) k = d->kmax;
     if (k > d->kmax) break;
+    FX_PROF(26, 1);
     dec_stage_a(d, t);
+    FX_PROF(26, 0);
     d->ta++;
   }
   for (;;) {
     int32_t t = d->tb;
     if (t >= d->ta) break;
     if (d->nend < 0 && t + BRIDGE >= d->ta) break;
+    FX_PROF(27, 1);
     dec_stage_b(d, t);
+    FX_PROF(27, 0);
     d->tb++;
   }
 }
@@ -605,7 +611,9 @@ void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PE
   short y8[N8];
   int32_t n = d->n;
   const fx_dec_info_t *info;
+  FX_PROF(24, 1);
   sotto_decode(d->core, in, good, y8);
+  FX_PROF(24, 0);
   info = sotto_dec_info(d->core);
   dec_take_core(d, y8, n, n >= 1);           /* frame n - 1 was synthesised */
   d->code[n % GRING] = (int16_t)frame_code(info->b2);
@@ -722,12 +730,15 @@ unsigned sotto_fx_enc16_bytes(void) { return (unsigned)sizeof(struct sotto_enc16
 static int enc_above_pct(struct sotto_enc16 *e, int32_t v) {
   int above = 0;
   if (e->npct) {
-    int32_t n = e->npct, i = 6 * n / 10, frac10 = 6 * n - 10 * i, a[2];
+    int32_t n = e->npct, i = 6 * n / 10, frac10 = 6 * n - 10 * i, a[2], lo = 0, hi = n;
     int r;
+    while (lo < hi) {                                       /* below = stored values < v (sorted) */
+      int32_t mid = lo + (hi - lo) / 2;
+      if (e->pct[mid] < v) lo = mid + 1; else hi = mid;
+    }
     for (r = 0; r < 2; r++) {
-      int32_t rank = i + r, below = 0;
+      int32_t rank = i + r, below = lo;
       if (rank > n) rank = n;
-      while (below < n && e->pct[below] < v) below++;      /* stored values < v */
       a[r] = rank < below ? e->pct[rank] : rank == below ? v : e->pct[rank - 1];
     }
     if (i + 1 <= n) above = (fx_acc)(v - a[0]) * 10 > (fx_acc)frac10 * (a[1] - a[0]);
@@ -901,7 +912,9 @@ static void enc_take_local(struct sotto_enc16 *e, const short *y8, int32_t g, in
 /* feed frame g (final voicing) to the local decoder: its output is frame g - 1 */
 static void enc_feed_local(struct sotto_enc16 *e, int32_t g) {
   short y8[N8];
+  FX_PROF(20, 1);
   sotto_decode(e->ldec, e->rf[g % FRING].bits, 1, y8);
+  FX_PROF(20, 0);
   enc_take_local(e, y8, g, g >= 1);
 }
 
@@ -923,10 +936,13 @@ static void enc_advance_local(struct sotto_enc16 *e) {
       int32_t n = e->ly16n / 2;
       int16_t x[21], y[2];
       int i;
-      for (i = 0; i < 21; i++) {
-        int32_t j = n - 10 + i;
-        x[i] = j < 0 ? 0 : e->ly8[j & (EX8 - 1)];
-      }
+      if (n >= 10)
+        for (i = 0; i < 21; i++) x[i] = e->ly8[(n - 10 + i) & (EX8 - 1)];
+      else
+        for (i = 0; i < 21; i++) {
+          int32_t j = n - 10 + i;
+          x[i] = j < 0 ? 0 : e->ly8[j & (EX8 - 1)];
+        }
       up2(x, y);
       RING_CHECK(e->ly16n + 1, HH * e->lnst, LY16, "ly16");
       e->ly16[e->ly16n & (LY16 - 1)] = y[0];
@@ -999,8 +1015,12 @@ static void enc_finish(struct sotto_enc16 *e, int32_t g) {
 static void enc_run(struct sotto_enc16 *e) {
   fx_enc_frame_t f;
   int32_t nfinal, nfinish;
+  FX_PROF(23, 1);
   while (sotto_enc_pop_frame(e->core, &f)) e->rf[e->nraw++ % FRING].raw = f;
+  FX_PROF(23, 0);
+  FX_PROF(19, 1);
   enc_rules(e);
+  FX_PROF(19, 0);
   nfinal = e->nend >= 0 ? e->nraw : (e->nraw - SOTTO_RULE_LAG > 0 ? e->nraw - SOTTO_RULE_LAG : 0);
   while (e->nfed < nfinal) enc_feed_local(e, e->nfed++);
   if (e->nend >= 0 && e->nfed == e->nend && e->ly8n < N8 * e->nend + 10) {
@@ -1009,13 +1029,17 @@ static void enc_run(struct sotto_enc16 *e) {
     enc_take_local(e, y8, e->nend, 1);
     while (e->ly8n < N8 * e->nend + 10) e->ly8[e->ly8n++ & (EX8 - 1)] = 0;
   }
+  FX_PROF(21, 1);
   enc_advance_local(e);
+  FX_PROF(21, 0);
   e->nfinal = nfinal;
   /* a frame is finished one frame after its voicing: its index needs its own decoded
      envelope (synthesised when the next frame was fed), the side channel the local
      output up to the window boundary */
   nfinish = e->nend >= 0 ? e->nend : (nfinal - 1 > 0 ? nfinal - 1 : 0);
+  FX_PROF(22, 1);
   while (e->nemit < nfinish && e->qn < OUTQ) enc_finish(e, e->nemit++);
+  FX_PROF(22, 0);
 }
 
 static int enc_pop(struct sotto_enc16 *e, unsigned char *out) {
@@ -1035,17 +1059,28 @@ static void enc_decimate_block(struct sotto_enc16 *e, int32_t limit) {
   for (i = 0; i < 80; i++) {
     int16_t x[NTAPS];
     int32_t m = 2 * (n0 + i) - 20;
-    for (j = 0; j < NTAPS; j++) x[j] = m + j < 0 || m + j >= limit ? 0 : e->x16[(m + j) & (EX16 - 1)];
+    if (m >= 0 && m + NTAPS <= limit)                      /* the usual case, without tests */
+      for (j = 0; j < NTAPS; j++) x[j] = e->x16[(m + j) & (EX16 - 1)];
+    else
+      for (j = 0; j < NTAPS; j++) x[j] = m + j < 0 || m + j >= limit ? 0 : e->x16[(m + j) & (EX16 - 1)];
     x8[i] = down2(x);
   }
+  FX_PROF(17, 1);
   sotto_enc_analyse_block(e->core, x8);
+  FX_PROF(17, 0);
   e->nblk++;
 }
 
 /* decimate and analyse every 10 ms block whose 20 input samples of look-ahead are in */
 static void enc_analyse(struct sotto_enc16 *e) {
-  while (2 * (80 * e->nblk + 79) + 20 < e->x16n) enc_decimate_block(e, INT32_MAX);
+  while (2 * (80 * e->nblk + 79) + 20 < e->x16n) {
+    FX_PROF(16, 1);
+    enc_decimate_block(e, INT32_MAX);
+    FX_PROF(16, 0);
+  }
+  FX_PROF(18, 1);
   while (HH * e->nst + HN <= e->x16n) enc_input_stft(e, e->nst++);
+  FX_PROF(18, 0);
 }
 
 int sotto_encode16(struct sotto_enc16 *e, const short speech[SOTTO_SAMPLES_PER_FRAME_16K],
