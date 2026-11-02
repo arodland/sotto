@@ -117,6 +117,10 @@ Spectrograms: `/mnt/project-files/vocoder/hiss-ceiling/spectrograms.png`.
 
 Narrowband PESQ is unchanged (the ceiling only touches 4-8 kHz).
 
+**Result (Jeff, 2026-11-02):** `sotto-ab-14 1:B 2:B 3:A 4:A 5:= 6:B 7:B 8:A`: the ceiling won all
+7 pairs, null pair correct. Jeff: the change "really did seem to cut down on the jarring high
+frequency components. It just needs further refinement."
+
 ## Getting the two numbers to the decoder (if round 14 wins)
 
 The side channel carries one 16-bit message (12 payload + CRC-4) per 2 s window in the UU
