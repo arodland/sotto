@@ -448,12 +448,15 @@ states.
 x86 build and the DSP build identical to each other (checked on the 8 kHz and 16 kHz runs);
 every change but one also keeps the bits of PR #18.
 
-| | PR #18: mean / worst frame | Now: mean / worst frame |
+| | Before (PR #11 for 8 kHz, PR #18 for 16 kHz): mean / worst frame | Now: mean / worst frame |
 |---|---:|---:|
-| v3.7 encoder (8 kHz, ve9qrp 10 s) | 188 / 212 | **@@E8@@** |
-| v3.7 decoder | 36.7 / 43.9 | **@@D8@@** |
-| v3.8 encoder (16 kHz, LibriSpeech 198, 13.9 s) | 288 / 328 | **@@E16@@** |
-| v3.8 decoder | 92.3 / 106.8 | **@@D16@@** |
+| v3.7 encoder (8 kHz, ve9qrp 10 s) | 188 / 212 | **114.9 / 127.9** |
+| v3.7 decoder | 36.7 / 43.9 | **29.7 / 36.9** |
+| v3.8 encoder (16 kHz, LibriSpeech 198, 13.9 s) | 288 / 328 | **181.1 / 209.3** |
+| v3.8 decoder | 92.3 / 106.8 | **67.3 / 81.7** |
+
+The 8 kHz encoder now fits with about 70 MHz to spare at its worst frame. The v3.8 encoder
+still doesn't: its worst frame needs 209 MHz of the 200, before the modem and FEC.
 
 **What changed.** Encoder MHz on the 1 s 8 kHz profile (the profiling build's timer calls add
 a few percent), measured after each step:
@@ -481,7 +484,7 @@ PR #18 and this round, side by side) is for listening.
 **Memory.** The tables grow by 37 KB: 29 KB for the unpacked codebook and 8 KB for the
 minimum-phase tables. `C55X_PACKED=1` (`tools/c55x_build.sh`) keeps the packed codebook and
 its C search, which gives the same bits more slowly. With v3.8 the total is
-about @@RAM@@ of the C5517's 320 KB.
+about 250 KB of the C5517's 320 KB (`-DFX_PCT_MAX=3000` still saves 36 KB).
 
 **Where the encoder's time goes now** (8 kHz, 1 s, profiling build, MHz): codebook search 21
 (of which the dot products 10), pitch refinement 29 (of which the 2^48 reciprocals 8),
