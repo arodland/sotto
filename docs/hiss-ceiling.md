@@ -188,3 +188,36 @@ dropped.
 Listening round 15: https://claude.ai/artifact/2uqwxnKvix9sAszMRTjtwW,
 `tools/listening/render_ab15.py`, key `ab-15-key.json`. v3.8 vs s model (7 pairs, including 777),
 s model vs + real-noise texture (3), null pair 4. Each window is the 8 s with the most s frames.
+
+**Round 15 result (Jeff, 2026-11-02 19:31):** `sotto-ab-15 1:= 2:= 3:- ... 8:= ...`: no
+difference heard ("there's really no difference here"). The finer s spectrum is not what sticks
+out. Jeff: maybe the non-s sibilants are the ones that need the band-limited treatment.
+
+## Non-s fricatives (round 16)
+
+v3.8 against the original, 11 normal test voices, per kind of sound (`classes.py`, frames
+classified on the original; decoded minus original, dB, per band):
+
+| | 1-2k | 2-3k | 3-4k | 4-5k | 5-6k | 6-7k | 7-8k |
+|---|---|---|---|---|---|---|---|
+| s (4-8 kHz dominant) | -4.3 | -2.1 | -2.2 | -1.6 | +0.1 | -0.1 | -1.6 |
+| sh (2-4 kHz dominant) | -1.6 | -0.2 | -1.3 | -0.1 | -0.3 | +0.7 | -0.3 |
+| f/th (weak, flat) | -1.4 | +1.5 | +0.9 | -0.4 | -0.1 | +1.1 | -0.9 |
+| z/v/zh (voiced or mixed) | -2.8 | -1.6 | -1.9 | -5.8 | -6.4 | -6.1 | -7.5 |
+| t/k/p bursts | -2.2 | -1.6 | -1.5 | -0.6 | -1.0 | +0.3 | -2.0 |
+| vowels | -1.2 | -2.1 | -4.5 | -10.5 | -12.5 | -12.0 | -13.0 |
+| pauses | -0.3 | +1.1 | +0.9 | +1.1 | +1.5 | +2.1 | +0.4 |
+
+On average none of the non-s fricatives is too bright; z/v/zh are short of hiss. Onsets and
+offsets track the original within ~2 dB in 5 ms steps (`edges.py`). Jeff's bench microphones
+show no cliff (no ceiling found).
+
+To test the idea by ear anyway, `nons_cap.py` is a decoder-only rule: an unvoiced, mixed or
+edge frame whose decoded 4-8 kHz sits more than 3 dB under its 2-4 kHz is taken as a non-s
+fricative, and its high band loses 24 dB/kHz above 5 kHz ("soft") or 60 dB/kHz above 4.5 kHz
+("hard"), at most 40 dB, smoothed over 3 frames. It leaves s frames and vowels alone
+(`nons_eval.py`), and cuts sh by 4-14 dB above 5 kHz and z by 3-10 dB.
+
+Round 16: https://claude.ai/artifact/1o5Xr8B8GVH7QiPNr2romy, `tools/listening/render_ab16.py`,
+key `ab-16-key.json`. v3.8 vs soft (4 pairs), v3.8 vs hard (4), null pair 5. Each window is
+the 8 s with the most sh/f/th/z frames.
