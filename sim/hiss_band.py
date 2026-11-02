@@ -228,7 +228,7 @@ class SottoV38(vl.SottoV37):
     UU_WO_GUARD = True      # UU frames' pitch field is a hiss index: never interpolate from it
 
 
-    def __init__(self, model=MODEL, vowel=None, voiced_trim=0.0, texture="noise", pulse=1.0, vowel_shape=False, smooth_ms=30.0, peak_hz=None, peak_db=9.0, peak_bw=250.0, peak_floor=4.0, spk_pc=None, blend=False, whisper=False, release_ms=20.0, vsmooth=False, keep_mixed=False, sib_db=None, sib_voiced=False, **kw):
+    def __init__(self, model=MODEL, vowel=None, voiced_trim=0.0, texture="noise", pulse=1.0, vowel_shape=False, smooth_ms=30.0, peak_hz=None, peak_db=9.0, peak_bw=250.0, peak_floor=4.0, spk_pc=None, blend=False, whisper=False, release_ms=20.0, vsmooth=False, keep_mixed=False, sib_db=None, sib_voiced=False, whisper_lag=None, **kw):
         """vowel: None (no high band in voiced frames), "guess" (voiced frames at the guess
         - 3 dB) or "adaptive" (voiced and mixed frames at the guess + a per-speaker offset
         sent one bit per UU frame; the UU index is then 6 bits)."""
@@ -241,6 +241,7 @@ class SottoV38(vl.SottoV37):
                                               # real harmonics and a wandering pitch) as unvoiced
         self.sib_db = sib_db                  # encoder: M/edge frames with 4-8 kHz > 0-1 kHz + sib_db -> UU
         self.sib_voiced = sib_voiced          # encoder: the sibilant rule also recodes VV frames (z, zh)
+        self.whisper_lag = whisper_lag        # encoder: whisper rule look-ahead in frames (C port); None = whole run
         self.keep_mixed = keep_mixed          # blend: mixed frames keep the -3 dB guessed hiss
         self.release_ms = release_ms          # blend: consonant hiss hold (0 = none)
         self.vsmooth = vsmooth                # encoder: no V/M flutter or U blips inside voiced runs
@@ -359,7 +360,7 @@ class SottoV38(vl.SottoV37):
         bits = vl.SottoV37.encode(self, x8)
         self._onsets(x8, bits)
         if self.whisper:
-            self._whisper(x8, bits)
+            self._whisper(x8, bits, lag=self.whisper_lag)
         if self.vsmooth:
             self._vsmooth(bits)
         P = np.abs(stft(x16)) ** 2
@@ -432,12 +433,14 @@ class SottoV38(vl.SottoV37):
         self._feat_key, self._feat = key, (snr, jt)
         return self._feat
 
-    def _whisper(self, x8, bits, min_frames=10, snr_db=6.0, jit=0.025):
+    def _whisper(self, x8, bits, min_frames=10, snr_db=6.0, jit=0.025, lag=None):
         """A whispered vowel has no glottal pulses, but the tracker still finds a 'pitch' and
         v3.7 sends it as mixed: harmonics below 1 kHz at a wandering pitch, heard as a low
         warble. Runs of >= `min_frames` mixed/edge frames whose median harmonic SNR below
         1 kHz is < `snr_db` and whose pitch moves > `jit` (log ratio per 10 ms, median) are
-        sent as UU instead. Real voiced runs: SNR ~11-16 dB, jitter ~0.003-0.016."""
+        sent as UU instead. Real voiced runs: SNR ~11-16 dB, jitter ~0.003-0.016.
+        lag: judge a run on its first lag + 1 frames only, as the streaming C encoder does
+        (SOTTO_RULE_LAG); None judges the whole run."""
         snr, jt = self._features(x8)
         n = len(snr)
         code = bits[:, 0] * 2 + bits[:, 1]
@@ -450,7 +453,7 @@ class SottoV38(vl.SottoV37):
             while h < len(bits) and code[h] in (2, 3):
                 h += 1
             if h - g >= min_frames:
-                sl = slice(2 * g, min(2 * h, n))
+                sl = slice(2 * g, min(2 * h if lag is None else 2 * min(h, g + lag + 1), n))
                 s_, j_ = snr[sl], jt[sl]
                 if np.nanmedian(s_) < snr_db and np.median(j_) > jit:
                     bits[g:h, 0] = bits[g:h, 1] = 0

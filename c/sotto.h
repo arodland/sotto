@@ -28,6 +28,7 @@ extern "C" {
 #endif
 
 #define SOTTO_SAMPLES_PER_FRAME 160
+#define SOTTO_SAMPLES_PER_FRAME_16K 320     /* v3.8: 16 kHz in and out */
 #define SOTTO_BITS_PER_FRAME 48
 #define SOTTO_BYTES_PER_FRAME 6
 #define SOTTO_SAMPLE_RATE 8000
@@ -91,6 +92,33 @@ SOTTO_API void sotto_dec_destroy(struct sotto_dec *d);
 SOTTO_API void sotto_decode(struct sotto_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
                   short speech[SOTTO_SAMPLES_PER_FRAME]);
 SOTTO_API void sotto_dec_flush(struct sotto_dec *d, short speech[SOTTO_SAMPLES_PER_FRAME]);
+
+/* ---- v3.8: 16 kHz, with the 4-8 kHz hiss band (builds with VARIANT=v3.8, the default) ----
+ * Same 48-bit frame; a v3.7 decoder plays a v3.8 stream without the high band. The 8 kHz
+ * functions above still work in a v3.8 build: sotto_encode is the plain v3.7 encoder, and
+ * sotto_decode decodes v3.7 or v3.8 streams at 8 kHz.
+ *
+ * Encoder: feed 320 samples (20 ms at 16 kHz) per call. Frames come out about
+ * 7 + SOTTO_RULE_LAG + 1 calls after the speech went in (the core's 90 ms, 10 ms for the
+ * resampler, then SOTTO_RULE_LAG frames of look-ahead for the voicing rules and one more for
+ * the index); call sotto_enc16_flush until it returns 0 at the end.
+ * Decoder: one call per received frame; each returns 320 samples SOTTO_DEC16_DELAY_FRAMES
+ * frames behind the encoder's input (the first calls return silence). Call sotto_dec16_flush
+ * until it returns 0 to drain the last frames. */
+#define SOTTO_DEC16_DELAY_FRAMES 5
+
+struct sotto_enc16;
+struct sotto_dec16;
+SOTTO_API struct sotto_enc16 *sotto_enc16_create(void);
+SOTTO_API void sotto_enc16_destroy(struct sotto_enc16 *e);
+SOTTO_API int sotto_encode16(struct sotto_enc16 *e, const short speech[SOTTO_SAMPLES_PER_FRAME_16K],
+                             unsigned char out[SOTTO_BYTES_PER_FRAME]);
+SOTTO_API int sotto_enc16_flush(struct sotto_enc16 *e, unsigned char out[SOTTO_BYTES_PER_FRAME]);
+SOTTO_API struct sotto_dec16 *sotto_dec16_create(void);
+SOTTO_API void sotto_dec16_destroy(struct sotto_dec16 *d);
+SOTTO_API void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
+                              short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
+SOTTO_API int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
 
 #ifdef __cplusplus
 }
