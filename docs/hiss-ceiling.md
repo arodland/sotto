@@ -274,3 +274,10 @@ Side-by-side page https://claude.ai/artifact/N1PnNCzuRPsACvQPUqjfks (labelled, o
 the two MP3-cut voices, 2 m and 70 cm fading): `tools/listening/render_v39_compare.py`, built
 with `tools/listening/build_compare.py`, key `cmp-v39-key.json`. On the low-passed rows WB-PESQ rises 0.15-0.18;
 on the MP3-cut rows it is flat. The C port and the C55x cost wait for Jeff's listen.
+
+**Side-by-side result (Jeff, 2026-11-02 21:01):** `sotto-cmp-v39 1:8 2:9 3:9 4:= 5:9 6:9 7:= 8:8
+9:8 10:= 11:= 12:9 13:9 14:= 15:9 16:9 17:=`. v3.9 8, v3.8 3, ties 6. Rows with a ceiling (two
+low-passed, two MP3-cut): v3.9 3, tie 1. Clean voices (cap only): v3.9 4 (6313, 3536, p047, p051),
+v3.8 3 (8842, 251, 2428), ties 4. Fading: v3.9 1, tie 1. The capped frames' 5-8 kHz level lands
+4-8 dB under the original on winners and losers alike, so level alone doesn't explain the three
+v3.8 wins.
