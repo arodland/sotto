@@ -237,6 +237,24 @@ static inline int32_t shift(int32_t x, int s) { return s > 0 ? fx_rshr32(x, s) :
    rounded right by 15 (c55x/nlp_dft.asm on the C5517: circular addressing, dual MAC) */
 #if defined(__TMS320C55X__) && !defined(FX_NLP_DFT_C)
 void fx_nlp_dft(const int16_t *x, const int16_t *cos512, int32_t *rr, int32_t *qq, int k0, int k1);
+#elif defined(FX_ARM_DSP) && !defined(FX_NLP_DFT_C)
+/* x[n] in both halves against cos | sin (fx_cs512): SMLALD sums r + q, SMLSLD r - q */
+static void fx_nlp_dft(const int16_t *x, const int16_t *cos512, int32_t *rr, int32_t *qq, int k0, int k1) {
+  const uint32_t *cs = fx_cs512();
+  uint32_t xx[64];
+  int k, n;
+  (void)cos512;
+  for (n = 0; n < 64; n++) xx[n] = (uint32_t)(uint16_t)x[n] * 0x10001u;
+  for (k = k0; k < k1; k++) {
+    fx_acc sum = 0, dif = 0;
+    unsigned i = 0;
+    for (n = 0; n < 64; n++, i = (i + (unsigned)k) & 511u) {
+      sum = fx_smlald(xx[n], cs[i], sum);
+      dif = fx_smlsld(xx[n], cs[i], dif);
+    }
+    rr[k] = fx_rshr((sum + dif) >> 1, 15), qq[k] = fx_rshr((sum - dif) >> 1, 15);
+  }
+}
 #else
 static void fx_nlp_dft(const int16_t *x, const int16_t *cos512, int32_t *rr, int32_t *qq, int k0, int k1) {
   int k, n;

@@ -263,8 +263,9 @@ def test_fixed_point_encoder_matches_float():
 @pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "c", "fixed", "sotto_enc_fx_arm")),
                     reason="Cortex-M4 code path not built (make -C c fixed)")
 def test_fixed_point_arm_path_is_bit_exact():
-    """The Cortex-M4 path (FX_ARM_DSP: direct 32 x 32 products, unpacked codebook searched
-    with SMLAD, emulated here) gives the same bits and the same samples as the C55x-shaped C."""
+    """The Cortex-M4 path (FX_ARM_DSP: direct 32 x 32 products, codebook search and dot
+    products with SMLAD/SMLALD, emulated here) gives the same bits and the same samples as
+    the C55x-shaped C, at 8 kHz and at 16 kHz (v3.8)."""
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import check_fx
     x16 = np.round(_ve9qrp(4.0) * 32767).astype(np.int16)[:4 * FS // 160 * 160]
@@ -275,6 +276,15 @@ def test_fixed_point_arm_path_is_bit_exact():
     good[60:64] = False
     assert np.array_equal(check_fx.run_dec(os.path.join(fx, "sotto_dec_fx"), b, good),
                           check_fx.run_dec(os.path.join(fx, "sotto_dec_fx_arm"), b, good))
+    # v3.8 at 16 kHz (SMLALD resamplers): the same speech with hiss above 4 kHz
+    from scipy import signal
+    hiss = signal.sosfilt(signal.butter(6, 4500, "highpass", fs=16000, output="sos"),
+                          np.random.default_rng(1).standard_normal(2 * len(x16)))
+    y = np.clip(signal.resample_poly(x16, 2, 1) + 1500 * hiss, -32767, 32767).astype(np.int16)
+    b = check_fx.run_enc(os.path.join(fx, "sotto_enc_fx"), y, k16=True)
+    assert np.array_equal(b, check_fx.run_enc(os.path.join(fx, "sotto_enc_fx_arm"), y, k16=True))
+    assert np.array_equal(check_fx.run_dec(os.path.join(fx, "sotto_dec_fx"), b, k16=True),
+                          check_fx.run_dec(os.path.join(fx, "sotto_dec_fx_arm"), b, k16=True))
 
 def test_v38_unvoiced_frames_decode_at_50_hz_spacing():
     """v3.8 carries a hiss index in the pitch field of all-unvoiced frames; the decoder must

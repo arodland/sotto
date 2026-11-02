@@ -572,7 +572,8 @@ encoder still runs its own copy of the decoder for the v3.8 layer (22 MHz now).
 
 ## Fixed point on the Cortex-M4 (TYT MD-UV380/390)
 
-*2026-11-02, after PR #21.* Can an OpenRTX radio run the v3.7 encoder? The TYT MD-UV380/390
+*2026-11-02, after PR #21; v3.8 and the SMLALD round after PR #22.* Can an OpenRTX radio run
+the v3.7 encoder, and v3.8? The TYT MD-UV380/390
 (also Module17 and the CS7000) runs an STM32F405: a Cortex-M4 at 168 MHz with 192 KB of RAM
 and 1 MB of flash. OpenRTX already runs Codec 2 3200 there, through one file
 (`openrtx/src/core/audio_codec.c`, 160 samples at 8 kHz a frame, the same framing as sotto).
@@ -585,21 +586,23 @@ against real hardware. The compiler is clang, while OpenRTX uses GCC.
 |---|---:|---:|
 | main after PR #21, -O2 (ve9qrp 10 s) | 125.1 / 134.7 | 27.5 / 35.4 |
 | main after PR #21, -Os | 171.8 / 181.5 | 27.5 / 35.7 |
-| **Now, -O2** (four clips: ve9qrp, david4, vk2tpm, kristoff) | **85.0-87.0 / 91.6-92.6** | 22.7-27.4 / 34.3-42.5 |
-| **Now, -Os** | **107.2-109.3 / 114.5-115.3** | 22.6-27.4 / 34.6-43.2 |
-| Flash wait states, if the tables stay in flash (5 at 168 MHz, ART accelerator modelled) | +14.2 / +15.0 | |
+| PR #22, -O2 (four clips: ve9qrp, david4, vk2tpm, kristoff) | 85.0-87.0 / 91.6-92.6 | 22.7-27.4 / 34.3-42.5 |
+| PR #22, -Os | 107.2-109.3 / 114.5-115.3 | 22.6-27.4 / 34.6-43.2 |
+| **Now, -O2** (the same four clips) | **78.3-80.4 / 85.0-86.0** | 13.5-15.7 / 18.9-22.8 |
+| **Now, -Os** | **104.4-106.6 / 111.7-112.6** | 14.1-16.1 / 19.0-22.6 |
+| Flash wait states, if the tables stay in flash (5 at 168 MHz, ART accelerator modelled; PR #22 build) | +14.2 / +15.0 | |
 
 In every run the M4 build's bitstream equals the x86 build's (`--bits`, then `cmp`). The RAM
-is 35 KB of encoder and decoder state plus 5-8 KB of stack. The flash is 129 KB at -O2 and
+is 35 KB of encoder and decoder state plus 5-8 KB of stack. The flash is 131 KB at -O2 and
 102 KB at -Os, of which the unpacked codebook is about 60 KB.
 
 **Verdict:** the encoder fits. Its worst frame at -O2 with the tables in flash is about
-107 MHz of the 168, leaving about 60 MHz for the M17 modulator, audio DMA and the UI while
-transmitting. At -Os it is about 130 MHz, which is tighter, so the sotto files should be
+100 MHz of the 168, leaving about 65 MHz for the M17 modulator, audio DMA and the UI while
+transmitting. At -Os it is about 127 MHz, which is tighter, so the sotto files should be
 built -O2 (a per-file flag in OpenRTX's meson build). For scale, the M17 project timed
 Codec 2 3200's encoder at about 7 ms a frame, 59 MHz, on the same chip with GCC -Os
-(m17project.org, 2025-12-29). sotto's encoder is about 1.5 to 1.8 times that. The decoder,
-at 35-43 MHz worst, is not a concern.
+(m17project.org, 2025-12-29). sotto's encoder is about 1.4 to 1.7 times that. The decoder,
+at 19-23 MHz worst, is not a concern.
 
 **What carried over from the C55x rounds.** The algorithmic changes in C carried over as they
 were: the spectrum ring instead of a second FFT, and the table-seeded reciprocal. They are already in the "before" row. The nine C55x assembly kernels did
@@ -613,19 +616,51 @@ in C, both bit-exact:
 | main after PR #21 | 125 |
 | `FX_WIDE_MUL`: `fx_mul32x16`, `fx_sq32`, `fx_mul32`, `fx_q15_mac2` and the FFT butterfly take the products directly; the same integers for the ranges the split forms already require (`FX_HI` still checks them under `FX_CHECK`) | about 104 |
 | The unpacked codebook (`FX_CB_UNPACKED`, as on the C55x) searched with SMLAD, two 16 x 16 products per instruction, two vectors at a time so each pair of residual values is loaded once (`fx_cb_dots`) | 85 |
+| The NLP pitch DFT with SMLALD and SMLSLD: each sample in both halves of a word against a cos and sin pair from one table word (`fx_cs512`), so one load and two instructions give r + q and r - q (`fx_nlp_dft`) | 78 |
+| The decoder (and the encoder's local decoder in v3.8): the overlap-add sums with the harmonics packed as re and -im against the same table (`fx_oa_pair_ri`), and the minimum-phase sums as SMLALD dot products (`fx_dot16`) | decoder 27 to 15 |
 
 Both are switched on by `FX_ARM_DSP`, which `fx.h` defines for any ARM target with the DSP
 extension. `-DFX_ARM_DSP` builds the same code on x86 with SMLAD in plain C, and
 `make -C c fixed` now also builds `sotto_enc_fx_arm` / `sotto_dec_fx_arm` that way.
 `tests/test_vocoder.py::test_fixed_point_arm_path_is_bit_exact` checks them against the
-default build. They also gave the same bits and samples at 16 kHz (v3.8) with `FX_CHECK`.
+default build, at 8 kHz and 16 kHz (v3.8).
 
-**Where the encoder's 85 MHz goes now** (-O2, MHz with inlining, so callers include their
-inlined callees): the frame decision with the codebook search 24.4, the 10 ms analysis
-(spectrum, NLP pitch DFT, harmonic sums) 21.6, the pitch-track costs 10.7, the FFT 6.6, then
-many small items (reciprocals, harmonic fit, bin loops, 64-bit divisions) of 1-2 MHz each. A
-`-fno-inline` profile names the next candidates: the NLP DFT (12 MHz; SMLALD on sample pairs),
-the harmonic-sum loop (7 MHz) and the butterflies (8 MHz). None is needed to fit.
+**Where the encoder's 78 MHz goes now** (-O2, MHz with inlining, so callers include their
+inlined callees): the frame decision with the codebook search 23, the 10 ms analysis
+(spectrum, NLP pitch DFT, harmonic sums) 15, the pitch-track costs 9, the FFT 6, then many
+small items (reciprocals, harmonic fit, bin loops, 64-bit divisions) of 1-2 MHz each. The
+codebook search is already two products a cycle; the next candidates are the harmonic-sum
+loop (5 MHz) and the butterflies (8 MHz). None is needed to fit.
+
+### v3.8 (16 kHz) on the Cortex-M4
+
+`VARIANT=v3.8 sh tools/cm4_build.sh` adds the hiss-band layer (`sotto_fx_hiss.c`) with 30 s
+of percentile history (`FX_PCT_MAX=3000`, as on the C55x bench), and `run.py --16k` drives
+`sotto_encode16` / `sotto_decode16`. Two clips at 16 kHz: LibriSpeech 198-209-0000 (13.9 s,
+the C55x bench clip) and p020 (11.5 s, a whisper bench clip).
+
+| v3.8, 16 kHz, MHz mean / worst frame | Encoder | Decoder |
+|---|---:|---:|
+| main after PR #22, -O2 | 138.0-141.5 / 163.0-163.7 | 48.4-50.6 / 64.3 |
+| **Now, -O2** | **116.1-118.5 / 132.5-133.1** | **35.1-36.1 / 42.7** |
+| **Now, -Os** | 150.1-152.6 / 166.7-167.7 | 39.8-40.6 / 46.6 |
+| Flash wait states, -O2 (150 frames of the Libri clip) | +8.8 / +9.7 | |
+
+The 16 kHz encoder is the v3.7 encoder plus a local decoder (its rules look at decoded audio),
+the 2:1 resamplers and the 320-point STFT, so the SMLALD work on the decoder counts twice.
+What it took, on top of the 8 kHz steps above: the resamplers' 41- and 21-tap filters
+(`down2`, `up2`) as `fx_dot16` over the taps' 16-bit halves (SMLALD, the same sums), 6 MHz.
+
+Bits and samples equal the x86 build (`sotto_enc_fx -16`, `sotto_dec_fx -16`) on both clips
+at -O2 and -Os, and the x86 build's bits and samples are unchanged from main.
+
+**Verdict:** v3.8 fits too, at -O2 only. The worst encoder frame with the flash wait states
+is about 143 MHz of 168, leaving about 25 MHz while transmitting. At -Os it does not fit.
+RAM is the tighter limit: the encoder state is 77.5 KB (34.5 KB of it the v3.7 core, 12 KB
+the percentile history), the decoder 24.4 KB, plus about 10 KB of stack; flash is 164 KB.
+Only one of the two states is needed at a time on a half-duplex radio, and the STM32F405's
+64 KB CCM can hold state (not DMA buffers). Whether the 4-8 kHz band survives the MD-UV380's own microphone and
+speaker filtering is untested; OpenRTX samples the microphone at 8 kHz today.
 
 **Caveats.** The timing model has no bus contention, and its flash model is a sampled guess at
 the ART accelerator. The bench's 64-bit division is a simple loop, slower than libgcc's on

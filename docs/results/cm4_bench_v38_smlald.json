@@ -1,0 +1,249 @@
+{
+ "note": "Cortex-M4 cycle model (c/fixed/cm4/run.py), 2026-11-02, after PR #22: SMLALD/SMLSLD round. v3.8 16 kHz runs: VARIANT=v3.8 tools/cm4_build.sh [-Os], run.py --16k; 'before' = main after PR #22. v3.7 8 kHz runs: tools/cm4_build.sh [-Os]. Every bitstream (and the v3.8 decoder output at -O2) equals the x86 build's.",
+ "runs": [
+  {
+   "elf": "v3.8 -O2 before",
+   "input": "l198_16k.raw",
+   "frames": 695,
+   "encoder_MHz": {
+    "mean": 138.0,
+    "worst": 163.0
+   },
+   "decoder_MHz": {
+    "mean": 48.4,
+    "worst": 64.3
+   },
+   "heap_bytes": 101888,
+   "stack_bytes": 9884,
+   "flash_bytes": 161652
+  },
+  {
+   "elf": "v3.8 -O2",
+   "input": "l198_16k.raw",
+   "frames": 695,
+   "encoder_MHz": {
+    "mean": 116.1,
+    "worst": 132.5
+   },
+   "decoder_MHz": {
+    "mean": 35.1,
+    "worst": 42.7
+   },
+   "heap_bytes": 101888,
+   "stack_bytes": 10028,
+   "flash_bytes": 163692
+  },
+  {
+   "elf": "v3.8 -Os",
+   "input": "l198_16k.raw",
+   "frames": 695,
+   "encoder_MHz": {
+    "mean": 150.1,
+    "worst": 166.7
+   },
+   "decoder_MHz": {
+    "mean": 39.8,
+    "worst": 46.6
+   },
+   "heap_bytes": 101888,
+   "stack_bytes": 6716,
+   "flash_bytes": 116836
+  },
+  {
+   "elf": "v3.8 -O2 before",
+   "input": "p020_16k.raw",
+   "frames": 573,
+   "encoder_MHz": {
+    "mean": 141.5,
+    "worst": 163.7
+   },
+   "decoder_MHz": {
+    "mean": 50.6,
+    "worst": 64.3
+   },
+   "heap_bytes": 101888,
+   "stack_bytes": 9884,
+   "flash_bytes": 161652
+  },
+  {
+   "elf": "v3.8 -O2",
+   "input": "p020_16k.raw",
+   "frames": 573,
+   "encoder_MHz": {
+    "mean": 118.5,
+    "worst": 133.1
+   },
+   "decoder_MHz": {
+    "mean": 36.1,
+    "worst": 42.7
+   },
+   "heap_bytes": 101888,
+   "stack_bytes": 10028,
+   "flash_bytes": 163692
+  },
+  {
+   "elf": "v3.8 -Os",
+   "input": "p020_16k.raw",
+   "frames": 573,
+   "encoder_MHz": {
+    "mean": 152.6,
+    "worst": 167.7
+   },
+   "decoder_MHz": {
+    "mean": 40.6,
+    "worst": 46.6
+   },
+   "heap_bytes": 101888,
+   "stack_bytes": 6716,
+   "flash_bytes": 116836
+  },
+  {
+   "elf": "v3.8 -O2 with flash model",
+   "input": "l198_16k.raw",
+   "frames": 150,
+   "encoder_MHz": {
+    "mean": 113.6,
+    "worst": 129.7
+   },
+   "decoder_MHz": {
+    "mean": 36.0,
+    "worst": 42.7
+   },
+   "heap_bytes": 101888,
+   "stack_bytes": 10028,
+   "flash_bytes": 163692,
+   "encoder_flash_wait_MHz": {
+    "mean": 8.8,
+    "worst": 9.7
+   }
+  },
+  {
+   "elf": "v3.7 -O2",
+   "input": "ve9qrp_10s.raw",
+   "frames": 500,
+   "encoder_MHz": {
+    "mean": 78.3,
+    "worst": 85.5
+   },
+   "decoder_MHz": {
+    "mean": 15.4,
+    "worst": 19.1
+   },
+   "heap_bytes": 35336,
+   "stack_bytes": 8172,
+   "flash_bytes": 130728
+  },
+  {
+   "elf": "v3.7 -Os",
+   "input": "ve9qrp_10s.raw",
+   "frames": 500,
+   "encoder_MHz": {
+    "mean": 104.4,
+    "worst": 112.5
+   },
+   "decoder_MHz": {
+    "mean": 15.8,
+    "worst": 19.1
+   },
+   "heap_bytes": 35336,
+   "stack_bytes": 5116,
+   "flash_bytes": 101824
+  },
+  {
+   "elf": "v3.7 -O2",
+   "input": "david4_10s.raw",
+   "frames": 500,
+   "encoder_MHz": {
+    "mean": 79.3,
+    "worst": 85.0
+   },
+   "decoder_MHz": {
+    "mean": 14.8,
+    "worst": 18.9
+   },
+   "heap_bytes": 35336,
+   "stack_bytes": 8128,
+   "flash_bytes": 130728
+  },
+  {
+   "elf": "v3.7 -Os",
+   "input": "david4_10s.raw",
+   "frames": 500,
+   "encoder_MHz": {
+    "mean": 105.3,
+    "worst": 111.7
+   },
+   "decoder_MHz": {
+    "mean": 15.3,
+    "worst": 19.0
+   },
+   "heap_bytes": 35336,
+   "stack_bytes": 5048,
+   "flash_bytes": 101824
+  },
+  {
+   "elf": "v3.7 -O2",
+   "input": "vk2tpm_10s.raw",
+   "frames": 500,
+   "encoder_MHz": {
+    "mean": 80.4,
+    "worst": 86.0
+   },
+   "decoder_MHz": {
+    "mean": 15.7,
+    "worst": 22.8
+   },
+   "heap_bytes": 35336,
+   "stack_bytes": 8172,
+   "flash_bytes": 130728
+  },
+  {
+   "elf": "v3.7 -Os",
+   "input": "vk2tpm_10s.raw",
+   "frames": 500,
+   "encoder_MHz": {
+    "mean": 106.6,
+    "worst": 112.5
+   },
+   "decoder_MHz": {
+    "mean": 16.1,
+    "worst": 22.6
+   },
+   "heap_bytes": 35336,
+   "stack_bytes": 5092,
+   "flash_bytes": 101824
+  },
+  {
+   "elf": "v3.7 -O2",
+   "input": "kristoff.raw",
+   "frames": 250,
+   "encoder_MHz": {
+    "mean": 79.4,
+    "worst": 85.9
+   },
+   "decoder_MHz": {
+    "mean": 13.5,
+    "worst": 18.9
+   },
+   "heap_bytes": 35336,
+   "stack_bytes": 8172,
+   "flash_bytes": 130728
+  },
+  {
+   "elf": "v3.7 -Os",
+   "input": "kristoff.raw",
+   "frames": 250,
+   "encoder_MHz": {
+    "mean": 105.3,
+    "worst": 112.6
+   },
+   "decoder_MHz": {
+    "mean": 14.1,
+    "worst": 19.0
+   },
+   "heap_bytes": 35336,
+   "stack_bytes": 5116,
+   "flash_bytes": 101824
+  }
+ ]
+}

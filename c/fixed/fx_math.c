@@ -255,11 +255,8 @@ void fx_bins_pow(const int32_t *re, const int32_t *im, uint32_t *p, int n, int t
 
 #if !(defined(__TMS320C55X__) && !defined(FX_MP_C))
 void fx_mp_sums(const int16_t *h, const int16_t *l, const int16_t *row, int n1, int n2, fx_acc out[4]) {
-  int j;
-  fx_acc a = 0, b = 0, c = 0, d = 0;
-  for (j = 0; j < n1; j++) a += (fx_acc)h[j] * row[j], b += (fx_acc)l[j] * row[j];
-  for (; j < n1 + n2; j++) c += (fx_acc)h[j] * row[j], d += (fx_acc)l[j] * row[j];
-  out[0] = a, out[1] = b, out[2] = c, out[3] = d;
+  out[0] = fx_dot16(h, row, n1), out[1] = fx_dot16(l, row, n1);
+  out[2] = fx_dot16(h + n1, row + n1, n2), out[3] = fx_dot16(l + n1, row + n1, n2);
 }
 #endif
 
@@ -272,6 +269,33 @@ fx_acc fx_oa_pair(const int16_t *bin, const int16_t *re, const int16_t *im, int 
     int y = (int)(((unsigned)bin[j] * (unsigned)(n + 1)) & 511u);
     a0 += (fx_acc)re[j] * fx_cos512[x] - (fx_acc)im[j] * fx_cos512[(x - 128) & 511];
     b1 += (fx_acc)re[j] * fx_cos512[y] - (fx_acc)im[j] * fx_cos512[(y - 128) & 511];
+  }
+  *a1 = b1;
+  return a0;
+}
+#endif
+
+#ifdef FX_ARM_DSP
+const uint32_t *fx_cs512(void) {
+  static uint32_t cs[512];
+  static int ready;
+  unsigned j;
+  if (!ready) {
+    for (j = 0; j < 512; j++) cs[j] = (uint16_t)fx_cos512[j] | (uint32_t)(uint16_t)fx_cos512[(j - 128) & 511] << 16;
+    ready = 1;
+  }
+  return cs;
+}
+
+/* the same sums, two products per SMLALD */
+fx_acc fx_oa_pair_ri(const int16_t *bin, const uint32_t *ri, int nb, int n, fx_acc *a1) {
+  const uint32_t *cs512 = fx_cs512();
+  unsigned j;
+  fx_acc a0 = 0, b1 = 0;
+  for (j = 0; j < (unsigned)nb; j++) {
+    unsigned b = (unsigned)bin[j], x = (b * (unsigned)n) & 511u;
+    a0 = fx_smlald(ri[j], cs512[x], a0);
+    b1 = fx_smlald(ri[j], cs512[(x + b) & 511u], b1);
   }
   *a1 = b1;
   return a0;

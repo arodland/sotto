@@ -12,7 +12,8 @@ technical supplements. No firmware, decrypted or not, is part of this repository
 - **The quickest way onto a real radio is OpenRTX on a TYT MD-UV380/390.** That path is well
   trodden: the firmware is open, it already runs Codec 2 over M17 through one codec file, and
   the radios are cheap. The fixed-point v3.7 encoder fits its Cortex-M4. On a cycle model it
-  needs 92 MHz worst frame of 168 at -O2, plus about 15 MHz for flash wait states
+  needs 86 MHz worst frame of 168 at -O2, plus about 15 MHz for flash wait states. The 16 kHz
+  v3.8 encoder fits too, at 133 MHz worst plus about 10, built -O2
   (`docs/c-port.md`, "Fixed point on the Cortex-M4").
 
 ## Existing projects (checked first)
@@ -46,7 +47,7 @@ over to the other, and probably to the FT-5D's.
 
 | Radio | Processor | sotto |
 |---|---|---|
-| TYT MD-UV380/390, MD-380, Module17, CS7000, DM-1701 | STM32F405, Cortex-M4 168 MHz, 192 KB RAM | v3.7 encoder fits (85-87 MHz mean, 92-93 worst at -O2 on the model; build it -O2, not -Os). M17 on the TYT radios needs a small hardware mod (OpenRTX README). |
+| TYT MD-UV380/390, MD-380, Module17, CS7000, DM-1701 | STM32F405, Cortex-M4 168 MHz, 192 KB RAM | v3.7 encoder fits (78-80 MHz mean, 85-86 worst at -O2 on the model). v3.8 at 16 kHz fits at -O2 only (116-119 mean, 133 worst; 78 KB encoder state). Build it -O2, not -Os. M17 on the TYT radios needs a small hardware mod (OpenRTX README). |
 | Connect Systems CS7000-PLUS | STM32H743, Cortex-M7 480 MHz; AK2365A IF (the same IF chip as the FTM-300D) | comfortable, v3.8 too |
 | LILYGO T-TWR Plus | ESP32-S3 + SA868 module | probably fits; the baseband path through the SA868 is unverified |
 | Radtel RT-4D | AT32F423, 48 KB RAM | no (RAM) |
@@ -60,6 +61,8 @@ is `openrtx/src/core/audio_codec.c`, which calls `codec2_create(CODEC2_MODE_3200
 
 1. **OpenRTX on an MD-UV380/390.** Swap Codec 2 for the fixed-point sotto in
    `audio_codec.c`, built -O2, and time it with the DWT cycle counter to confirm the model.
+   v3.8 also needs 16 kHz audio in and out, and a check that the radio's audio path passes
+   4-8 kHz.
    Then make on-air tests against Codec 2 3200 over M17.
 2. **The FTM-300D's DSP JTAG.** A TI XDS110 probe on J9001, a JTAG scan, then sotto loaded
    into DSP RAM with Code Composer Studio. That route needs neither the encrypted DSP update

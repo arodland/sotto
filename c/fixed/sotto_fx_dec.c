@@ -302,6 +302,10 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
   /* overlap-add (Codec 2's synthesise with shift): samples 433..511 of this frame's
      inverse DFT finish the previous half, samples 0..80 start the next */
   FX_PROF(12, 1);
+#ifdef FX_ARM_DSP
+  uint32_t ri[MAXL];
+  for (i = 0; i < nb; i++) ri[i] = (uint16_t)re[i] | (uint32_t)(uint16_t)-im[i] << 16;   /* |im| <= 2^14 */
+#endif
   for (i = 0; i < NSAMP - 1; i++) d->sn[i] = d->sn[i + NSAMP];
   d->sn[NSAMP - 1] = 0;
   fx_acc a2[2] = {0, 0};
@@ -311,7 +315,11 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
     fx_acc a;
     /* the harmonic sums two samples at a time (one index multiply per harmonic for both);
        each segment has an odd count, so its last pair's second sum goes unused */
+#ifdef FX_ARM_DSP
+    if (!(k & 1)) a2[0] = fx_oa_pair_ri(bin, ri, nb, n, &a2[1]);
+#else
     if (!(k & 1)) a2[0] = fx_oa_pair(bin, re, im, nb, n, &a2[1]);
+#endif
     a = a2[k & 1];
     FX_ACC_CHECK(a);
     int32_t s4 = fx_rshr(a, qa + 11);        /* Q(qa + 15) -> samples Q4 */
