@@ -136,3 +136,55 @@ Caveat for the radio itself: if the FTM-300D's AIC3204 runs at 16 kHz, its ADC d
 filter ends the input band at about 0.45 fs = 7.2 kHz, so every transmission looks like 777.
 The receiver's DAC filter also removes the excess above 7.2 kHz, so on the radio only cut-offs
 below about 7 kHz (a dull microphone) would be audible. On a PC decoder all of them are.
+
+## The ceiling over the air
+
+`ceiling_study/ceiling_air.py`. A ceiling message is an ordinary 16-bit side-channel message
+(12 payload + CRC-4) with its CRC XORed with a fixed mask. CRC-4 is affine, so a vowel-shape
+message never passes the ceiling check and the other way round: the message type costs no bits,
+and a v3.8 decoder sees a failed message and keeps its vowel shape. Payload: cut-off code
+(4 bits, 15 = off), steepness (2 bits), 6 spare. The encoder accumulates the sibilant spectra
+of the windows so far and re-measures from 10 sibilant frames on. It sends a ceiling message
+when the decision changes, then every 5th window. A voice with no ceiling never sends one, so
+its bitstream is exactly v3.8 (checked on 6313, 2428, p020, p095). First version
+(`air_test.py`): the ceiling lands 2.8-11 s into the clip (777 and 8842 LP 5 kHz at ~11 s), and the
+3081 5.5 kHz clip was not detected in 12 s. Earlier detection is still to tune.
+
+## An s model (Jeff, 2026-11-02: "develop a model that matches the Ss")
+
+What differs in decoded s frames (`sdiag.py`, `stage2.py`; s frames = all-unvoiced frames with
+4-8 kHz more than 6 dB over 0-1 kHz):
+
+- The time texture matches. Envelope modulation at 40-110 Hz and the frame-to-frame band
+  changes are the same as in the original, and there is no 50 Hz roughness.
+- The spectrum is too white. On a 3-frame-smoothed spectrum in 250 Hz bins, the original s has
+  its peak 5.5 dB over the 4-8 kHz mean. v3.8's per-frame line gives 2.9 dB, because the
+  6-bit 4-band index can't place a peak inside a band. The peak lands 600 Hz off on average.
+- A 16-bin codebook in the same 6 bits helps a little (shape error 3.94 -> 3.62 dB, peak
+  2.9 -> 4.0 dB). Sharpening the decoded line by a fixed factor makes the error worse: the
+  peak is boosted in the wrong place.
+
+**14-bit s shape** (`s_model.py` SottoS14). All-unvoiced frames give up the 4th 0-4 kHz shape
+stage (8 bits) and use it for a second hiss stage: a 256 x 16 table of 250 Hz-bin
+refinements added to v3.8's 4-band line (k-means on LibriSpeech dev-clean training speakers'
+unvoiced frames, s frames weighted 3x; `cb2.npy`, 4 KB as int8). The decoder reads the 0-4 kHz
+shape of those frames from stages 1-3. The encoder searches both hiss stages against the
+16-bin spectrum the decoder will make, ceiling included. Encoder cost: a 256 x 16 search per
+unvoiced frame (~0.1 MHz). Decoder cost: one table add per frame. Bitstream change: a v3.8
+decoder would read those 8 bits as shape stage 4.
+
+Decoded, 13 test clips (`s14_eval.py`):
+
+| | NB-PESQ | WB-PESQ | s shape error | s peak (original 5.51 dB) |
+|---|---|---|---|---|
+| v3.8 | 2.851 | 1.707 | 4.58 dB | 3.79 dB |
+| v3.8 + ceiling + 14-bit s shape | 2.829 | 1.710 | 3.05 | 4.83 |
+| + real-noise texture (Rayleigh per-bin magnitudes) | 2.828 | 1.709 | 3.16 | 5.22 |
+
+The NB-PESQ cost (-0.02) is from the 0-4 kHz shape losing its 4th stage in unvoiced frames.
+Re-searching those frames' shape on 3 stages made it worse (2.807), so the stage is simply
+dropped.
+
+Listening round 15: https://claude.ai/artifact/2uqwxnKvix9sAszMRTjtwW,
+`tools/listening/render_ab15.py`, key `ab-15-key.json`. v3.8 vs s model (7 pairs, including 777),
+s model vs + real-noise texture (3), null pair 4. Each window is the 8 s with the most s frames.
