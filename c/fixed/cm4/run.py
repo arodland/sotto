@@ -1,13 +1,16 @@
 """Cycle estimate for the fixed-point sotto on a Cortex-M4 (STM32F405 class: TYT MD-UV380/390,
 Module17, CS7000), from an instruction-level emulator and a static timing model.
 
-Usage: python c/fixed/cm4/run.py BUILD/bench.elf IN.raw|IN.wav [--frames N] [--profile]
-       [--flash] [--bits OUT.bit] [--json OUT.json]
+Usage: python c/fixed/cm4/run.py BUILD/bench.elf IN.raw|IN.wav [--16k] [--frames N] [--profile]
+       [--flash] [--bits OUT.bit] [--pcm OUT.raw] [--json OUT.json]
 
 Unicorn runs the bare-metal build from tools/cm4_build.sh one sotto_encode / sotto_decode call
 at a time (8 kHz, 160 samples a frame); every executed basic block is costed with the
 Cortex-M4 timings below and reported as MHz for real time (cycles per 20 ms frame x 50).
---bits writes the encoder's bitstream, which must equal the x86 build's (c/fixed/sotto_enc_fx).
+--16k runs the v3.8 16 kHz encoder and decoder instead (sotto_encode16 / sotto_decode16, 320
+samples a frame; build with VARIANT=v3.8 sh tools/cm4_build.sh).
+--bits writes the encoder's bitstream, which must equal the x86 build's (c/fixed/sotto_enc_fx
+[-16]); --pcm writes the decoder's output as sotto_dec_fx [-16] would (its delay removed).
 
 Timing model (ARM Cortex-M4 TRM, table 3-1), zero wait states:
   data processing, multiplies and multiply-accumulates incl. SMULL/SMLAL/SMLAD: 1
@@ -167,10 +170,10 @@ class FlashModel:
             self.cyc += WS
 
 
-def load_pcm(path):
+def load_pcm(path, rate):
     if path.endswith('.wav'):
         w = wave.open(path)
-        assert w.getframerate() == 8000 and w.getnchannels() == 1 and w.getsampwidth() == 2, '8 kHz mono 16-bit'
+        assert w.getframerate() == rate and w.getnchannels() == 1 and w.getsampwidth() == 2, f'{rate} Hz mono 16-bit'
         return w.readframes(w.getnframes())
     return open(path, 'rb').read()
 
@@ -186,40 +189,58 @@ def main():
     ap.add_argument('--frames', type=int, default=10 ** 9)
     ap.add_argument('--profile', action='store_true', help='encoder MHz by function')
     ap.add_argument('--flash', action='store_true', help='add the flash wait-state model (slow; use --frames 100)')
+    ap.add_argument('--16k', dest='k16', action='store_true', help='v3.8: 16 kHz encoder and decoder')
     ap.add_argument('--bits')
+    ap.add_argument('--pcm')
     ap.add_argument('--json')
     a = ap.parse_args()
     m4 = M4(a.elf)
     fl = FlashModel(m4) if a.flash else None
-    pcm = load_pcm(a.input)
-    n = min(len(pcm) // 320, a.frames)
-    enc, _ = m4.call('sotto_enc_create')
-    dec, _ = m4.call('sotto_dec_create')
+    sfx, fb = ('16', 640) if a.k16 else ('', 320)       # API suffix, input bytes a frame
+    pcm = load_pcm(a.input, 16000 if a.k16 else 8000)
+    n = min(len(pcm) // fb, a.frames)
+    enc, _ = m4.call(f'sotto_enc{sfx}_create')
+    dec, _ = m4.call(f'sotto_dec{sfx}_create')
     assert enc and dec, 'heap too small'
-    ec, dc, fc, bits = [], [], [], b''
+    ec, dc, fc, bits, out_pcm = [], [], [], b'', []
+
+    def decode(c=None):
+        _, c = m4.call(f'sotto_decode{sfx}', dec, IO + 0x1000, 1, IO + 0x2000)
+        out_pcm.append(bytes(m4.mu.mem_read(IO + 0x2000, fb)))
+        return c
     if a.profile:
         m4.prof = collections.Counter()
     for i in range(n):
-        m4.mu.mem_write(IO, pcm[320 * i:320 * (i + 1)])
+        m4.mu.mem_write(IO, pcm[fb * i:fb * (i + 1)])
         f0 = fl.cyc if fl else 0
-        r, c = m4.call('sotto_encode', enc, IO, IO + 0x1000)
+        r, c = m4.call(f'sotto_encode{sfx}', enc, IO, IO + 0x1000)
         ec.append(c)
         if fl:
             fc.append(fl.cyc - f0)
         if r:
             bits += bytes(m4.mu.mem_read(IO + 0x1000, 6))
             prof, m4.prof = m4.prof, None               # profile the encoder only
-            _, c = m4.call('sotto_decode', dec, IO + 0x1000, 1, IO + 0x2000)
+            dc.append(decode())
             m4.prof = prof
-            dc.append(c)
     m4.prof = None
     while True:
-        r, _ = m4.call('sotto_enc_flush', enc, IO + 0x1000)
+        r, _ = m4.call(f'sotto_enc{sfx}_flush', enc, IO + 0x1000)
         if not r:
             break
         bits += bytes(m4.mu.mem_read(IO + 0x1000, 6))
+        decode()
     if a.bits:
         open(a.bits, 'wb').write(bits)
+    if a.pcm:                                           # as sotto_dec_fx [-16] writes it
+        y = b''.join(out_pcm[5 if a.k16 else 1:])
+        while out_pcm:
+            r, _ = m4.call(f'sotto_dec{sfx}_flush', dec, IO + 0x2000)
+            if a.k16 and not r:
+                break
+            y += bytes(m4.mu.mem_read(IO + 0x2000, fb))
+            if not a.k16:
+                break
+        open(a.pcm, 'wb').write(y)
     out = {
         'elf': os.path.relpath(a.elf), 'input': os.path.basename(a.input), 'frames': n,
         'encoder_MHz': {'mean': mhz(sum(ec) / len(ec)), 'worst': mhz(max(ec))},

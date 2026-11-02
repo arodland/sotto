@@ -13,7 +13,9 @@ make -C c fixed && c/fixed/sotto_enc_fx in.raw x86.bit && cmp m4.bit x86.bit
 ```
 
 `in.raw` is 8 kHz 16-bit mono (or a .wav). The output is the encoder's and decoder's MHz for
-real time (mean and worst frame), heap, stack and flash bytes. `--profile` adds the
+real time (mean and worst frame), heap, stack and flash bytes. For v3.8 at 16 kHz:
+`VARIANT=v3.8 sh tools/cm4_build.sh`, then `run.py ... in16k.raw --16k --bits m4.bit --pcm
+m4.raw`, and compare with `sotto_enc_fx -16` and `sotto_dec_fx -16`. `--profile` adds the
 encoder's MHz by function, and `--flash` adds the STM32F4's flash wait states (slow, so use
 `--frames 100`). `sh tools/cm4_build.sh -Os` gives the size-optimised build that OpenRTX
 uses by default.
@@ -24,8 +26,9 @@ Files: `shim.c` (bump allocator, memory functions, 64-bit division), `divmod.s` 
 
 The code that runs on the M4 is the ordinary `c/fixed/` C. `FX_ARM_DSP` (fx.h) is on for any
 ARM target with the DSP extension. It takes 32 x 32-bit products directly (`FX_WIDE_MUL`),
-because the M4's SMULL and SMLAL take one cycle, and searches an unpacked codebook with
-SMLAD. Results and the method's limits are in `docs/c-port.md`, "Fixed point on the
+because the M4's SMULL and SMLAL take one cycle, searches an unpacked codebook with SMLAD,
+and does the 16-bit dot products (resamplers, minimum phase), the overlap-add and the NLP
+pitch DFT with SMLALD/SMLSLD, two products per instruction into 64 bits. Results and the method's limits are in `docs/c-port.md`, "Fixed point on the
 Cortex-M4".
 
 SPDX-License-Identifier: MIT

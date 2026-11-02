@@ -24,6 +24,7 @@
 #ifndef SOTTO_FX_H
 #define SOTTO_FX_H
 #include <stdint.h>
+#include <string.h>
 
 #ifdef __TMS320C55X__
 typedef long long fx_acc;              /* 40 bits */
@@ -74,13 +75,46 @@ void fx_prof(int id, int start);
 #ifdef __ARM_FEATURE_DSP
 #include <arm_acle.h>
 #define fx_smlad(x, y, a) ((int32_t)__smlad((x), (y), (a)))
+#define fx_smlald(x, y, a) ((fx_acc)__smlald((x), (y), (a)))
+#define fx_smlsld(x, y, a) ((fx_acc)__smlsld((x), (y), (a)))
 #else
-/* a + the products of the low and of the high 16-bit halves of x and y (SMLAD) */
+/* a + the products of the low and of the high 16-bit halves of x and y (SMLAD; SMLALD
+   with a 64-bit a) */
 static inline int32_t fx_smlad(uint32_t x, uint32_t y, int32_t a) {
   return (int32_t)((uint32_t)a + (uint32_t)((int32_t)(int16_t)x * (int16_t)y)
                    + (uint32_t)((int32_t)(int16_t)(x >> 16) * (int16_t)(y >> 16)));
 }
+static inline fx_acc fx_smlald(uint32_t x, uint32_t y, fx_acc a) {
+  return a + (int32_t)(int16_t)x * (int16_t)y + (int32_t)(int16_t)(x >> 16) * (int16_t)(y >> 16);
+}
+/* a + the low halves' product - the high halves' product (SMLSLD) */
+static inline fx_acc fx_smlsld(uint32_t x, uint32_t y, fx_acc a) {
+  return a + (int32_t)(int16_t)x * (int16_t)y - (int32_t)(int16_t)(x >> 16) * (int16_t)(y >> 16);
+}
 #endif
+/* the dot product of two int16 vectors, two products per SMLALD */
+static inline fx_acc fx_dot16(const int16_t *a, const int16_t *b, int n) {
+  fx_acc s = 0;
+  int j;
+  for (j = 0; j + 1 < n; j += 2) {
+    uint32_t x, y;
+    memcpy(&x, a + j, 4), memcpy(&y, b + j, 4);
+    s = fx_smlald(x, y, s);
+  }
+  if (j < n) s += (int32_t)a[j] * b[j];
+  return s;
+}
+/* cos and sin in one word: fx_cs512()[i] = fx_cos512[i] | fx_cos512[(i - 128) & 511] << 16 */
+const uint32_t *fx_cs512(void);
+/* fx_oa_pair with the harmonics as ri[j] = re[j] | -im[j] << 16 (16-bit halves) */
+fx_acc fx_oa_pair_ri(const int16_t *bin, const uint32_t *ri, int nb, int n, fx_acc *a1);
+#else
+static inline fx_acc fx_dot16(const int16_t *a, const int16_t *b, int n) {
+  fx_acc s = 0;
+  int j;
+  for (j = 0; j < n; j++) s += (fx_acc)a[j] * b[j];
+  return s;
+}
 #endif
 
 /* 32 x 16-bit products as two 16 x 16-bit ones, exactly: the C55x multiplies 17 x 17 bits

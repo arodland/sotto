@@ -339,24 +339,15 @@ static int16_t sat16(fx_acc v) { return (int16_t)(v > 32767 ? 32767 : v < -32768
 /* scipy.signal.resample_poly(x, 1, 2): y[n] = sum_j h[j] x16[2n + 20 - j]; x16 at 2n - 20.
    The taps' absolute sum is 1.24, so the Q19 x Q15 sum stays below 2^35. */
 static int16_t down2(const int16_t *x) {
-  int j;
-  fx_acc h = 0, l = 0, s;
-  for (j = 0; j < NTAPS; j++) h += (fx_acc)tdh[j] * x[j];
-  for (j = 0; j < NTAPS; j++) l += (fx_acc)tdl[j] * x[j];
-  s = FX_JOIN(h, l);
+  fx_acc s = FX_JOIN(fx_dot16(tdh, x, NTAPS), fx_dot16(tdl, x, NTAPS));
   FX_ACC_CHECK(s);
   return sat16(fx_rshr(s, 19));
 }
 
 /* resample_poly(x, 2, 1): y[2n + p] = 2 sum_k h[2k + p] x8[n + 10 - k]; x8 at n - 10 */
 static void up2(const int16_t *x, int16_t *y) {
-  int k;
-  fx_acc eh = 0, el = 0, oh = 0, ol = 0, e, o;
-  for (k = 0; k <= 20; k++) eh += (fx_acc)teh[k] * x[k];
-  for (k = 0; k <= 20; k++) el += (fx_acc)tel[k] * x[k];
-  for (k = 0; k <= 20; k++) oh += (fx_acc)toh[k] * x[k];
-  for (k = 0; k <= 20; k++) ol += (fx_acc)tol[k] * x[k];
-  e = FX_JOIN(eh, el), o = FX_JOIN(oh, ol);
+  fx_acc e = FX_JOIN(fx_dot16(teh, x, 21), fx_dot16(tel, x, 21));
+  fx_acc o = FX_JOIN(fx_dot16(toh, x, 21), fx_dot16(tol, x, 21));
   FX_ACC_CHECK(e); FX_ACC_CHECK(o);
   y[0] = sat16(fx_rshr(e, 18));
   y[1] = sat16(fx_rshr(o, 18));
