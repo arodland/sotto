@@ -1,0 +1,28 @@
+# The C port builds from the committed tables with no Python, and those tables match what
+# tools/export_codebook_c.py, tools/export_hiss_c.py and tools/gen_fx_tables.py write.
+name: C build
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-without-python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: libsotto, tools and fixed point, with Python unavailable to make
+        run: |
+          make PYTHON=false
+          make fixed PYTHON=false
+          make -C c check
+  tables:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy scipy
+      - name: committed tables match the generators
+        run: make check-tables PYTHON=python

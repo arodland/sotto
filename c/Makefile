@@ -6,6 +6,11 @@
 #   make clean all VARIANT=v3.7   for the 8 kHz v3.7 library (VARIANT=v3.6, v3.5: older variants)
 #   make clean all RULE_LAG=5     v3.8 encoder look-ahead in frames (default 10)
 #   make clean all CODEBOOK=sim/data/shape_msvq_9988.npz   for another codebook
+#   make tables          regenerate the committed tables from sim/data/*.npz (needs numpy, scipy)
+#   make check-tables    fail if the committed tables differ from what the generators write
+# The generated tables (sotto_codebook.c, sotto_hiss_tables.c, fixed/fx_tables.c) are committed,
+# so the default build needs no Python. VARIANT=v3.5 or another CODEBOOK generates its own
+# codebook source (sotto_codebook_gen.c) with Python and numpy.
 CODEC2_SRC ?= ../codec/codec2/src
 CODEC2_LIB ?= ../build/codec2/src
 PYTHON ?= python3
@@ -33,6 +38,13 @@ CFLAGS_VARIANT = -DSOTTO_V36
 else
 CODEBOOK ?= sim/data/shape_msvq_34.npz
 endif
+# the committed sotto_codebook.c is the v3.6-v3.8 codebook; any other is generated
+DEFAULT_CODEBOOK = sim/data/shape_msvq_9988.npz
+ifeq ($(CODEBOOK) $(CBROUND),$(DEFAULT_CODEBOOK) --round 8)
+CB = sotto_codebook
+else
+CB = sotto_codebook_gen
+endif
 PREFIX ?= /usr/local
 LIBDIR ?= $(PREFIX)/lib
 INCDIR ?= $(PREFIX)/include
@@ -51,7 +63,6 @@ all: libsotto.so libsotto.a sotto_enc sotto_dec
 # fixed-point build (fixed/), integer only, v3.6 codebook, the same VARIANT flags (v3.8 adds
 # fixed/sotto_fx_hiss.c and the -16 mode of the tools); FX_CHECK aborts if a sum would
 # overflow the C55x's 40-bit accumulator
-FX_CODEBOOK = sim/data/shape_msvq_9988.npz
 FXFLAGS ?= -DFX_CHECK
 FX_OBJS = fixed/fx_math.o fixed/fx_tables.o
 ifeq ($(VARIANT),v3.8)
@@ -61,8 +72,6 @@ FX_ENC_OBJS = fixed/sotto_fx_enc.o
 FX_DEC_OBJS = fixed/sotto_fx_dec.o
 endif
 fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx
-fixed/fx_tables.c: ../$(FX_CODEBOOK) ../tools/gen_fx_tables.py ../sim/data/hiss_band.npz ../sim/data/hiss_vowel_fine.npz
-	cd .. && $(PYTHON) tools/gen_fx_tables.py --codebook $(FX_CODEBOOK) c/fixed/fx_tables.c
 fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h
 	$(CC) $(CFLAGS) $(FXFLAGS) -c -o $@ $<
 fixed/sotto_dec_fx: sotto_dec.o $(FX_DEC_OBJS) $(FX_OBJS)
@@ -70,21 +79,34 @@ fixed/sotto_dec_fx: sotto_dec.o $(FX_DEC_OBJS) $(FX_OBJS)
 fixed/sotto_enc_fx: sotto_enc.o $(FX_ENC_OBJS) $(FX_OBJS)
 	$(CC) -o $@ $^
 
-sotto_codebook.c: ../$(CODEBOOK) ../tools/export_codebook_c.py
-	cd .. && $(PYTHON) tools/export_codebook_c.py $(CBROUND) $(CODEBOOK) c/sotto_codebook.c
+sotto_codebook_gen.c: ../$(CODEBOOK) ../tools/export_codebook_c.py
+	cd .. && $(PYTHON) tools/export_codebook_c.py $(CBROUND) $(CODEBOOK) c/$@
 
-sotto_hiss_tables.c: ../sim/data/hiss_band.npz ../sim/data/hiss_vowel_fine.npz ../tools/export_hiss_c.py
-	cd .. && $(PYTHON) tools/export_hiss_c.py c/sotto_hiss_tables.c
+# The committed tables, written by the generators into directory $(1) (relative to the repo
+# root). After changing a generator or its .npz data, run make tables and commit the result.
+TABLES = sotto_codebook.c sotto_hiss_tables.c fixed/fx_tables.c
+gen_tables = cd .. && $(PYTHON) tools/export_codebook_c.py --round 8 $(DEFAULT_CODEBOOK) $(1)/sotto_codebook.c \
+	&& $(PYTHON) tools/export_hiss_c.py $(1)/sotto_hiss_tables.c \
+	&& $(PYTHON) tools/gen_fx_tables.py --codebook $(DEFAULT_CODEBOOK) $(1)/fixed/fx_tables.c
+tables:
+	$(call gen_tables,c)
+check-tables:
+	rm -rf tables.chk && mkdir -p tables.chk/fixed
+	$(call gen_tables,c/tables.chk)
+	@stale=; for f in $(TABLES); do cmp -s $$f tables.chk/$$f || stale="$$stale $$f"; done; \
+	if [ -n "$$stale" ]; then echo "stale generated tables:$$stale (run make tables, commit them)"; \
+	  for f in $$stale; do diff -u $$f tables.chk/$$f | head -20; done; exit 1; fi; \
+	rm -rf tables.chk; echo "generated tables match the generators"
 
 sotto.o: sotto.c sotto.h sotto_codebook.h sotto_internal.h
 sotto_hiss.o: sotto_hiss.c sotto.h sotto_internal.h sotto_hiss_tables.h
 sotto_hiss_tables.o: sotto_hiss_tables.c sotto_hiss_tables.h
-sotto_codebook.o: sotto_codebook.c sotto_codebook.h
+$(CB).o: $(CB).c sotto_codebook.h
 
-libsotto.a: sotto.o sotto_codebook.o $(HISS_OBJS)
+libsotto.a: sotto.o $(CB).o $(HISS_OBJS)
 	$(AR) rcs $@ $^
 
-libsotto.so.$(VERSION): sotto.o sotto_codebook.o $(HISS_OBJS)
+libsotto.so.$(VERSION): sotto.o $(CB).o $(HISS_OBJS)
 	$(CC) -shared -Wl,-soname,$(SONAME) -o $@ $^ $(C2LIBS)
 libsotto.so: libsotto.so.$(VERSION)
 	ln -sf $< $(SONAME)
@@ -118,7 +140,8 @@ install: libsotto.so libsotto.a sotto.pc
 	install -m 644 sotto.pc $(DESTDIR)$(LIBDIR)/pkgconfig/
 
 clean:
-	rm -f *.o libsotto.a libsotto.so* sotto_enc sotto_dec test_api sotto_codebook.c sotto_hiss_tables.c sotto.pc
-	rm -f fixed/*.o fixed/fx_tables.c fixed/sotto_dec_fx fixed/sotto_enc_fx
+	rm -f *.o libsotto.a libsotto.so* sotto_enc sotto_dec test_api sotto_codebook_gen.c sotto.pc
+	rm -rf tables.chk
+	rm -f fixed/*.o fixed/sotto_dec_fx fixed/sotto_enc_fx
 
-.PHONY: all fixed check install clean
+.PHONY: all fixed check install clean tables check-tables

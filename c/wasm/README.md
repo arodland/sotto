@@ -9,7 +9,7 @@ at a time.
 
 ```sh
 sudo apt install clang lld wasi-libc libclang-rt-18-dev-wasm32   # Debian/Ubuntu names
-make                     # in the repository root first: codebook, hiss tables, Codec 2 build
+make                     # in the repository root first: the Codec 2 build (generated codebooks)
 make -C c/wasm install   # builds sotto.wasm (about 200 KB) and copies it to docs/
 make -C c/wasm check     # node: compares the decoder with c/sotto_dec -16 and the encoder
                          # with c/sotto_enc -16 on the page clips (encoder part needs
