@@ -64,7 +64,10 @@ the API and the input level the codec expects (speech near −26 dBFS).
 - `codec/codec2/`: our working fork of Codec 2 (LGPL-2.1), where the oracle experiments and the 2400 bps improvements happen.
 - `docs/course/`: **How sotto works**, an illustrated beginner course (about 10th-grade level) with a glossary. Figures and demos are rebuilt by `tools/course_figures.py`. Online at https://baitisj.github.io/sotto/course/.
 - `docs/`: design memos (TWELP survey, Codec 2 improvement plan, FEC race, waveform race,
-  softmodem, audio results).
+  softmodem, audio results), and `docs/ht-survey.md`, which handheld to run sotto on first (Yaesu
+  handhelds vs OpenRTX radios such as the TYT MD-UV380/390).
+- `c/fixed/cm4/` and `tools/cm4_build.sh`: a Cortex-M4 cycle bench for the fixed-point code
+  (STM32F405, as in the MD-UV380/390); results in `docs/c-port.md`.
 
 ## Rules
 

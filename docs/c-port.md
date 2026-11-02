@@ -570,6 +570,71 @@ pass (4 MHz), the pitch refinement's per-candidate loop around `fx_hsum` and `re
 pitch-cost bookkeeping in `decide` and `frame_costs`, and the pitch estimator (4.5). The
 encoder still runs its own copy of the decoder for the v3.8 layer (22 MHz now).
 
+## Fixed point on the Cortex-M4 (TYT MD-UV380/390)
+
+*2026-11-02, after PR #21.* Can an OpenRTX radio run the v3.7 encoder? The TYT MD-UV380/390
+(also Module17 and the CS7000) runs an STM32F405: a Cortex-M4 at 168 MHz with 192 KB of RAM
+and 1 MB of flash. OpenRTX already runs Codec 2 3200 there, through one file
+(`openrtx/src/core/audio_codec.c`, 160 samples at 8 kHz a frame, the same framing as sotto).
+There is no board here, so the numbers come from a model: the fixed-point C built bare-metal
+for the M4 (`tools/cm4_build.sh`, clang), run frame by frame in an instruction emulator, each
+instruction costed with the M4's published timings (`c/fixed/cm4/`). Expect about +-15 %
+against real hardware. The compiler is clang, while OpenRTX uses GCC.
+
+| v3.7, 8 kHz, MHz mean / worst frame | Encoder | Decoder |
+|---|---:|---:|
+| main after PR #21, -O2 (ve9qrp 10 s) | 125.1 / 134.7 | 27.5 / 35.4 |
+| main after PR #21, -Os | 171.8 / 181.5 | 27.5 / 35.7 |
+| **Now, -O2** (four clips: ve9qrp, david4, vk2tpm, kristoff) | **85.0-87.0 / 91.6-92.6** | 22.7-27.4 / 34.3-42.5 |
+| **Now, -Os** | **107.2-109.3 / 114.5-115.3** | 22.6-27.4 / 34.6-43.2 |
+| Flash wait states, if the tables stay in flash (5 at 168 MHz, ART accelerator modelled) | +14.2 / +15.0 | |
+
+In every run the M4 build's bitstream equals the x86 build's (`--bits`, then `cmp`). The RAM
+is 35 KB of encoder and decoder state plus 5-8 KB of stack. The flash is 129 KB at -O2 and
+102 KB at -Os, of which the unpacked codebook is about 60 KB.
+
+**Verdict:** the encoder fits. Its worst frame at -O2 with the tables in flash is about
+107 MHz of the 168, leaving about 60 MHz for the M17 modulator, audio DMA and the UI while
+transmitting. At -Os it is about 130 MHz, which is tighter, so the sotto files should be
+built -O2 (a per-file flag in OpenRTX's meson build). For scale, the M17 project timed
+Codec 2 3200's encoder at about 7 ms a frame, 59 MHz, on the same chip with GCC -Os
+(m17project.org, 2025-12-29). sotto's encoder is about 1.5 to 1.8 times that. The decoder,
+at 35-43 MHz worst, is not a concern.
+
+**What carried over from the C55x rounds.** The algorithmic changes in C carried over as they
+were: the spectrum ring instead of a second FFT, and the table-seeded reciprocal. They are already in the "before" row. The nine C55x assembly kernels did
+not, and they aren't needed in that form. Most of them split 32-bit products into 16 x 16-bit
+pieces because the C55x has no wider multiplier. The M4 has single-cycle SMULL and SMLAL
+(32 x 32 into 64 bits), so on the M4 those splits cost time. Two changes did the work, both
+in C, both bit-exact:
+
+| Step (-O2, ve9qrp) | Encoder mean |
+|---|---:|
+| main after PR #21 | 125 |
+| `FX_WIDE_MUL`: `fx_mul32x16`, `fx_sq32`, `fx_mul32`, `fx_q15_mac2` and the FFT butterfly take the products directly; the same integers for the ranges the split forms already require (`FX_HI` still checks them under `FX_CHECK`) | about 104 |
+| The unpacked codebook (`FX_CB_UNPACKED`, as on the C55x) searched with SMLAD, two 16 x 16 products per instruction, two vectors at a time so each pair of residual values is loaded once (`fx_cb_dots`) | 85 |
+
+Both are switched on by `FX_ARM_DSP`, which `fx.h` defines for any ARM target with the DSP
+extension. `-DFX_ARM_DSP` builds the same code on x86 with SMLAD in plain C, and
+`make -C c fixed` now also builds `sotto_enc_fx_arm` / `sotto_dec_fx_arm` that way.
+`tests/test_vocoder.py::test_fixed_point_arm_path_is_bit_exact` checks them against the
+default build. They also gave the same bits and samples at 16 kHz (v3.8) with `FX_CHECK`.
+
+**Where the encoder's 85 MHz goes now** (-O2, MHz with inlining, so callers include their
+inlined callees): the frame decision with the codebook search 24.4, the 10 ms analysis
+(spectrum, NLP pitch DFT, harmonic sums) 21.6, the pitch-track costs 10.7, the FFT 6.6, then
+many small items (reciprocals, harmonic fit, bin loops, 64-bit divisions) of 1-2 MHz each. A
+`-fno-inline` profile names the next candidates: the NLP DFT (12 MHz; SMLALD on sample pairs),
+the harmonic-sum loop (7 MHz) and the butterflies (8 MHz). None is needed to fit.
+
+**Caveats.** The timing model has no bus contention, and its flash model is a sampled guess at
+the ART accelerator. The bench's 64-bit division is a simple loop, slower than libgcc's on
+wide operands (1.6 MHz). Nothing has run on a real radio. A DWT cycle-counter run on an
+MD-UV380, or any STM32F4 board, would settle the numbers. The software side of the port is
+the OpenRTX change: swap `codec2_encode`/`codec2_decode` in `audio_codec.c` for
+`sotto_encode`/`sotto_decode`, send 2400 bps in M17's 3200 bps voice payload (800 bps left
+for extra protection), and mark the stream as non-Codec-2 in the LSF type field.
+
 ## Fixed point: the plan
 
 The C55x has no floating-point unit. Software float would be far too slow for the analysis

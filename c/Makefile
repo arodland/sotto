@@ -71,12 +71,21 @@ else
 FX_ENC_OBJS = fixed/sotto_fx_enc.o
 FX_DEC_OBJS = fixed/sotto_fx_dec.o
 endif
-fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx
+fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm
 fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h
 	$(CC) $(CFLAGS) $(FXFLAGS) -c -o $@ $<
 fixed/sotto_dec_fx: sotto_dec.o $(FX_DEC_OBJS) $(FX_OBJS)
 	$(CC) -o $@ $^
 fixed/sotto_enc_fx: sotto_enc.o $(FX_ENC_OBJS) $(FX_OBJS)
+	$(CC) -o $@ $^
+# the Cortex-M4 code path (FX_ARM_DSP: direct 32 x 32 products, SMLAD codebook search) built
+# for this machine, so make check can show it gives the same bits and samples
+fixed/arm/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h
+	@mkdir -p fixed/arm
+	$(CC) $(CFLAGS) $(FXFLAGS) -DFX_ARM_DSP -c -o $@ $<
+fixed/sotto_dec_fx_arm: sotto_dec.o $(subst fixed/,fixed/arm/,$(FX_DEC_OBJS) $(FX_OBJS))
+	$(CC) -o $@ $^
+fixed/sotto_enc_fx_arm: sotto_enc.o $(subst fixed/,fixed/arm/,$(FX_ENC_OBJS) $(FX_OBJS))
 	$(CC) -o $@ $^
 
 sotto_codebook_gen.c: ../$(CODEBOOK) ../tools/export_codebook_c.py
@@ -142,6 +151,7 @@ install: libsotto.so libsotto.a sotto.pc
 clean:
 	rm -f *.o libsotto.a libsotto.so* sotto_enc sotto_dec test_api sotto_codebook_gen.c sotto.pc
 	rm -rf tables.chk
-	rm -f fixed/*.o fixed/sotto_dec_fx fixed/sotto_enc_fx
+	rm -f fixed/*.o fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm
+	rm -rf fixed/arm
 
 .PHONY: all fixed check install clean tables check-tables
