@@ -15,6 +15,7 @@
  *
  * Each function names the Python it mirrors. SPDX-License-Identifier: MIT */
 #define SOTTO_BUILD
+#include <limits.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
@@ -386,7 +387,7 @@ static void dec_stage_b(struct sotto_dec16 *d, long t) {
 static void dec_run(struct sotto_dec16 *d) {
   dec_advance_y16(d);
   long nlast = d->nend >= 0 ? d->nend - 1 : d->n - 1;    /* last codec frame received */
-  long tmax = d->nend >= 0 ? 2 * d->nend - 2 : 1L << 40;  /* nfr - 1 */
+  long tmax = d->nend >= 0 ? 2 * d->nend - 2 : LONG_MAX;  /* nfr - 1 (LONG_MAX: long is 32 bits on wasm32) */
   for (;;) {
     long t = d->ta, k = t + HB_LAG, f = dec_frame_of(d, t);
     if (t > tmax) break;
