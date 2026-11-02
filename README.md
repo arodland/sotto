@@ -4,6 +4,10 @@ Open 2400 bps digital voice for FM radios: a vocoder, channel coding and a
 constant-envelope modem path, built to run on small fixed-point DSPs (first
 target: the TI C5517 in the Yaesu FTM-300D).
 
+## Why sotto
+
+The radios people already own can't run neural voice codecs: a Yaesu FTM-300D has a 200 MHz TI C5517 DSP with 320 KB of RAM, and OpenRTX/M17 handhelds such as the TYT MD-UV380 have a 168 MHz Cortex-M4. sotto v3.8 fits both (in simulation). Decoding the same 2400 bit/s bits, stock FARGAN, Opus's neural vocoder, scores level with sotto's decoder (wideband PESQ 1.77 against 1.78) at about 305 million multiply-adds per second and 811 KB of weights, too much for either radio; without sotto's 4-8 kHz hiss index it drops to 1.63. See `docs/fargan-study.md`.
+
 ## Listen
 
 Compare sotto with Codec 2 and with Fusion-style protection over a simulated weak mobile signal, for male and female voices: **https://baitisj.github.io/sotto/** (the page is `docs/index.html`; the FLAC files are in `docs/samples/`). The page decodes its sotto v3.8 clips in your browser from the received bits, with the C decoder compiled to WebAssembly (`c/wasm/`).
@@ -59,6 +63,7 @@ the API and the input level the codec expects (speech near −26 dBFS).
 - `sim/`: a C4FM (4-level FSK over FM) link simulator with Rayleigh and two-path
   fading; an FEC race (`fec_race.py`); a waveform race (`waveform_race.py`, `vw_race.py`); and an
   end-to-end speech test through the softmodem (`audio_race.py`, needs the Codec 2 build).
+- `tools/fargan_study.py` and `docs/fargan-study.md`: sotto's decoder against Opus's FARGAN neural vocoder on the same bits (needs a separately built Opus `fargan_demo`).
 - `tools/score_samples.py`: PESQ (narrowband) and ESTOI scoring of coded clips
   against the originals.
 - `codec/codec2/`: our working fork of Codec 2 (LGPL-2.1), where the oracle experiments and the 2400 bps improvements happen.
