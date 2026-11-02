@@ -1,6 +1,8 @@
-"""Check the v3.8 C port (c/, VARIANT=v3.8) against the Python model (sim/hiss_band.py SottoV38).
+"""Check the v3.8 C port (c/, VARIANT=v3.8) against the Python model (sim/hiss_band.py SottoV38),
+or with --v39 the v3.9 port (make VARIANT=v3.9) against sim/hiss_v39.py SottoV39.
 
 Usage: python tools/check_c_port38.py CLIP16K.wav [...] [--lag 10] [--loss 0.1] [--seconds 6] [--json OUT.json]
+       [--v39] [--lowpass HZ]
 
 Encoder: both encoders see the same 16 kHz samples; the Python runs the fixed-lag tracker
 (TRACK2["lag"] = 8) and judges whisper runs on their first lag + 1 frames (whisper_lag), as
@@ -12,6 +14,8 @@ delayed by SOTTO_DEC16_DELAY_FRAMES frames, which the sotto_dec tool removes. Re
 0-4 kHz sample SNR between the two (the noise band has random phase, so it is compared by
 its 4-8 kHz level per 10 ms frame: mean and 95th percentile of the absolute dB difference
 over frames above -60 dB), and PESQ-NB of each against the original.
+With --v39 it also reports the frame each side's decoder first has a ceiling and which one
+(--lowpass HZ low-passes the clip first, 10th-order Butterworth, to give it one).
 Build first: make -C c (VARIANT=v3.8 is the default; RULE_LAG=... to change the look-ahead).
 """
 import argparse, json, os, subprocess, sys, tempfile
@@ -66,11 +70,21 @@ def compare_bits(bp, bc):
     return round(float(same.mean()), 4), diff
 
 
-def main(clips, lag, loss, seconds, out):
+def first_ceiling(cdec, bits, good):
+    c = cdec.frame_ceiling(bits, good)
+    g = next((i for i, v in enumerate(c) if v is not None), None)
+    return None if g is None else [g, list(c[g])]
+
+
+def main(clips, lag, loss, seconds, out, v39=False, lowpass=0):
     vl.TRACK2["lag"] = 8
-    enc_lag = hb.SottoV38(whisper_lag=lag, **ENC)
-    enc_full = hb.SottoV38(**ENC)
-    dec = hb.SottoV38(**DEC)
+    Codec = hb.SottoV38
+    if v39:
+        import hiss_v39
+        Codec = hiss_v39.SottoV39
+    enc_lag = Codec(whisper_lag=lag, **ENC)
+    enc_full = Codec(**ENC)
+    dec = Codec(**DEC)
     rows = []
     for path in clips:
         x, fs = sf.read(path)
@@ -80,6 +94,9 @@ def main(clips, lag, loss, seconds, out):
         if seconds:
             x = x[:int(seconds * fs)]
         x = x[:len(x) // 320 * 320]
+        if lowpass:
+            from scipy.signal import butter, sosfiltfilt
+            x = sosfiltfilt(butter(10, lowpass, fs=16000, output="sos"), x)
         x16 = np.round(x * 32767).astype(np.int16)
         xq = x16 / 32767.0
         bp = enc_lag.encode(xq)
@@ -107,6 +124,10 @@ def main(clips, lag, loss, seconds, out):
              "pesq_py": round(float(ar.score(x8, lo_p, ar.CODEC_DELAY)[0]), 3),
              "pesq_c": round(float(ar.score(x8, lo_c, ar.CODEC_DELAY)[0]), 3),
              "pesq_c_enc_c_dec": round(float(ar.score(x8, resample_poly(c_decode(bc, good), 1, 2), ar.CODEC_DELAY)[0]), 3)}
+        if v39:
+            r["ceiling_py"] = first_ceiling(dec, bp, good)
+            r["ceiling_c"] = first_ceiling(dec, bc, good)
+            r["hiss_5_8k_db"] = [round(float(np.mean(band_track(y[:n], 5000, 8000)[live])), 2) for y in (yp, yc)]
         print(json.dumps(r), flush=True)
         rows.append(r)
     if out:
@@ -120,5 +141,7 @@ if __name__ == "__main__":
     a.add_argument("--loss", type=float, default=0.0)
     a.add_argument("--seconds", type=float, default=0.0)
     a.add_argument("--json")
+    a.add_argument("--v39", action="store_true")
+    a.add_argument("--lowpass", type=float, default=0.0)
     a = a.parse_args()
-    main(a.clips, a.lag, a.loss, a.seconds, a.json)
+    main(a.clips, a.lag, a.loss, a.seconds, a.json, a.v39, a.lowpass)

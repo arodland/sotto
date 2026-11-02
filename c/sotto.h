@@ -106,7 +106,11 @@ SOTTO_API void sotto_dec_flush(struct sotto_dec *d, short speech[SOTTO_SAMPLES_P
  * Decoder: one call per received frame; each returns 320 samples SOTTO_DEC16_DELAY_FRAMES
  * frames behind the encoder's input (the first calls return silence). Call sotto_dec16_flush
  * until it returns 0 to drain the last frames. */
+#ifdef SOTTO_V39
+#define SOTTO_DEC16_DELAY_FRAMES 6      /* v3.9: one more 10 ms STFT frame for the non-s cap */
+#else
 #define SOTTO_DEC16_DELAY_FRAMES 5
+#endif
 
 struct sotto_enc16;
 struct sotto_dec16;
@@ -120,6 +124,9 @@ SOTTO_API void sotto_dec16_destroy(struct sotto_dec16 *d);
 SOTTO_API void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
                               short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
 SOTTO_API int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
+/* the library's own SOTTO_DEC16_DELAY_FRAMES (5 in v3.8, 6 in v3.9), for programs that
+   include this header without the library's VARIANT flags */
+SOTTO_API int sotto_dec16_delay_frames(void);
 
 #ifdef __cplusplus
 }

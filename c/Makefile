@@ -4,6 +4,7 @@
 #   make install PREFIX=/usr/local   library, header and pkg-config file
 #   make CODEC2_SRC=... CODEC2_LIB=...   to use another Codec 2 tree
 #   make clean all VARIANT=v3.7   for the 8 kHz v3.7 library (VARIANT=v3.6, v3.5: older variants)
+#   make clean all VARIANT=v3.9   v3.8 plus the hiss ceiling and the non-s cap
 #   make clean all RULE_LAG=5     v3.8 encoder look-ahead in frames (default 10)
 #   make clean all CODEBOOK=sim/data/shape_msvq_9988.npz   for another codebook
 #   make tables          regenerate the committed tables from sim/data/*.npz (needs numpy, scipy)
@@ -19,7 +20,17 @@ PYTHON ?= python3
 #               same frames as v3.6)
 # VARIANT=v3.8: v3.7 plus the 16 kHz hiss band (sotto_hiss.c, sim/hiss_band.py)
 VARIANT ?= v3.8
-ifeq ($(VARIANT),v3.8)
+# VARIANT=v3.9: v3.8 plus the hiss ceiling and the non-s cap (sim/hiss_v39.py); a voice
+#               without a ceiling gets v3.8's exact frames
+ifeq ($(VARIANT),v3.9)
+CODEBOOK ?= sim/data/shape_msvq_9988.npz
+CBROUND = --round 8
+CFLAGS_VARIANT = -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DSOTTO_V38 -DSOTTO_V39
+ifdef RULE_LAG
+CFLAGS_VARIANT += -DSOTTO_RULE_LAG=$(RULE_LAG)
+endif
+HISS_OBJS = sotto_hiss.o sotto_hiss_tables.o
+else ifeq ($(VARIANT),v3.8)
 CODEBOOK ?= sim/data/shape_msvq_9988.npz
 CBROUND = --round 8
 CFLAGS_VARIANT = -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DSOTTO_V38
@@ -108,6 +119,7 @@ check-tables:
 	rm -rf tables.chk; echo "generated tables match the generators"
 
 sotto.o: sotto.c sotto.h sotto_codebook.h sotto_internal.h
+sotto_enc.o sotto_dec.o test_api.o: sotto.h
 sotto_hiss.o: sotto_hiss.c sotto.h sotto_internal.h sotto_hiss_tables.h
 sotto_hiss_tables.o: sotto_hiss_tables.c sotto_hiss_tables.h
 $(CB).o: $(CB).c sotto_codebook.h

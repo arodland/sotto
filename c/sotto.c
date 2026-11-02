@@ -84,6 +84,11 @@
    a hiss index in all-unvoiced frames), upward-tilted ones 3 dB louder, and a voiced second
    half between two unvoiced frames keeps its own pitch (hiss_band.SottoV38._model_hook,
    vocoder_lab.interp_wo guard). */
+#ifdef SOTTO_V39
+#define SOTTO_V39_ON 1
+#else
+#define SOTTO_V39_ON 0
+#endif
 #ifdef SOTTO_V38
 #define V38 1
 #else
@@ -169,7 +174,7 @@ static int n_harm(float wo) {
 const char *sotto_format(void) {
   static char buf[64];
   if (!buf[0]) {
-    int n = snprintf(buf, sizeof buf, "sotto %s, shape ", V38 ? "v3.8" : SOTTO_ENERGY_RK ? "v3.6" : "v3.5");
+    int n = snprintf(buf, sizeof buf, "sotto %s, shape ", V38 ? (SOTTO_V39_ON ? "v3.9" : "v3.8") : SOTTO_ENERGY_RK ? "v3.6" : "v3.5");
     for (int s = 0; s < sotto_cb_stages && n < (int)sizeof buf; s++)
       n += snprintf(buf + n, sizeof buf - n, s ? "-%d" : "%d", sotto_cb_bits[s]);
   }
