@@ -6,7 +6,7 @@ target: the TI C5517 in the Yaesu FTM-300D).
 
 ## Listen
 
-Compare sotto with Fusion-style protection over a simulated weak mobile signal, for male and female voices: **https://baitisj.github.io/sotto/** (the page is `docs/index.html`; the FLAC files are in `docs/samples/`).
+Compare sotto with Codec 2 and with Fusion-style protection over a simulated weak mobile signal, for male and female voices: **https://baitisj.github.io/sotto/** (the page is `docs/index.html`; the FLAC files are in `docs/samples/`). The page decodes its sotto v3.8 clips in your browser from the received bits, with the C decoder compiled to WebAssembly (`c/wasm/`).
 
 ## Build libsotto
 

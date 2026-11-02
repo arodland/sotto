@@ -23,7 +23,20 @@ PESQ for these conditions (mean of 3 fading seeds; the files are from the first 
 
 ## Encoder against encoder (`encoder/`)
 
-`encoder/<voice>__<condition>__codec2_2400.flac` and `...__sotto_v36.flac` (the page) or `...__sotto_v35.flac` (the course) are the same voice sent through the identical chain (sotto VW payload, C4FM softmodem, same channel and fading seed, same receiver). Only the encoder and decoder differ. The conditions are no radio channel; 446 MHz, 60 km/h, 52 dB-Hz; and 146 MHz, 30 km/h, 56 dB-Hz. Scores are in `docs/encoder-v1.md`.
+`encoder/<voice>__<condition>__codec2_2400.flac` and `...__sotto_v36.flac` (the page until v3.8) or `...__sotto_v35.flac` (the course) are the same voice sent through the identical chain (sotto VW payload, C4FM softmodem, same channel and fading seed, same receiver). Only the encoder and decoder differ. The conditions are no radio channel; 446 MHz, 60 km/h, 52 dB-Hz; and 146 MHz, 30 km/h, 56 dB-Hz. Scores are in `docs/encoder-v1.md`.
+
+## sotto v3.8 on the page (`v38/`)
+
+The page's Part 1 decodes sotto v3.8 in the browser, so `v38/` holds bitstreams, not audio, for the sotto rows:
+
+| File | What it is |
+|---|---|
+| `<voice>__<condition>.bit` | the 6-byte frames the softmodem receiver handed the decoder (first fading seed) |
+| `<voice>__<condition>.good` | one byte per frame, 0 where the frame failed its CRC (radio conditions only) |
+| `<voice>__<condition>__codec2_2400.flac` | Codec 2 2400 through the same chain, same seed |
+| `<voice>__original16.flac` | the 16 kHz input (LibriSpeech voices only; ve9qrp exists only at 8 kHz) |
+
+Decode one with `c/sotto_dec -16 X.bit out.raw X.good` (16 kHz raw). Made by `tools/render_page_v38.py`; scores in `docs/results/page_v38.json`. The older `encoder/...__sotto_v36.flac` files are kept for reference.
 
 ## Sources
 
@@ -31,4 +44,4 @@ PESQ for these conditions (mean of 3 fading seeds; the files are from the first 
 - `male_libri3436_15s`: LibriSpeech utterance 3436-172162-0000, from *The Age of Chivalry*, read by Anders Lankford. Trimmed to 15 s.
 - `female_libri198_14s`: LibriSpeech utterance 198-209-0000, from *Sense and Sensibility*, read by Heather Barnett. The full utterance, 13.9 s.
 
-LibriSpeech (V. Panayotov, G. Chen, D. Povey, S. Khudanpur, ICASSP 2015) is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). We used the copies in the librosa example data, downsampled them from 16 to 8 kHz and peak-normalised them. The decoded versions here are derived from those recordings.
+LibriSpeech (V. Panayotov, G. Chen, D. Povey, S. Khudanpur, ICASSP 2015) is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). We used the copies in the librosa example data, downsampled them to 8 kHz (16 kHz for `v38/`) and peak-normalised them. The decoded versions here are derived from those recordings.

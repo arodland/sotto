@@ -56,7 +56,8 @@
     <span class="cond">UHF 446 MHz, 60 km/h, 52 dB-Hz (a weak mobile signal)</span>
     <span class="cond">VHF 146 MHz, 30 km/h, 56 dB-Hz (slow fading)</span>
   </p>
-  <p class="note">The score is PESQ, an automatic speech-quality estimate from 1 (bad) to 4.5 (excellent), averaged over three fading runs. sotto v3.6 is an early prototype: a mel-spaced spectral envelope in place of Codec 2's 10th-order LPC, quantized with a codebook trained on 632 speakers and small enough (29 KB) for the radio's DSP, a tracker that decides pitch and voicing together, and its own handling of lost frames, with Codec 2's synthesis.</p>
+  <p class="note">The score is PESQ, an automatic speech-quality estimate from 1 (bad) to 4.5 (excellent), averaged over three fading runs. It is the narrowband version (0-4 kHz), so it can't hear sotto's 4-8 kHz hiss band. sotto v3.8 is an early prototype: a mel-spaced spectral envelope in place of Codec 2's 10th-order LPC, quantized with a codebook trained on 632 speakers and small enough (29 KB) for the radio's DSP, a tracker that decides pitch and voicing together, its own handling of lost frames, and, new in v3.8, 16 kHz output with the hiss of s, sh, f and whispers rebuilt from bits it already sends.</p>
+  <p class="note" id="wasm-note">The sotto rows are not audio files. The page fetches what the receiver produced (6 bytes per 20 ms frame, under 5 KB per clip, plus a list of the frames that failed their check) and decodes it in your browser with sotto's C decoder compiled to WebAssembly. <span id="wasm-status">Loading the decoder…</span></p>
 
   <div id="encoders"></div>
 
@@ -71,10 +72,11 @@
 
 
   <h2>What you're hearing</h2>
-  <p><b>sotto v3.6</b> (Part 1) describes the spectrum with 20 mel-spaced amplitudes, quantized with 34 bits by a four-stage codebook trained on 632 speakers (Google's Speech Commands volunteers and LibriSpeech readers), plus a formant postfilter and a frame-energy field, where Codec 2 uses a 10th-order LPC filter. The codebook is stored as 8-bit values in 29 KB, so it fits in the radio's DSP alongside the modem, and the energy field measures only the band the envelope covers, so a low hum doesn't turn into buzz. Its tracker starts from Codec 2's pitch estimate and fixes octave errors (pitch reported at double or half its true value), which Codec 2 makes most often on higher voices. The same tracker decides which frames are voiced, follows pitch up to 500 Hz, and avoids the warbling that wandering pitch causes in quiet transitions. Breathy sounds like the "v" in "five" get harmonics only below 1 kHz with noise above, at no extra bits. Pauses decode as true silence. When a frame is lost, it holds the last sound for 40 ms and fades it out within 80 ms, which a listener preferred to repeating and cutting. It keeps Codec 2's synthesis. It needs no memory between frames, so a lost frame doesn't damage the next one.</p>
+  <p><b>sotto v3.8</b> (Part 1) describes the spectrum with 20 mel-spaced amplitudes, quantized with 34 bits by a four-stage codebook trained on 632 speakers (Google's Speech Commands volunteers and LibriSpeech readers), plus a formant postfilter and a frame-energy field, where Codec 2 uses a 10th-order LPC filter. The codebook is stored as 8-bit values in 29 KB, so it fits in the radio's DSP alongside the modem, and the energy field measures only the band the envelope covers, so a low hum doesn't turn into buzz. Its tracker starts from Codec 2's pitch estimate and fixes octave errors (pitch reported at double or half its true value), which Codec 2 makes most often on higher voices. The same tracker decides which frames are voiced, follows pitch up to 500 Hz, and avoids the warbling that wandering pitch causes in quiet transitions. Breathy sounds like the "v" in "five" get harmonics only below 1 kHz with noise above, at no extra bits. Pauses decode as true silence. When a frame is lost, it holds the last sound for 40 ms and fades it out within 80 ms, which a listener preferred to repeating and cutting. It keeps Codec 2's synthesis. It needs no memory between frames, so a lost frame doesn't damage the next one.</p>
+  <p><b>New in v3.8:</b> the decoder plays 16 kHz audio. Codec 2 and earlier sotto versions stop at 4 kHz, which is why s, sh and f sound dull on them. In frames with no pitch (the hiss sounds), the 7 pitch bits are free, so v3.8 uses 6 of them to send how loud the 4-8 kHz hiss is, and the decoder rebuilds it as shaped noise. Voiced sounds get an upper band predicted from their 0-4 kHz shape, and the seventh bit carries a slow side channel (three numbers every 2 s) that corrects that prediction for the speaker's voice. Frames stay 48 bits, and a v3.7 decoder still plays a v3.8 stream (without the upper band). Whispers and voiced hiss (the z in "prism") are sent as hiss too. The ve9qrp recording only exists at 8 kHz, so its original has no upper band; its sotto rows still get some, because the decoder predicts the upper band of voiced sounds from the lower one.</p>
   <p><b>VW slot</b> (used for everything in Part 1) puts the voice in the full-rate part of the Fusion frame, adds a CRC to each 20 ms frame and protects everything with a strong tail-biting convolutional code. <b>DN slot + our code</b> uses the half-rate slot Fusion radios use for DN mode, with a weaker version of the same code. <b>Fusion-style protection</b> mimics how DN protects its voice bits (the first 27 bits sent three times, the rest unprotected), applied to Codec 2. That's a statement about Codec 2 with that protection, not about AMBE+2, whose decoder is built around it.</p>
   <p>At 146 MHz and 30 km/h, fades outlast the 100 ms interleaver, so whole frames are lost. sotto fades lost frames out quickly. Spreading each codeword over two Fusion frames (200 ms) helps at 60 km/h and is still being tested.</p>
-  <p class="note">Simulation only, not yet on the air. Sources: the ve9qrp recording from the Codec 2 project, and LibriSpeech readers (CC BY 4.0; see <a href="samples/README.md">samples/README.md</a>). Details: <a href="https://github.com/baitisj/sotto/blob/main/docs/encoder-v1.md">encoder-v1.md</a> (v1 to v3.6), <a href="https://github.com/baitisj/sotto/blob/main/docs/audio-race.md">audio-race.md</a>. Code: <a href="https://github.com/baitisj/sotto">github.com/baitisj/sotto</a> (MIT; the Codec 2 fork is LGPL-2.1).</p>
+  <p class="note">Simulation only, not yet on the air. Sources: the ve9qrp recording from the Codec 2 project, and LibriSpeech readers (CC BY 4.0; see <a href="samples/README.md">samples/README.md</a>). Details: <a href="https://github.com/baitisj/sotto/blob/main/docs/encoder-v1.md">encoder-v1.md</a> (v1 to v3.6), <a href="https://github.com/baitisj/sotto/blob/main/docs/unvoiced-hiss.md">unvoiced-hiss.md</a> (v3.8), <a href="https://github.com/baitisj/sotto/blob/main/docs/audio-race.md">audio-race.md</a>. Code: <a href="https://github.com/baitisj/sotto">github.com/baitisj/sotto</a> (MIT; the Codec 2 fork is LGPL-2.1).</p>
 </main>
 <script>
   const voices = [
@@ -108,36 +110,63 @@
     for (const r of rows) card.append(row(v, r));
     host.append(card);
   }
-  // Part 1: encoder against encoder (files in samples/encoder/)
+  // Part 1: encoder against encoder. Codec 2 rows are files (samples/v38/); sotto rows are
+  // received frames that sotto_dec.wasm decodes here. Scores: docs/results/page_v38.json.
   const enc = {
-    female_libri198_14s: { none: [2.21, 2.87], uhf52: [1.69, 2.46], vhf56: [1.82, 2.57] },
-    male_libri3436_15s:  { none: [2.94, 3.35], uhf52: [2.30, 2.91], vhf56: [2.06, 2.83] },
-    male_ve9qrp_15s:     { none: [2.78, 3.07], uhf52: [2.48, 2.92], vhf56: [1.98, 2.49] },
+    female_libri198_14s: { none: [2.16, 2.79], uhf52: [1.56, 2.46], vhf56: [1.86, 2.32] },
+    male_libri3436_15s:  { none: [2.94, 3.32], uhf52: [2.27, 2.81], vhf56: [2.12, 2.68] },
+    male_ve9qrp_15s:     { none: [2.75, 2.90], uhf52: [2.41, 2.91], vhf56: [1.98, 2.41] },
   };
   const conds = [
     { key: "none", file: "No_radio_channel", title: "No radio channel" },
-    { key: "uhf52", file: "446_MHz_60_kmh_52_dB-Hz", title: "UHF 446 MHz, 60 km/h, 52 dB-Hz" },
-    { key: "vhf56", file: "146_MHz_30_kmh_56_dB-Hz", title: "VHF 146 MHz, 30 km/h, 56 dB-Hz" },
+    { key: "uhf52", file: "446_MHz_60_kmh_52_dB-Hz", title: "UHF 446 MHz, 60 km/h, 52 dB-Hz", lossy: true },
+    { key: "vhf56", file: "146_MHz_30_kmh_56_dB-Hz", title: "VHF 146 MHz, 30 km/h, 56 dB-Hz", lossy: true },
   ];
   function clip(label, sub, score, src, best) {
     const d = el("div", "row" + (best ? " best" : ""));
     d.append(el("div", "label", `<b>${label}</b><span>${sub}</span>`));
     d.append(el("div", "score", score == null ? "" : `PESQ ${score.toFixed(2)}`));
-    const a = el("audio"); a.controls = true; a.preload = "metadata"; a.src = src;
+    const a = el("audio"); a.controls = true; a.preload = "metadata"; if (src) a.src = src;
     d.append(a);
     return d;
   }
   const ehost = document.getElementById("encoders");
+  const pending = [];
   for (const v of voices) {
     const card = el("section", "voice"); card.append(el("h3", null, v.name));
-    card.append(clip("Original", "the input speech", null, `samples/${v.id}__original.flac`));
+    const orig16 = v.id !== "male_ve9qrp_15s";
+    card.append(clip("Original", orig16 ? "the input speech (16 kHz)" : "the input speech (8 kHz only)", null,
+                     orig16 ? `samples/v38/${v.id}__original16.flac` : `samples/${v.id}__original.flac`));
     for (const c of conds) {
       const [c2, so] = enc[v.id][c.key];
-      card.append(clip("Codec 2 encoder", c.title, c2, `samples/encoder/${v.id}__${c.file}__codec2_2400.flac`));
-      card.append(clip("sotto v3.6 encoder", c.title, so, `samples/encoder/${v.id}__${c.file}__sotto_v36.flac`, so >= c2));
+      const base = `samples/v38/${v.id}__${c.file}`;
+      card.append(clip("Codec 2 encoder", c.title, c2, `${base}__codec2_2400.flac`));
+      const row = clip("sotto v3.8 encoder", `${c.title} · <i>decoding…</i>`, so, null, so >= c2);
+      card.append(row);
+      pending.push({ row, title: c.title, bit: `${base}.bit`, good: c.lossy ? `${base}.good` : null });
     }
     ehost.append(card);
   }
+  const status = document.getElementById("wasm-status");
+  const bytes = async u => { const r = await fetch(u); if (!r.ok) throw new Error(`${u}: ${r.status}`); return new Uint8Array(await r.arrayBuffer()); };
+  import("./sotto-dec.js").then(async ({ loadSotto, wavBlob }) => {
+    const sotto = await loadSotto("sotto_dec.wasm");
+    let ms = 0;
+    for (const p of pending) {
+      const [frames, good] = await Promise.all([bytes(p.bit), p.good ? bytes(p.good) : null]);
+      const t = performance.now();
+      const pcm = sotto.decode16(frames, good);
+      ms += performance.now() - t;
+      const lost = good ? good.reduce((n, g) => n + (g ? 0 : 1), 0) : 0;
+      p.row.querySelector("audio").src = URL.createObjectURL(wavBlob(pcm, sotto.sampleRate));
+      p.row.querySelector(".label span").innerHTML = `${p.title} · ${frames.length} bytes received` +
+        (good ? `, ${lost} of ${good.length} frames lost` : "");
+    }
+    status.textContent = `Decoded ${pending.length} clips here in ${Math.round(ms)} ms.`;
+  }).catch(err => {
+    status.textContent = `This browser couldn't run the decoder (${err.message}), so the sotto rows are silent.`;
+    for (const p of pending) p.row.querySelector(".label span").innerHTML = `${p.title} · not decoded`;
+  });
   // Only one clip plays at a time.
   document.addEventListener("play", e => {
     for (const a of document.querySelectorAll("audio")) if (a !== e.target) a.pause();
