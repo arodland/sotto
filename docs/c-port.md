@@ -501,6 +501,75 @@ decoder's overlap-add (one 256-point inverse FFT, as Codec 2 does, would replace
 changes the bits). The encoder still runs its own copy of the decoder for the v3.8 layer
 (33 MHz).
 
+## Fixed point on the C55x: the second speedup round
+
+*2026-11-02, after PR #19.* The same simulator and inputs. Every change keeps the bits of
+PR #19: the x86 build (with `FX_CHECK`) and the DSP build give the same bitstreams and the
+same decoded audio on four 8 kHz clips and two 16 kHz clips, and every assembly kernel is
+checked against its C version on random inputs (`c/fixed/c55x/kernels.c`).
+
+| | PR #19: mean / worst frame | Now: mean / worst frame |
+|---|---:|---:|
+| v3.7 encoder (8 kHz, ve9qrp 10 s) | 114.9 / 127.9 | **81.8 / 91.1** |
+| v3.7 decoder | 29.7 / 36.9 | **20.1 / 24.8** |
+| v3.8 encoder (16 kHz, LibriSpeech 198, 13.9 s) | 181.1 / 209.3 | **137.0 / 156.9** |
+| v3.8 decoder | 67.3 / 81.7 | **54.7 / 64.3** |
+
+Both encoders now fit the C5517's 200 MHz with margin: the 8 kHz pair takes 102 MHz on
+average and 116 on its worst frames, the 16 kHz pair 192 on average. At 16 kHz the worst
+encoder and decoder frames (157 + 64) would exceed 200 only if they coincided, which the
+percentile history shows they don't on this clip; a real radio would still want the encoder's
+local decoder dropped or the synthesis changed (below) before relying on that. The 8 kHz
+encoder state grew by 9 K words (the spectrum ring). The 16 kHz one shows 18 K words less
+only because this bench keeps 30 s of the layer's percentile history instead of 120 s
+(`-DFX_PCT_MAX=3000`, so that the heap fits one 64K-word page); the bits are the same for
+clips under 30 s.
+
+**What changed.** Encoder MHz on the 1 s 8 kHz profile, measured after each step. These
+are the profiling build's numbers: each pair of its timer marks costs about 294 cycles, and
+the two blocks with hundreds of calls a frame (the voicing fit, the reciprocals) carry about
+12 MHz of that, so the final table above (no marks) is lower.
+
+| Step | Encoder | Decoder |
+|---|---:|---:|
+| The decided frame's spectrum kept from analysis (a ring of `LAG + 2` spectra) instead of a second FFT; the reciprocal by table seed and Newton step, in C | 140.8 | 29.8 |
+| The reciprocal in assembly (`recip48.asm`: 16 x 16-bit products only, products mod 2^32 from 15-bit halves); the spectrum's bin loops in assembly (`bins.asm`: largest bin, 16-bit copy, powers) | 129.5 | 29.8 |
+| The voicing fit's three loops in assembly (`hfit.asm`: the sums with the dual multiply-accumulate, the error, the band power) | 129.2 | |
+| The FFT's two butterfly loops in assembly (`fft.asm`) | 127.1 | |
+| The voicing fit's two divisions in assembly (`divq15.asm`: two rounds of 16 conditional subtractions each, instead of the 150-cycle library division); the codebook search's residual in assembly (`cb_resid.asm`) and its recon update as 16 x 16 products; the decoder's overlap-add two samples at a time with the cosine table as a circular buffer (`oa_pair.asm`) and its minimum-phase dot products with the dual multiply-accumulate (`mp_sums.asm`); `fx_mul32` (four 16 x 16 products) in place of the compiler's 32 x 32 library call in the dB/log helpers, `fx_exp2`, `fx_cos`, `env_at` and `min_phase` | 119.5 | 20.2 |
+| The v3.8 layer's radix-5 stage in assembly (`fft5.asm`, 16 kHz only; its 5.3 MHz on the 16 kHz profile mostly gone, not re-profiled) | | |
+
+By block (8 kHz): voicing fit 32 → 9 (the loops turned out to be a third of it; the two
+divisions and the per-call arithmetic were the rest), the spectra 16 → 11, minimum phase
+9 → 4.6, overlap-add 10 → 6.7, FFTs 5.7 → 4.2. At 16 kHz the profile went 188 → 169 MHz
+(encoder) and 70 → 57 (decoder) before the radix-5 kernel; the STFT's 160-point FFT is
+15 of its 22 MHz, the radix-5 stage 5.3 of that.
+
+The profiles are in `docs/results/c55x_profile_speedup2.txt`, the final runs in
+`docs/results/c55x_bench_speedup2_ve9qrp10s.txt` and `docs/results/c55x_bench_speedup2_v38_libri198.txt`.
+
+**How the kernels stay exact.** Each kernel does the C's integer arithmetic in the C's
+order; what changes is only how the C55x reaches the numbers. The recurring tools: a 32-bit
+value split into a signed high half and a 15-bit low half (`FX_HI`, `FX_LO`), so a 32 x 16
+or 32 x 32 product is two or four single-cycle 16 x 16 ones; the 40-bit accumulator for
+sums (`M40` set inside the kernel, cleared on return); the dual multiply-accumulate where
+two sums share an operand (the real and imaginary parts against one window value, the high
+and low halves against one table value); `EXP` for bit lengths (it returns 0 for a zero
+accumulator, which `divq15.asm` checks first); `SUBC` for an exact 32-bit by 16-bit
+division; a circular buffer (`BSA45`, `BK47`) for a table index that wraps. `kernels.c`
+caught the only two mistakes made along the way (`EXP`'s offset is 30, not 31, and its zero
+case), both before any codec run.
+
+**Memory.** The spectrum ring adds 2 x 257 x 4 x (LAG + 2) words to the encoder state;
+`fx_rcp_tab` adds 256 words. The 8 kHz bench's heap grew to 0xA000 words; the 16 kHz
+bench now runs with `-DFX_PCT_MAX=3000` (clips up to 30 s, 36 KB less state), so that its
+heap stays inside one 64K-word page.
+
+**Next.** What is left in compiled C at 8 kHz, by the profile: the codebook search's list
+pass (4 MHz), the pitch refinement's per-candidate loop around `fx_hsum` and `recip48`, the
+pitch-cost bookkeeping in `decide` and `frame_costs`, and the pitch estimator (4.5). The
+encoder still runs its own copy of the decoder for the v3.8 layer (22 MHz now).
+
 ## Fixed point: the plan
 
 The C55x has no floating-point unit. Software float would be far too slow for the analysis

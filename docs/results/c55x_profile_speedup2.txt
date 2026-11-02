@@ -1,0 +1,308 @@
+# C55x profiling-build runs of speedup round 2 (2026-11-02). 8 kHz: 1 s of ve9qrp, v3.7; 16 kHz: 2 s of LibriSpeech 198, v3.8 (-DBENCH16).
+# Each FX_PROF mark pair costs about 294 cycles, so the blocks with many calls (harm_fit, recip48) read high.
+
+== o_s1: 8 kHz, saved spectrum + C reciprocal (rcp17)
+state: encoder 17362 words, decoder 426 words
+clock() pair: 294 cycles
+encode: 50 frames, cycles/frame mean 2816499 min 1111013 max 3121316 -> 140.82 MHz mean, 156.07 MHz peak
+decode: 50 frames, cycles/frame mean 595051 min 54283 max 729965 -> 29.75 MHz mean, 36.50 MHz peak
+  enc nlp                                4.50 MHz
+  enc spectrum                          16.25 MHz
+  enc hs_refine                          4.21 MHz
+  enc c2_voicing                         2.89 MHz
+  enc frame_costs                       65.76 MHz
+  enc decide                            46.38 MHz
+  enc  msvq_search                      22.45 MHz
+  enc  decide spectrum                   6.14 MHz
+  enc  refine                           41.37 MHz
+  enc  ln_fit_error                     22.34 MHz
+  dec unpack                             2.66 MHz
+  dec min_phase                          9.29 MHz
+  dec overlap-add sums                  10.02 MHz
+  enc  odd_even_db                       0.89 MHz
+  enc   recip48 in refine               19.84 MHz
+  enc   fft (both spectra)               8.81 MHz
+  enc   codebook dot products            9.68 MHz
+  enc  nlp filter                        2.02 MHz
+  enc  nlp DFT                           1.09 MHz
+  fx_fft (all sizes)                     5.68 MHz
+  enc harm_fit (all callers)            14.90 MHz
+  enc   msvq block minima                1.59 MHz
+  enc   msvq residual + list             4.15 MHz
+  enc recip48 (all callers)              9.39 MHz
+stack used: 3128 of 4096 words, system stack 1024 of 2048 words
+done
+
+== o_s2: 8 kHz, + recip48.asm, bins.asm
+state: encoder 17362 words, decoder 426 words
+clock() pair: 294 cycles
+encode: 50 frames, cycles/frame mean 2589058 min 1001019 max 2882649 -> 129.45 MHz mean, 144.13 MHz peak
+decode: 50 frames, cycles/frame mean 595051 min 54283 max 729965 -> 29.75 MHz mean, 36.50 MHz peak
+  enc nlp                                4.50 MHz
+  enc spectrum                          12.33 MHz
+  enc hs_refine                          3.89 MHz
+  enc c2_voicing                         2.88 MHz
+  enc frame_costs                       62.73 MHz
+  enc decide                            42.31 MHz
+  enc  msvq_search                      22.45 MHz
+  enc  decide spectrum                   2.21 MHz
+  enc  refine                           38.44 MHz
+  enc  ln_fit_error                     22.22 MHz
+  dec unpack                             2.66 MHz
+  dec min_phase                          9.29 MHz
+  dec overlap-add sums                  10.02 MHz
+  enc  odd_even_db                       0.89 MHz
+  enc   recip48 in refine               17.11 MHz
+  enc   fft (both spectra)               8.81 MHz
+  enc   codebook dot products            9.68 MHz
+  enc  nlp filter                        2.02 MHz
+  enc  nlp DFT                           1.09 MHz
+  fx_fft (all sizes)                     5.68 MHz
+  enc harm_fit (all callers)            14.77 MHz
+  enc   msvq block minima                1.59 MHz
+  enc   msvq residual + list             4.15 MHz
+  enc recip48 (all callers)              5.60 MHz
+stack used: 3124 of 4096 words, system stack 1024 of 2048 words
+done
+
+== o_s3: 8 kHz, + hfit.asm
+state: encoder 17362 words, decoder 426 words
+clock() pair: 296 cycles
+encode: 50 frames, cycles/frame mean 2584747 min 1005732 max 2881860 -> 129.24 MHz mean, 144.09 MHz peak
+decode: 50 frames, cycles/frame mean 593059 min 53845 max 727783 -> 29.65 MHz mean, 36.39 MHz peak
+  enc nlp                                4.49 MHz
+  enc spectrum                          12.36 MHz
+  enc hs_refine                          3.88 MHz
+  enc c2_voicing                         2.91 MHz
+  enc frame_costs                       62.65 MHz
+  enc decide                            42.13 MHz
+  enc  msvq_search                      22.70 MHz
+  enc  decide spectrum                   2.21 MHz
+  enc  refine                           38.41 MHz
+  enc  ln_fit_error                     22.16 MHz
+  dec unpack                             2.64 MHz
+  dec min_phase                          9.26 MHz
+  dec overlap-add sums                   9.99 MHz
+  enc  odd_even_db                       0.89 MHz
+  enc   recip48 in refine               17.06 MHz
+  enc   fft (both spectra)               8.84 MHz
+  enc   codebook dot products            9.89 MHz
+  enc  nlp filter                        2.02 MHz
+  enc  nlp DFT                           1.09 MHz
+  fx_fft (all sizes)                     5.65 MHz
+  enc harm_fit (all callers)            14.70 MHz
+  enc   msvq block minima                1.59 MHz
+  enc   msvq residual + list             4.23 MHz
+  enc recip48 (all callers)              5.54 MHz
+stack used: 3124 of 4096 words, system stack 1024 of 2048 words
+done
+
+== o_s4: 8 kHz, + fft.asm
+state: encoder 17362 words, decoder 426 words
+clock() pair: 292 cycles
+encode: 50 frames, cycles/frame mean 2542065 min 968955 max 2838250 -> 127.10 MHz mean, 141.91 MHz peak
+decode: 50 frames, cycles/frame mean 594027 min 54187 max 728866 -> 29.70 MHz mean, 36.44 MHz peak
+  enc nlp                                4.51 MHz
+  enc spectrum                          10.78 MHz
+  enc hs_refine                          3.86 MHz
+  enc c2_voicing                         2.89 MHz
+  enc frame_costs                       62.07 MHz
+  enc decide                            42.19 MHz
+  enc  msvq_search                      22.50 MHz
+  enc  decide spectrum                   2.21 MHz
+  enc  refine                           37.98 MHz
+  enc  ln_fit_error                     22.03 MHz
+  dec unpack                             2.66 MHz
+  dec min_phase                          9.30 MHz
+  dec overlap-add sums                   9.97 MHz
+  enc  odd_even_db                       0.89 MHz
+  enc   recip48 in refine               16.81 MHz
+  enc   fft (both spectra)               7.26 MHz
+  enc   codebook dot products            9.67 MHz
+  enc  nlp filter                        2.02 MHz
+  enc  nlp DFT                           1.10 MHz
+  fx_fft (all sizes)                     4.17 MHz
+  enc harm_fit (all callers)            14.66 MHz
+  enc   msvq block minima                1.58 MHz
+  enc   msvq residual + list             4.23 MHz
+  enc recip48 (all callers)              5.50 MHz
+stack used: 3124 of 4096 words, system stack 1024 of 2048 words
+done
+
+== o_s5: 8 kHz, + divq15.asm, cb_resid.asm, recon split, oa_pair.asm, mp_sums.asm, fx_mul32
+state: encoder 17362 words, decoder 426 words
+clock() pair: 296 cycles
+encode: 50 frames, cycles/frame mean 2388996 min 916797 max 2640183 -> 119.45 MHz mean, 132.01 MHz peak
+decode: 50 frames, cycles/frame mean 403155 min 51918 max 490776 -> 20.16 MHz mean, 24.54 MHz peak
+  enc nlp                                4.50 MHz
+  enc spectrum                          10.69 MHz
+  enc hs_refine                          3.89 MHz
+  enc c2_voicing                         2.41 MHz
+  enc frame_costs                       57.59 MHz
+  enc decide                            39.55 MHz
+  enc  msvq_search                      20.18 MHz
+  enc  decide spectrum                   2.21 MHz
+  enc  refine                           38.62 MHz
+  enc  ln_fit_error                     16.98 MHz
+  dec unpack                             2.54 MHz
+  dec min_phase                          4.61 MHz
+  dec overlap-add sums                   6.69 MHz
+  enc  odd_even_db                       0.83 MHz
+  enc   recip48 in refine               17.16 MHz
+  enc   fft (both spectra)               7.17 MHz
+  enc   codebook dot products            9.68 MHz
+  enc  nlp filter                        2.02 MHz
+  enc  nlp DFT                           1.09 MHz
+  fx_fft (all sizes)                     4.16 MHz
+  enc harm_fit (all callers)             9.42 MHz
+  enc   msvq block minima                1.59 MHz
+  enc   msvq residual + list             4.27 MHz
+  enc recip48 (all callers)              5.57 MHz
+stack used: 3126 of 4096 words, system stack 1024 of 2048 words
+done
+
+== o_s16b: 16 kHz, saved spectrum, recip48.asm, bins.asm
+state: encoder 22056 words, decoder 11760 words
+clock() pair: 295 cycles
+encode: 100 frames, cycles/frame mean 3752527 min 439717 max 4469899 -> 187.63 MHz mean, 223.49 MHz peak
+decode: 100 frames, cycles/frame mean 1394403 min 56518 max 1655848 -> 69.72 MHz mean, 82.79 MHz peak
+  enc nlp                                4.60 MHz
+  enc spectrum                          12.40 MHz
+  enc hs_refine                          3.40 MHz
+  enc c2_voicing                         2.45 MHz
+  enc frame_costs                       58.06 MHz
+  enc decide                            44.62 MHz
+  enc  msvq_search                      22.55 MHz
+  enc  decide spectrum                   2.22 MHz
+  enc  refine                           38.13 MHz
+  enc  ln_fit_error                     17.82 MHz
+  dec unpack                             5.33 MHz
+  dec min_phase                         18.95 MHz
+  dec overlap-add sums                  23.66 MHz
+  enc  odd_even_db                       0.73 MHz
+  enc   recip48 in refine               17.50 MHz
+  enc   fft (both spectra)               8.82 MHz
+  enc16 decimate + core analysis       130.96 MHz
+  enc16  core analysis                 126.28 MHz
+  enc16 input STFT + bands              10.33 MHz
+  enc16 rules                            2.78 MHz
+  enc16 local decoder (core)            33.17 MHz
+  enc16 local 2x upsampler + STFT       15.78 MHz
+  enc16 finish (index, side bit)         0.91 MHz
+  enc16 core decide                      0.01 MHz
+  dec16 core decoder                    33.17 MHz
+  dec16 2x upsampler                     3.88 MHz
+  dec16 stage A (STFT, predictor)       12.25 MHz
+  dec16 stage B (hiss synthesis)        18.95 MHz
+  enc   codebook dot products            9.67 MHz
+  enc  nlp filter                        2.05 MHz
+  enc  nlp DFT                           1.09 MHz
+  fx_fft (all sizes)                    15.37 MHz
+  fft5x radix-5 stage                    5.32 MHz
+  hiss stft_power                       22.83 MHz
+  dec16 hiss synthesis (ifft, overlap-add)    12.15 MHz
+  enc harm_fit (all callers)            12.45 MHz
+  enc   msvq block minima                1.58 MHz
+  enc   msvq residual + list             4.29 MHz
+  enc recip48 (all callers)              6.06 MHz
+stack used: 3602 of 4096 words, system stack 1024 of 2048 words
+done
+
+== o_s16d: 16 kHz, + hfit.asm, fft.asm
+state: encoder 22056 words, decoder 11760 words
+clock() pair: 296 cycles
+encode: 100 frames, cycles/frame mean 3611098 min 410486 max 4293085 -> 180.55 MHz mean, 214.65 MHz peak
+decode: 100 frames, cycles/frame mean 1370763 min 56100 max 1630686 -> 68.54 MHz mean, 81.53 MHz peak
+  enc nlp                                4.59 MHz
+  enc spectrum                          10.79 MHz
+  enc hs_refine                          3.41 MHz
+  enc c2_voicing                         2.06 MHz
+  enc frame_costs                       54.49 MHz
+  enc decide                            44.17 MHz
+  enc  msvq_search                      22.73 MHz
+  enc  decide spectrum                   2.22 MHz
+  enc  refine                           38.32 MHz
+  enc  ln_fit_error                     14.04 MHz
+  dec unpack                             5.29 MHz
+  dec min_phase                         18.86 MHz
+  dec overlap-add sums                  23.67 MHz
+  enc  odd_even_db                       0.72 MHz
+  enc   recip48 in refine               17.66 MHz
+  enc   fft (both spectra)               7.21 MHz
+  enc16 decimate + core analysis       124.96 MHz
+  enc16  core analysis                 120.25 MHz
+  enc16 input STFT + bands               9.83 MHz
+  enc16 rules                            2.75 MHz
+  enc16 local decoder (core)            33.06 MHz
+  enc16 local 2x upsampler + STFT       15.26 MHz
+  enc16 finish (index, side bit)         0.90 MHz
+  enc16 core decide                      0.01 MHz
+  dec16 core decoder                    33.05 MHz
+  dec16 2x upsampler                     3.88 MHz
+  dec16 stage A (STFT, predictor)       11.73 MHz
+  dec16 stage B (hiss synthesis)        18.40 MHz
+  enc   codebook dot products            9.89 MHz
+  enc  nlp filter                        2.04 MHz
+  enc  nlp DFT                           1.09 MHz
+  fx_fft (all sizes)                    12.08 MHz
+  fft5x radix-5 stage                    5.32 MHz
+  hiss stft_power                       21.36 MHz
+  dec16 hiss synthesis (ifft, overlap-add)    11.65 MHz
+  enc harm_fit (all callers)             7.97 MHz
+  enc   msvq block minima                1.59 MHz
+  enc   msvq residual + list             4.28 MHz
+  enc recip48 (all callers)              6.11 MHz
+stack used: 3602 of 4096 words, system stack 1024 of 2048 words
+done
+
+== o_s16e: 16 kHz, + divq15, cb_resid, oa_pair, mp_sums, fx_mul32
+state: encoder 22056 words, decoder 11760 words
+clock() pair: 296 cycles
+encode: 100 frames, cycles/frame mean 3371572 min 409739 max 3931881 -> 168.58 MHz mean, 196.59 MHz peak
+decode: 100 frames, cycles/frame mean 1141724 min 54145 max 1326392 -> 57.09 MHz mean, 66.32 MHz peak
+  enc nlp                                4.58 MHz
+  enc spectrum                          10.71 MHz
+  enc hs_refine                          3.41 MHz
+  enc c2_voicing                         2.07 MHz
+  enc frame_costs                       54.22 MHz
+  enc decide                            41.77 MHz
+  enc  msvq_search                      20.31 MHz
+  enc  decide spectrum                   2.22 MHz
+  enc  refine                           38.52 MHz
+  enc  ln_fit_error                     13.66 MHz
+  dec unpack                             5.09 MHz
+  dec min_phase                          9.44 MHz
+  dec overlap-add sums                  15.47 MHz
+  enc  odd_even_db                       0.67 MHz
+  enc   recip48 in refine               17.71 MHz
+  enc   fft (both spectra)               7.17 MHz
+  enc16 decimate + core analysis       122.25 MHz
+  enc16  core analysis                 117.52 MHz
+  enc16 input STFT + bands               9.81 MHz
+  enc16 rules                            2.77 MHz
+  enc16 local decoder (core)            22.40 MHz
+  enc16 local 2x upsampler + STFT       15.38 MHz
+  enc16 finish (index, side bit)         0.91 MHz
+  enc16 core decide                      0.01 MHz
+  dec16 core decoder                    22.40 MHz
+  dec16 2x upsampler                     3.88 MHz
+  dec16 stage A (STFT, predictor)       11.85 MHz
+  dec16 stage B (hiss synthesis)        17.49 MHz
+  enc   codebook dot products            9.68 MHz
+  enc  nlp filter                        2.03 MHz
+  enc  nlp DFT                           1.09 MHz
+  fx_fft (all sizes)                    12.09 MHz
+  fft5x radix-5 stage                    5.32 MHz
+  hiss stft_power                       22.30 MHz
+  dec16 hiss synthesis (ifft, overlap-add)    11.61 MHz
+  enc harm_fit (all callers)             7.98 MHz
+  enc   msvq block minima                1.59 MHz
+  enc   msvq residual + list             4.40 MHz
+  enc recip48 (all callers)              6.11 MHz
+  hiss  stft window + scale              1.92 MHz
+  hiss  stft rfft_pack                   0.78 MHz
+  hiss  stft fft5x (5 ffts, radix-5)    14.65 MHz
+  hiss  stft rfft_split                  1.94 MHz
+  hiss  stft bins                        2.04 MHz
+stack used: 3604 of 4096 words, system stack 1024 of 2048 words
+done

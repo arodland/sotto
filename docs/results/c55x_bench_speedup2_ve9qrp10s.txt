@@ -1,0 +1,7 @@
+# speedup round 2 (2026-11-02), C55X_VARIANT=v3.7, 10 s ve9qrp; bits = x86 v3.7 build, audio = sotto_dec_fx delayed 160 samples
+state: encoder 17362 words, decoder 426 words
+encode: 500 frames, cycles/frame mean 1635575 min 604845 max 1821215 -> 81.78 MHz mean, 91.06 MHz peak
+decode: 500 frames, cycles/frame mean 401810 min 51094 max 496385 -> 20.09 MHz mean, 24.82 MHz peak
+stack used: 3124 of 4096 words, system stack 1024 of 2048 words
+done
+simulated in 590.141 s
