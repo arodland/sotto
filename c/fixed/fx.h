@@ -79,6 +79,14 @@ static inline fx_acc fx_sq32(int32_t a) {
   return ((fx_acc)h * h) * 32768 * 32768 + (fx_acc)h * l * 65536 + (fx_acc)l * l;
 }
 
+/* a b for |a|, |b| < 2^30 whose product fits 40 bits, as four 16 x 16 products (the C55x
+   compiler's 32 x 32 multiply is a library call of about 90 cycles): with a = ah 2^15 + al
+   and b = bh 2^15 + bl, a b = ((ah bh) 2^15 + ah bl + al bh) 2^15 + al bl, exactly */
+static inline fx_acc fx_mul32(int32_t a, int32_t b) {
+  int16_t ah = FX_HI(a), al = FX_LO(a), bh = FX_HI(b), bl = FX_LO(b);
+  return ((fx_acc)ah * bh * 32768 + (fx_acc)ah * bl + (fx_acc)al * bh) * 32768 + (fx_acc)al * bl;
+}
+
 /* round-to-nearest right shift (n >= 1) */
 static inline int32_t fx_rshr(fx_acc x, int n) { return (int32_t)((x + ((fx_acc)1 << (n - 1))) >> n); }
 /* fx_rshr(a c + b s, 15) for |a|, |b| < 2^30 and |c| + |s| <= 65535, exactly, in 32-bit
@@ -93,6 +101,49 @@ static inline int32_t fx_q15_mac2(int32_t a, int16_t c, int32_t b, int16_t s) {
    shift of a long long is a library call, of a long one instruction */
 static inline int32_t fx_rshr32(int32_t x, int n) { return ((x >> (n - 1)) + 1) >> 1; }
 
+/* loops over the bins of a spectrum (re, im: int32 arrays of n bins, |value| < 2^30); on the
+   C5517 these are c55x/bins.asm, elsewhere the C in fx_math.c:
+   fx_bins_max: the largest |re[b]|, |im[b]|
+   fx_bins_to16: sw[2b], sw[2b+1] = the bins rounded right by s bits (s > 0) or shifted
+     left by -s (the results must fit 16 bits)
+   fx_bins_pow_max: the largest p(b) = sq(rshr(re[b], t)) + sq(rshr(im[b], t)) with t >= 0
+     (rshr: round-to-nearest right shift, no shift for t = 0; the rounded values must be
+     below 2^19 in magnitude, so a power is < 2^39)
+   fx_bins_pow: p[b] = (p(b) + rnd) >> sp, the same p(b), for 0 <= sp <= 31 */
+uint32_t fx_bins_max(const int32_t *re, const int32_t *im, int n);
+void fx_bins_to16(const int32_t *re, const int32_t *im, int16_t *sw, int n, int s);
+fx_acc fx_bins_pow_max(const int32_t *re, const int32_t *im, int n, int t);
+void fx_bins_pow(const int32_t *re, const int32_t *im, uint32_t *p, int n, int t, int32_t sp, uint32_t rnd);
+/* the radix-5 stage of the 160-point FFT (c55x/fft5.asm; the C is the loop in
+   sotto_fx_hiss.c fft5x, m = 32): sr, si hold the five 32-point FFTs, t the twiddle step */
+void fx_fft5_stage32(int32_t *re, int32_t *im, const int32_t *sr, const int32_t *si, int t);
+/* the decoder's minimum-phase sums (c55x/mp_sums.asm on the C55x): the dot products of
+   row[0..n1+n2) with h and l, split at n1: out = { h.row, l.row (j < n1), h.row, l.row (j >= n1) } */
+void fx_mp_sums(const int16_t *h, const int16_t *l, const int16_t *row, int n1, int n2, fx_acc out[4]);
+/* the decoder's overlap-add sums for samples n and n + 1 (c55x/oa_pair.asm on the C55x):
+   a(n) = sum_j re[j] cos512[bin[j] n mod 512] - im[j] cos512[(bin[j] n - 128) mod 512],
+   a(n) returned, a(n + 1) stored at *a1 */
+fx_acc fx_oa_pair(const int16_t *bin, const int16_t *re, const int16_t *im, int nb, int n, fx_acc *a1);
+/* the codebook search's residual (c55x/cb_resid.asm on the C55x): r[k] = ((c[k] - recon[k])
+   istep) >> 24 clamped to +-32767 for k < n, returning the sum of the r[k]^2 */
+fx_acc fx_cb_resid(const int32_t *c, const int32_t *recon, int16_t *r, int n, int32_t istep);
+/* the loops of the encoder's harmonic fit over nb bins (c55x/hfit.asm on the C55x): sw
+   points at the first fitted bin of the interleaved 16-bit spectrum, w at its window value.
+   fx_hfit_sums: out = { sum sw[2i] w[i], sum sw[2i+1] w[i], sum w[i]^2 }
+   fx_hfit_err: sum of (sw[2i] - rshr(ar w[i], 15))^2 + (sw[2i+1] - rshr(ai w[i], 15))^2
+     (products as fx_mul32x16, squares as fx_sq32)
+   fx_hfit_pow: sum of the squares of n values */
+void fx_hfit_sums(const int16_t *sw, const int16_t *w, int nb, fx_acc out[3]);
+fx_acc fx_hfit_err(const int16_t *sw, const int16_t *w, int nb, int32_t ar, int32_t ai);
+fx_acc fx_hfit_pow(const int16_t *sw, int n);
+/* the fit's amplitudes: q1, q2 = n1 2^15 / d, n2 2^15 / d truncated toward zero, d > 0
+   rounded down to 16 bits, |q| capped at 2^31 - 1 (c55x/divq15.asm; the C version is
+   div_q15_2 in sotto_fx_enc.c) */
+void fx_div_q15_2(fx_acc n1, fx_acc n2, fx_acc d, int32_t *q1, int32_t *q2);
+
+/* round(2^48 / x) for 2^20 <= x < 2^28 (sotto_fx_enc.c; C55x: c55x/recip48.asm) */
+uint32_t fx_recip48_c(uint32_t x);
+
 /* cos and sin of a Q32 phase, Q15, from the 512-point table with linear interpolation */
 int16_t fx_cos(uint32_t ph);
 static inline int16_t fx_sin(uint32_t ph) { return fx_cos(ph - 0x40000000u); }
@@ -106,6 +157,11 @@ int32_t fx_log2_acc(fx_uacc x);
 fx_uacc fx_udiv_shl(fx_uacc a, int sh, fx_uacc d, fx_uacc *rem);
 /* in-place radix-2 FFT (n <= 512, a power of 2), forward, output = DFT / n */
 void fx_fft(int32_t *re, int32_t *im, int n);
+/* its butterfly loops (c55x/fft.asm on the C55x): cnt butterflies with the one twiddle
+   cs = c << 16 | (s & 0xFFFF), the pointers stepping by stride values; and the 2q
+   butterflies of one group with the twiddles fx_cos512[k step], k = 0 .. 2q - 1 */
+void fx_fft_bfly1(int32_t *ar, int32_t *ai, int32_t *br, int32_t *bi, int cnt, int stride, int32_t cs);
+void fx_fft_bfly_grp(int32_t *ar, int32_t *ai, int32_t *br, int32_t *bi, int q, int step);
 /* real-input FFT helpers (fx_math.c): pack, n2-point fx_fft, split gives bins 0..n2 of
    the n = 2 n2 real samples as DFT / n; pre, n2-point FFT, unpack gives the real DFT / n
    of a Hermitian spectrum given as bins 0..n2. ct: cos(2 pi i / n) Q15. */

@@ -161,6 +161,8 @@ def main(cb_path, out):
         arr(f, "int16_t", "fx_nlp_bmin", [int(0.8 * b) for b in bb], per_line=16,
             comment="(int)(0.8 b) and (int)(1.2 b) in double precision, for the NLP's sub-multiple search")
         arr(f, "int16_t", "fx_nlp_bmax", [int(1.2 * b) for b in bb], per_line=16)
+        arr(f, "int16_t", "fx_rcp_tab", rnd(2.0 ** 30 / (32768 + 128 * np.arange(256) + 64.5)), per_line=12,
+            comment="recip48's seed: round(2^30 / d) at the centre of each run of 128 values of d = xn + 1, xn in [2^15, 2^16)")
         lo, hi = np.log(WO_MIN), np.log(WO_HI)
         thr = np.exp(lo + (np.arange(127) + 0.5) * (hi - lo) / 127)
         arr(f, "uint32_t", "fx_wo_thr", np.ceil(thr / (2 * np.pi) * 2 ** 32), per_line=8,
