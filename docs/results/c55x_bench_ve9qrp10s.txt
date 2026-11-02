@@ -1,6 +1,6 @@
 state: encoder 8102 words, decoder 388 words
 encode: 500 frames, cycles/frame mean 3760619 min 1546192 max 4239269 -> 188.03 MHz mean, 211.96 MHz peak
 decode: 500 frames, cycles/frame mean 734277 min 55182 max 877174 -> 36.71 MHz mean, 43.86 MHz peak
-stack used: 7178 of 8192 words, system stack 2048 of 4096 words
+stack used: 7178 of 8192 words, system stack 2048 of 4096 words   [wrong: byte addresses read as words; real stack 2986 words, see docs/c-port.md]
 done
 simulated in 864.555 s

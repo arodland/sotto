@@ -26,24 +26,31 @@ static unsigned long cyc_enc[MAXF], cyc_dec[MAXF];
 /* stack high-water marks: fill the unused part of both stacks (they grow down) with a
    pattern at start, and count the words that changed at the end */
 extern int stk_start[], stk_end[], sstk_start[], sstk_end[];   /* from bench.cmd */
+/* RUN_START / RUN_END give byte addresses; a data pointer holds a word address */
+#define WORDS(p) ((int *)((unsigned long)(p) >> 1))
 static void fill(int *a, int *b) { while (a < b) *a++ = (int)0xA5C3; }
 static void paint(void) {
   int here;
-  fill(stk_start, &here - 64);
-  fill(sstk_start, sstk_start + (sstk_end - sstk_start) / 2);   /* the lower half is unused here */
+  fill(WORDS(stk_start), &here - 64);
+  fill(WORDS(sstk_start), WORDS(sstk_start) + (WORDS(sstk_end) - WORDS(sstk_start)) / 2);   /* the lower half: the upper may be in use */
 }
 static unsigned used(int *a, int *b) {
-  int *p = a;
-  while (p < b && *p == (int)0xA5C3) p++;
-  return (unsigned)(b - p);
+  int *p = WORDS(a);
+  while (p < WORDS(b) && *p == (int)0xA5C3) p++;
+  return (unsigned)(WORDS(b) - p);
 }
 
 #ifdef FX_PROFILE
 /* inclusive cycles per block id, see FX_PROF in fx.h */
-static const char *const prof_name[16] = {"enc nlp", "enc spectrum", "enc hs_refine", "enc c2_voicing",
+#define NPROF 28
+static const char *const prof_name[NPROF] = {"enc nlp", "enc spectrum", "enc hs_refine", "enc c2_voicing",
   "enc frame_costs", "enc decide", "enc  msvq_search", "enc  decide spectrum", "enc  refine",
-  "enc  ln_fit_error", "dec unpack", "dec min_phase", "dec overlap-add sums", "enc  odd_even_db", "enc   recip48 in refine", "enc   fft (both spectra)"};
-static unsigned long prof_tot[16], prof_t0[16], prof_self;   /* the cost of a clock() pair */
+  "enc  ln_fit_error", "dec unpack", "dec min_phase", "dec overlap-add sums", "enc  odd_even_db", "enc   recip48 in refine", "enc   fft (both spectra)",
+  /* the v3.8 16 kHz layer (sotto_fx_hiss.c); the core ids above count inside these too */
+  "enc16 decimate + core analysis", "enc16  core analysis", "enc16 input STFT + bands", "enc16 rules",
+  "enc16 local decoder (core)", "enc16 local 2x upsampler + STFT", "enc16 finish (index, side bit)", "enc16 core decide",
+  "dec16 core decoder", "dec16 2x upsampler", "dec16 stage A (STFT, predictor)", "dec16 stage B (hiss synthesis)"};
+static unsigned long prof_tot[NPROF], prof_t0[NPROF], prof_self;   /* the cost of a clock() pair */
 void fx_prof(int id, int start) {
   unsigned long t = (unsigned long)clock();
   if (start) prof_t0[id] = t;
@@ -51,8 +58,8 @@ void fx_prof(int id, int start) {
 }
 static void prof_report(int frames) {
   int i;
-  for (i = 0; i < 16; i++)
-    if (prof_name[i]) printf("  %-22s %8.2f MHz\n", prof_name[i], prof_tot[i] / (double)frames * 50 / 1e6);
+  for (i = 0; i < NPROF; i++)
+    if (prof_tot[i]) printf("  %-34s %8.2f MHz\n", prof_name[i], prof_tot[i] / (double)frames * 50 / 1e6);
 }
 #endif
 
@@ -93,12 +100,19 @@ static void stats(const char *name, const unsigned long *c, int n) {
 #endif
 
 int main(void) {
-  FILE *fi = fopen("in.raw", "rb"), *fb = fopen("out.bit", "wb"), *fo;
-  ENC *e = enc_create();
-  DEC *d = dec_create();
+  FILE *fi, *fb, *fo;
+  ENC *e;
+  DEC *d;
   int nf = 0, nb = 0, i;
   clock_t t0;
-  if (!fi || !fb || !e || !d) { printf("setup failed\n"); return 1; }
+  printf("state: encoder %u words, decoder %u words\n", enc_bytes(), dec_bytes());
+  fi = fopen("in.raw", "rb"), fb = fopen("out.bit", "wb");
+  e = enc_create();
+  d = dec_create();
+  if (!fi || !fb || !e || !d) {
+    printf("setup failed:%s%s%s%s\n", fi ? "" : " in.raw", fb ? "" : " out.bit", e ? "" : " encoder (heap)", d ? "" : " decoder (heap)");
+    return 1;
+  }
   paint();
 #ifdef FX_PROFILE
   { clock_t a = clock(); prof_self = (unsigned long)(clock() - a); printf("clock() pair: %lu cycles\n", prof_self); }
@@ -113,7 +127,6 @@ int main(void) {
     printf("fx_fft 512: %lu cycles\n", (unsigned long)(clock() - a));
   }
 #endif
-  printf("state: encoder %u words, decoder %u words\n", enc_bytes(), dec_bytes());
   while (nf < MAXF) {
     unsigned char raw[2 * NS];
     if (fread(raw, 1, sizeof raw, fi) != sizeof raw) break;
@@ -150,7 +163,7 @@ int main(void) {
   prof_report(nf);
 #endif
   printf("stack used: %u of %u words, system stack %u of %u words\n", used(stk_start, stk_end),
-         (unsigned)(stk_end - stk_start), used(sstk_start, sstk_end), (unsigned)(sstk_end - sstk_start));
+         (unsigned)(WORDS(stk_end) - WORDS(stk_start)), used(sstk_start, sstk_end), (unsigned)(WORDS(sstk_end) - WORDS(sstk_start)));
   printf("done\n");
   return 0;
 }

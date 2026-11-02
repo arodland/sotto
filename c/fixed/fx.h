@@ -81,6 +81,13 @@ static inline fx_acc fx_sq32(int32_t a) {
 
 /* round-to-nearest right shift (n >= 1) */
 static inline int32_t fx_rshr(fx_acc x, int n) { return (int32_t)((x + ((fx_acc)1 << (n - 1))) >> n); }
+/* fx_rshr(a c + b s, 15) for |a|, |b| < 2^30 and |c| + |s| <= 65535, exactly, in 32-bit
+   arithmetic: with a = ah 2^15 + al (al in 0..32767), a c + b s = (ah c + bh s) 2^15 +
+   (al c + bl s), and both brackets fit 32 bits. No 40-bit sum, so the C55x compiler
+   needn't switch accumulator modes inside a loop. */
+static inline int32_t fx_q15_mac2(int32_t a, int16_t c, int32_t b, int16_t s) {
+  return (int32_t)FX_HI(a) * c + (int32_t)FX_HI(b) * s + (((int32_t)FX_LO(a) * c + (int32_t)FX_LO(b) * s + 16384) >> 15);
+}
 /* the same for a 32-bit x (|x| < 2^31 - 1) by a variable n >= 1, with 32-bit shifts only:
    floor((floor(x / 2^(n-1)) + 1) / 2) = floor((x + 2^(n-1)) / 2^n). On the C55x a variable
    shift of a long long is a library call, of a long one instruction */

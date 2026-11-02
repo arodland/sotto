@@ -1,0 +1,6 @@
+state: encoder 40056 words, decoder 11760 words
+encode: 695 frames, cycles/frame mean 5750688 min 784830 max 6561649 -> 287.53 MHz mean, 328.08 MHz peak
+decode: 695 frames, cycles/frame mean 1846430 min 55870 max 2134983 -> 92.32 MHz mean, 106.75 MHz peak
+done
+simulated in 2682.065 s
+stack (2 s run of the same code, with bench.c's corrected stack measurement): 3470 of 4096 words, system stack within 1024 of 2048

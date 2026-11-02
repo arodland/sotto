@@ -71,7 +71,7 @@ struct sotto_dec {
 };
 
 const fx_dec_info_t *sotto_dec_info(const struct sotto_dec *d) { return &d->info; }
-static const int32_t fb_q4[FX_NFB] = {1250 * 16, 1750 * 16, 2250 * 16, 2750 * 16, 3250 * 16, 3600 * 16, 3800 * 16};
+static const int32_t fb_q4[FX_NFB] = {1250L * 16, 1750L * 16, 2250L * 16, 2750L * 16, 3250L * 16, 3600L * 16, 3800L * 16};
 
 /* mean rk below 1 kHz minus mean rk above 2 kHz, dB Q8 (hiss_band: rk[KLO].mean() - rk[KHI].mean()) */
 static int32_t rk_tilt(const int32_t *rk) {

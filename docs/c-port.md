@@ -289,11 +289,7 @@ API as the float layer, `make fixed` with the default `VARIANT=v3.8`; `-16` on t
   the encoder, 48 KB of which is the running percentile's sorted history (`FX_PCT_MAX`,
   12,000 frames = 120 s, as the Python keeps everything; 3,000 frames would do on the DSP
   and saves 36 KB). All ring sizes are checked at run time under `FX_CHECK`.
-- Not yet measured on the C55x simulator (the TI tools are not installed in this session);
-  `tools/c55x_build.sh` now builds the v3.8 layer in, and `-DBENCH16` makes `bench.c` run
-  16 kHz audio through it. From the float layer's operation count the layer should add
-  about 5 to 10 MHz to the decoder and a little more to the encoder, which also runs a
-  second core decoder (about 40 MHz).
+- Measured on the C55x simulator: see "v3.8 on the C55x" below.
 
 ## Fixed point on the C55x: measured
 
@@ -323,13 +319,15 @@ yet: at its worst frame it needs more than the whole DSP, before the modem and F
 | Decoder state | 0.8 KB | 0.8 KB |
 | Tables | 43 KB | 45.7 KB (76.4 KB with the codebook unpacked) |
 | Code | 18 KB | 17.4 KB (encoder 11.9, decoder 3.6, arithmetic 1.9), plus a few KB of TI's run-time library |
-| Stack | not estimated | 14.4 KB at most |
-| **Total** | **about 78 KB** | **about 98 KB of the C5517's 320 KB** |
+| Stack | not estimated | 6.0 KB at most (first reported as 14.4 KB, see below) |
+| **Total** | **about 78 KB** | **about 90 KB of the C5517's 320 KB** |
 
 The RAM estimate held. The tables grew because the C55x has no 8-bit type: the codebook is
 stored two values to a 16-bit word, padded to 20 values a vector, and the other small tables
-take a word a value. The stack is large because the encoder keeps a whole spectrum (2 KB)
-and the codebook search's 8 paths (2.4 KB) on it.
+take a word a value. Most of the stack is the encoder's copy of a whole spectrum (2 KB) and
+the codebook search's 8 paths (2.4 KB). The first version of this page gave 14.4 KB: the
+benchmark read the linker's stack symbols, which are byte addresses, as word addresses, and
+so counted 8 KB of other memory as stack (fixed 2026-11-02).
 
 **Where the encoder's time goes** (1 s, MHz averaged over frames, from the profiling build,
 whose timer calls add about 7% to the total):
@@ -368,6 +366,63 @@ step, which is what hand-written C55x assembly gets. Compiled C gets much less:
   every input from 2^20 to 2^28); bin positions stepped instead of multiplied; the codebook
   search on packed words without unpacking; the FFT butterfly in 32-bit arithmetic only; and
   the codebook search skipping a vector as soon as a 32-bit test shows it can't make the list.
+
+**v3.8 on the C55x** (2026-11-02). `-DBENCH16` runs 16 kHz audio through the v3.8 layer
+(`sotto_encode16` / `sotto_decode16`). The input is LibriSpeech 198-209-0000 (the female
+clip, 13.9 s, resampled to 16 kHz), since ve9qrp exists only at 8 kHz. The DSP's bits match
+the x86 build's and its audio matches the x86 decoder's sample for sample (5 frames later:
+`sotto_dec -16` removes the layer's delay, `bench.c` doesn't).
+
+| | v3.7 (8 kHz, ve9qrp) | v3.8: mean | v3.8: worst frame | Estimate for the layer |
+|---|---:|---:|---:|---:|
+| Encoder | 188 / 212 | **288** | **328** | core + 45–50 |
+| Decoder | 36.7 / 43.9 | **92.3** | **106.8** | core + 5–10 |
+
+Where the layer's time goes (2 s, profiling build, MHz):
+
+| Encoder | MHz | Decoder | MHz |
+|---|---:|---|---:|
+| 8 kHz core encoder | 204 | 8 kHz core decoder (80 harmonics in unvoiced halves) | 41 |
+| 2:1 decimator (41 taps) | 7 | 1:2 interpolator | 10 |
+| input STFT and band levels | 16 | stage A: STFT of the decoded audio, predictor | 17 |
+| local core decoder (the encoder's own copy) | 41 | stage B: hiss synthesis (inverse FFT, overlap-add) | 24 |
+| local 1:2 interpolator and STFT | 27 | | |
+| rules, index, side bit | 4 | | |
+
+The layer adds about 80 MHz to the encoder and 50 MHz to the decoder, far more than the
+estimate. The causes are the same as for the core: a 320-point STFT costs over 100,000
+cycles in compiled C, and each side runs four per 20 ms; the 41-tap resamplers multiply
+32 × 16 bits. The encoder also decodes its own frames, which costs as much as the
+decoder's core. (The 8 kHz core itself got about 7 MHz slower with v3.8's core changes:
+194 MHz on the 1 s ve9qrp run with `C55X_VARIANT=v3.7`, against 187 at PR #11.)
+
+Fixes in this round (all exact, the same bits and samples on x86 before and after):
+
+- `sotto_fx_dec.c`: the hiss band's reference frequencies were written as `3800 * 16`,
+  which overflows the C55x's 16-bit `int` (60,800), so the DSP's table was wrong. They are
+  `long` constants now. The x86 build was unaffected.
+- The radix-5 stage of the 320-point FFT in 32-bit arithmetic (`fx_q15_mac2`): about 10 MHz
+  less on each of the four STFT paths.
+- The resamplers gather their input without bounds tests except at the start of the
+  stream: 11 MHz less in the encoder, 4 in the decoder.
+- The running percentile finds its rank by binary search. The linear scan grew with the
+  talk time: by our estimate, about 10 MHz after two minutes.
+- `bench16.cmd`: v3.8's states (about 120 KB with both directions) don't fit the 64 KB of
+  DARAM, so the heap gets a 64K-word page of SARAM. The heap size is in bytes, which
+  `c55x_build.sh` had as words.
+
+**Memory with v3.8** (both directions allocated, as in `bench.c`):
+
+| | Size |
+|---|---:|
+| 16 kHz encoder state (its core encoder 16.2 KB and local decoder 0.8 KB extra) | 80.1 KB (+17 KB) |
+| 16 kHz decoder state (its core decoder 0.8 KB extra) | 23.5 KB (+0.8 KB) |
+| Tables | 49.4 KB |
+| Code (layer 13.5 KB, encoder 12.3, decoder 4.0, arithmetic 1.9) | 31.7 KB |
+| Stack | 6.9 KB at most |
+| **Total** | **about 210 KB of 320 KB** |
+
+`-DFX_PCT_MAX=3000` (30 s of percentile history instead of 120 s) saves 36 KB.
 
 **Next, to fit with room for the modem.** In order of MHz saved for the work:
 
