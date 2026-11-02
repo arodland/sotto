@@ -135,6 +135,14 @@ static void fft5x(int32_t *re, int32_t *im, int32_t *sr, int32_t *si, int m) {
     for (k2 = 0; k2 < m; k2++) xr[k2] = re[5 * k2 + n1], xi[k2] = im[5 * k2 + n1];
     fx_fft(xr, xi, m);
   }
+  FX_PROF(32, 1);
+#if defined(__TMS320C55X__) && !defined(FX_FFT5_C)
+  if (m == 32) {                               /* the loop below in assembly, c55x/fft5.asm */
+    fx_fft5_stage32(re, im, sr, si, t);
+    FX_PROF(32, 0);
+    return;
+  }
+#endif
   for (k2 = 0; k2 < m; k2++) {
     int32_t zr[5], zi[5], t1r, t1i, t2r, t2i, t3r, t3i, t4r, t4i, a1r, a1i, a2r, a2i, b1r, b1i, b2r, b2i;
     zr[0] = sr[k2], zi[0] = si[k2];
@@ -164,6 +172,7 @@ static void fft5x(int32_t *re, int32_t *im, int32_t *sr, int32_t *si, int m) {
     re[2 * m + k2] = a2r + b2i, im[2 * m + k2] = a2i - b2r;
     re[3 * m + k2] = a2r - b2i, im[3 * m + k2] = a2i + b2r;
   }
+  FX_PROF(32, 0);
 }
 
 /* ------------------------------------------------------------------ STFT and bands */
@@ -171,25 +180,19 @@ typedef struct {
   int32_t re[HN], im[HN], sr[HN], si[HN];   /* FFT work */
 } fftw_t;
 
-/* the right shift that brings the largest |re|, |im| of bins 0..160 below 2^bits */
-static int bins_shift(const int32_t *re, const int32_t *im, int bits) {
-  int b, t = 0;
-  uint32_t m = 0;
-  for (b = 0; b < NBIN; b++) {
-    uint32_t a = (uint32_t)(re[b] < 0 ? -re[b] : re[b]), c = (uint32_t)(im[b] < 0 ? -im[b] : im[b]);
-    if (a > m) m = a;
-    if (c > m) m = c;
-  }
-  while ((m >> t) >= ((uint32_t)1 << bits) - 1) t++;
-  return t;
-}
-
 /* power spectrum of 320 samples (short units) through the sqrt-Hann window (hiss_band.stft):
    P[k] for k = 0..160, with |STFT(x / 2^15)|^2 = P 2^(*ex) (the float layer's units, which
    divides by 32767 or 32768; the 0.0003 dB between them is ignored) */
+static void stft_power_(fftw_t *w, const int16_t *x, uint32_t *P, int *ex);
 static void stft_power(fftw_t *w, const int16_t *x, uint32_t *P, int *ex) {
-  int i, k, s = 0, t;
+  FX_PROF(33, 1);
+  stft_power_(w, x, P, ex);
+  FX_PROF(33, 0);
+}
+static void stft_power_(fftw_t *w, const int16_t *x, uint32_t *P, int *ex) {
+  int i, s = 0, t;
   uint32_t mx = 0;
+  FX_PROF(39, 1);
   for (i = 0; i < HN; i++) {
     w->re[i] = (int32_t)x[i] * fx_hs_win[i];                /* Q15, < 2^30 */
     {
@@ -206,14 +209,23 @@ static void stft_power(fftw_t *w, const int16_t *x, uint32_t *P, int *ex) {
   if (s == 0)
     while ((mx << (1 - s)) < ((uint32_t)1 << 22)) s--;
   for (i = 0; i < HN; i++) w->re[i] = s > 0 ? fx_rshr32(w->re[i], s) : (int32_t)((uint32_t)w->re[i] << -s);
+  FX_PROF(39, 0);
+  FX_PROF(40, 1);
   fx_rfft_pack(w->re, w->im, HN / 2);                      /* real input: 160-point FFT */
+  FX_PROF(40, 0);
+  FX_PROF(41, 1);
   fft5x(w->re, w->im, w->sr, w->si, 32);
+  FX_PROF(41, 0);
+  FX_PROF(42, 1);
   fx_rfft_split(w->re, w->im, HN / 2, fx_cos320, HN);       /* bins 0..160, DFT / 64 */
-  t = bins_shift(w->re, w->im, 19);
-  for (k = 0; k < NBIN; k++) {
-    int32_t a = t ? fx_rshr32(w->re[k], t) : w->re[k], b = t ? fx_rshr32(w->im[k], t) : w->im[k];
-    P[k] = (uint32_t)((fx_sq32(a) + fx_sq32(b)) >> 8);      /* < 2^31 */
+  FX_PROF(42, 0);
+  FX_PROF(43, 1);
+  {   /* the bins rounded to 19 bits, their powers / 2^8 (< 2^31) */
+    uint32_t m = fx_bins_max(w->re, w->im, NBIN);
+    for (t = 0; (m >> t) >= ((uint32_t)1 << 19) - 1; t++) ;
+    fx_bins_pow(w->re, w->im, P, NBIN, t, 8, 0);
   }
+  FX_PROF(43, 0);
   /* X = DFT(x w 2^(15 - s)) / 64 then 2^-t: P = |DFT(x w)|^2 2^(2 (9 - s - t) - 8), and
      |DFT(x w)|^2 = 2^30 |STFT(x / 2^15)|^2 */
   *ex = 2 * s + 2 * t - 10 - 30;
@@ -541,6 +553,7 @@ static void dec_stage_b(struct sotto_dec16 *d, int32_t t) {
     d->w.im[k] = -fx_rshr(fx_mul32x16(a, fx_sin(ph)), 15);   /* conjugate: the inverse by the forward FFT */
   }
   /* the real signal's DFT / 64 from bins 0..160 (the mirror bins implied): a 160-point FFT */
+  FX_PROF(34, 1);
   fx_irfft_pre(d->w.re, d->w.im, HN / 2, fx_cos320, HN);
   fft5x(d->w.re, d->w.im, d->w.sr, d->w.si, 32);
   fx_rfft_unpack(d->w.re, d->w.im, HN / 2);
@@ -554,6 +567,7 @@ static void dec_stage_b(struct sotto_dec16 *d, int32_t t) {
     RING_CHECK(j, d->outn, ORING, "out");
     d->out[j & (ORING - 1)] += q > 2 ? fx_rshr(v, q - 2) : (int32_t)v;
   }
+  FX_PROF(34, 0);
 }
 /* On the shift above: Re(out) = 5 x 2^q x y (the conjugate trick with DFT / 64), so
    y_short = Re(out) (win_q15 / 2^15) 2^(15 - q) / 5 = Re(out) win_q15 2^-q / 5, and with

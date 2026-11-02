@@ -1,0 +1,7 @@
+# speedup round 2 (2026-11-02), -DBENCH16 (-DFX_PCT_MAX=3000), LibriSpeech 198-209-0000 13.9 s at 16 kHz; bits = x86 build, audio = sotto_dec_fx -16 delayed 5 frames
+state: encoder 22056 words, decoder 11760 words
+encode: 695 frames, cycles/frame mean 2740052 min 362406 max 3138562 -> 137.00 MHz mean, 156.93 MHz peak
+decode: 695 frames, cycles/frame mean 1093599 min 51741 max 1286462 -> 54.68 MHz mean, 64.32 MHz peak
+stack used: 3602 of 4096 words, system stack 1024 of 2048 words
+done
+simulated in 1477.148 s

@@ -150,8 +150,8 @@ static int32_t env_at(const int32_t *rk, int32_t f) {
   if (f >= fx_kfreq[K - 1]) return rk[K - 1];
   int j = 0;
   while (fx_kfreq[j + 1] < f) j++;
-  int32_t fr = (int32_t)(((fx_acc)(f - fx_kfreq[j]) * fx_kinvw[j]) >> 16);   /* Q16 */
-  return rk[j] + (int32_t)(((fx_acc)(rk[j + 1] - rk[j]) * fr + 32768) >> 16);
+  int32_t fr = (int32_t)(fx_mul32(f - fx_kfreq[j], fx_kinvw[j]) >> 16);   /* Q16 */
+  return rk[j] + (int32_t)((fx_mul32(rk[j + 1] - rk[j], fr) + 32768) >> 16);
 }
 
 /* minimum phase at the 65 bins (Q32 turns) from the harmonic levels A[1..L] (dB Q8) */
@@ -167,8 +167,8 @@ static void min_phase(const int32_t *A, int L, uint32_t wo, uint32_t *ph) {
     while (((int32_t)(k + 2) << 16) < u && k < L - 3) k++;
     int32_t y1 = A[k + 1], y2 = A[k + 2], y3 = A[k + 3];
     int32_t t = u - ((int32_t)(k + 2) << 16);
-    int32_t tt = (int32_t)(((fx_acc)t * t) >> 16);
-    G[i] = y2 + (int32_t)(((fx_acc)t * (y3 - y1)) >> 17) + (int32_t)(((fx_acc)tt * (y3 - 2 * y2 + y1)) >> 17);
+    int32_t tt = (int32_t)(fx_mul32(t, t) >> 16);
+    G[i] = y2 + (int32_t)(fx_mul32(t, y3 - y1) >> 17) + (int32_t)(fx_mul32(tt, y3 - 2 * y2 + y1) >> 17);
   }
   /* real cepstrum (x 128): c[n] = G0 + (-1)^n G64 + 2 sum_j G_j cos(2 pi j n / 128), Q4.
      Each 32 x 16 product as two 16 x 16 ones (G = hi 2^15 + lo); the cos values come from
@@ -181,9 +181,9 @@ static void min_phase(const int32_t *A, int L, uint32_t wo, uint32_t *ph) {
     for (j = 0; j < 32; j++) gh[31 + j] = FX_HI(G[2 * j + 1]), gl[31 + j] = FX_LO(G[2 * j + 1]);
     for (n = 1; n <= 32; n++) {
       const int16_t *row = fx_mp_cos + (n - 1) * 63;
-      fx_acc eh = 0, el = 0, oh = 0, ol = 0, a;
-      for (j = 0; j < 31; j++) eh += (fx_acc)gh[j] * row[j], el += (fx_acc)gl[j] * row[j];
-      for (j = 31; j < 63; j++) oh += (fx_acc)gh[j] * row[j], ol += (fx_acc)gl[j] * row[j];
+      fx_acc sums[4], eh, el, oh, ol, a;
+      fx_mp_sums(gh, gl, row, 31, 32, sums);   /* the even j, then the odd j */
+      eh = sums[0], el = sums[1], oh = sums[2], ol = sums[3];
       a = (fx_acc)(G[0] + ((n & 1) ? -G[64] : G[64])) * 32768 + FX_JOIN(eh + oh, el + ol) * 2;
       FX_ACC_CHECK(a);
       cc[n] = fx_rshr(a, 19);
@@ -207,10 +207,10 @@ static void min_phase(const int32_t *A, int L, uint32_t wo, uint32_t *ph) {
     ph[0] = ph[64] = 0;
     for (i = 1; i <= 32; i++) {
       const int16_t *row = fx_mp_sin + (i - 1) * 63;
-      fx_acc eh = 0, el = 0, oh = 0, ol = 0;
+      fx_acc sums[4], eh, el, oh, ol;
       int r;
-      for (n = 0; n < 31; n++) eh += (fx_acc)ch[n] * row[n], el += (fx_acc)cl[n] * row[n];
-      for (n = 31; n < 63; n++) oh += (fx_acc)ch[n] * row[n], ol += (fx_acc)cl[n] * row[n];
+      fx_mp_sums(ch, cl, row, 31, 32, sums);   /* the even n, then the odd n */
+      eh = sums[0], el = sums[1], oh = sums[2], ol = sums[3];
       for (r = 0; r < 2; r++) {
         fx_acc a;
         int k = r ? 64 - i : i;
@@ -226,7 +226,7 @@ static void min_phase(const int32_t *A, int L, uint32_t wo, uint32_t *ph) {
         }
         FX_ACC_CHECK(a);
         /* -((a x 153709) >> 16) mod 2^32: split a so no product needs more than 40 bits */
-        ph[k] = (uint32_t)0 - ((uint32_t)(a >> 16) * 153709u + (uint32_t)(((a & 0xFFFF) * 153709) >> 16));
+        ph[k] = (uint32_t)0 - ((uint32_t)fx_mul32((int32_t)(a >> 16), 153709) + (uint32_t)(fx_mul32((int32_t)(a & 0xFFFF), 153709) >> 16));
       }
     }
   }
@@ -304,13 +304,15 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
   FX_PROF(12, 1);
   for (i = 0; i < NSAMP - 1; i++) d->sn[i] = d->sn[i + NSAMP];
   d->sn[NSAMP - 1] = 0;
+  fx_acc a2[2] = {0, 0};
   for (i = 0; i < 2 * NSAMP; i++) {
     int n = i < NSAMP - 1 ? 512 - NSAMP + 1 + i : i - (NSAMP - 1);
-    fx_acc a = 0;
-    for (j = 0; j < nb; j++) {
-      int x = (int)(((unsigned)bin[j] * (unsigned)n) & 511u);   /* wraps at 16 bits on the C55x */
-      a += (fx_acc)re[j] * fx_cos512[x] - (fx_acc)im[j] * fx_cos512[(x - 128) & 511];
-    }
+    int k = i < NSAMP - 1 ? i : i - (NSAMP - 1);   /* position inside the segment */
+    fx_acc a;
+    /* the harmonic sums two samples at a time (one index multiply per harmonic for both);
+       each segment has an odd count, so its last pair's second sum goes unused */
+    if (!(k & 1)) a2[0] = fx_oa_pair(bin, re, im, nb, n, &a2[1]);
+    a = a2[k & 1];
     FX_ACC_CHECK(a);
     int32_t s4 = fx_rshr(a, qa + 11);        /* Q(qa + 15) -> samples Q4 */
     int32_t w = (int32_t)(fx_mul32x16(s4, fx_pn[i]) >> 14);
