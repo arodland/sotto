@@ -1,7 +1,7 @@
 import sys, glob, os, numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); from measure import run, hb; import nons_cap as nc
 B = [(2000, 3000), (3000, 4000), (4000, 5000), (5000, 6000), (6000, 7000), (7000, 8000)]
-V = {'v3.8': None, 'soft (5 kHz, 24 dB/kHz)': (5000, 24), 'hard (4.5 kHz, 60 dB/kHz)': (4500, 60)}
+V = {'v3.8': None, 'soft (5 kHz, 24 dB/kHz)': (5000, 24), 'soft, z exempt 0': (5000, 24, 3.0, 40.0, 0.0), 'soft, z exempt -6': (5000, 24, 3.0, 40.0, -6.0), 'soft, z exempt +6': (5000, 24, 3.0, 40.0, 6.0)}
 acc = {}
 for p in sorted(glob.glob('/tmp/claude-0/hiss/clips16/*.wav')):
     if '777' in p or '3170' in p: continue

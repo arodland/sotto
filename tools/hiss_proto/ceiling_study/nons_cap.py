@@ -9,14 +9,18 @@ import ceiling as cl
 hb = cl.hb
 
 
-def cap_nons(y, bits, fc=5000.0, S=24.0, margin=3.0, depth=40.0):
-    """-> (capped y, fraction of STFT frames capped)"""
+def cap_nons(y, bits, fc=5000.0, S=24.0, margin=3.0, depth=40.0, z_exempt=None):
+    """-> (capped y, fraction of STFT frames capped). z_exempt (dB): frames whose decoded
+    0-1 kHz is above 2-4 kHz + z_exempt (a voicing bar: z, v, zh) are left alone."""
     X = hb.stft(np.pad(y, (hb.H, hb.N)))
     P = np.abs(X) ** 2
     hi = hb.bands_db(P, [(4000, 8000)])[:, 0]; mid = hb.bands_db(P, [(2000, 4000)])[:, 0]
     code = bits[:, 0] * 2 + bits[:, 1]
     t = np.arange(len(X)); g = np.clip(t - 1 + hb.HB_LAG, 0, 2 * len(bits) - 1) // 2
     nons = (code[g] != 1) & (hi < mid - margin)
+    if z_exempt is not None:
+        lo = hb.bands_db(P, [(0, 1000)])[:, 0]
+        nons &= ~(lo > mid + z_exempt)
     w = np.convolve(nons.astype(float), np.ones(3) / 3, 'same')
     G = -np.clip((hb.FR - fc) * S / 1000, 0, depth)
     X *= 10 ** (w[:, None] * G[None, :] / 20)

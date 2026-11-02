@@ -221,3 +221,20 @@ fricative, and its high band loses 24 dB/kHz above 5 kHz ("soft") or 60 dB/kHz a
 Round 16: https://claude.ai/artifact/1o5Xr8B8GVH7QiPNr2romy, `tools/listening/render_ab16.py`,
 key `ab-16-key.json`. v3.8 vs soft (4 pairs), v3.8 vs hard (4), null pair 5. Each window is
 the 8 s with the most sh/f/th/z frames.
+
+**Round 16 result (Jeff, 2026-11-02 19:52):** `sotto-ab-16 1:A 2:A 3:= 4:A 5:= 6:B 7:- 8:- 9:-`:
+the cap won all 4 decided pairs (soft: 2 wins, 1 tie; hard: 2 wins), null pair correct, 3 pairs
+not scored. Jeff: "there are two hiss models needed: one that limits the overall band, and
+another that affects non S shapes." Our reading: v3.8's hiss on sh/f/th is at the original's
+level, yet less of it sounds closer, so synthetic noise above 5 kHz is more noticeable than
+real frication at the same level. The 14-bit s model (round 15, no audible gain, -0.02 PESQ,
+a bitstream change) is dropped.
+
+`nons_cap.py` gains `z_exempt`: frames whose decoded 0-1 kHz is above their 2-4 kHz (a voicing
+bar) are left alone. At 0 dB it halves the cut on z/v/zh (6-7 kHz: -15 -> -11 dB re original)
+and leaves sh almost as capped.
+
+Round 17: https://claude.ai/artifact/DNbbfjC8gFmaMzQv5sztav, `tools/listening/render_ab17.py`,
+key `ab-17-key.json`. soft vs hard (4 pairs), soft vs soft + z exemption (3; two of them differ
+very little), ceiling vs ceiling + soft on the MP3-cut voices 777 and 3170 (2), v3.8 vs soft on
+446 MHz / 60 km/h / 52 dB-Hz fading (1, 7% frames lost), null pair 1.
