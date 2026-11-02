@@ -128,15 +128,17 @@ def decimate_interp(v, axis_vals=None):
     return out
 
 
-def interp_wo(wo, voiced):
-    """Codec 2 style: odd 10 ms subframes take Wo from the 20 ms frames either side."""
+def interp_wo(wo, voiced, guard=False):
+    """Codec 2 style: odd 10 ms subframes take Wo from the 20 ms frames either side.
+    guard (v3.8): a voiced second half whose neighbours are both unvoiced keeps its own
+    frame's Wo instead of the next frame's, whose pitch field is a hiss index."""
     out = wo.copy()
     for i in range(1, len(wo), 2):
         a, b = i - 1, min(i + 1, len(wo) - 1)
         if voiced[i] and voiced[a] and voiced[b]:
             out[i] = 0.5 * (wo[a] + wo[b])
         elif voiced[i]:
-            out[i] = wo[a] if voiced[a] else wo[b]
+            out[i] = wo[a] if (voiced[a] or (guard and not voiced[b])) else wo[b]
         else:
             out[i] = WO_MIN * 2 if not voiced[i] else out[i]
     return out
@@ -388,7 +390,7 @@ class SottoV0:
         rk = decimate_interp(rk)
         en = decimate_interp(en)
         wo[1::2] = wo[0::2]
-        wo = interp_wo(wo, voiced)
+        wo = interp_wo(wo, voiced, getattr(self, "UU_WO_GUARD", False))
         wo = np.where(voiced > 0, wo, np.maximum(wo, WO_MIN))
         m = np.zeros(2 * n, MODEL)
         m = set_wo(m, wo, np.minimum(voiced, 1))
