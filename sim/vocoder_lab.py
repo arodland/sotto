@@ -397,6 +397,11 @@ class SottoV0:
         m = set_energy(from_rate_k(m, rk), en)
         for k in np.where(voiced == MIXED)[0]:
             m[k]["voiced"] = mixed_cutoff(m[k]["Wo"])
+        return self._model_hook(m, rk, en)
+
+    def _model_hook(self, m, rk, en):
+        """Decoded model, its rate-K envelopes and energies, per 10 ms frame. v3.8 puts the
+        noise harmonics of unvoiced frames 50 Hz apart here (sim/hiss_band.py)."""
         return m
 
     @staticmethod

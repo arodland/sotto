@@ -26,7 +26,8 @@ for name,(key,ch,(a,e)) in SRC.items():
     if ONLY and name not in ONLY.split(','): continue
     x=sf.read(C+key+'.wav')[0]; x=x[:len(x)//320*320]
     v=vl.SottoV37(); b7=v.encode(resample_poly(x,1,2)); f7,g7=channel(b7,*ch) if ch else (b7,np.ones(len(b7),bool))
-    y8=vl.synthesise(v.decode(f7,g7))[160:]; y8=np.pad(y8,(0,max(0,len(x)//2-len(y8))))[:len(x)//2]; y37=resample_poly(y8,2,1)
+    if not os.environ.get('SKIP37'):   # SKIP37=1: keep the v3.7 rows already rendered
+        y8=vl.synthesise(v.decode(f7,g7))[160:]; y8=np.pad(y8,(0,max(0,len(x)//2-len(y8))))[:len(x)//2]; y37=resample_poly(y8,2,1)
     b=hb.SottoV38(**ENC).encode(x); fr,gd=channel(b,*ch) if ch else (b,np.ones(len(b),bool))
     y38=hb.SottoV38(**DEC).decode_audio16(fr,gd,n16=len(x))
     A,E=int(a*16000),min(int(e*16000),len(x))
@@ -34,5 +35,6 @@ for name,(key,ch,(a,e)) in SRC.items():
         y=y[A:E].copy(); y[:320]*=np.linspace(0,1,320); y[-320:]*=np.linspace(1,0,320)
         return y*np.sqrt(np.mean(x[A:E]**2)/np.mean(y**2))
     w=lambda n,y: sf.write(f'{S}/{name}_{n}.wav',np.round(np.clip(snip(y),-1,1)*32767).astype(np.int16),16000,subtype='PCM_16')
-    w('0_original',x); w('1_v37',y37); w('2_v38',y38)
+    w('0_original',x); w('2_v38',y38)
+    if not os.environ.get('SKIP37'): w('1_v37',y37)
     print(name,'done',f'lost {int((~gd).sum())}' if ch else '',flush=True)
