@@ -246,3 +246,16 @@ def test_fixed_point_encoder_matches_float():
     pf = ar.score(x[:len(x16)], cc.c_decode(bf), ar.CODEC_DELAY)[0]
     px = ar.score(x[:len(x16)], y, ar.CODEC_DELAY)[0]
     assert px > pf - 0.1
+
+
+def test_v38_unvoiced_frames_decode_at_50_hz_spacing():
+    """v3.8 carries a hiss index in the pitch field of all-unvoiced frames; the decoder must
+    not read it as a pitch (sim/hiss_band.py SottoV38._model_hook, run by SottoV0.decode)."""
+    import hiss_band as hb
+    rng = np.random.default_rng(0)
+    bits = np.zeros((6, 48), np.int8)
+    bits[:, 2:9] = rng.integers(0, 2, (6, 7))        # UU frames, random 7-bit field
+    bits[:, 9:14] = [1, 0, 1, 0, 0]                   # energy code 20
+    m = hb.SottoV38(vowel="speaker", vowel_shape="fine", blend=True).decode(bits)
+    assert np.all(m["voiced"] == 0)
+    assert np.allclose(m["Wo"], hb.W50) and np.all(m["L"] == 80)
