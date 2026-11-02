@@ -1,0 +1,67 @@
+# speedup round, profiling build (-DFX_PROFILE), 1 s ve9qrp, C55X_VARIANT=v3.7
+state: encoder 8272 words, decoder 426 words
+clock() pair: 292 cycles
+encode: 50 frames, cycles/frame mean 2526992 min 905853 max 2790766 -> 126.35 MHz mean, 139.54 MHz peak
+decode: 50 frames, cycles/frame mean 593824 min 53912 max 728796 -> 29.69 MHz mean, 36.44 MHz peak
+  enc nlp                                4.50 MHz
+  enc spectrum                          16.06 MHz
+  enc hs_refine                          2.90 MHz
+  enc c2_voicing                         2.16 MHz
+  enc frame_costs                       46.39 MHz
+  enc decide                            53.52 MHz
+  enc  msvq_search                      20.72 MHz
+  enc  decide spectrum                  16.06 MHz
+  enc  refine                           28.69 MHz
+  enc  ln_fit_error                     15.54 MHz
+  dec unpack                             2.64 MHz
+  dec min_phase                          9.25 MHz
+  dec overlap-add sums                  10.02 MHz
+  enc  odd_even_db                       0.89 MHz
+  enc   recip48 in refine                8.45 MHz
+  enc   fft (both spectra)              17.62 MHz
+  enc   codebook dot products            9.68 MHz
+  enc  nlp filter                        2.02 MHz
+  enc  nlp DFT                           1.10 MHz
+stack used: 3126 of 4096 words, system stack 1024 of 2048 words
+done
+simulated in 97.735 s
+
+# profiling build, 2 s LibriSpeech 198 at 16 kHz, -DBENCH16
+state: encoder 40056 words, decoder 11760 words
+clock() pair: 295 cycles
+encode: 100 frames, cycles/frame mean 3724245 min 450437 max 4397533 -> 186.21 MHz mean, 219.88 MHz peak
+decode: 100 frames, cycles/frame mean 1379857 min 56554 max 1640751 -> 68.99 MHz mean, 82.04 MHz peak
+  enc nlp                                4.59 MHz
+  enc spectrum                          16.12 MHz
+  enc hs_refine                          2.41 MHz
+  enc c2_voicing                         1.90 MHz
+  enc frame_costs                       43.15 MHz
+  enc decide                            56.54 MHz
+  enc  msvq_search                      20.89 MHz
+  enc  decide spectrum                  16.12 MHz
+  enc  refine                           28.51 MHz
+  enc  ln_fit_error                     12.49 MHz
+  dec unpack                             5.33 MHz
+  dec min_phase                         18.93 MHz
+  dec overlap-add sums                  23.73 MHz
+  enc  odd_even_db                       0.73 MHz
+  enc   recip48 in refine                8.73 MHz
+  enc   fft (both spectra)              17.43 MHz
+  enc16 decimate + core analysis       130.16 MHz
+  enc16  core analysis                 125.48 MHz
+  enc16 input STFT + bands              10.00 MHz
+  enc16 rules                            2.78 MHz
+  enc16 local decoder (core)            33.18 MHz
+  enc16 local 2x upsampler + STFT       15.38 MHz
+  enc16 finish (index, side bit)         0.92 MHz
+  enc16 core decide                      0.01 MHz
+  dec16 core decoder                    33.18 MHz
+  dec16 2x upsampler                     3.88 MHz
+  dec16 stage A (STFT, predictor)       11.90 MHz
+  dec16 stage B (hiss synthesis)        18.58 MHz
+  enc   codebook dot products            9.67 MHz
+  enc  nlp filter                        2.04 MHz
+  enc  nlp DFT                           1.09 MHz
+stack used: 3604 of 4096 words, system stack 1024 of 2048 words
+done
+simulated in 315.763 s

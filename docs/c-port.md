@@ -475,6 +475,9 @@ estimator 18 → 4.5, refinement 36 → 29, minimum phase 16 → 9. In the v3.8 
 resamplers also run on split halves, and its 320-point FFT's radix-5 stage is shared by the
 160-point transforms.
 
+The runs are in `docs/results/c55x_bench_speedup_*.txt` and the profiles in
+`docs/results/c55x_profile_speedup.txt`.
+
 The real-input FFT gives the same spectrum to within a unit or two in the last place, but
 not bit for bit, so a frame changes where two choices were nearly tied. On ten 16 kHz clips
 97 to 100% of frames are identical, on four 8 kHz clips 98 to 100%, and the mean PESQ-NB of

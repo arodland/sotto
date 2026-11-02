@@ -1,0 +1,7 @@
+# speedup round (2026-11-02), C55X_VARIANT=v3.7, 10 s ve9qrp; bits = x86 v3.7 build
+state: encoder 8272 words, decoder 426 words
+encode: 500 frames, cycles/frame mean 2298163 min 816549 max 2558065 -> 114.91 MHz mean, 127.90 MHz peak
+decode: 500 frames, cycles/frame mean 594558 min 53741 max 737316 -> 29.73 MHz mean, 36.87 MHz peak
+stack used: 3124 of 4096 words, system stack 1024 of 2048 words
+done
+simulated in 831.36 s
