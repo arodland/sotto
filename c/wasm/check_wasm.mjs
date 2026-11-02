@@ -1,5 +1,5 @@
 // Decodes every docs/samples/v38/*.bit (with its .good file when there is one) with the
-// WebAssembly decoder (docs/sotto_dec.wasm through docs/sotto-dec.js) and with the native
+// WebAssembly decoder (docs/sotto.wasm through docs/sotto.js) and with the native
 // c/sotto_dec -16, and compares the samples. Run from the repository root after `make` and
 // `make -C c/wasm install`: node c/wasm/check_wasm.mjs [WASM]
 // SPDX-License-Identifier: MIT
@@ -7,10 +7,10 @@ import { readFileSync, readdirSync, existsSync, mkdtempSync, rmSync } from "node
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadSotto } from "../../docs/sotto-dec.js";
+import { loadSotto } from "../../docs/sotto.js";
 
 const dir = "docs/samples/v38";
-const sotto = await loadSotto(readFileSync(process.argv[2] || "docs/sotto_dec.wasm"));
+const sotto = await loadSotto(readFileSync(process.argv[2] || "docs/sotto.wasm"));
 console.log(`wasm decoder: ${sotto.format}`);
 const tmp = mkdtempSync(join(tmpdir(), "sotto-wasm-"));
 let worst = Infinity, bad = 0;

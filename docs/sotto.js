@@ -1,4 +1,4 @@
-// sotto v3.8 decoder in the browser: loads sotto_dec.wasm (c/wasm, built from the C port in c/)
+// sotto v3.8 decoder in the browser: loads sotto.wasm (c/wasm, built from the C port in c/)
 // and turns received frames into 16 kHz speech. Used by index.html; c/wasm/check_wasm.mjs runs
 // the same module under node to compare it with the native decoder.
 // SPDX-License-Identifier: MIT

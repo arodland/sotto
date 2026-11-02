@@ -36,12 +36,13 @@ The page's Part 1 decodes sotto v3.8 in the browser, so `v38/` holds bitstreams,
 | `<voice>__<condition>__codec2_2400.flac` | Codec 2 2400 through the same chain, same seed |
 | `<voice>__original16.flac` | the 16 kHz input (LibriSpeech voices only; ve9qrp exists only at 8 kHz) |
 
-Decode one with `c/sotto_dec -16 X.bit out.raw X.good` (16 kHz raw). Made by `tools/render_page_v38.py`; scores in `docs/results/page_v38.json`. The older `encoder/...__sotto_v36.flac` files are kept for reference.
+Part 2 of the page (more voices, no radio channel) uses `librispeech_<speaker>_<sex>__No_radio_channel.bit` and its Codec 2 and original16 files: the 8 LibriSpeech dev-clean speakers held out of codebook training (`tools/clean_corpus.py`), the same 12 s clips as the 8 kHz test set. Decode one with `c/sotto_dec -16 X.bit out.raw X.good` (16 kHz raw). Made by `tools/render_page_v38.py`; scores in `docs/results/page_v38.json`. The older `encoder/...__sotto_v36.flac` files are kept for reference.
 
 ## Sources
 
 - `male_ve9qrp_15s`: 15 s from `ve9qrp.raw` in the Codec 2 repository (`codec/codec2/raw/`, LGPL-2.1).
 - `male_libri3436_15s`: LibriSpeech utterance 3436-172162-0000, from *The Age of Chivalry*, read by Anders Lankford. Trimmed to 15 s.
+- `librispeech_<speaker>_<sex>` (`v38/`): the first 12 s of the first utterance of at least 12 s per speaker in LibriSpeech dev-clean (16 kHz, peak-normalised).
 - `female_libri198_14s`: LibriSpeech utterance 198-209-0000, from *Sense and Sensibility*, read by Heather Barnett. The full utterance, 13.9 s.
 
 LibriSpeech (V. Panayotov, G. Chen, D. Povey, S. Khudanpur, ICASSP 2015) is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). We used the copies in the librosa example data, downsampled them to 8 kHz (16 kHz for `v38/`) and peak-normalised them. The decoded versions here are derived from those recordings.

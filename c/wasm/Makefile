@@ -2,8 +2,8 @@
 # Needs clang and wasm-ld with a wasm32-wasi sysroot (Debian/Ubuntu: apt install clang lld
 # wasi-libc libclang-rt-dev-wasm32). Run `make` in c/ first: it generates the codebook and
 # hiss tables, and build/codec2 holds Codec 2's generated codebooks.
-#   make            sotto_dec.wasm
-#   make install    copies it to docs/sotto_dec.wasm (the file the page loads)
+#   make            sotto.wasm
+#   make install    copies it to docs/sotto.wasm (the file the page loads)
 #   make check      decodes with node and compares against c/sotto_dec -16
 CC_WASM ?= clang
 WASI_SYSROOT ?=
@@ -22,7 +22,7 @@ SRCS = sotto_wasm.c ../sotto.c ../sotto_hiss.c ../sotto_codebook.c ../sotto_hiss
 OBJS = $(patsubst %.c,obj/%.o,$(notdir $(SRCS)))
 vpath %.c . .. $(C2SRC) $(C2GEN)/src
 
-sotto_dec.wasm: $(OBJS)
+sotto.wasm: $(OBJS)
 	$(CC_WASM) $(TARGET) -mexec-model=reactor -Wl,--gc-sections -Wl,--strip-all \
 	  -Wl,-z,stack-size=1048576 -Wl,--initial-memory=8388608 -Wl,--max-memory=268435456 \
 	  -o $@ $(OBJS)
@@ -34,12 +34,12 @@ obj/sine.o: CFLAGS += -Dcodec2_rand=codec2_rand_32bit
 obj:
 	mkdir -p obj
 
-install: sotto_dec.wasm
-	cp sotto_dec.wasm ../../docs/sotto_dec.wasm
+install: sotto.wasm
+	cp sotto.wasm ../../docs/sotto.wasm
 
-check: sotto_dec.wasm
+check: sotto.wasm
 	cd ../.. && node c/wasm/check_wasm.mjs
 
 clean:
-	rm -rf obj sotto_dec.wasm
+	rm -rf obj sotto.wasm
 .PHONY: install check clean

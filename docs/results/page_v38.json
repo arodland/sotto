@@ -214,5 +214,133 @@
   "pesq": 2.4126147429148355,
   "estoi": 0.7594434167521324,
   "codec2_pesq": 1.9828280607859294
+ },
+ {
+  "voice": "librispeech_2428_m",
+  "cond": "No radio channel",
+  "frames": 600,
+  "runs": [
+   {
+    "seed": 1,
+    "pesq": 3.3101918697357178,
+    "estoi": 0.8437301297178852,
+    "lost": 0
+   }
+  ],
+  "pesq": 3.3101918697357178,
+  "estoi": 0.8437301297178852,
+  "codec2_pesq": 3.141402244567871
+ },
+ {
+  "voice": "librispeech_251_m",
+  "cond": "No radio channel",
+  "frames": 600,
+  "runs": [
+   {
+    "seed": 1,
+    "pesq": 2.776967763900757,
+    "estoi": 0.8539166853348075,
+    "lost": 0
+   }
+  ],
+  "pesq": 2.776967763900757,
+  "estoi": 0.8539166853348075,
+  "codec2_pesq": 2.518709897994995
+ },
+ {
+  "voice": "librispeech_3081_f",
+  "cond": "No radio channel",
+  "frames": 600,
+  "runs": [
+   {
+    "seed": 1,
+    "pesq": 2.4647867679595947,
+    "estoi": 0.6961574117437028,
+    "lost": 0
+   }
+  ],
+  "pesq": 2.4647867679595947,
+  "estoi": 0.6961574117437028,
+  "codec2_pesq": 2.036489248275757
+ },
+ {
+  "voice": "librispeech_3536_f",
+  "cond": "No radio channel",
+  "frames": 600,
+  "runs": [
+   {
+    "seed": 1,
+    "pesq": 2.793987512588501,
+    "estoi": 0.8164919289837114,
+    "lost": 0
+   }
+  ],
+  "pesq": 2.793987512588501,
+  "estoi": 0.8164919289837114,
+  "codec2_pesq": 2.178992509841919
+ },
+ {
+  "voice": "librispeech_6313_f",
+  "cond": "No radio channel",
+  "frames": 600,
+  "runs": [
+   {
+    "seed": 1,
+    "pesq": 2.6463687419891357,
+    "estoi": 0.7855930880476906,
+    "lost": 0
+   }
+  ],
+  "pesq": 2.6463687419891357,
+  "estoi": 0.7855930880476906,
+  "codec2_pesq": 2.2134101390838623
+ },
+ {
+  "voice": "librispeech_652_m",
+  "cond": "No radio channel",
+  "frames": 600,
+  "runs": [
+   {
+    "seed": 1,
+    "pesq": 2.750842809677124,
+    "estoi": 0.8103194299964712,
+    "lost": 0
+   }
+  ],
+  "pesq": 2.750842809677124,
+  "estoi": 0.8103194299964712,
+  "codec2_pesq": 2.4555301666259766
+ },
+ {
+  "voice": "librispeech_777_m",
+  "cond": "No radio channel",
+  "frames": 600,
+  "runs": [
+   {
+    "seed": 1,
+    "pesq": 3.0762641429901123,
+    "estoi": 0.8004105000618816,
+    "lost": 0
+   }
+  ],
+  "pesq": 3.0762641429901123,
+  "estoi": 0.8004105000618816,
+  "codec2_pesq": 3.006378650665283
+ },
+ {
+  "voice": "librispeech_8842_f",
+  "cond": "No radio channel",
+  "frames": 600,
+  "runs": [
+   {
+    "seed": 1,
+    "pesq": 2.571749210357666,
+    "estoi": 0.8349015614895962,
+    "lost": 0
+   }
+  ],
+  "pesq": 2.571749210357666,
+  "estoi": 0.8349015614895962,
+  "codec2_pesq": 1.9279253482818604
  }
 ]
