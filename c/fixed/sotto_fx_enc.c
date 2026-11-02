@@ -667,6 +667,26 @@ static void put_bits(unsigned char *out, int *pos, int v, int nb) {
    r padded to FX_CBW with 0); c55x/cb_dots.asm on the C5517 */
 #if defined(__TMS320C55X__) && !defined(FX_CB_DOTS_C)
 void fx_cb_dots(const int16_t *r, const int16_t *cb, int n, const int32_t *e2, int32_t *h);
+#elif defined(FX_ARM_DSP) && !defined(FX_CB_DOTS_C)
+/* Cortex-M4: SMLAD, two products a cycle, on value pairs (FX_CBW is even), two vectors at a
+   time so each pair of r is loaded once (n is even); the same 32-bit sums */
+static void fx_cb_dots(const int16_t *r, const int16_t *cb, int n, const int32_t *e2, int32_t *h) {
+  uint32_t rp[FX_CBW / 2], y0, y1, x;
+  int v, k;
+  memcpy(rp, r, sizeof rp);
+  for (v = 0; v < n; v += 2, cb += 2 * FX_CBW) {
+    int32_t a0 = 0, a1 = 0;
+    for (k = 0; k < FX_CBW / 2; k++) {
+      x = rp[k];
+      memcpy(&y0, cb + 2 * k, 4);
+      memcpy(&y1, cb + FX_CBW + 2 * k, 4);
+      a0 = fx_smlad(x, y0, a0);
+      a1 = fx_smlad(x, y1, a1);
+    }
+    h[v] = e2[v] * 32 - a0;
+    h[v + 1] = e2[v + 1] * 32 - a1;
+  }
+}
 #else
 static void fx_cb_dots(const int16_t *r, const int16_t *cb, int n, const int32_t *e2, int32_t *h) {
   int v, k;

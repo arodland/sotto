@@ -94,9 +94,14 @@ fx_uacc fx_udiv_shl(fx_uacc a, int sh, fx_uacc d, fx_uacc *rem) {
    handles by switching modes */
 #if !(defined(__TMS320C55X__) && !defined(FX_FFT_C))
 static inline void bfly(int32_t *ar, int32_t *ai, int32_t *br, int32_t *bi, int16_t c, int16_t s) {
+#ifdef FX_WIDE_MUL
+  int32_t xr = fx_q15_mac2(*br, c, *bi, s);
+  int32_t xi = (int32_t)(((fx_acc)*bi * c - (fx_acc)*br * s + 16384) >> 15);
+#else
   int16_t rh = FX_HI(*br), rl = FX_LO(*br), ih = FX_HI(*bi), il = FX_LO(*bi);
   int32_t xr = (int32_t)rh * c + (int32_t)ih * s + (((int32_t)rl * c + (int32_t)il * s + 16384) >> 15);
   int32_t xi = (int32_t)ih * c - (int32_t)rh * s + (((int32_t)il * c - (int32_t)rl * s + 16384) >> 15);
+#endif
   int32_t a0 = *ar, a1 = *ai;
   *ar = (a0 + xr + 1) >> 1; *ai = (a1 + xi + 1) >> 1;
   *br = (a0 - xr + 1) >> 1; *bi = (a1 - xi + 1) >> 1;

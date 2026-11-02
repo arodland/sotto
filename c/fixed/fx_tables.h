@@ -3,6 +3,7 @@
 #ifndef SOTTO_FX_TABLES_H
 #define SOTTO_FX_TABLES_H
 #include <stdint.h>
+#include "fx.h"            /* FX_CB_UNPACKED may be set there (FX_ARM_DSP) */
 
 #define FX_K 20          /* rate-K envelope points */
 #define FX_NC (FX_K - 1) /* DCT coefficients per codebook vector */
