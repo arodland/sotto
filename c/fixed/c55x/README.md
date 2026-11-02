@@ -7,8 +7,10 @@ that the DSP output is bit-identical to the x86 build. Results are in `docs/c-po
 | File | What it is |
 |---|---|
 | `bench.c` | Encodes `in.raw` (16-bit, 8 kHz, up to 30 s) and writes `out.bit`, then decodes it and writes `out.raw`, using CIO file I/O on the host. Prints the cycles per frame (mean, minimum, maximum), the state sizes and the stack high-water marks. Build it with `-DFX_PROFILE` for a breakdown by block (the `FX_PROF` marks in the codec), with `-DFFT_BENCH` for the 512-point FFT alone, and with `-DBENCH16` to run 16 kHz audio through the v3.8 layer (`out.raw` is then 16 kHz, 5 frames later than `sotto_dec -16`'s output, which removes the layer's delay). |
+| `cb_dots.asm`, `hsum.asm`, `nlp_dft.asm` | Hand-written kernels for the encoder's three hottest exact loops: the codebook dot products (`fx_cb_dots`, used with the unpacked codebook), the harmonic sums of the pitch refinement (`fx_hsum`) and the pitch estimator's 64-point DFT (`fx_nlp_dft`, one dual multiply-accumulate per cosine and sine pair). Each gives the same integers as its C version in `sotto_fx_enc.c`, which the x86 build uses; `-DFX_CB_DOTS_C`, `-DFX_HSUM_C` or `-DFX_NLP_DFT_C` uses the C version on the DSP too. |
+| `kernels.c` | Checks the three kernels against their C versions on random inputs: `C55X_MAIN=kernels sh tools/c55x_build.sh`, then run `kernels.out` with `bench.js`. Prints `ok` for each. |
 | `fxtest.c` | Checksums of the arithmetic primitives in `fx.h` and `fx_math.c`. Its output must match the same file built with gcc. |
-| `bench.cmd` | Linker memory map: 32K words of dual-access RAM (DARAM) and 128K words of single-access RAM (SARAM), as on the C5517. |
+| `bench.cmd` | Linker memory map: 32K words of dual-access RAM (DARAM) and 128K words of single-access RAM (SARAM), as on the C5517. SARAM is split into ranges that each stay inside one 64K-word page: the simulator stops with "PAGE BOUNDARY CROSSING" when an address register steps across a page end, even just past the last element of an array. The cosine table and the strings go in DARAM. |
 | `bench16.cmd` | The same for `-DBENCH16`: v3.8's states don't fit DARAM, so the heap gets a 64K-word page of SARAM. `c55x_build.sh` picks it. |
 | `bench.js` | Debug Server Scripting (DSS) script: loads the program, enables the profile clock that `clock()` reads, and runs to exit. |
 | `tisim_c55x30_ca.ccxml` | Target configuration: C55xx Rev 3.0 CPU cycle-accurate simulator. |
@@ -29,8 +31,9 @@ head -c 16000 ../../../../codec/codec2/raw/ve9qrp_10s.raw > in.raw    # 1 s
 ```
 
 The simulator runs about 1 s of audio in 1.5 minutes. `C55X_OUT=dir` builds into another
-folder; `-DFX_CB_UNPACKED` stores the codebook one value per word (29 KB more, faster
-search). `out.raw` is the x86 decoder's output (`c/fixed/sotto_dec_fx out.bit`) delayed by 160
+folder. The build stores the codebook one value per word (`-DFX_CB_UNPACKED`, 29 KB more
+than packed, and needed by `cb_dots.asm`); `C55X_PACKED=1` builds the packed codebook and
+its C search instead. `out.raw` is the x86 decoder's output (`c/fixed/sotto_dec_fx out.bit`) delayed by 160
 samples (the command-line tool drops the first 20 ms), and otherwise identical.
 
 ## Getting the tools (Linux x86-64, 2026-11)

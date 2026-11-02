@@ -442,6 +442,59 @@ With 1 to 3, the encoder should land near 100 MHz at its worst frame, and the de
 25 MHz. A C5517 board is still needed to confirm the simulator against real memory wait
 states.
 
+## Fixed point on the C55x: the speedup round
+
+*2026-11-02, after PR #18.* The same simulator and inputs as above. Every change keeps the
+x86 build and the DSP build identical to each other (checked on the 8 kHz and 16 kHz runs);
+every change but one also keeps the bits of PR #18.
+
+| | PR #18: mean / worst frame | Now: mean / worst frame |
+|---|---:|---:|
+| v3.7 encoder (8 kHz, ve9qrp 10 s) | 188 / 212 | **@@E8@@** |
+| v3.7 decoder | 36.7 / 43.9 | **@@D8@@** |
+| v3.8 encoder (16 kHz, LibriSpeech 198, 13.9 s) | 288 / 328 | **@@E16@@** |
+| v3.8 decoder | 92.3 / 106.8 | **@@D16@@** |
+
+**What changed.** Encoder MHz on the 1 s 8 kHz profile (the profiling build's timer calls add
+a few percent), measured after each step:
+
+| Step | Encoder | Decoder | Bits |
+|---|---:|---:|---|
+| PR #18 | 206.9 | 36.9 | |
+| Real-input FFT: the 512-point spectra as one 256-point complex FFT plus a split step (`fx_rfft_pack`, `fx_rfft_split`), and the FFT's loops reordered so each twiddle is read once a group. The v3.8 layer's 320-point STFTs and its inverse go the same way at 160 points | 190.5 | | about 1% of frames differ |
+| Codebook search: the codebook unpacked to one value per word (29 KB more) and the dot products in assembly with the dual multiply-accumulate (`cb_dots.asm`, two vectors at a time) | 169.2 | | same |
+| Voicing fit: the two divisions of a harmonic share one normalisation (`div_q15_2`) | 150.6 | | same |
+| Minimum phase from precomputed even/odd tables (`fx_mp_cos`, `fx_mp_sin`, 8 KB), using the symmetry of the 64-point transform; the refinement's harmonic sums in assembly (`hsum.asm`) | 143.9 | 29.7 | same |
+| Pitch estimator: the 64-point DFT in assembly, cosine and sine in one dual multiply-accumulate on a circular buffer (`nlp_dft.asm`), and the 48-tap filter as two 16-bit loops on split high and low halves; the codebook search skips runs of 8 vectors whose smallest error can't make the list | 126.4 | 29.7 | same |
+
+By block: codebook search 48 → 21 MHz, FFTs 35 → 18, voicing fit 32 → 16, pitch
+estimator 18 → 4.5, refinement 36 → 29, minimum phase 16 → 9. In the v3.8 layer the 41-tap
+resamplers also run on split halves, and its 320-point FFT's radix-5 stage is shared by the
+160-point transforms.
+
+The real-input FFT gives the same spectrum to within a unit or two in the last place, but
+not bit for bit, so a frame changes where two choices were nearly tied. On ten 16 kHz clips
+97 to 100% of frames are identical, on four 8 kHz clips 98 to 100%, and the mean PESQ-NB of
+the 8 kHz set is 2.849 before and after. The A/B page (fixed-point WebAssembly builds of
+PR #18 and this round, side by side) is for listening.
+
+**Memory.** The tables grow by 37 KB: 29 KB for the unpacked codebook and 8 KB for the
+minimum-phase tables. `C55X_PACKED=1` (`tools/c55x_build.sh`) keeps the packed codebook and
+its C search, which gives the same bits more slowly. With v3.8 the total is
+about @@RAM@@ of the C5517's 320 KB.
+
+**Where the encoder's time goes now** (8 kHz, 1 s, profiling build, MHz): codebook search 21
+(of which the dot products 10), pitch refinement 29 (of which the 2^48 reciprocals 8),
+the two spectra 16 each (FFT 18 of that, all four), voicing fit 16, pitch estimator 5,
+the rest about 20. Decoder: overlap-add 10, minimum phase 9, the rest 10.
+
+**Next.** The C5517's FFT accelerator can't be simulated: its 16-bit data would change the
+low bits, and it needs a board to measure. On the simulator the remaining large items are
+compiled C: the refinement's reciprocals, the voicing fit's per-harmonic loop, and the
+decoder's overlap-add (one 256-point inverse FFT, as Codec 2 does, would replace it but
+changes the bits). The encoder still runs its own copy of the decoder for the v3.8 layer
+(33 MHz).
+
 ## Fixed point: the plan
 
 The C55x has no floating-point unit. Software float would be far too slow for the analysis

@@ -8,6 +8,8 @@
 #define FX_NC (FX_K - 1) /* DCT coefficients per codebook vector */
 
 extern const int16_t fx_cos512[512];
+extern const int16_t fx_mp_cos[32 * 63];  /* min_phase's transforms, see gen_fx_tables.py */
+extern const int16_t fx_mp_sin[32 * 63];
 extern const uint32_t fx_wo_tab[128];
 extern const int32_t fx_kfreq[FX_K];
 extern const int32_t fx_kinvw[FX_K - 1];

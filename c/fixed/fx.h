@@ -106,6 +106,13 @@ int32_t fx_log2_acc(fx_uacc x);
 fx_uacc fx_udiv_shl(fx_uacc a, int sh, fx_uacc d, fx_uacc *rem);
 /* in-place radix-2 FFT (n <= 512, a power of 2), forward, output = DFT / n */
 void fx_fft(int32_t *re, int32_t *im, int n);
+/* real-input FFT helpers (fx_math.c): pack, n2-point fx_fft, split gives bins 0..n2 of
+   the n = 2 n2 real samples as DFT / n; pre, n2-point FFT, unpack gives the real DFT / n
+   of a Hermitian spectrum given as bins 0..n2. ct: cos(2 pi i / n) Q15. */
+void fx_rfft_pack(int32_t *re, int32_t *im, int n2);
+void fx_rfft_split(int32_t *re, int32_t *im, int n2, const int16_t *ct, int n);
+void fx_irfft_pre(int32_t *re, int32_t *im, int n2, const int16_t *ct, int n);
+void fx_rfft_unpack(int32_t *re, const int32_t *im, int n2);
 /* 2^(y / 2^16) * 2^q, rounded and saturated to int32 (q may be negative) */
 int32_t fx_exp2(int32_t y, int q);
 

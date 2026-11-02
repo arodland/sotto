@@ -64,4 +64,9 @@ EXPORT(sotto_wasm_encode16) int sotto_wasm_encode16(const short *speech, int n, 
   return nf;
 }
 
+#ifdef SOTTO_FX
+/* the fixed-point build (c/fixed, the code that runs on the C5517): sotto_fx.wasm */
+EXPORT(sotto_wasm_format) const char *sotto_wasm_format(void) { return "sotto v3.8 fixed point"; }
+#else
 EXPORT(sotto_wasm_format) const char *sotto_wasm_format(void) { return sotto_format(); }
+#endif

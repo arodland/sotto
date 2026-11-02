@@ -73,11 +73,19 @@ static const int32_t ramp_db[3] = {-3083, -1541, -640};
 /* interpolation of the 4 and 16 band levels onto the bins (np.interp, clamped): segment and Q16 fraction */
 static int16_t seg4[NBIN], seg16[NBIN];
 static int32_t frac4[NBIN], frac16[NBIN];
+/* the resampler taps (Q19) split into 16-bit halves (tap = hi 2^15 + lo) and ordered by the
+   input sample they multiply: down2 tdh/tdl[i] for x[i]; up2 teh/tel[i] (even outputs) and
+   toh/tol[i] (odd outputs, entry 0 unused) for x[i]. The sums are fx_mul32x16's, regrouped. */
+static int16_t tdh[NTAPS], tdl[NTAPS], teh[21], tel[21], toh[21], tol[21];
 static int tables_ready;
 
 static void init_tables(void) {
   int k;
   if (tables_ready) return;
+  for (k = 0; k < NTAPS; k++) tdh[k] = FX_HI(fx_hs_taps[NTAPS - 1 - k]), tdl[k] = FX_LO(fx_hs_taps[NTAPS - 1 - k]);
+  for (k = 0; k <= 20; k++) teh[k] = FX_HI(fx_hs_taps[40 - 2 * k]), tel[k] = FX_LO(fx_hs_taps[40 - 2 * k]);
+  toh[0] = tol[0] = 0;
+  for (k = 1; k <= 20; k++) toh[k] = FX_HI(fx_hs_taps[41 - 2 * k]), tol[k] = FX_LO(fx_hs_taps[41 - 2 * k]);
   for (k = 0; k < NBIN; k++) {
     int32_t f = 50 * k;
     if (f <= 4500) seg4[k] = 0, frac4[k] = 0;
@@ -116,23 +124,24 @@ static void ring_check(long j, long oldest, int size, const char *what) {
 #define S5_2 19261                          /* sin(4 pi / 5) */
 
 
-/* in place, decimation in time as 5 x 64: output = DFT / 64. Inputs: |re|, |im| <= 2^22,
-   so every twiddled sum stays below 2^39 and the output below 2^25. sr, si: 320 words of
-   scratch each. */
-static void fft320(int32_t *re, int32_t *im, int32_t *sr, int32_t *si) {
-  int n1, k2;
+/* in place, decimation in time as 5 x m (m = 32 or 64, a 5m-point FFT): output = DFT / m.
+   Inputs: |re|, |im| <= 2^23, so the output stays below 2^26.5. sr, si: 5m words of
+   scratch each. The STFT is a 320-point real FFT, done as this 160-point complex one
+   (m = 32) with fx_rfft_pack/split (or fx_irfft_pre/unpack the other way). */
+static void fft5x(int32_t *re, int32_t *im, int32_t *sr, int32_t *si, int m) {
+  int n1, k2, t = 64 / m;                      /* twiddle W_5m^i = W_320^(t i) */
   for (n1 = 0; n1 < 5; n1++) {
-    int32_t *xr = sr + 64 * n1, *xi = si + 64 * n1;
-    for (k2 = 0; k2 < 64; k2++) xr[k2] = re[5 * k2 + n1], xi[k2] = im[5 * k2 + n1];
-    fx_fft(xr, xi, 64);
+    int32_t *xr = sr + m * n1, *xi = si + m * n1;
+    for (k2 = 0; k2 < m; k2++) xr[k2] = re[5 * k2 + n1], xi[k2] = im[5 * k2 + n1];
+    fx_fft(xr, xi, m);
   }
-  for (k2 = 0; k2 < 64; k2++) {
+  for (k2 = 0; k2 < m; k2++) {
     int32_t zr[5], zi[5], t1r, t1i, t2r, t2i, t3r, t3i, t4r, t4i, a1r, a1i, a2r, a2i, b1r, b1i, b2r, b2i;
     zr[0] = sr[k2], zi[0] = si[k2];
-    for (n1 = 1; n1 < 5; n1++) {                 /* Z = Y W320^(n1 k2), W = c - j s */
-      int m = n1 * k2;                           /* < 320 */
-      int16_t c = fx_cos320[m], s = fx_cos320[(m + 240) % 320];
-      int32_t yr = sr[64 * n1 + k2], yi = si[64 * n1 + k2];
+    for (n1 = 1; n1 < 5; n1++) {                 /* Z = Y W^(n1 k2), W = c - j s */
+      int i = n1 * k2 * t;                       /* < 320 */
+      int16_t c = fx_cos320[i], s = fx_cos320[i + 240 < 320 ? i + 240 : i - 80];
+      int32_t yr = sr[m * n1 + k2], yi = si[m * n1 + k2];
       zr[n1] = fx_q15_mac2(yr, c, yi, s), zi[n1] = fx_q15_mac2(yi, c, -yr, s);   /* |c| + |s| < 46342; s may be -32768 */
     }
     t1r = zr[1] + zr[4], t1i = zi[1] + zi[4];
@@ -150,10 +159,10 @@ static void fft320(int32_t *re, int32_t *im, int32_t *sr, int32_t *si) {
     b2r = fx_q15_mac2(t3r, S5_2, t4r, -S5_1);
     b2i = fx_q15_mac2(t3i, S5_2, t4i, -S5_1);
     /* X1 = a1 - j b1, X4 = a1 + j b1, X2 = a2 - j b2, X3 = a2 + j b2 */
-    re[64 + k2] = a1r + b1i, im[64 + k2] = a1i - b1r;
-    re[256 + k2] = a1r - b1i, im[256 + k2] = a1i + b1r;
-    re[128 + k2] = a2r + b2i, im[128 + k2] = a2i - b2r;
-    re[192 + k2] = a2r - b2i, im[192 + k2] = a2i + b2r;
+    re[m + k2] = a1r + b1i, im[m + k2] = a1i - b1r;
+    re[4 * m + k2] = a1r - b1i, im[4 * m + k2] = a1i + b1r;
+    re[2 * m + k2] = a2r + b2i, im[2 * m + k2] = a2i - b2r;
+    re[3 * m + k2] = a2r - b2i, im[3 * m + k2] = a2i + b2r;
   }
 }
 
@@ -183,7 +192,6 @@ static void stft_power(fftw_t *w, const int16_t *x, uint32_t *P, int *ex) {
   uint32_t mx = 0;
   for (i = 0; i < HN; i++) {
     w->re[i] = (int32_t)x[i] * fx_hs_win[i];                /* Q15, < 2^30 */
-    w->im[i] = 0;
     {
       uint32_t a = (uint32_t)(w->re[i] < 0 ? -w->re[i] : w->re[i]);
       if (a > mx) mx = a;
@@ -198,7 +206,9 @@ static void stft_power(fftw_t *w, const int16_t *x, uint32_t *P, int *ex) {
   if (s == 0)
     while ((mx << (1 - s)) < ((uint32_t)1 << 22)) s--;
   for (i = 0; i < HN; i++) w->re[i] = s > 0 ? fx_rshr32(w->re[i], s) : (int32_t)((uint32_t)w->re[i] << -s);
-  fft320(w->re, w->im, w->sr, w->si);
+  fx_rfft_pack(w->re, w->im, HN / 2);                      /* real input: 160-point FFT */
+  fft5x(w->re, w->im, w->sr, w->si, 32);
+  fx_rfft_split(w->re, w->im, HN / 2, fx_cos320, HN);       /* bins 0..160, DFT / 64 */
   t = bins_shift(w->re, w->im, 19);
   for (k = 0; k < NBIN; k++) {
     int32_t a = t ? fx_rshr32(w->re[k], t) : w->re[k], b = t ? fx_rshr32(w->im[k], t) : w->im[k];
@@ -318,8 +328,10 @@ static int16_t sat16(fx_acc v) { return (int16_t)(v > 32767 ? 32767 : v < -32768
    The taps' absolute sum is 1.24, so the Q19 x Q15 sum stays below 2^35. */
 static int16_t down2(const int16_t *x) {
   int j;
-  fx_acc s = 0;
-  for (j = 0; j < NTAPS; j++) s += fx_mul32x16(fx_hs_taps[j], x[NTAPS - 1 - j]);
+  fx_acc h = 0, l = 0, s;
+  for (j = 0; j < NTAPS; j++) h += (fx_acc)tdh[j] * x[j];
+  for (j = 0; j < NTAPS; j++) l += (fx_acc)tdl[j] * x[j];
+  s = FX_JOIN(h, l);
   FX_ACC_CHECK(s);
   return sat16(fx_rshr(s, 19));
 }
@@ -327,9 +339,12 @@ static int16_t down2(const int16_t *x) {
 /* resample_poly(x, 2, 1): y[2n + p] = 2 sum_k h[2k + p] x8[n + 10 - k]; x8 at n - 10 */
 static void up2(const int16_t *x, int16_t *y) {
   int k;
-  fx_acc e = 0, o = 0;
-  for (k = 0; k <= 20; k++) e += fx_mul32x16(fx_hs_taps[2 * k], x[20 - k]);
-  for (k = 0; k <= 19; k++) o += fx_mul32x16(fx_hs_taps[2 * k + 1], x[20 - k]);
+  fx_acc eh = 0, el = 0, oh = 0, ol = 0, e, o;
+  for (k = 0; k <= 20; k++) eh += (fx_acc)teh[k] * x[k];
+  for (k = 0; k <= 20; k++) el += (fx_acc)tel[k] * x[k];
+  for (k = 0; k <= 20; k++) oh += (fx_acc)toh[k] * x[k];
+  for (k = 0; k <= 20; k++) ol += (fx_acc)tol[k] * x[k];
+  e = FX_JOIN(eh, el), o = FX_JOIN(oh, ol);
   FX_ACC_CHECK(e); FX_ACC_CHECK(o);
   y[0] = sat16(fx_rshr(e, 18));
   y[1] = sat16(fx_rshr(o, 18));
@@ -525,11 +540,10 @@ static void dec_stage_b(struct sotto_dec16 *d, int32_t t) {
     d->w.re[k] = fx_rshr(fx_mul32x16(a, fx_cos(ph)), 15);
     d->w.im[k] = -fx_rshr(fx_mul32x16(a, fx_sin(ph)), 15);   /* conjugate: the inverse by the forward FFT */
   }
-  for (k = NBIN; k < HN; k++) {              /* the real signal's mirror bins (conjugated spectrum) */
-    d->w.re[k] = d->w.re[HN - k];
-    d->w.im[k] = -d->w.im[HN - k];
-  }
-  fft320(d->w.re, d->w.im, d->w.sr, d->w.si);
+  /* the real signal's DFT / 64 from bins 0..160 (the mirror bins implied): a 160-point FFT */
+  fx_irfft_pre(d->w.re, d->w.im, HN / 2, fx_cos320, HN);
+  fft5x(d->w.re, d->w.im, d->w.sr, d->w.si, 32);
+  fx_rfft_unpack(d->w.re, d->w.im, HN / 2);
   /* y = conj(out) 64 / 320: real part / 5, windowed, into the overlap-add as samples Q4 */
   for (i = 0; i < HN; i++) {
     int32_t j = HH * t + i;

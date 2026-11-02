@@ -42,14 +42,15 @@ static unsigned used(int *a, int *b) {
 
 #ifdef FX_PROFILE
 /* inclusive cycles per block id, see FX_PROF in fx.h */
-#define NPROF 28
+#define NPROF 32
 static const char *const prof_name[NPROF] = {"enc nlp", "enc spectrum", "enc hs_refine", "enc c2_voicing",
   "enc frame_costs", "enc decide", "enc  msvq_search", "enc  decide spectrum", "enc  refine",
   "enc  ln_fit_error", "dec unpack", "dec min_phase", "dec overlap-add sums", "enc  odd_even_db", "enc   recip48 in refine", "enc   fft (both spectra)",
   /* the v3.8 16 kHz layer (sotto_fx_hiss.c); the core ids above count inside these too */
   "enc16 decimate + core analysis", "enc16  core analysis", "enc16 input STFT + bands", "enc16 rules",
   "enc16 local decoder (core)", "enc16 local 2x upsampler + STFT", "enc16 finish (index, side bit)", "enc16 core decide",
-  "dec16 core decoder", "dec16 2x upsampler", "dec16 stage A (STFT, predictor)", "dec16 stage B (hiss synthesis)"};
+  "dec16 core decoder", "dec16 2x upsampler", "dec16 stage A (STFT, predictor)", "dec16 stage B (hiss synthesis)",
+  "enc   codebook dot products", "enc  nlp filter", "enc  nlp DFT", "spare"};
 static unsigned long prof_tot[NPROF], prof_t0[NPROF], prof_self;   /* the cost of a clock() pair */
 void fx_prof(int id, int start) {
   unsigned long t = (unsigned long)clock();

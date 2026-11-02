@@ -19,6 +19,11 @@ make -C c/wasm check     # node: compares the decoder with c/sotto_dec -16 and t
 `WASI_SYSROOT=/path/to/wasi-sysroot` points the build at a sysroot clang doesn't find by itself
 (for example from wasi-sdk).
 
+`make -C c/wasm sotto_fx.wasm` builds the fixed-point codec (`c/fixed`, the integer code that
+runs on the C5517) behind the same entry points, for comparing fixed-point versions in the
+browser. Being integer only, it gives exactly the bits of `c/fixed/sotto_enc_fx -16` (apart
+from the padded last frame). It isn't installed into `docs/`.
+
 `docs/sotto.js` loads the module (`loadSotto(url)`) and gives `encode16(speech)` and
 `decode16(frames, good)`.
 
