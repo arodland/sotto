@@ -46,3 +46,7 @@ Part 2 of the page (more voices, no radio channel) uses `librispeech_<speaker>_<
 - `female_libri198_14s`: LibriSpeech utterance 198-209-0000, from *Sense and Sensibility*, read by Heather Barnett. The full utterance, 13.9 s.
 
 LibriSpeech (V. Panayotov, G. Chen, D. Povey, S. Khudanpur, ICASSP 2015) is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). We used the copies in the librosa example data, downsampled them to 8 kHz (16 kHz for `v38/`) and peak-normalised them. The decoded versions here are derived from those recordings.
+
+## sotto's decoder against FARGAN (`fargan/`)
+
+The page's Part 4. `fargan/<voice>__fargan_v38.flac` is Opus's FARGAN neural vocoder (stock Opus 1.6.1 weights) resynthesising the v3.8 decoder's output from the same `v38/<voice>__No_radio_channel.bit` bits, so its 4-8 kHz bands carry sotto's hiss index; `__fargan_v38_blindhf` guesses those bands from the lower ones instead; `__fargan_ceiling` is FARGAN fed the original speech's own features (not sendable at 2400 bit/s). 16 kHz, made by `tools/fargan_study.py`; scores in `docs/results/fargan_study.json`, write-up in `docs/fargan-study.md`.
