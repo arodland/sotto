@@ -267,8 +267,8 @@ fx_acc fx_oa_pair(const int16_t *bin, const int16_t *re, const int16_t *im, int 
   for (j = 0; j < nb; j++) {
     int x = (int)(((unsigned)bin[j] * (unsigned)n) & 511u);   /* wraps at 16 bits on the C55x */
     int y = (int)(((unsigned)bin[j] * (unsigned)(n + 1)) & 511u);
-    a0 += (fx_acc)re[j] * fx_cos512[x] - (fx_acc)im[j] * fx_cos512[(x - 128) & 511];
-    b1 += (fx_acc)re[j] * fx_cos512[y] - (fx_acc)im[j] * fx_cos512[(y - 128) & 511];
+    a0 += FX_P16(re[j], fx_cos512[x]) - FX_P16(im[j], fx_cos512[(x - 128) & 511]);
+    b1 += FX_P16(re[j], fx_cos512[y]) - FX_P16(im[j], fx_cos512[(y - 128) & 511]);
   }
   *a1 = b1;
   return a0;

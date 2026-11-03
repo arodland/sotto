@@ -51,11 +51,60 @@ over to the other, and probably to the FT-5D's.
 | Connect Systems CS7000-PLUS | STM32H743, Cortex-M7 480 MHz; AK2365A IF (the same IF chip as the FTM-300D) | comfortable, v3.8 too |
 | LILYGO T-TWR Plus | ESP32-S3 + SA868 module | probably fits; the baseband path through the SA868 is unverified |
 | Radtel RT-4D | AT32F423, 48 KB RAM | no (RAM) |
-| Quansheng UV-K5 family (own open firmwares) | Cortex-M0 48 MHz, 16 KB RAM | no |
+| Quansheng UV-K5/K6/5R Plus (own open firmwares, uvmod) | DP32G030, Cortex-M0 48 MHz, 64 KB flash, 16 KB RAM; BK4819 | no: even the decoder needs more than the 48 MHz (see below), and the stock 60 KB of application flash is full |
+| Baofeng UV-K6 "K6 Plus Open" (Baofeng's open firmware, cnt7/BAOFENG-UV-K6-Firmware) | KD32F328, Cortex-M0 96 MHz, 128 KB flash, 24 KB RAM; FD6818 (a BK4819 clone) | receive-only at best, and only with work: below |
 
 OpenRTX is GPL-3 and sotto is MIT, so sotto can be linked into an OpenRTX fork. The codec hook
 is `openrtx/src/core/audio_codec.c`, which calls `codec2_create(CODEC2_MODE_3200)` on
 160-sample frames.
+
+### The Baofeng UV-K6 and the Quansheng UV-K5 (Cortex-M0)
+
+*2026-11-03.* Baofeng published the K6's firmware, schematic and chip datasheets
+(github.com/cnt7/BAOFENG-UV-K6-Firmware, BFPL-1.0 licence). The board: a KD32F328 MCU
+(Cortex-M0 up to 96 MHz, two flash wait states there, a 4-word prefetch buffer, 128 KB flash
+of which 120 KB is for the application, 24 KB SRAM, a 1 Msps 12-bit ADC, no DAC), an FD6818
+RF chip with the BK4819's pins and registers, a TDA2822 speaker amplifier, external SPI NOR
+flash for voice prompts.
+
+Audio. The mic goes into the RF chip (MICP); the RF chip's demodulated audio goes to the
+volume control and the speaker amplifier. **The MCU sees neither.** Its only analogue
+inputs are the battery divider and a rectified VOX level. It can make sound: PA11 (TIM1
+channel 4, PWM at 48 kHz carrier, updated at 8 kHz by DMA) goes through a two-pole RC filter
+into the speaker path, which is how the voice prompts play. So the speaker side of a decoder
+exists on a stock radio; the mic side and an RX-audio input would need wires.
+
+Data. The RF chip's FSK packet modem runs at 1200 or 2400 baud (REG_72; the firmware ships
+1200), with a preamble, sync word and CRC per packet. sotto needs 2400 bit/s of payload, so
+the modem at its top rate has no room for sotto plus framing, let alone FEC.
+
+Cycles, from a Cortex-M0 build of the fixed-point C run in the emulator (`tools/cm0_build.sh`,
+`c/fixed/cm0/run.py`; the M0's published timings, the KD32F328's two flash wait states, ARMv6-M's
+missing 64-bit multiply, divide and CLZ costed as library calls; bitstream and decoded samples
+equal the x86 build's). MHz for real time, v3.7 at 8 kHz, ve9qrp 10 s, -O2:
+
+| | Encoder mean / worst | Decoder mean / worst |
+|---|---:|---:|
+| Code in zero-wait memory | 894 / 954 | 64.8 / 82.3 |
+| From flash at 96 MHz (2 wait states) | 1085 / 1138 | 78.0 / 100.1 |
+
+The decoder figure needed one change, bit-exact on every target: `FX_NARROW_MUL` (fx.h, on
+for ARMv6-M) forms 16 x 16-bit products in 32 bits before widening them, because on the M0 a
+product formed in 64 bits is a call to `__aeabi_lmul`. It took the decoder from 188 to 65 MHz
+(zero wait). Most of what's left is the overlap-add sums (`fx_oa_pair`, about 39 MHz) and the
+minimum-phase sums (14). The encoder has many more 64-bit products, but even if every one were
+free it would still need about 420 MHz: over four times the chip.
+
+Memory. The decoder needs 840 bytes of state and 2.3 KB of stack; the decoder alone is 57 KB
+of flash at -O2 (14 KB code, 44 KB tables, 30 KB of it the codebook) or 50 KB at -Os. The
+encoder's state is 34 KB, more than the K6's whole RAM.
+
+**Verdict.** The K6 cannot be a sotto radio: the encoder needs about ten times the CPU and
+more RAM than the chip has, and the mic never reaches the MCU. Receive-only is borderline:
+the decoder needs 78 MHz mean and 100 MHz worst of the 96 MHz, before the radio's own
+firmware runs, and the stock FSK modem can't carry 2400 bit/s, so the bits would need a
+hardware mod (RF chip's AF output to an ADC pin) and a soft demodulator on top. The
+Quansheng UV-K5 family is the same idea at half the clock and half the flash: no.
 
 ## Suggested order
 
