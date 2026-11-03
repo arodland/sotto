@@ -23,7 +23,7 @@ and nothing is written to flash per message. The design and the numbers are in
 
 **Why a pager-only image.** Stock Aura uses 115,208 of the 122,880 bytes of application flash,
 and the pager needs 66 KB (30 KB of it is the codebook). All of Aura with VOICE MSG comes out 58 KB
-too big. The pager-only image is 102,228 bytes (20 KB free) with 9,144 bytes of static RAM. It keeps Aura's drivers, its saved settings and VFO, and the VOICE MSG
+too big. The pager-only image is 102,228 bytes (20 KB free) with 9,144 bytes of static RAM. It keeps Aura's drivers, its saved settings and VFO, a frequency entry, and the VOICE MSG
 app, and leaves out the rest: the standby screen and menus, scanning, FM broadcast, SSTV, APRS,
 satellites, the spectrum and CHIRP programming. To use the radio normally, flash stock Aura back
 (same UPDATE-mode steps). Each image switch is one erase of the MCU's flash. The SPI flash, which
@@ -72,11 +72,16 @@ can clone Aura.
 
 ## Using VOICE MSG
 
-1. **Set the frequency in stock Aura first.** In standby, set the VFO (or a channel) to the
-   frequency the sender will use. FM wide is the usual setting. Power off, so Aura saves it. The
-   pager-only image has no frequency entry: it listens on whatever Aura saved.
-2. Flash `aura-pager-only.bin` and power on. The radio goes straight to VOICE MSG and listens,
-   with the speaker muted. The pager-only image writes nothing to flash, not even at power-off.
+1. Flash `aura-pager-only.bin` and power on. The radio goes straight to VOICE MSG and listens,
+   with the speaker muted, on the frequency stock Aura last saved. The pager-only image writes
+   nothing to flash, not even at power-off.
+2. **Set the frequency** with **#**, then six digits in kHz, the same way as Aura's VFO entry.
+   For example, `# 4 3 9 5 0 0` gives 439.500 MHz, and `# 1 4 6 5 2` then MENU gives 146.520 MHz
+   (MENU fills the rest with zeros). Below 100 MHz, start with a 0. EXIT deletes a digit, or
+   cancels when nothing has been typed. The frequency is kept in RAM only, so at power-on the
+   radio is back on the frequency Aura saved. To change that default, set it in stock Aura. The
+   bandwidth (wide or narrow) and offset are Aura's saved settings, too. FM wide is the usual
+   setting.
 3. The message plays by itself once every frame has arrived, or 3 s after the last packet if some
    are missing. Missing 20 ms frames are concealed. **MENU** plays it again, and **EXIT** stops a
    playback.
@@ -95,6 +100,7 @@ MENU again; EXIT leaves the app.)
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
 | 5 | 1200 / 2400 baud (profile D) |
 | * | clear the message |
+| # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
 | PTT | calibration transmit: test packet 0, twice in D and then twice in F, on the VFO's TX frequency and power |
 
 The screen:
