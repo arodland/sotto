@@ -114,7 +114,7 @@ more RAM than the chip has, and the mic never reaches the MCU. It can be a sotto
 of messages*: the decoder now needs about 60 MHz mean of the 96, the stock FSK modem can carry
 the bits slower than real time (a message, not live voice), 300 bytes of RAM hold a second of
 speech, and the PWM pin plays it. No hardware change and no flash write per message. That receiver is now built:
-[`docs/k6-pager.md`](k6-pager.md) (library `c/k6/`, Aura firmware patch `firmware/k6-aura/`). The
+[`docs/k6-receiver.md`](k6-receiver.md) (library `c/k6/`, Aura firmware patch `firmware/k6-aura/`). The
 Quansheng UV-K5 family is the same idea at half the clock and half the flash: no.
 
 ## Suggested order

@@ -1,7 +1,7 @@
 # c/k6: the K6 voice pager's receive library
 
 Packet reassembly and playback for receiving sotto messages on a Baofeng UV-K6 (KD32F328,
-Cortex-M0). The design and measurements are in [`docs/k6-pager.md`](../../docs/k6-pager.md), and
+Cortex-M0). The design and measurements are in [`docs/k6-receiver.md`](../../docs/k6-receiver.md), and
 the firmware that links this library is in [`firmware/k6-aura/`](../../firmware/k6-aura/).
 
 ```sh

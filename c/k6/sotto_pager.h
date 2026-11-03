@@ -1,6 +1,6 @@
 /* sotto voice pager: receive a sotto message as FSK packets, keep it in RAM, play it.
  *
- * The receive side of the K6 voice pager (docs/k6-pager.md): the radio's FSK modem hands
+ * The receive side of the K6 voice pager (docs/k6-receiver.md): the radio's FSK modem hands
  * over 64-byte packets in the K6 voice-pager packet format, version 1 (profile L), or 16-byte
  * packets (profile S); this code de-whitens them, checks them, puts each sotto frame in its
  * place in a RAM store with a good flag, and plays the message through the fixed-point
@@ -75,7 +75,7 @@ void sp_status(sp_status_t *st);
    to replay). sp_play_frame decodes the next 20 ms into pcm (160 samples, 8 kHz) and returns
    1, or returns 0 once the message and the decoder's 20 ms delay are done. Frames that never
    arrived are concealed. Takes about 55-75 MHz-milliseconds per call on the K6's M0 at
-   96 MHz (docs/k6-pager.md), so it must not run inside an interrupt. */
+   96 MHz (docs/k6-receiver.md), so it must not run inside an interrupt. */
 void sp_play_start(void);
 int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]);
 int sp_play_pos(void);           /* frames played so far */

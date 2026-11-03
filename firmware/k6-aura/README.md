@@ -6,7 +6,7 @@ Aura, the open Rust firmware for the Baofeng UV-K6 / K61 family
 radio chip's modem, keeps it in RAM only, and plays it on the speaker through the MCU's PWM pin.
 That pin is the one the stock firmware uses for its voice prompts. There are no hardware changes,
 and nothing is written to flash per message. The design and the numbers are in
-[`docs/k6-pager.md`](../../docs/k6-pager.md). The packet format is `k6-fsk-packet-spec.md`
+[`docs/k6-receiver.md`](../../docs/k6-receiver.md). The packet format is `k6-fsk-packet-spec.md`
 (version 1), and its reference packer is [`c/k6/k6fsk_ref.py`](../../c/k6/k6fsk_ref.py).
 
 - `aura-pager.patch`: the change to Aura at commit `edf3b98` (2026-11-02). It is GPL-3.0, like Aura.
@@ -114,6 +114,6 @@ bytes per frame. Raise it if the free-RAM figure leaves room.
    - `CRC BAD`: bit errors, or a byte order it couldn't detect. A rising `TO` count means the
      chip's FIFO interrupts didn't arrive as expected. Try 2 for the 16-byte frames.
 3. **A test message, then a real sotto clip.** The PC encodes with `c/sotto_enc` (v3.7 frames), and
-   the softmodem packs them with `k6fsk_ref.pack_message`. After it plays, note the DEC line. The
+   the softmodem sends them (`python -m modem.k6 tx`, see `docs/k6-pager.md`). After it plays, note the DEC line. The
    emulator predicts about 11-13 ms mean and 15-18 ms worst per 20 ms frame. Note the free RAM too:
    it should stay well above zero.

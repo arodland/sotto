@@ -901,7 +901,7 @@ index 0000000..a1df792
 +//! behind it. Registers are written by address (STM32F0 layout, checked
 +//! against KD32F328CB.svd) to keep this independent of the PAC's API.
 +//!
-+//! Part of the sotto voice pager (github.com/baitisj/sotto, docs/k6-pager.md).
++//! Part of the sotto voice pager (github.com/baitisj/sotto, docs/k6-receiver.md).
 +
 +use core::ptr::{read_volatile, write_volatile};
 +
