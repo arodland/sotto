@@ -92,12 +92,13 @@ the VOICE MSG screen reports how much RAM the stack never reached. That figure c
 the free RAM on entering the app and scanning it after a playback. If it is tight, the first knobs
 are `STORE_BYTES` (3.2 s per KB) and `-DFX_OA_UNPACKED` (2 KB).
 
-**Flash does not fit yet.** Measured by the *K6 pager firmware* CI job (`firmware/k6-aura/build.sh`):
+**All of Aura plus the pager doesn't fit; the pager-only image does.** Measured by the *K6 pager firmware* CI job (`firmware/k6-aura/build.sh`):
 
 | | Flash, bytes | Static RAM, bytes |
 |---|---:|---:|
 | Stock Aura `edf3b98` | 115,208 (7,672 free of 122,880) | 340 |
 | Aura + pager | 180,788 (**57,908 over**) | 9,144 |
+| Pager-only image (`--features pager-only`) | 102,228 (20,652 free) | 9,144 (8,576 left for the stack) |
 
 Aura fills 94% of the application flash by itself, and the pager adds 65.6 KB: the 30 KB
 codebook, 8 KB of minimum-phase tables, about 5 KB of other tables, and the decoder and packet

@@ -23,7 +23,7 @@ and nothing is written to flash per message. The design and the numbers are in
 
 **Why a pager-only image.** Stock Aura uses 115,208 of the 122,880 bytes of application flash,
 and the pager needs 66 KB (30 KB of it is the codebook). All of Aura with VOICE MSG comes out 58 KB
-too big. The pager-only image keeps Aura's drivers, its saved settings and VFO, and the VOICE MSG
+too big. The pager-only image is 102,228 bytes (20 KB free) with 9,144 bytes of static RAM. It keeps Aura's drivers, its saved settings and VFO, and the VOICE MSG
 app, and leaves out the rest: the standby screen and menus, scanning, FM broadcast, SSTV, APRS,
 satellites, the spectrum and CHIRP programming. To use the radio normally, flash stock Aura back
 (same UPDATE-mode steps). Each image switch is one erase of the MCU's flash. The SPI flash, which
