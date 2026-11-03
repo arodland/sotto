@@ -1,0 +1,19 @@
+{
+ "input": "kristoff__original.wav",
+ "frames": 250,
+ "packets": 32,
+ "lost_packets": [],
+ "store_frames": 992,
+ "flash_ws": 2,
+ "play_MHz": {
+  "mean": 52.6,
+  "worst": 73.5
+ },
+ "packet_cycles": {
+  "mean": 9058,
+  "worst": 10005
+ },
+ "stack_bytes": 3552,
+ "flash_bytes": 63420,
+ "static_ram_bytes": 3588
+}

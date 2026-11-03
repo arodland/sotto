@@ -18,3 +18,7 @@ c/fixed/c55x/f16/
 c/fixed/c55x/*.buildlog
 c/wasm/objfx/
 c/wasm/sotto_fx.wasm
+c/k6/host/
+c/k6/pager_host
+firmware/k6-aura/out/
+firmware/k6-aura/lib/

@@ -1,0 +1,44 @@
+# K6 voice pager: the receive library's host tests, then Aura (Baofeng UV-K6 firmware, Rust)
+# built with the pager patch, with its flash and RAM fit; the .bin is kept as a build artifact.
+name: K6 pager firmware
+on:
+  push:
+    branches: [main]
+    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tests/test_k6_pager.py",
+            ".github/workflows/k6-firmware.yml"]
+  pull_request:
+    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tests/test_k6_pager.py",
+            ".github/workflows/k6-firmware.yml"]
+
+jobs:
+  host-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install numpy pytest
+      - name: pager reassembly and playback vs the M0 decoder path
+        run: |
+          make -C c VARIANT=v3.7 fixed PYTHON=false
+          make -C c/k6
+          python -m pytest -q tests/test_k6_pager.py
+
+  aura-pager:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: toolchains (clang/lld for the C library, Rust for Aura)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq clang lld llvm
+          rustup toolchain install stable --profile minimal --target thumbv6m-none-eabi
+      - name: build Aura + pager, check the fit
+        run: sh firmware/k6-aura/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: aura-pager
+          path: |
+            firmware/k6-aura/out/aura-pager.bin
+            firmware/k6-aura/out/aura-pager.elf
+            firmware/k6-aura/out/size.txt
