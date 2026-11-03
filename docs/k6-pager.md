@@ -5,8 +5,8 @@ command line `python -m modem.k6`. Tests: `tests/test_k6.py`. Nothing here has b
 air yet. The first session with the radios is calibration, not voice.*
 
 The K6 "voice pager" receives a sotto message as data through its RF chip's FSK packet modem,
-keeps it in RAM and plays it (design: the K6 voice-pager memo; receiver firmware is a
-separate piece of work). This softmodem is the transmit side. It packs a `.sot` file into the
+keeps it in RAM and plays it (design: the K6 voice-pager memo; the receiver firmware is in
+[`docs/k6-receiver.md`](k6-receiver.md)). This softmodem is the transmit side. It packs a `.sot` file into the
 chip's packets and makes audio for the IC-7100, which transmits it on FM.
 
 ## The packet format

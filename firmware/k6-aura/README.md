@@ -1,0 +1,132 @@
+# VOICE MSG: sotto voice pager firmware for the Baofeng UV-K6
+
+Aura, the open Rust firmware for the Baofeng UV-K6 / K61 family
+([sophiel-meow/bf-k61-firmware-aura](https://github.com/sophiel-meow/bf-k61-firmware-aura)), with a
+**VOICE MSG** app added. The radio receives a sotto voice message as FSK packets through its own
+radio chip's modem, keeps it in RAM only, and plays it on the speaker through the MCU's PWM pin.
+That pin is the one the stock firmware uses for its voice prompts. There are no hardware changes,
+and nothing is written to flash per message. The design and the numbers are in
+[`docs/k6-receiver.md`](../../docs/k6-receiver.md). The packet format is `k6-fsk-packet-spec.md`
+(version 1), and its reference packer is [`c/k6/k6fsk_ref.py`](../../c/k6/k6fsk_ref.py).
+
+- `aura-pager.patch`: the change to Aura at commit `edf3b98` (2026-11-02). It is GPL-3.0, like Aura.
+  It adds `src/app/pager.rs`, `src/hal/pwm_audio.rs` and `src/ui/pager.rs`, and wires them into the
+  launcher, keys, screen and main loop. It also adds two raw-register helpers to the FD6818 driver
+  and makes `build.rs` link `lib/libsotto_k6.a`. The cargo feature `pager-only` makes VOICE MSG the
+  whole firmware.
+- `build.sh` clones Aura at that commit, applies the patch, and builds sotto's C library
+  (`tools/k6_build.sh`, MIT). It then builds stock Aura, Aura with VOICE MSG added, and the
+  pager-only image, and reports each one's flash and RAM use. It writes `out/aura-pager-only.bin`
+  only if it fits.
+- The GitHub Actions job *K6 pager firmware* runs the same build. Each run keeps the `.bin`, the
+  ELF and the size reports as a downloadable artifact.
+
+**Why a pager-only image.** Stock Aura uses 115,208 of the 122,880 bytes of application flash,
+and the pager needs 66 KB (30 KB of it is the codebook). All of Aura with VOICE MSG comes out 58 KB
+too big. The pager-only image is 102,228 bytes (20 KB free) with 9,144 bytes of static RAM. It keeps Aura's drivers, its saved settings and VFO, and the VOICE MSG
+app, and leaves out the rest: the standby screen and menus, scanning, FM broadcast, SSTV, APRS,
+satellites, the spectrum and CHIRP programming. To use the radio normally, flash stock Aura back
+(same UPDATE-mode steps). Each image switch is one erase of the MCU's flash. The SPI flash, which
+holds the settings, isn't touched by the switch.
+
+**Status, 2026-11-03.** The sotto side is tested on this machine and in the Cortex-M0 emulator.
+The Rust side builds in CI, but nobody has run it on a radio yet. Treat the first flash as a bring-up test, with the calibration steps
+below.
+
+## Before you flash: what can't be undone
+
+- **Flashing Aura replaces the stock firmware for good.** Baofeng never released the stock image,
+  and the bootloader can't read it back out. If your K6 already runs Aura, this is just an Aura
+  update.
+- **Only the Baofeng K6 / K61 with the FD6818 RF chip works.** That means CHIPID 0x4819. Boards with
+  the FD6818B (0x4829) need Aura's experimental `fd6818b` branch, and the pager isn't ported to it.
+  The pager screen says `RF chip not FD6818` and won't listen if the chip is wrong. The Quansheng
+  UV-K5/K6 is a different radio and won't take this image.
+- **Flash writes.** Installing writes the MCU's internal flash once. On Aura's first boot, the
+  `FORMAT FLASH?` prompt formats part of the 2 MB SPI flash once. That part holds Aura's settings,
+  VFO, contacts, satellites, FM, logo and SSTV image, but not the calibration. After that the pager
+  never writes flash. Aura itself still saves settings and channel state to the SPI flash
+  (wear-levelled) when you change them or power off, as it always does.
+
+## Flashing and backup
+
+You need a Quansheng-K5-style USB-to-TTL programming cable (the Kenwood 2-pin plug), Python 3 with
+`pyserial`, and Aura's `tools/` folder. After `build.sh` that folder is at `build/aura/tools/`, or you
+can clone Aura.
+
+1. **Get `aura-pager-only.bin`.** Download it from the *K6 pager firmware* run's artifacts on the pull
+   request, or run `sh firmware/k6-aura/build.sh`. That needs rustup, clang and lld, and llvm-tools.
+2. **Enter UPDATE mode.** With the radio off, hold **Side Key 1 and Side Key 2** and turn it on. The
+   screen shows `UPDATE`.
+3. **Flash it:** `python tools/flash.py aura-pager-only.bin /dev/ttyUSB0` (on Windows, the COM port).
+   On success it prints `succeed!` and the radio reboots. If it doesn't reboot, nothing was written
+   (a known Aura bug): power off and repeat from step 2. Pulling the battery mid-flash is safe; just
+   flash again.
+4. **Back up the SPI flash before formatting.** On the first boot the radio shows `FORMAT FLASH?`.
+   Leave it on that screen, plug in the cable, and run
+   `python tools/dump_aura_spiflash.py /dev/ttyUSB0 k6-spiflash-backup.bin`. It reads all 2 MB, the
+   factory calibration included, in a few minutes. Run it again if it stops partway. Keep the file.
+   You can also save the bootloader with `python tools/dump_bootloader_aura.py`. Then press **MENU**
+   to format.
+5. **Check the chip:** Settings → SYSTEM → CHIPID must read `0x4819`.
+
+## Using VOICE MSG
+
+1. **Set the frequency in stock Aura first.** In standby, set the VFO (or a channel) to the
+   frequency the sender will use. FM wide is the usual setting. Power off, so Aura saves it. The
+   pager-only image has no frequency entry: it listens on whatever Aura saved.
+2. Flash `aura-pager-only.bin` and power on. The radio goes straight to VOICE MSG and listens,
+   with the speaker muted. The pager-only image writes nothing to flash, not even at power-off.
+3. The message plays by itself once every frame has arrived, or 3 s after the last packet if some
+   are missing. Missing 20 ms frames are concealed. **MENU** plays it again, and **EXIT** stops a
+   playback.
+
+(In a build of all of Aura with VOICE MSG, if a later Aura ever has room: MENU, choose **VOICE MSG**,
+MENU again; EXIT leaves the app.)
+
+| Key | Does |
+|---|---|
+| MENU | play the message (again) |
+| EXIT | stop playback / leave |
+| UP / DOWN | volume, 3 dB steps on top of the automatic level (-9 to +12 dB) |
+| 1 | PHY: D (direct 2-FSK, the default) or F (FFSK 1200/1800 Hz) |
+| 2 | frames: L (64-byte packets, the default) or S (16-byte fallback) |
+| 3 | RX polarity invert (set automatically on a SyncNegative) |
+| 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
+| 5 | 1200 / 2400 baud (profile D) |
+| * | clear the message |
+| PTT | calibration transmit: test packet 0, twice in D and then twice in F, on the VFO's TX frequency and power |
+
+The screen:
+
+```
+VOICE MSG  439.50000     frequency
+D L 1200 i- s- e+ +0     PHY, frames, baud, invert, FIFO byte swap, emphasis, volume dB
+ID 42  640/640  80/80    message id, frames received/stored, packets received/total
+SYNC P CRC ok A7 TO 0    last sync polarity, CRC, magic byte (A7 = right), FIFO timeouts
+DEC 11.8/17.2ms 2930     after a playback: decode ms per 20 ms frame, mean/worst; free RAM bytes
+MENU play  PTT test
+```
+
+A message holds up to 640 frames (12.8 s). `STORE_BYTES` in `src/app/pager.rs` sets that, at 6.2
+bytes per frame. Raise it if the free-RAM figure leaves room.
+
+## First tests (spec section 8)
+
+1. **K6 transmits, IC-7100 records.** In VOICE MSG, press PTT. The radio keys up for about 3 s and
+   sends test packet 0 twice in profile D and twice in profile F. Record the IC-7100's receive
+   audio; the softmodem decodes it to settle polarity, bit order, FIFO byte order and deviation.
+   `TX not allowed here` means Aura's band lock refused that frequency or the VFO isn't FM.
+2. **IC-7100 transmits test packets, K6 receives.** Watch the SYNC line.
+   - `SYNC -` that never changes: no sync found. Check the level and deviation, or press 1 for
+     profile F.
+   - `SYNC N`: the polarity is inverted. The radio switches to inverted RX by itself, so the next
+     packet should show `SYNC P` and `i+`.
+   - `CRC ok A7`: the packet arrived intact. `s+` means the chip's FIFO turned out to be low byte
+     first; the radio found that from the magic byte and now swaps the bytes.
+   - `CRC BAD`: bit errors, or a byte order it couldn't detect. A rising `TO` count means the
+     chip's FIFO interrupts didn't arrive as expected. Try 2 for the 16-byte frames.
+3. **A test message, then a real sotto clip.** The PC encodes with `c/sotto_enc` (v3.7 frames), and
+   the softmodem sends them (`python -m modem.k6 tx`, see `docs/k6-pager.md`). After it plays, note the DEC line. The
+   emulator predicts about 11-13 ms mean and 15-18 ms worst per 20 ms frame. Note the free RAM too:
+   it should stay well above zero.

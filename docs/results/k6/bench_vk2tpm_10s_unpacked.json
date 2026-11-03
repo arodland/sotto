@@ -1,0 +1,19 @@
+{
+ "input": "vk2tpm_10s__original.wav",
+ "frames": 500,
+ "packets": 64,
+ "lost_packets": [],
+ "store_frames": 992,
+ "flash_ws": 2,
+ "play_MHz": {
+  "mean": 69.4,
+  "worst": 103.8
+ },
+ "packet_cycles": {
+  "mean": 9038,
+  "worst": 10095
+ },
+ "stack_bytes": 3456,
+ "flash_bytes": 63256,
+ "static_ram_bytes": 3588
+}

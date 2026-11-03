@@ -1,0 +1,19 @@
+{
+ "input": "ve9qrp_10s__original.wav",
+ "frames": 500,
+ "packets": 64,
+ "lost_packets": [],
+ "store_frames": 992,
+ "flash_ws": 2,
+ "play_MHz": {
+  "mean": 68.0,
+  "worst": 85.9
+ },
+ "packet_cycles": {
+  "mean": 9040,
+  "worst": 10000
+ },
+ "stack_bytes": 3456,
+ "flash_bytes": 63256,
+ "static_ram_bytes": 3588
+}

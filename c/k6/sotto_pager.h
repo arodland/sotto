@@ -1,0 +1,112 @@
+/* sotto voice pager: receive a sotto message as FSK packets, keep it in RAM, play it.
+ *
+ * The receive side of the K6 voice pager (docs/k6-receiver.md): the radio's FSK modem hands
+ * over 64-byte packets in the K6 voice-pager packet format, version 1 (profile L), or 16-byte
+ * packets (profile S); this code de-whitens them, checks them, puts each sotto frame in its
+ * place in a RAM store with a good flag, and plays the message through the fixed-point
+ * decoder. Nothing is written to flash. The radio code (Aura, Rust) owns the FSK registers,
+ * the screen and the PWM output; it calls only the functions below.
+ *
+ * The packet format: k6-fsk-packet-spec.md (project files, ht-survey/k6fsk/), reference
+ * k6fsk_ref.py. In short, profile L: PN9-whitened 64 bytes = magic 0xA7, msg_id, seq (2),
+ * total frames (2), 8 frames of 6 bytes, 8 reserved, CRC-16/CCITT-FALSE (2); packet k of a
+ * group g of 8 carries frames g*64 + s*8 + k, s = 0..7.
+ *
+ * No heap, no floating point, no 64-bit division: everything lives in the caller's buffer
+ * (sp_init) and in this library's static decoder state (about 0.9 KB plus a 2 KB cos/sin
+ * table). Not reentrant; call from one thread (Aura's main loop).
+ * SPDX-License-Identifier: MIT */
+#ifndef SOTTO_PAGER_H
+#define SOTTO_PAGER_H
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define SP_PAYLOAD_L 64           /* profile L packet */
+#define SP_PAYLOAD_S 16           /* profile S packet */
+#define SP_MAGIC 0xA7
+#define SP_FRAME_BYTES 6
+#define SP_FRAME_SAMPLES 160      /* 20 ms at 8 kHz */
+#define SP_GAP_MS 3000            /* play after this long with no packet for the message */
+
+/* sp_packet results */
+enum {
+  SP_BAD_LENGTH = -3,
+  SP_BAD_MAGIC = -2,             /* de-whitened byte 0 is not 0xA7 (profile L) */
+  SP_BAD_CRC = -1,
+  SP_DUP = 0,                    /* good packet, nothing new in it */
+  SP_ADDED = 1,                  /* good packet with new frames */
+  SP_NEW = 2,                    /* first packet of a new message (the old one is dropped) */
+  SP_COMPLETE = 3                /* this packet brought the message's last missing frame */
+};
+
+/* Message store in the caller's buffer (4-byte aligned). Returns the longest message it
+   holds, in frames (6.2 bytes per frame; 6 KB holds 976 frames, 19.5 s),
+   or 0 if the buffer is too small. Clears any message. */
+int sp_init(void *mem, unsigned bytes);
+
+/* One received packet, as the chip's FIFO gave it (whitened), SP_PAYLOAD_L or SP_PAYLOAD_S
+   bytes. Returns one of the codes above. The checked, de-whitened packet is kept for
+   sp_last_packet. */
+int sp_packet(const uint8_t *payload, int len);
+
+/* Per-packet diagnostics: the de-whitened bytes of the last packet passed to sp_packet,
+   good or bad (the screen shows the magic byte and the CRC result). */
+const uint8_t *sp_last_packet(void);
+
+typedef struct {
+  int16_t have;                  /* 1 while a message is in the store */
+  uint8_t msg_id;
+  uint8_t profile;               /* 'L' or 'S' */
+  uint16_t total;                /* frames in the message (profile S: known once its last group came) */
+  uint16_t stored;               /* frames that fit the store (= total unless it was truncated) */
+  uint16_t frames_got;           /* frames received, of stored */
+  uint16_t packets_got;          /* distinct packets received */
+  uint16_t packets_total;        /* packets in one pass (0 while unknown) */
+  uint16_t good_packets;         /* packets accepted since sp_init, all messages */
+  uint16_t bad_packets;          /* CRC or magic failures since sp_init */
+  int16_t complete;              /* every stored frame arrived */
+} sp_status_t;
+void sp_status(sp_status_t *st);
+
+/* Playback. sp_play_start resets the decoder and starts at frame 0 (it can be called again
+   to replay). sp_play_frame decodes the next 20 ms into pcm (160 samples, 8 kHz) and returns
+   1, or returns 0 once the message and the decoder's 20 ms delay are done. Frames that never
+   arrived are concealed. Takes about 55-75 MHz-milliseconds per call on the K6's M0 at
+   96 MHz (docs/k6-receiver.md), so it must not run inside an interrupt. */
+void sp_play_start(void);
+int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]);
+int sp_play_pos(void);           /* frames played so far */
+
+/* PCM to PWM compare values for the K6's TIM1 CH4 path (PA11 -> two RC poles -> speaker
+   amplifier), in place of the stock voice prompts' (s + 2048) >> 1. out[i] is in
+   0..top with top / 2 for silence (top = TIM1 ARR, 2000 for the stock 48 kHz carrier).
+   gain_q8: 256 maps full scale to +-top (speech at the usual -26 dBFS then swings about
+   +-5 % of the range); louder clips. emphasis: 1 runs the samples through
+   (33 x[n] - 21 x[n-1] + 4 x[n-2]) / 16 first, which undoes the RC filter's -10 dB at
+   3 kHz (computed from the schematic, so +-0.5 dB to 3.5 kHz on paper; not measured). The
+   filter's history carries over between calls; sp_play_start clears it. */
+void sp_pcm_to_pwm(const int16_t *pcm, uint16_t *out, int n, unsigned top, int gain_q8, int emphasis);
+
+/* A gain_q8 for sp_pcm_to_pwm that puts the message's loudest frame (from the frames' 5-bit
+   energy fields) at about -13 dBFS, between -6 and +18 dB: senders' levels vary by 15 dB or
+   more, and the PWM path has no other volume control. 256 for an empty store. */
+int sp_auto_gain_q8(void);
+
+/* sp_play_frame then sp_pcm_to_pwm in one call, with the PCM in this library's buffer:
+   what the radio's playback loop calls for each 20 ms. Returns as sp_play_frame. */
+int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int emphasis);
+
+/* Profile L test packet 0 of the spec's section 10 (70-frame test message, msg_id 0x42),
+   whitened, for the calibration transmit key. */
+void sp_test_packet(uint8_t out[SP_PAYLOAD_L]);
+
+/* Bytes of static RAM this library uses (decoder state, cos/sin table and the rest). */
+unsigned sp_static_bytes(void);
+
+#ifdef __cplusplus
+}
+#endif
+#endif

@@ -57,6 +57,7 @@ the API and the input level the codec expects (speech near −26 dBFS).
 
 - `modem/`: the **softmodem**. It sends and receives YSF frames carrying sotto voice through a radio's 9600 data port and a sound card, or through an SDR (IQ). `python -m modem tx voice.bit tx.flac`, then `python -m modem rx rx.flac voice.bit`. See `docs/softmodem.md`.
 - `modem/k6.py`: the **K6 voice pager softmodem**. It packs a `.sot` message into the Baofeng UV-K6 RF chip's FSK packets (K6 voice-pager packet format v1) and makes transmit audio for an FM radio such as the IC-7100: direct NRZ FSK for a flat 9600 input, or FFSK tones for USB audio. It also includes a demodulator, path calibration and CI-V PTT. `python -m modem.k6 tx msg.sot tx.wav`. See `docs/k6-pager.md`.
+- `c/k6/` and `firmware/k6-aura/`: the **K6 voice pager receiver**. A C library (packet reassembly in RAM, the fixed-point decoder on the K6's Cortex-M0, PWM playback) and a patch that adds a VOICE MSG app to Aura, the open Rust firmware for the Baofeng UV-K6. See `docs/k6-receiver.md`.
 - `tests/`: `python -m pytest tests`.
 - `c/`: the **C port** of the sotto v3.7 encoder and v3.6 decoder (float, links Codec 2), built as `libsotto` by `make` (see Build libsotto above). See `c/README.md` and `docs/c-port.md` for the plan to run it on the radio's DSP.
 - `tools/listening/` and `docs/listening-tests.md`: the blind A/B listening-test pages used to check each codec change by ear.
