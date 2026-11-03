@@ -82,7 +82,7 @@ python -m modem.k6 send msg.sot --port /dev/ttyUSB0 --player "aplay -D plughw:CA
 `send` keys the radio over CI-V, plays the audio, and always unkeys, even on Ctrl-C or an
 error. It plays through the `sounddevice` package (`--device`), or a command (`--player`).
 `--ptt rts` or `--ptt dtr` keys with a serial control line instead: use that for the IC-7100's
-USB SEND setting, or a Digirig on DATA2. `--dry-run` shows what would happen. `--max-tx`
+USB SEND setting, or a Digirig on DATA2. `--dry-run` shows what would happen. The K6 receiver firmware holds 640 frames (12.8 s) by default, so `tx` and `send` warn about longer messages. `--max-tx`
 (180 s) refuses anything longer.
 
 Other options: `--baud 2400`, `--payload S`, `--passes 2` (the whole message twice; the K6 fills
@@ -139,7 +139,7 @@ covers station identification (97.119).
 This follows section 8 of the packet-format spec.
 
 1. **Check the K6's RF chip.** CHIPID must be 0x4819, not 0x4829.
-2. **K6 transmits, IC-7100 receives.** The receiver firmware's debug key sends test packet 0.
+2. **K6 transmits, IC-7100 receives.** Pressing PTT on the K6 (receiver firmware) sends test packet 0 twice in D, then twice in F, on the VFO TX frequency (about 3 s). Decode the same recording once with `--phy D` and once with `--phy F`.
    Record the IC-7100's DATA2 pin 4 (9600 out, with 9600bps Mode on) on a sound card, or an
    SDR's IQ. Then run `python -m modem.k6 rx rec.wav -v` (add `--phy F` for the FFSK test).
    The packet must decode, and the output tells you:

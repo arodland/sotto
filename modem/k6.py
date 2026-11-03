@@ -35,6 +35,9 @@ MORSE = {"A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".", "F": "..-.",
          "7": "--...", "8": "---..", "9": "----.", "/": "-..-."}
 
 
+K6_STORE_FRAMES = 640      # the receiver firmware's default message store (12.8 s)
+
+
 def cw(text, fs=fsk.FS, wpm=20, tone=800.0, level=0.4):
     """Morse ID as audio (for the station identification an FM data transmission needs)."""
     keys = [0, 0, 0]                      # in dits: 1 = tone
@@ -183,6 +186,9 @@ def main(argv=None):
         pk, mid = _payloads(a, frames)
         x = build_audio(pk, a, a.rate)
         n = len(frames) // 6
+        if n > K6_STORE_FRAMES:
+            log(f"warning: {n} frames is more than the K6 receiver holds by default "
+                f"({K6_STORE_FRAMES} frames, {K6_STORE_FRAMES / 50:.1f} s); split the message")
         log(f"{n} frames ({n / 50:.1f} s of speech), msg_id {mid}, {len(pk)} packets, "
             f"{len(x) / a.rate:.1f} s on air (profile {a.payload}, phy {a.phy}, {a.baud} baud)")
         if a.cmd == "tx":
