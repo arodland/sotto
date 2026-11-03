@@ -25,6 +25,43 @@ rm -rf "$WORK"
 mkdir -p "$HERE/build" "$OUT"
 git clone -q "$AURA_REPO" "$WORK"
 git -C "$WORK" checkout -q "$AURA_REV"
+
+SIZE=${SIZE:-llvm-size}
+command -v "$SIZE" >/dev/null 2>&1 || SIZE="rust-size"
+NM=${NM:-llvm-nm}
+command -v "$NM" >/dev/null 2>&1 || NM="rust-nm"
+ELF="$WORK/target/thumbv6m-none-eabi/release/aura"
+
+# flash: everything loaded (vector table, text, rodata, the .data image); RAM: .data + .bss + .uninit
+fit() {
+  "$SIZE" -A "$1" | awk '
+    $1 == ".vector_table" || $1 == ".text" || $1 == ".rodata" || $1 == ".gnu.sgstubs" { flash += $2 }
+    $1 == ".data" { flash += $2; ram += $2 }
+    $1 == ".bss" || $1 == ".uninit" { ram += $2 }
+    END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 17720 (%d left for the stack)\n",
+            flash, 122880 - flash, ram, 17720 - ram
+          if (17720 - ram < 6144) print "warning: under 6 KB of stack left (the decoder alone needs 3.5 KB)" }'
+}
+# where the flash goes: demangled symbols grouped by Rust module path (C symbols by name)
+breakdown() {
+  "$NM" --print-size --size-sort --demangle --radix=d "$1" | awk '
+    $3 ~ /^[tTrRdD]$/ {
+      size = $2 + 0; name = $4; for (i = 5; i <= NF; i++) name = name " " $i
+      gsub(/^[<_]+/, "", name); g = name
+      if (index(name, "::")) { n = split(name, p, "::"); g = p[1] "::" p[2]; if (p[1] == "aura" && n > 3) g = g "::" p[3] }
+      else g = "(C) " name
+      sum[g] += size; total += size
+    }
+    END { for (g in sum) printf "%8d  %s\n", sum[g], g; printf "%8d  TOTAL (symbols with sizes)\n", total }' \
+    | sort -rn | head -45
+}
+
+# Baseline: stock Aura at the same commit, for comparison (AURA_BASELINE=0 skips it)
+if [ "${AURA_BASELINE:-1}" = 1 ]; then
+  (cd "$WORK" && cargo build --release)
+  { echo "== stock Aura $AURA_REV"; fit "$ELF"; breakdown "$ELF"; } | tee "$OUT/size-aura-stock.txt"
+fi
+
 git -C "$WORK" apply "$HERE/aura-pager.patch"
 
 if [ -n "$SOTTO_K6_LIB" ]; then
@@ -36,8 +73,18 @@ fi
 mkdir -p "$WORK/lib"
 cp "$LIB" "$WORK/lib/libsotto_k6.a"
 
+# Measure with the flash region opened up, so an overflow still links and shows where the bytes
+# go; the layout doesn't depend on the region's length. Then link for real against 120 KB.
+cp "$WORK/memory.x" "$WORK/memory.x.real"
+sed -i 's/LENGTH = 120K/LENGTH = 1024K/' "$WORK/memory.x"
 (cd "$WORK" && cargo build --release)
-ELF="$WORK/target/thumbv6m-none-eabi/release/aura"
+{ echo "== Aura + pager"; fit "$ELF"; breakdown "$ELF"; } | tee "$OUT/size.txt"
+"$SIZE" -A "$ELF" >> "$OUT/size.txt"
+mv "$WORK/memory.x.real" "$WORK/memory.x"
+if ! (cd "$WORK" && cargo build --release); then
+  echo "DOES NOT FIT in the 120 KB application flash: see $OUT/size.txt" | tee -a "$OUT/size.txt"
+  exit 1
+fi
 cp "$ELF" "$OUT/aura-pager.elf"
 
 if command -v llvm-objcopy >/dev/null 2>&1; then
@@ -45,19 +92,5 @@ if command -v llvm-objcopy >/dev/null 2>&1; then
 else
   (cd "$WORK" && cargo objcopy --release -- -O binary "$OUT/aura-pager.bin")
 fi
-
-SIZE=${SIZE:-llvm-size}
-command -v "$SIZE" >/dev/null 2>&1 || SIZE="rust-size"
-"$SIZE" -A "$ELF" | tee "$OUT/size.txt"
-# flash: everything loaded (vector table, text, rodata, the .data image); RAM: .data + .bss + .uninit
-"$SIZE" -A "$ELF" | awk '
-  $1 == ".vector_table" || $1 == ".text" || $1 == ".rodata" { flash += $2 }
-  $1 == ".data" { flash += $2; ram += $2 }
-  $1 == ".bss" || $1 == ".uninit" { ram += $2 }
-  END {
-    printf "flash %d of 122880 bytes (%d free); static RAM %d of 17720 (%d left for the stack)\n",
-      flash, 122880 - flash, ram, 17720 - ram
-    if (flash > 122880) { print "DOES NOT FIT: flash"; exit 1 }
-    if (17720 - ram < 6144) print "warning: under 6 KB of stack left (the decoder alone needs 3.5 KB)"
-  }' | tee -a "$OUT/size.txt"
+fit "$ELF" | tee -a "$OUT/size.txt"
 ls -l "$OUT/aura-pager.bin"

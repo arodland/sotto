@@ -35,10 +35,15 @@ jobs:
           rustup toolchain install stable --profile minimal --target thumbv6m-none-eabi
       - name: build Aura + pager, check the fit
         run: sh firmware/k6-aura/build.sh
+      - name: size reports
+        if: always()
+        run: cat firmware/k6-aura/out/size-aura-stock.txt firmware/k6-aura/out/size.txt || true
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: aura-pager
+          if-no-files-found: ignore
           path: |
             firmware/k6-aura/out/aura-pager.bin
             firmware/k6-aura/out/aura-pager.elf
-            firmware/k6-aura/out/size.txt
+            firmware/k6-aura/out/size*.txt
