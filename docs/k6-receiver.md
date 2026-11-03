@@ -103,9 +103,10 @@ Aura fills 94% of the application flash by itself, and the pager adds 65.6 KB: t
 codebook, 8 KB of minimum-phase tables, about 5 KB of other tables, and the decoder and packet
 code. Freeing 58 KB takes one of these:
 
-- **A pager-only image built from Aura**: Aura's drivers (RF chip, LCD, keys, battery), a frequency
-  entry and VOICE MSG, without the rest of Aura's apps and menus. That would leave about 30 KB of
-  room. To use the radio normally again, you flash stock Aura back over it.
+- **A pager-only image built from Aura** (done: the patch's `pager-only` feature, built by
+  `build.sh` as `out/aura-pager-only.bin`). It has Aura's drivers, its saved settings and VFO, and
+  VOICE MSG, without the rest of Aura's apps and menus. The frequency is set in stock Aura
+  beforehand. To use the radio normally again, you flash stock Aura back over it.
 - **Keep all of Aura and move the codebook to the SPI flash**: 30 KB, written once at install, like
   Aura's SSTV image import. That still leaves about 28 KB to cut from Aura and from the library
   (for example `-Os`, and dropping apps), and nothing measured yet shows where those bytes would
@@ -113,9 +114,8 @@ code. Freeing 58 KB takes one of these:
 
 ## What is not verified yet
 
-- Aura with the patch hasn't been built with cargo: this sandbox refuses to run Aura's build (its
-  build script and its dependencies' code). The patch's new code was type-checked against stubs of
-  the Aura APIs it uses. The *K6 pager firmware* CI job does the real build and reports the fit.
+- The firmware is built only in CI (*K6 pager firmware*). This sandbox won't run Aura's cargo
+  build, so the Rust was type-checked here against stubs and compiled for real in CI.
 - FD6818 FSK receive has never been shown working by anyone. Aura's FSK functions are dead code.
   The register sequence follows the spec, from the BK4819 register list and egzumer's 72-byte
   AIRCOPY. The screen shows sync polarity, CRC, magic byte and timeouts for the first test.

@@ -1,3 +1,19 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 785c441..b56ebb9 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -21,6 +21,11 @@ st7565 = "0.6"
+ embedded-graphics = "0.8"
+ profont = "0.7"
+ 
++[features]
++# The sotto voice pager as the whole firmware: Aura's drivers and VOICE MSG only, so the
++# decoder's 66 KB fits (full Aura leaves 7.5 KB). Built by sotto's firmware/k6-aura/build.sh.
++pager-only = []
++
+ [profile.release]
+ opt-level = "z"
+ lto = true
 diff --git a/build.rs b/build.rs
 index 34078b1..8a73bcc 100644
 --- a/build.rs
@@ -90,7 +106,7 @@ index 55f04b6..b5a34d0 100644
      }
  }
 diff --git a/src/app/mod.rs b/src/app/mod.rs
-index 5f006e4..f6bc8fd 100644
+index 5f006e4..f499056 100644
 --- a/src/app/mod.rs
 +++ b/src/app/mod.rs
 @@ -9,6 +9,7 @@ mod input;
@@ -127,7 +143,7 @@ index 5f006e4..f6bc8fd 100644
          }
      }
  
-@@ -1436,6 +1442,29 @@ impl App {
+@@ -1436,6 +1442,43 @@ impl App {
      pub fn poll_spectrum(&mut self, syst: &mut SYST) {
          spectrum::poll(self, syst);
      }
@@ -154,15 +170,29 @@ index 5f006e4..f6bc8fd 100644
 +    pub fn handle_pager_ptt(&mut self, syst: &mut SYST) {
 +        pager::handle_ptt(self, syst);
 +    }
++    /// Pager-only image: VOICE MSG is the whole firmware, on the VFO frequency Aura saved.
++    #[cfg(feature = "pager-only")]
++    pub fn enter_pager(&mut self, syst: &mut SYST) {
++        pager::enter(self, syst);
++    }
++    /// Pager-only image: keys go straight to the pager, so the rest of Aura's key handling
++    /// (and the apps it reaches) isn't linked.
++    #[cfg(feature = "pager-only")]
++    pub fn poll_pager_keys(&mut self, syst: &mut SYST) {
++        self.keypad.poll(syst);
++        while let Some(ev) = self.keypad.pop_event() {
++            pager::dispatch(self, syst, ev);
++        }
++    }
      pub fn spectrum_window_start_hz(&self) -> u32 {
          spectrum::window_start_hz(self)
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..d1fbdbd
+index 0000000..4cbe7c7
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,686 @@
+@@ -0,0 +1,688 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -634,6 +664,8 @@ index 0000000..d1fbdbd
 +    let p = &mut app.pager;
 +    let mut rearm = false;
 +    match ev.key {
++        // In the pager-only image there is nothing to go back to
++        #[cfg(not(feature = "pager-only"))]
 +        KeyId::Exit => {
 +            exit(app, syst);
 +            return;
@@ -901,7 +933,7 @@ index 0000000..a1df792
 +//! behind it. Registers are written by address (STM32F0 layout, checked
 +//! against KD32F328CB.svd) to keep this independent of the PAC's API.
 +//!
-+//! Part of the sotto voice pager (github.com/baitisj/sotto, docs/k6-receiver.md).
++//! Part of the sotto voice pager (github.com/baitisj/sotto, docs/k6-pager.md).
 +
 +use core::ptr::{read_volatile, write_volatile};
 +
@@ -1029,10 +1061,48 @@ index 0000000..a1df792
 +    }
 +}
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..e2d77b2 100644
+index 9d2b0c0..b87f89a 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -329,6 +329,18 @@ fn main() -> ! {
+@@ -301,6 +301,37 @@ fn main() -> ! {
+     )
+     .ok();
+ 
++    // Pager-only image (feature "pager-only"): VOICE MSG is the whole firmware. Nothing here
++    // writes flash: no channel-state save at power-off.
++    #[cfg(feature = "pager-only")]
++    {
++        app.enter_pager(&mut cp.SYST);
++        let mut scheduler = scheduler::Scheduler::new();
++        loop {
++            let due = scheduler.tick();
++            app.poll_pager_keys(&mut cp.SYST);
++            app.poll_pager(&mut cp.SYST);
++            if app.pager_play_pending() {
++                ui::draw_pager_only(&mut display, &app);
++                app.play_pager_message(&mut cp.SYST, &power);
++                ui::draw_pager_only(&mut display, &app);
++            }
++            if app.pager_cal_pending() {
++                ui::draw_pager_only(&mut display, &app);
++                app.transmit_pager_cal(&mut cp.SYST);
++            }
++            app.handle_pager_ptt(&mut cp.SYST);
++            if power.debounced_off(&mut cp.SYST) {
++                app.radio_mut().rf_off(&mut cp.SYST);
++                power.shutdown(&mut cp.SYST);
++            }
++            if due.every_50ms {
++                ui::draw_pager_only(&mut display, &app);
++            }
++            delay::ms(&mut cp.SYST, 10);
++        }
++    }
++
+     // scheduler + main loop
+     let mut scheduler = scheduler::Scheduler::new();
+     let mut applied_contrast: u8 = u8::MAX;
+@@ -329,6 +360,18 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -1051,7 +1121,7 @@ index 9d2b0c0..e2d77b2 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +413,8 @@ fn main() -> ! {
+@@ -401,6 +444,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -1060,7 +1130,7 @@ index 9d2b0c0..e2d77b2 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +479,13 @@ fn main() -> ! {
+@@ -465,9 +510,13 @@ fn main() -> ! {
              }
          }
  
@@ -1078,7 +1148,7 @@ index 9d2b0c0..e2d77b2 100644
                  app.poll_squelch(&mut cp.SYST, 3);
                  app.poll_dual_standby(&mut cp.SYST, app.rssi_open());
 diff --git a/src/ui/mod.rs b/src/ui/mod.rs
-index cdfa0f7..2d3276f 100644
+index cdfa0f7..6ca5a70 100644
 --- a/src/ui/mod.rs
 +++ b/src/ui/mod.rs
 @@ -6,6 +6,7 @@ mod fm;
@@ -1097,7 +1167,21 @@ index cdfa0f7..2d3276f 100644
  use satellite::draw_satellite;
  use sstv::draw_sstv;
  use scan::draw_scan;
-@@ -77,6 +79,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
+@@ -62,6 +64,13 @@ impl<const N: usize> core::fmt::Write for TextBuf<N> {
+     }
+ }
+ 
++/// Pager-only image: just the VOICE MSG screen, so the other screens aren't linked.
++#[cfg(feature = "pager-only")]
++pub fn draw_pager_only<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &app::App) {
++    draw_pager(display.as_draw_target(), app);
++    display.flush();
++}
++
+ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut app::App) {
+     match app.mode() {
+         app::Mode::AppMenu => draw_app_menu(display.as_draw_target(), &*app),
+@@ -77,6 +86,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
              draw_satellite(display.as_draw_target(), app);
          }
          app::Mode::Sstv => draw_sstv(display.as_draw_target(), app),

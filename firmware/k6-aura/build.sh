@@ -2,7 +2,7 @@
 # Build Aura (the open Rust firmware for the Baofeng UV-K6 / K61 family) with the sotto voice
 # pager patched in: firmware/k6-aura/out/aura-pager.bin, ready for Aura's tools/flash.py.
 #
-#   sh firmware/k6-aura/build.sh
+#   sh firmware/k6-aura/build.sh      ->  out/aura-pager-only.bin (and size reports)
 #
 # Steps: a fresh clone of Aura at the commit the patch was written against (into
 # firmware/k6-aura/build/aura, which this script owns and deletes), git apply
@@ -75,18 +75,29 @@ mkdir -p "$WORK/lib"
 cp "$LIB" "$WORK/lib/libsotto_k6.a"
 
 # Link with the flash region opened up, so an overflow still links and shows where the bytes go.
-# The layout doesn't depend on the region's length (same origin), so the fit check below is the
-# same test the linker makes, and no image is written unless it passes.
+# The layout doesn't depend on the region's length (same origin), so the fit check is the same
+# test the linker makes, and no image is written unless it passes.
 sed -i 's/LENGTH = 120K/LENGTH = 1024K/' "$WORK/memory.x"
-(cd "$WORK" && cargo build --release)
-{ echo "== Aura + pager"; fit "$ELF"; breakdown "$ELF"; "$SIZE" -A "$ELF"; } > "$OUT/size.txt" || true
-cat "$OUT/size.txt"
-fit "$ELF" > /dev/null || exit 1
-cp "$ELF" "$OUT/aura-pager.elf"
 
-if command -v llvm-objcopy >/dev/null 2>&1; then
-  llvm-objcopy -O binary "$ELF" "$OUT/aura-pager.bin"
-else
-  (cd "$WORK" && cargo objcopy --release -- -O binary "$OUT/aura-pager.bin")
+# variant NAME TITLE [cargo args]: build, report to out/size-NAME.txt, write out/NAME.bin if it fits
+variant() {
+  name=$1; title=$2; shift 2
+  (cd "$WORK" && cargo build --release "$@")
+  { echo "== $title"; fit "$ELF"; breakdown "$ELF"; "$SIZE" -A "$ELF"; } > "$OUT/size-$name.txt" || true
+  cat "$OUT/size-$name.txt"
+  fit "$ELF" > /dev/null || return 1
+  cp "$ELF" "$OUT/$name.elf"
+  if command -v llvm-objcopy >/dev/null 2>&1; then
+    llvm-objcopy -O binary "$ELF" "$OUT/$name.bin"
+  else
+    (cd "$WORK" && cargo objcopy --release "$@" -- -O binary "$OUT/$name.bin")
+  fi
+  ls -l "$OUT/$name.bin"
+}
+
+# Full Aura with VOICE MSG in its launcher: 58 KB too big at edf3b98, so this is a report only
+# (FULL=0 skips it). The image to flash is the pager-only one.
+if [ "${FULL:-1}" = 1 ]; then
+  variant aura-pager "Aura + pager (all of Aura)" || echo "(all of Aura + pager doesn't fit: report only)"
 fi
-ls -l "$OUT/aura-pager.bin"
+variant aura-pager-only "pager-only image (Aura drivers + VOICE MSG)" --features pager-only

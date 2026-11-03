@@ -12,16 +12,25 @@ and nothing is written to flash per message. The design and the numbers are in
 - `aura-pager.patch`: the change to Aura at commit `edf3b98` (2026-11-02). It is GPL-3.0, like Aura.
   It adds `src/app/pager.rs`, `src/hal/pwm_audio.rs` and `src/ui/pager.rs`, and wires them into the
   launcher, keys, screen and main loop. It also adds two raw-register helpers to the FD6818 driver
-  and makes `build.rs` link `lib/libsotto_k6.a`.
+  and makes `build.rs` link `lib/libsotto_k6.a`. The cargo feature `pager-only` makes VOICE MSG the
+  whole firmware.
 - `build.sh` clones Aura at that commit, applies the patch, and builds sotto's C library
-  (`tools/k6_build.sh`, MIT). It then runs `cargo build --release`, writes `out/aura-pager.bin`, and
-  checks the flash and RAM fit.
-- The GitHub Actions job *K6 pager firmware* runs the same build. Each run keeps `aura-pager.bin`,
-  the ELF and the size report as a downloadable artifact.
+  (`tools/k6_build.sh`, MIT). It then builds stock Aura, Aura with VOICE MSG added, and the
+  pager-only image, and reports each one's flash and RAM use. It writes `out/aura-pager-only.bin`
+  only if it fits.
+- The GitHub Actions job *K6 pager firmware* runs the same build. Each run keeps the `.bin`, the
+  ELF and the size reports as a downloadable artifact.
+
+**Why a pager-only image.** Stock Aura uses 115,208 of the 122,880 bytes of application flash,
+and the pager needs 66 KB (30 KB of it is the codebook). All of Aura with VOICE MSG comes out 58 KB
+too big. The pager-only image keeps Aura's drivers, its saved settings and VFO, and the VOICE MSG
+app, and leaves out the rest: the standby screen and menus, scanning, FM broadcast, SSTV, APRS,
+satellites, the spectrum and CHIRP programming. To use the radio normally, flash stock Aura back
+(same UPDATE-mode steps). Each image switch is one erase of the MCU's flash. The SPI flash, which
+holds the settings, isn't touched by the switch.
 
 **Status, 2026-11-03.** The sotto side is tested on this machine and in the Cortex-M0 emulator.
-The Rust side is written against Aura's code and type-checks, but nobody has built it with cargo
-or run it on a radio yet. Treat the first flash as a bring-up test, with the calibration steps
+The Rust side builds in CI, but nobody has run it on a radio yet. Treat the first flash as a bring-up test, with the calibration steps
 below.
 
 ## Before you flash: what can't be undone
@@ -45,11 +54,11 @@ You need a Quansheng-K5-style USB-to-TTL programming cable (the Kenwood 2-pin pl
 `pyserial`, and Aura's `tools/` folder. After `build.sh` that folder is at `build/aura/tools/`, or you
 can clone Aura.
 
-1. **Get `aura-pager.bin`.** Download it from the *K6 pager firmware* run's artifacts on the pull
+1. **Get `aura-pager-only.bin`.** Download it from the *K6 pager firmware* run's artifacts on the pull
    request, or run `sh firmware/k6-aura/build.sh`. That needs rustup, clang and lld, and llvm-tools.
 2. **Enter UPDATE mode.** With the radio off, hold **Side Key 1 and Side Key 2** and turn it on. The
    screen shows `UPDATE`.
-3. **Flash it:** `python tools/flash.py aura-pager.bin /dev/ttyUSB0` (on Windows, the COM port).
+3. **Flash it:** `python tools/flash.py aura-pager-only.bin /dev/ttyUSB0` (on Windows, the COM port).
    On success it prints `succeed!` and the radio reboots. If it doesn't reboot, nothing was written
    (a known Aura bug): power off and repeat from step 2. Pulling the battery mid-flash is safe; just
    flash again.
@@ -63,13 +72,17 @@ can clone Aura.
 
 ## Using VOICE MSG
 
-1. In standby, set the VFO (or a channel) to the frequency the sender will use. FM wide is the
-   usual setting.
-2. Press MENU, choose **VOICE MSG**, and press MENU again. The radio listens at once, with the
-   speaker muted.
+1. **Set the frequency in stock Aura first.** In standby, set the VFO (or a channel) to the
+   frequency the sender will use. FM wide is the usual setting. Power off, so Aura saves it. The
+   pager-only image has no frequency entry: it listens on whatever Aura saved.
+2. Flash `aura-pager-only.bin` and power on. The radio goes straight to VOICE MSG and listens,
+   with the speaker muted. The pager-only image writes nothing to flash, not even at power-off.
 3. The message plays by itself once every frame has arrived, or 3 s after the last packet if some
    are missing. Missing 20 ms frames are concealed. **MENU** plays it again, and **EXIT** stops a
-   playback or leaves the app.
+   playback.
+
+(In a build of all of Aura with VOICE MSG, if a later Aura ever has room: MENU, choose **VOICE MSG**,
+MENU again; EXIT leaves the app.)
 
 | Key | Does |
 |---|---|
