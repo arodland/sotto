@@ -57,6 +57,20 @@ void fx_prof(int id, int start);
 #define FX_PROF(id, start) ((void)0)
 #endif
 
+/* Cortex-M0 (FX_NARROW_MUL, on by default for ARMv6-M; -DFX_NARROW_MUL tests it on x86):
+   no 32 x 32 -> 64-bit multiply, so any product formed in fx_acc is a library call
+   (__aeabi_lmul, ~35 cycles). FX_P16(a, b), a 16 x 16-bit product added to an fx_acc, is
+   then formed in 32 bits (one MULS) and widened; elsewhere it is the plain fx_acc product.
+   The same integer either way. */
+#if defined(__ARM_ARCH_6M__) && !defined(FX_NARROW_MUL)
+#define FX_NARROW_MUL
+#endif
+#ifdef FX_NARROW_MUL
+#define FX_P16(a, b) ((fx_acc)((int32_t)(a) * (int32_t)(b)))
+#else
+#define FX_P16(a, b) ((fx_acc)(a) * (b))
+#endif
+
 /* Cortex-M4/M7 (FX_ARM_DSP, on by default with the ARM DSP extension; -DFX_ARM_DSP tests the
    same code on x86, -DFX_NO_ARM_DSP turns it off): one-cycle 32 x 32 -> 64-bit products
    (SMULL, SMLAL), so FX_WIDE_MUL takes the products below directly instead of as 16 x 16
@@ -112,7 +126,7 @@ fx_acc fx_oa_pair_ri(const int16_t *bin, const uint32_t *ri, int nb, int n, fx_a
 static inline fx_acc fx_dot16(const int16_t *a, const int16_t *b, int n) {
   fx_acc s = 0;
   int j;
-  for (j = 0; j < n; j++) s += (fx_acc)a[j] * b[j];
+  for (j = 0; j < n; j++) s += FX_P16(a[j], b[j]);
   return s;
 }
 #endif
@@ -138,13 +152,13 @@ static inline fx_acc fx_sq32(int32_t a) { (void)FX_HI(a); FX_ACC_CHECK((fx_acc)a
 static inline fx_acc fx_mul32(int32_t a, int32_t b) { (void)FX_HI(a); (void)FX_HI(b); return (fx_acc)a * b; }
 #else
 static inline fx_acc fx_mul32x16(int32_t a, int16_t b) {
-  return FX_JOIN((fx_acc)FX_HI(a) * b, (fx_acc)FX_LO(a) * b);
+  return FX_JOIN(FX_P16(FX_HI(a), b), FX_P16(FX_LO(a), b));
 }
 /* a^2 for |a| < 2^19.5 (so the result is < 2^39) */
 static inline fx_acc fx_sq32(int32_t a) {
   int16_t h = FX_HI(a), l = FX_LO(a);
   FX_ACC_CHECK((fx_acc)a * a * 2);
-  return ((fx_acc)h * h) * 32768 * 32768 + (fx_acc)h * l * 65536 + (fx_acc)l * l;
+  return FX_P16(h, h) * 32768 * 32768 + FX_P16(h, l) * 65536 + FX_P16(l, l);
 }
 
 /* a b for |a|, |b| < 2^30 whose product fits 40 bits, as four 16 x 16 products (the C55x
@@ -152,7 +166,7 @@ static inline fx_acc fx_sq32(int32_t a) {
    and b = bh 2^15 + bl, a b = ((ah bh) 2^15 + ah bl + al bh) 2^15 + al bl, exactly */
 static inline fx_acc fx_mul32(int32_t a, int32_t b) {
   int16_t ah = FX_HI(a), al = FX_LO(a), bh = FX_HI(b), bl = FX_LO(b);
-  return ((fx_acc)ah * bh * 32768 + (fx_acc)ah * bl + (fx_acc)al * bh) * 32768 + (fx_acc)al * bl;
+  return (FX_P16(ah, bh) * 32768 + FX_P16(ah, bl) + FX_P16(al, bh)) * 32768 + FX_P16(al, bl);
 }
 #endif
 
