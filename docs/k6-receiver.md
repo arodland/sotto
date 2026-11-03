@@ -92,9 +92,24 @@ the VOICE MSG screen reports how much RAM the stack never reached. That figure c
 the free RAM on entering the app and scanning it after a playback. If it is tight, the first knobs
 are `STORE_BYTES` (3.2 s per KB) and `-DFX_OA_UNPACKED` (2 KB).
 
-Flash: Aura's own size is unknown until it is built. If Aura plus 62 KB doesn't fit in 120 KB, the
-codebook (30 KB) could live in the SPI flash. That would be one write at install, like Aura's SSTV
-image import, and never per message. Not done.
+**Flash does not fit yet.** Measured by the *K6 pager firmware* CI job (`firmware/k6-aura/build.sh`):
+
+| | Flash, bytes | Static RAM, bytes |
+|---|---:|---:|
+| Stock Aura `edf3b98` | 115,208 (7,672 free of 122,880) | 340 |
+| Aura + pager | 180,788 (**57,908 over**) | 9,144 |
+
+Aura fills 94% of the application flash by itself, and the pager adds 65.6 KB: the 30 KB
+codebook, 8 KB of minimum-phase tables, about 5 KB of other tables, and the decoder and packet
+code. Freeing 58 KB takes one of these:
+
+- **A pager-only image built from Aura**: Aura's drivers (RF chip, LCD, keys, battery), a frequency
+  entry and VOICE MSG, without the rest of Aura's apps and menus. That would leave about 30 KB of
+  room. To use the radio normally again, you flash stock Aura back over it.
+- **Keep all of Aura and move the codebook to the SPI flash**: 30 KB, written once at install, like
+  Aura's SSTV image import. That still leaves about 28 KB to cut from Aura and from the library
+  (for example `-Os`, and dropping apps), and nothing measured yet shows where those bytes would
+  come from.
 
 ## What is not verified yet
 

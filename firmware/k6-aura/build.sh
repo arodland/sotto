@@ -40,7 +40,8 @@ fit() {
     $1 == ".bss" || $1 == ".uninit" { ram += $2 }
     END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 17720 (%d left for the stack)\n",
             flash, 122880 - flash, ram, 17720 - ram
-          if (17720 - ram < 6144) print "warning: under 6 KB of stack left (the decoder alone needs 3.5 KB)" }'
+          if (17720 - ram < 6144) print "warning: under 6 KB of stack left (the decoder alone needs 3.5 KB)"
+          if (flash > 122880) { print "DOES NOT FIT in the 120 KB application flash"; exit 1 } }'
 }
 # where the flash goes: demangled symbols grouped by Rust module path (C symbols by name)
 breakdown() {
@@ -73,18 +74,14 @@ fi
 mkdir -p "$WORK/lib"
 cp "$LIB" "$WORK/lib/libsotto_k6.a"
 
-# Measure with the flash region opened up, so an overflow still links and shows where the bytes
-# go; the layout doesn't depend on the region's length. Then link for real against 120 KB.
-cp "$WORK/memory.x" "$WORK/memory.x.real"
+# Link with the flash region opened up, so an overflow still links and shows where the bytes go.
+# The layout doesn't depend on the region's length (same origin), so the fit check below is the
+# same test the linker makes, and no image is written unless it passes.
 sed -i 's/LENGTH = 120K/LENGTH = 1024K/' "$WORK/memory.x"
 (cd "$WORK" && cargo build --release)
-{ echo "== Aura + pager"; fit "$ELF"; breakdown "$ELF"; } | tee "$OUT/size.txt"
-"$SIZE" -A "$ELF" >> "$OUT/size.txt"
-mv "$WORK/memory.x.real" "$WORK/memory.x"
-if ! (cd "$WORK" && cargo build --release); then
-  echo "DOES NOT FIT in the 120 KB application flash: see $OUT/size.txt" | tee -a "$OUT/size.txt"
-  exit 1
-fi
+{ echo "== Aura + pager"; fit "$ELF"; breakdown "$ELF"; "$SIZE" -A "$ELF"; } > "$OUT/size.txt" || true
+cat "$OUT/size.txt"
+fit "$ELF" > /dev/null || exit 1
 cp "$ELF" "$OUT/aura-pager.elf"
 
 if command -v llvm-objcopy >/dev/null 2>&1; then
@@ -92,5 +89,4 @@ if command -v llvm-objcopy >/dev/null 2>&1; then
 else
   (cd "$WORK" && cargo objcopy --release -- -O binary "$OUT/aura-pager.bin")
 fi
-fit "$ELF" | tee -a "$OUT/size.txt"
 ls -l "$OUT/aura-pager.bin"
