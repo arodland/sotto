@@ -286,6 +286,24 @@ def test_fixed_point_arm_path_is_bit_exact():
     assert np.array_equal(check_fx.run_dec(os.path.join(fx, "sotto_dec_fx"), b, k16=True),
                           check_fx.run_dec(os.path.join(fx, "sotto_dec_fx_arm"), b, k16=True))
 
+@pytest.mark.skipif(not os.path.exists(os.path.join(ROOT, "c", "fixed", "sotto_enc_fx_m0")),
+                    reason="Cortex-M0 code path not built (make -C c fixed)")
+def test_fixed_point_m0_path_is_bit_exact():
+    """The Cortex-M0 path (FX_NARROW_MUL: 16 x 16 products in 32 bits, the decoder's
+    overlap-add harmonic by harmonic from the packed cos/sin table) gives the same bits and
+    the same samples as the default C, lost frames included."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import check_fx
+    x16 = np.round(_ve9qrp(4.0) * 32767).astype(np.int16)[:4 * FS // 160 * 160]
+    fx = os.path.join(ROOT, "c", "fixed")
+    b = check_fx.run_enc(os.path.join(fx, "sotto_enc_fx"), x16)
+    assert np.array_equal(b, check_fx.run_enc(os.path.join(fx, "sotto_enc_fx_m0"), x16))
+    good = np.ones(len(b), bool)
+    good[60:64] = False
+    assert np.array_equal(check_fx.run_dec(os.path.join(fx, "sotto_dec_fx"), b, good),
+                          check_fx.run_dec(os.path.join(fx, "sotto_dec_fx_m0"), b, good))
+
+
 def test_v38_unvoiced_frames_decode_at_50_hz_spacing():
     """v3.8 carries a hiss index in the pitch field of all-unvoiced frames; the decoder must
     not read it as a pitch (sim/hiss_band.py SottoV38._model_hook, run by SottoV0.decode)."""

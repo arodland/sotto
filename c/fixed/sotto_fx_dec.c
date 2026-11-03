@@ -309,18 +309,26 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
   for (i = 0; i < NSAMP - 1; i++) d->sn[i] = d->sn[i + NSAMP];
   d->sn[NSAMP - 1] = 0;
   fx_acc a2[2] = {0, 0};
+#ifdef FX_NARROW_MUL
+  fx_acc ab[2 * NSAMP];                       /* every sum at once, harmonic by harmonic */
+  fx_oa_block(bin, re, im, nb, 512 - NSAMP + 1, 2 * NSAMP, ab);
+#endif
   for (i = 0; i < 2 * NSAMP; i++) {
     int n = i < NSAMP - 1 ? 512 - NSAMP + 1 + i : i - (NSAMP - 1);
     int k = i < NSAMP - 1 ? i : i - (NSAMP - 1);   /* position inside the segment */
     fx_acc a;
     /* the harmonic sums two samples at a time (one index multiply per harmonic for both);
        each segment has an odd count, so its last pair's second sum goes unused */
-#ifdef FX_ARM_DSP
+#if defined(FX_NARROW_MUL)
+    (void)k, (void)n, (void)a2;
+    a = ab[i];
+#elif defined(FX_ARM_DSP)
     if (!(k & 1)) a2[0] = fx_oa_pair_ri(bin, ri, nb, n, &a2[1]);
+    a = a2[k & 1];
 #else
     if (!(k & 1)) a2[0] = fx_oa_pair(bin, re, im, nb, n, &a2[1]);
-#endif
     a = a2[k & 1];
+#endif
     FX_ACC_CHECK(a);
     int32_t s4 = fx_rshr(a, qa + 11);        /* Q(qa + 15) -> samples Q4 */
     int32_t w = (int32_t)(fx_mul32x16(s4, fx_pn[i]) >> 14);

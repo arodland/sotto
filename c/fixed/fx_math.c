@@ -275,7 +275,31 @@ fx_acc fx_oa_pair(const int16_t *bin, const int16_t *re, const int16_t *im, int 
 }
 #endif
 
-#ifdef FX_ARM_DSP
+#ifdef FX_NARROW_MUL
+void fx_oa_block(const int16_t *bin, const int16_t *re, const int16_t *im, int nb, int n0, int ns, fx_acc *a) {
+  int i, j;
+  for (i = 0; i < ns; i++) a[i] = 0;
+  for (j = 0; j < nb; j++) {
+    unsigned step = (unsigned)bin[j] & 511u, x = ((unsigned)bin[j] * (unsigned)n0) & 511u;
+    int32_t r = re[j], m = im[j];
+#ifdef FX_OA_PACKED
+    const uint32_t *cs = fx_cs512();
+    for (i = 0; i < ns; i++) {
+      uint32_t w = cs[x];
+      a[i] += r * (int16_t)w - m * ((int32_t)w >> 16);
+      x = (x + step) & 511u;
+    }
+#else
+    for (i = 0; i < ns; i++) {
+      a[i] += r * fx_cos512[x] - m * fx_cos512[(x - 128) & 511u];
+      x = (x + step) & 511u;
+    }
+#endif
+  }
+}
+#endif
+
+#if defined(FX_ARM_DSP) || defined(FX_OA_PACKED)
 const uint32_t *fx_cs512(void) {
   static uint32_t cs[512];
   static int ready;
@@ -287,6 +311,9 @@ const uint32_t *fx_cs512(void) {
   return cs;
 }
 
+#endif
+
+#ifdef FX_ARM_DSP
 /* the same sums, two products per SMLALD */
 fx_acc fx_oa_pair_ri(const int16_t *bin, const uint32_t *ri, int nb, int n, fx_acc *a1) {
   const uint32_t *cs512 = fx_cs512();

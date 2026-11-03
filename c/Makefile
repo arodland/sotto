@@ -71,7 +71,8 @@ else
 FX_ENC_OBJS = fixed/sotto_fx_enc.o
 FX_DEC_OBJS = fixed/sotto_fx_dec.o
 endif
-fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm
+fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm \
+	fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0
 fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h
 	$(CC) $(CFLAGS) $(FXFLAGS) -c -o $@ $<
 fixed/sotto_dec_fx: sotto_dec.o $(FX_DEC_OBJS) $(FX_OBJS)
@@ -86,6 +87,15 @@ fixed/arm/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.
 fixed/sotto_dec_fx_arm: sotto_dec.o $(subst fixed/,fixed/arm/,$(FX_DEC_OBJS) $(FX_OBJS))
 	$(CC) -o $@ $^
 fixed/sotto_enc_fx_arm: sotto_enc.o $(subst fixed/,fixed/arm/,$(FX_ENC_OBJS) $(FX_OBJS))
+	$(CC) -o $@ $^
+# the Cortex-M0 code path (FX_NARROW_MUL: 16 x 16 products in 32 bits, the decoder's
+# overlap-add harmonic by harmonic), likewise
+fixed/m0/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h
+	@mkdir -p fixed/m0
+	$(CC) $(CFLAGS) $(FXFLAGS) -DFX_NARROW_MUL -c -o $@ $<
+fixed/sotto_dec_fx_m0: sotto_dec.o $(subst fixed/,fixed/m0/,$(FX_DEC_OBJS) $(FX_OBJS))
+	$(CC) -o $@ $^
+fixed/sotto_enc_fx_m0: sotto_enc.o $(subst fixed/,fixed/m0/,$(FX_ENC_OBJS) $(FX_OBJS))
 	$(CC) -o $@ $^
 
 sotto_codebook_gen.c: ../$(CODEBOOK) ../tools/export_codebook_c.py
@@ -152,6 +162,7 @@ clean:
 	rm -f *.o libsotto.a libsotto.so* sotto_enc sotto_dec test_api sotto_codebook_gen.c sotto.pc
 	rm -rf tables.chk
 	rm -f fixed/*.o fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm
-	rm -rf fixed/arm
+	rm -f fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0
+	rm -rf fixed/arm fixed/m0
 
 .PHONY: all fixed check install clean tables check-tables

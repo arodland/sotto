@@ -66,6 +66,11 @@ void fx_prof(int id, int start);
 #define FX_NARROW_MUL
 #endif
 #ifdef FX_NARROW_MUL
+/* the decoder's overlap-add (fx_oa_block) reads cos and sin from one word of fx_cs512 (a 2 KB
+   table in RAM); -DFX_OA_UNPACKED reads fx_cos512 twice instead, 2 KB less RAM, ~10 % slower */
+#ifndef FX_OA_UNPACKED
+#define FX_OA_PACKED
+#endif
 #define FX_P16(a, b) ((fx_acc)((int32_t)(a) * (int32_t)(b)))
 #else
 #define FX_P16(a, b) ((fx_acc)(a) * (b))
@@ -118,8 +123,6 @@ static inline fx_acc fx_dot16(const int16_t *a, const int16_t *b, int n) {
   if (j < n) s += (int32_t)a[j] * b[j];
   return s;
 }
-/* cos and sin in one word: fx_cs512()[i] = fx_cos512[i] | fx_cos512[(i - 128) & 511] << 16 */
-const uint32_t *fx_cs512(void);
 /* fx_oa_pair with the harmonics as ri[j] = re[j] | -im[j] << 16 (16-bit halves) */
 fx_acc fx_oa_pair_ri(const int16_t *bin, const uint32_t *ri, int nb, int n, fx_acc *a1);
 #else
@@ -129,6 +132,11 @@ static inline fx_acc fx_dot16(const int16_t *a, const int16_t *b, int n) {
   for (j = 0; j < n; j++) s += FX_P16(a[j], b[j]);
   return s;
 }
+#endif
+
+#if defined(FX_ARM_DSP) || defined(FX_OA_PACKED)
+/* cos and sin in one word: fx_cs512()[i] = fx_cos512[i] | fx_cos512[(i - 128) & 511] << 16 */
+const uint32_t *fx_cs512(void);
 #endif
 
 /* 32 x 16-bit products as two 16 x 16-bit ones, exactly: the C55x multiplies 17 x 17 bits
@@ -212,6 +220,10 @@ void fx_mp_sums(const int16_t *h, const int16_t *l, const int16_t *row, int n1, 
    a(n) = sum_j re[j] cos512[bin[j] n mod 512] - im[j] cos512[(bin[j] n - 128) mod 512],
    a(n) returned, a(n + 1) stored at *a1 */
 fx_acc fx_oa_pair(const int16_t *bin, const int16_t *re, const int16_t *im, int nb, int n, fx_acc *a1);
+/* all ns overlap-add sums at once, harmonic by harmonic (FX_NARROW_MUL, the Cortex-M0): a[i] =
+   a(n0 + i) of fx_oa_pair, the index stepping by bin[j] mod 512 instead of a multiply per sample.
+   |re|, |im| <= 2^14, so each harmonic's term fits 32 bits. The same integers as fx_oa_pair. */
+void fx_oa_block(const int16_t *bin, const int16_t *re, const int16_t *im, int nb, int n0, int ns, fx_acc *a);
 /* the codebook search's residual (c55x/cb_resid.asm on the C55x): r[k] = ((c[k] - recon[k])
    istep) >> 24 clamped to +-32767 for k < n, returning the sum of the r[k]^2 */
 fx_acc fx_cb_resid(const int32_t *c, const int32_t *recon, int16_t *r, int n, int32_t istep);

@@ -88,22 +88,32 @@ equal the x86 build's). MHz for real time, v3.7 at 8 kHz, ve9qrp 10 s, -O2:
 | Code in zero-wait memory | 894 / 954 | 64.8 / 82.3 |
 | From flash at 96 MHz (2 wait states) | 1085 / 1138 | 78.0 / 100.1 |
 
-The decoder figure needed one change, bit-exact on every target: `FX_NARROW_MUL` (fx.h, on
+| Decoder after the overlap-add rewrite below, four clips (ve9qrp, david4, vk2tpm, kristoff), from flash | | 52.5-60.9 / 73.4-88.5 |
+| The same with the 0.8 KB overlap-add kernel copied to RAM | | 48.9-56.2 / 66.8-79.8 |
+
+The decoder figures needed two changes, bit-exact on every target. The first: `FX_NARROW_MUL` (fx.h, on
 for ARMv6-M) forms 16 x 16-bit products in 32 bits before widening them, because on the M0 a
 product formed in 64 bits is a call to `__aeabi_lmul`. It took the decoder from 188 to 65 MHz
-(zero wait). Most of what's left is the overlap-add sums (`fx_oa_pair`, about 39 MHz) and the
-minimum-phase sums (14). The encoder has many more 64-bit products, but even if every one were
+(zero wait). The second, also under `FX_NARROW_MUL`: the overlap-add (`fx_oa_block`) runs harmonic by harmonic
+into all 160 sums, with the table index stepping by the harmonic's bin, and reads cos and sin from
+one word of the packed 2 KB table (`fx_cs512`, in RAM; `-DFX_OA_UNPACKED` reads `fx_cos512`
+twice instead). The kernel went from 39 to 24 MHz. `make -C c fixed` builds the path for x86 as
+`sotto_enc_fx_m0` / `sotto_dec_fx_m0`, and `tests/test_vocoder.py::test_fixed_point_m0_path_is_bit_exact`
+checks it against the default build, lost frames included. Next are the minimum-phase sums (16 MHz).
+A frame-by-frame replay shows that real time needs only the mean under budget plus a few
+milliseconds of audio buffer: a decoder held to 64 MHz never needs more than 8 ms on these clips. The encoder has many more 64-bit products, but even if every one were
 free it would still need about 420 MHz: over four times the chip.
 
-Memory. The decoder needs 840 bytes of state and 2.3 KB of stack; the decoder alone is 57 KB
+Memory. The decoder needs 840 bytes of state and 3.4 KB of stack (2.3 KB before the
+overlap-add rewrite, which keeps all 160 sums), plus the 2 KB cos/sin table; the decoder alone is 57 KB
 of flash at -O2 (14 KB code, 44 KB tables, 30 KB of it the codebook) or 50 KB at -Os. The
 encoder's state is 34 KB, more than the K6's whole RAM.
 
 **Verdict.** The K6 cannot be a sotto radio: the encoder needs about ten times the CPU and
-more RAM than the chip has, and the mic never reaches the MCU. Receive-only is borderline:
-the decoder needs 78 MHz mean and 100 MHz worst of the 96 MHz, before the radio's own
-firmware runs, and the stock FSK modem can't carry 2400 bit/s, so the bits would need a
-hardware mod (RF chip's AF output to an ADC pin) and a soft demodulator on top. The
+more RAM than the chip has, and the mic never reaches the MCU. It can be a sotto *receiver
+of messages*: the decoder now needs about 60 MHz mean of the 96, the stock FSK modem can carry
+the bits slower than real time (a message, not live voice), 300 bytes of RAM hold a second of
+speech, and the PWM pin plays it. No hardware change and no flash write per message. The
 Quansheng UV-K5 family is the same idea at half the clock and half the flash: no.
 
 ## Suggested order
