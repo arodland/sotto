@@ -228,3 +228,8 @@ def test_control_record_fields():
     import pytest
     with pytest.raises(ValueError):
         pager.control_record(1, {"freq": 440850})
+    r = pager.control_reg_record(9, 0x58, 0x73E9)
+    assert r[:6] == bytes([0xA8, 9, 0x58, 0x73, 0xE9, 4])
+    assert pager.parse_control(pager.control_packet(9, length=64, reg=(0x58, 0x73E9)))[:6] == r[:6]
+    with pytest.raises(ValueError):
+        pager.control_reg_record(1, 0x30, 0)            # REG_30 (TX/RX enables): refused

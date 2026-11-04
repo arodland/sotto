@@ -197,6 +197,10 @@ def main(argv=None):
                         "none: a confirmation only (a good packet that keeps a change)")
     k.add_argument("--action", choices=tuple(pager.CTL_ACTIONS), default="none",
                    help="play: play the stored message; clear: drop it; report: a CFG line")
+    k.add_argument("--reg", metavar="ADDR=VALUE",
+                   help="write one FD6818 receive register, hex, e.g. 58=73e9 (allowed: 2b 58 59 5c 72; "
+                        "59 low byte only; 0=0 drops every write); the K6 prints K6 REGS and undoes "
+                        "the writes after 60 s without a good packet. --action regs only prints them")
     k.add_argument("--seq", type=int, help="0-255; the K6 applies one seq once (default: from the clock)")
     k.add_argument("--copies", type=int, default=3, help="packets per PHY (default 3)")
     k.add_argument("--also", choices="DF", help="send the same packets again in this PHY after --phy "
@@ -255,7 +259,8 @@ def main(argv=None):
         settings = dict(kv.split("=", 1) for kv in a.set)
         seq = a.seq if a.seq is not None else int(time.time()) & 0xFF
         length = pager.PROFILES[a.payload].payload
-        pk = pager.control_packet(seq, settings, a.action, length)
+        reg = tuple(int(v, 16) for v in a.reg.split("=", 1)) if a.reg else None
+        pk = pager.control_packet(seq, settings, a.action, length, reg=reg)
         cw_id, a.cw_id = a.cw_id, None
         parts = []
         for phy in [a.phy] + ([a.also] if a.also and a.also != a.phy else []):
@@ -267,7 +272,8 @@ def main(argv=None):
         if cw_id:
             x = np.concatenate([x, cw(cw_id, a.rate, a.cw_wpm, level=min(a.level, 0.4))])
         _write(a.output, x, a.rate)
-        log(f"control seq {seq} record {pager.control_record(seq, settings, a.action).hex()}: "
+        rec = pager.control_reg_record(seq, *reg) if reg else pager.control_record(seq, settings, a.action)
+        log(f"control seq {seq} record {rec.hex()}: "
             f"{(len(parts) + 1) // 2 * a.copies} packets, {len(x) / a.rate:.1f} s on air")
         return 0
 

@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..ee76083
+index 0000000..cd130e2
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2017 @@
+@@ -0,0 +1,2088 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -421,6 +421,15 @@ index 0000000..ee76083
 +const CTL_VAR: u8 = 32;
 +const CTL_VOL: u8 = 64;
 +const CTL_IDLE_KEEP: u8 = 128;
++/// action 4: write one receive register (byte 2 the register, 3-4 the value, high byte first;
++/// register 0 drops every write); action 5: print the FSK registers (`K6 REGS`)
++const CTL_ACT_REG: u8 = 4;
++const CTL_ACT_REGS: u8 = 5;
++/// the registers action 4 may write: AF filters, FSK mode, FSK control (low byte only: preamble
++/// and sync lengths; RX/TX enable stay ours), CRC/scrambler, baud. Nothing that transmits,
++/// tunes or changes the payload length the timed read counts on
++const POKE_OK: [u8; 5] = [REG_AF_FILT, REG_FSK_CFG, REG_FSK_CTRL, REG_FSK_5C, REG_BAUD];
++const POKE_MAX: usize = 4;
 +/// An RX-done this soon (ms) after a timed packet's last word, coming after our re-arm, is
 +/// that packet's and is dropped without another re-arm
 +const STRAY_IGNORE_MS: u16 = 300;
@@ -525,6 +534,10 @@ index 0000000..ee76083
 +    idle_keep: bool,
 +    /// idle no-sync RX-dones since the last K6 CFG line (`idlerd=`)
 +    idle_rd: u16,
++    /// register writes from control packets, applied after configure() and undone by the 60 s
++    /// revert or a key press (`poke=` in K6 REGS)
++    poke: [(u8, u16); POKE_MAX],
++    poke_n: u8,
 +    /// key 8 (with key 7's lengths): read the RX FIFO on a timer after the sync, one word per
 +    /// 13.3 ms (16 bits at 1200 baud), instead of at the chip's 0x1000 interrupt. On air that
 +    /// interrupt follows REG_5D's length (it comes about 14 bytes before the end of the
@@ -659,6 +672,8 @@ index 0000000..ee76083
 +            keep_after_done: false,
 +            idle_keep: false,
 +            idle_rd: 0,
++            poke: [(0, 0); POKE_MAX],
++            poke_n: 0,
 +            timed_read: true,
 +            rearm_mode: 0,
 +            rearm_sweep: 0,
@@ -861,10 +876,23 @@ index 0000000..ee76083
 +    fd.reg_write(syst, REG_FSK_LEN, len_field);
 +    fd.reg_write(syst, REG_FIFO_THR, FIFO_THR);
 +    fd.reg_write(syst, REG_TX_GAIN, gain);
++    let p = &app.pager;
++    for &(r, v) in &p.poke[..p.poke_n as usize] {
++        if r != REG_FSK_CTRL {
++            app.radio.fd6818.reg_write(syst, r, v);
++        }
++    }
 +}
 +
 +fn rx_ctrl(app: &App) -> u16 {
-+    CTRL_BASE | if app.pager.invert { CTRL_RX_INVERT } else { 0 }
++    let p = &app.pager;
++    let mut base = CTRL_BASE;
++    for &(r, v) in &p.poke[..p.poke_n as usize] {
++        if r == REG_FSK_CTRL {
++            base = v & 0x00FF;
++        }
++    }
++    base | if p.invert { CTRL_RX_INVERT } else { 0 }
 +}
 +
 +/// Clear the RX FIFO and listen for the next packet.
@@ -1177,6 +1205,7 @@ index 0000000..ee76083
 +            app.pager.ctl_prev = None;
 +            let p = &mut app.pager;
 +            (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var, p.idle_keep) = prev;
++            p.poke_n = 0;
 +            settings_changed(app, syst);
 +            report_line(format_args!("K6 CTL revert: no good packet in 60 s"));
 +            report_cfg(app, "revert");
@@ -1521,6 +1550,7 @@ index 0000000..ee76083
 +    if rearm {
 +        // a key press is the person's choice: no control-packet revert over it
 +        app.pager.ctl_prev = None;
++        app.pager.poke_n = 0;
 +        settings_changed(app, syst);
 +    }
 +    if !matches!(ev.key, KeyId::Digit6 | KeyId::Pound) {
@@ -1567,6 +1597,13 @@ index 0000000..ee76083
 +        return;
 +    }
 +    app.pager.ctl_seq = seq as i16;
++    if action == CTL_ACT_REG || action == CTL_ACT_REGS {
++        if action == CTL_ACT_REG {
++            control_poke(app, syst, mask, (val as u16) << 8 | vv as u16);
++        }
++        report_regs(app, syst, seq);
++        return;
++    }
 +    let p = &mut app.pager;
 +    let before = (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var, p.idle_keep);
 +    if mask & CTL_PHY != 0 {
@@ -1614,6 +1651,40 @@ index 0000000..ee76083
 +        settings_changed(app, syst);
 +    }
 +    report_cfg(app, "ctl");
++}
++
++/// Action 4: record a register write (or with register 0, drop them all) and re-arm with it.
++/// It counts as a change: without a good packet within 60 s every write is undone.
++#[inline(never)]
++fn control_poke(app: &mut App, syst: &mut SYST, reg: u8, val: u16) {
++    let p = &mut app.pager;
++    if reg == 0 {
++        p.poke_n = 0;
++    } else if POKE_OK.contains(&reg) && (p.poke_n as usize) < POKE_MAX {
++        // in order, so a later write to the same register wins
++        p.poke[p.poke_n as usize] = (reg, val);
++        p.poke_n += 1;
++        if p.ctl_prev.is_none() {
++            p.ctl_prev = Some((p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var, p.idle_keep));
++        }
++        p.ctl_wait = 0;
++    } else {
++        return; // not a receive register, or POKE_MAX held: refused (poke= unchanged)
++    }
++    settings_changed(app, syst);
++}
++
++/// `K6 REGS seq=N 2b=.. 58=.. 59=.. 5c=.. 5d=.. 72=.. poke=N`: the FSK registers as read.
++#[inline(never)]
++fn report_regs(app: &mut App, syst: &mut SYST, seq: u8) {
++    use core::fmt::Write as _;
++    let mut s = Serial;
++    write!(s, "K6 REGS seq={}", seq).ok();
++    for a in [REG_AF_FILT, REG_FSK_CFG, REG_FSK_CTRL, REG_FSK_5C, REG_FSK_LEN, REG_BAUD] {
++        let v = app.radio.fd6818.reg_read(syst, a);
++        write!(s, " {:02x}={:04x}", a, v).ok();
++    }
++    report_line(format_args!(" poke={}", app.pager.poke_n));
 +}
 +
 +// ---- frequency entry (#) ----

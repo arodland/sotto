@@ -150,7 +150,10 @@ PROFILES = {"L": L, "XL": XL, "S": S}
 CTL_MAGIC = 0xA8
 CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, "vol": 64,
             "idlekeep": 128}
-CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3}
+CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 5}
+# registers action "reg" may write (the K6 refuses others): AF filters, FSK mode, FSK control
+# (low byte only), CRC/scrambler, baud
+CTL_REGS = (0x2B, 0x58, 0x59, 0x5C, 0x72)
 
 
 def control_record(seq, settings=None, action="none"):
@@ -184,9 +187,21 @@ def control_record(seq, settings=None, action="none"):
     return r + bytes([c >> 8, c & 0xFF])
 
 
-def control_packet(seq, settings=None, action="none", length=64):
-    """A whitened control payload: the record repeated to fill `length` (64 = L, 128 = XL)."""
-    rec = control_record(seq, settings, action)
+def control_reg_record(seq, reg, value):
+    """Action reg: write `value` to FD6818 register `reg` (0: drop every write), then a REGS line.
+    The K6 undoes the writes 60 s later unless a good packet arrives, like a PHY change."""
+    if reg and reg not in CTL_REGS:
+        raise ValueError(f"register {reg:#x} is not one the K6 lets a control packet write "
+                         f"({', '.join(f'{r:#x}' for r in CTL_REGS)})")
+    r = bytes([CTL_MAGIC, seq & 0xFF, reg, value >> 8 & 0xFF, value & 0xFF, CTL_ACTIONS["reg"]])
+    c = crc16_ccitt(r)
+    return r + bytes([c >> 8, c & 0xFF])
+
+
+def control_packet(seq, settings=None, action="none", length=64, reg=None):
+    """A whitened control payload: the record repeated to fill `length` (64 = L, 128 = XL).
+    reg=(register, value) makes a register write instead of a settings change."""
+    rec = control_reg_record(seq, *reg) if reg else control_record(seq, settings, action)
     return _whiten(rec * (length // len(rec)))
 
 
