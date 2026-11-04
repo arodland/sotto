@@ -139,16 +139,17 @@ def _ramp(x, fs, ms=5.0):
 
 
 def modulate(bits, profile="D", baud=1200, fs=FS, level=0.5, invert=False, bt=0.5,
-             comp=None, max_gain_db=30.0):
+             comp=None, max_gain_db=30.0, tones=None):
     """bits -> audio in -1..1 for the transmitter's modulation input; `level` is its peak.
 
     comp: anything with a response(f) method (a Channel, or cal.Measured from a calibration
     recording), whose inverse is applied first. Profile D: undoes a voice path's filters as
     far as max_gain_db allows. Profile F: undoes pre-emphasis, so both tones reach the same
-    deviation (optional; the chip's FFSK receiver may not care)."""
+    deviation (optional; the chip's FFSK receiver may not care). tones: profile F's (bit 1,
+    bit 0) Hz instead of ffsk_tones(baud), to try a tone pair at another baud rate."""
     if invert:
         bits = 1 - np.asarray(bits)
-    x = nrz(bits, baud, fs, bt) if profile == "D" else ffsk(bits, baud, fs, *ffsk_tones(baud))
+    x = nrz(bits, baud, fs, bt) if profile == "D" else ffsk(bits, baud, fs, *(tones or ffsk_tones(baud)))
     if comp is not None:
         x = precompensate(x, comp.response, fs, max_gain_db)
     x = x / max(np.max(np.abs(x)), 1e-9) * level
