@@ -101,7 +101,7 @@ MENU again; EXIT leaves the app.)
 | 6 | raw view: the last packet's first 16 bytes in hex, its sync and length, and its bit errors against the test message (below) |
 | 5 | 1200 / 2400 baud (profile D) |
 | 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, or 0x00FF = stream mode (sync found in software; screen `SYNC W`) |
-| 8 | FIFO reads on a timer (on by default; `CFG timed=`) or at the chip's FIFO interrupt (off) |
+| 8 | Re-arm delay after each packet: 60, 80, 100, 120, 0, 20, 40 ms after its end, then a per-packet sweep (`CFG rearm=`; -1 = sweep). FIFO reads are always on a timer now |
 | 9 | auto-play on/off (on by default; MENU still plays) |
 | 0 | decode watchdog on/off (off by default; `CFG wd=`): reports `K6 HANG pc=` if a frame takes over 1 s |
 | * | clear the message |
@@ -245,20 +245,25 @@ bytes before the end of the packet as REG_5D sets it (F at about 50 bytes for 0x
 overflowed and kept only the first 16 bytes. Profile S worked because its whole packet fits in
 the FIFO. The fix is to read the FIFO on a timer from the sync interrupt, one word per 13.3 ms
 (16 bits at 1200 baud) with one word of lead, and read the rest at RX-done. That's now the
-default; key 8 switches back to the interrupt reads for comparison. With timed reads, a
+default (key 8 used to switch back to the interrupt reads; it now sets the re-arm delay). A
 packet's `ev` ends in `T@ms+n` when the timer read its last word.
 
 **Back-to-back packets (2026-11-04).** On 314a306 only 46 of VE9QRP's 64 packets were
-caught, and each one that arrived had 0 bit errors. After a timed packet the firmware waited up
-to 150 ms for the chip's own RX-done before re-arming, but the next packet's sync is only about
-145 ms after the last word. It now re-arms at once and drops that RX-done when it comes. Each
-`K6 PKT` line has `gap=`, ms from the last re-arm to this packet (about 145 back to back, about
-700 more per packet missed), and `stray=`, how long after the timed finish the chip's RX-done
-came (-1 for not before the next packet). A late RX-done that lands inside the next packet
-(sooner than 60% of its air time after the sync) is dropped too, so it can't end that packet
-early. A gap test the same night ruled out the alternative: 53 or 100 ms of extra 0x55 between
-packets caught no more, and 100 ms made the chip fill its FIFO and false-sync on the preamble,
-so the spec's 16-byte preamble stays.
+caught, and each one that arrived had 0 bit errors. After a timed packet the firmware waited for
+the chip's own RX-done before re-arming, but that comes 85-260 ms after the last word, and the
+150 ms timeout ran past the next packet's sync (about 133 ms after the payload ends, back to
+back). Re-arming at once (f413547) was worse, 4-5 of 16: the chip false-synced about 50 ms into
+the next packet's 0x55 preamble and read it out of step. A gap test ruled out the preamble
+length: 53 or 100 ms of extra 0x55 caught no more, and 100 ms made the chip false-sync. So the
+firmware now re-arms at a fixed time, 60 ms after the payload's end (sync + 487 ms for 64 bytes
+at 1200 baud), and drops a late RX-done wherever it lands, including inside the next packet.
+Timed reads also follow the baud rate now (a word per 6.7 ms in D at 2400). Each `K6 PKT` line
+has `gap=`, ms from the last re-arm to this packet (about 75 back to back; about 560 more per
+packet missed), and `stray=`, when the last timed packet's RX-done came, in ms after its last
+word (-1 for not before this packet), and `rearm=`, the re-arm delay that preceded this packet.
+**Key 8** steps that delay (ms after the payload's end) through 60, 80, 100, 120, 0, 20 and 40,
+then a sweep that moves it 10 ms per packet from 0 to 120 (`rearm=-1` in the CFG line). The
+PC can't set it: the cable's PC-to-radio wire is PA10, the PTT input.
 
 With REG_5D at 0x00FF (key 7 pressed twice), the chip instead streamed everything it
 demodulated, preamble and sync word included, with a FIFO interrupt every 4 words and no sync

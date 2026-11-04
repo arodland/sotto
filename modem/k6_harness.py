@@ -181,14 +181,17 @@ def describe(d, a):
 
 
 def timing(d):
-    """gap= (ms from the radio's last re-arm to this packet: about 145 back to back, ~700
-    more per packet missed) and stray= (when the last timed packet's own RX-done came, ms
-    after it finished; -1 none)."""
+    """gap= (ms from the radio's last re-arm to this packet: about 75 back to back on the
+    default 60 ms re-arm, about 560 more per packet missed), stray= (when the last timed
+    packet's own RX-done came, ms after its last word; -1 none) and rearm= (the re-arm delay
+    before this packet, ms after the last one's end; key 8)."""
     t = ""
     if isinstance(d.get("gap"), int):
         t += f"  gap {d['gap']}"
     if isinstance(d.get("stray"), int) and d["stray"] >= 0:
         t += f"  stray {d['stray']}"
+    if isinstance(d.get("rearm"), int) and d["rearm"] >= 0:
+        t += f"  rearm {d['rearm']}"
     return t
 
 

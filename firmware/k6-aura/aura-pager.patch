@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..07cd739
+index 0000000..c3c1b39
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1445 @@
+@@ -0,0 +1,1503 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -366,6 +366,11 @@ index 0000000..07cd739
 +/// With timed reads, an RX-done sooner than 60% of the payload's air time after the sync
 +/// (67 ticks a byte at 1200 baud) is the last packet's, not this one's
 +const STRAY_DONE_TICKS_PER_BYTE: usize = 40;
++/// key 8's re-arm delays after a timed packet's end, ms; after them, a sweep
++const REARM_STEPS: [u8; 7] = [60, 80, 100, 120, 0, 20, 40];
++const REARM_SWEEP_STEPS: u8 = 13; // 0, 10, ... 120 ms
++/// 100 us ticks a byte takes at 1200 baud (66.7)
++const TICKS_PER_BYTE: usize = 67;
 +
 +/// Volume steps on top of the automatic level, 3 dB apart: -9 .. +12 dB.
 +const VOL_Q8: [i32; 8] = [91, 128, 181, 256, 362, 512, 724, 1024];
@@ -409,6 +414,14 @@ index 0000000..07cd739
 +    /// interrupt follows REG_5D's length (it comes about 14 bytes before the end of the
 +    /// packet), not the FIFO's fill, so a 64-byte packet overflowed the 8-word FIFO first.
 +    pub timed_read: bool,
++    /// key 8: when to re-arm after a packet read on the timer, as an index into REARM_STEPS
++    /// (ms after the payload's end); the last index sweeps 0-120 ms, a step per packet
++    pub rearm_mode: u8,
++    rearm_sweep: u8,
++    /// the delay (ms) of the re-arm after the last timed packet, and of the one before this
++    /// packet (`rearm=` in K6 PKT; -1: not after a timed packet)
++    rearm_last: i16,
++    rearm_before: i16,
 +    /// key 9: play a message by itself once it's complete or 3 s after its last packet
 +    pub auto_play: bool,
 +    /// key 0: a SysTick watchdog around each frame's decode that reports where the CPU is
@@ -455,6 +468,24 @@ index 0000000..07cd739
 +}
 +
 +impl PagerState {
++    /// The re-arm delay after this timed packet (ms after its payload's end): key 8's step,
++    /// or the sweep's next. 60 ms is about halfway into the next packet's 107 ms preamble.
++    fn rearm_delay_ms(&mut self) -> u8 {
++        match REARM_STEPS.get(self.rearm_mode as usize) {
++            Some(&ms) => ms,
++            None => {
++                let ms = self.rearm_sweep * 10;
++                self.rearm_sweep = (self.rearm_sweep + 1) % REARM_SWEEP_STEPS;
++                ms
++            }
++        }
++    }
++
++    fn rearm_label(&self) -> i16 {
++        // -1 in the CFG line: the sweep
++        REARM_STEPS.get(self.rearm_mode as usize).map_or(-1, |&ms| ms as i16)
++    }
++
 +    pub const fn new() -> Self {
 +        PagerState {
 +            chip_ok: false,
@@ -473,6 +504,10 @@ index 0000000..07cd739
 +            len_mode: 0,
 +            keep_after_done: false,
 +            timed_read: true,
++            rearm_mode: 0,
++            rearm_sweep: 0,
++            rearm_last: -1,
++            rearm_before: -1,
 +            auto_play: true,
 +            watchdog: false,
 +            ev: [(0, 0, 0); 12],
@@ -801,6 +836,8 @@ index 0000000..07cd739
 +    if app.pager.t_timed_done.is_some() {
 +        app.pager.stray_ms = -1;
 +    }
++    app.pager.rearm_before = app.pager.rearm_last;
++    app.pager.rearm_last = -1;
 +    let len = app.pager.payload_len();
 +    let words = len / 2;
 +    let swap_read = app.pager.swap;
@@ -811,6 +848,10 @@ index 0000000..07cd739
 +    let mut last = t0;
 +    let mut saw_sync = false;
 +    let timed = app.pager.timed_read;
++    // timed reads: a 16-bit word every 13.3 ms at 1200 baud (3 words per 400 ticks), 6.7 at 2400
++    let fast = app.pager.baud_2400 && !app.pager.phy_ffsk;
++    let words_div: usize = if fast { 200 } else { 400 };
++    let tpb = if fast { TICKS_PER_BYTE / 2 } else { TICKS_PER_BYTE };
 +    let mut t_sync = t0;
 +    app.pager.ev_n = 0;
 +    // key 7's third length (REG_5D 0x00FF): the chip streams what it demodulates, preamble
@@ -850,7 +891,7 @@ index 0000000..07cd739
 +        if timed
 +            && saw_sync
 +            && flags & IRQ_RX_DONE != 0
-+            && (uptime::now().wrapping_sub(t_sync) as usize) < len * STRAY_DONE_TICKS_PER_BYTE
++            && (uptime::now().wrapping_sub(t_sync) as usize) < len * STRAY_DONE_TICKS_PER_BYTE * tpb / TICKS_PER_BYTE
 +        {
 +            // far too soon for this packet's end: the last packet's own RX-done, late. Taken
 +            // as this one's end it would cut it short
@@ -882,7 +923,7 @@ index 0000000..07cd739
 +            waited += now.wrapping_sub(last) as u32;
 +            last = now;
 +            if timed && saw_sync {
-+                let due = (TIMED_LEAD_WORDS + now.wrapping_sub(t_sync) as usize * 3 / 400).min(words);
++                let due = (TIMED_LEAD_WORDS + now.wrapping_sub(t_sync) as usize * 3 / words_div).min(words);
 +                if due > got / 2 {
 +                    let n = due - got / 2;
 +                    read_words(app, syst, &mut buf, &mut got, n);
@@ -898,18 +939,34 @@ index 0000000..07cd739
 +            }
 +        }
 +        if got / 2 >= words {
-+            // all words read on the timer: log it as a pseudo event 0 and re-arm at once. The
-+            // packet's tail and the next one's preamble are still on air, and back to back the
-+            // next sync comes about 145 ms later. Waiting here for the chip's own RX-done
-+            // (50-100 ms, or a 150 ms timeout when it never came) cost about one packet in
-+            // four (2026-11-04, VE9QRP: 46/64). That RX-done, if it still comes, is dropped
-+            // at the top of this function (no sync with it), and `stray=` says when it came.
++            // all words read on the timer: log it as a pseudo event 0, then re-arm at a fixed
++            // time, REARM_AFTER_END_TICKS after the payload's end. Re-arming at once (image
++            // f413547) let the chip false-sync about 50 ms into the next packet's 0x55
++            // preamble, out of step (4-5/16 ok). Waiting for the chip's own RX-done (314a306)
++            // was right when it came 50-100 ms later, but it comes 85-260 ms later, and the
++            // 150 ms timeout then ran past the next sync (about 133 ms after the end, back to
++            // back) and lost that packet (46/64). An RX-done that still comes is dropped:
++            // here, at the top of this function, or inside the next packet (STRAY_DONE).
 +            let k = app.pager.ev_n as usize;
 +            if k < app.pager.ev.len() {
 +                app.pager.ev[k] = (0, last.wrapping_sub(t0), (got / 2 - words_before) as u8);
 +                app.pager.ev_n += 1;
 +            }
++            let delay_ms = app.pager.rearm_delay_ms();
++            app.pager.rearm_last = delay_ms as i16;
++            let rearm_at = (len * tpb) as u16 + delay_ms as u16 * 10;
 +            app.pager.t_timed_done = Some(uptime::now());
++            loop {
++                if take_irq(app, syst) & IRQ_RX_DONE != 0 {
++                    if let Some(t) = app.pager.t_timed_done.take() {
++                        app.pager.stray_ms = (uptime::now().wrapping_sub(t) / 10) as i16;
++                    }
++                }
++                if uptime::now().wrapping_sub(t_sync) >= rearm_at {
++                    break;
++                }
++                delay::us(syst, 500);
++            }
 +            break;
 +        }
 +        if flags == 0 {
@@ -1046,7 +1103,7 @@ index 0000000..07cd739
 +            p.len_mode = (p.len_mode + 1) % 3;
 +            rearm = true;
 +        }
-+        KeyId::Digit8 => p.timed_read = !p.timed_read,
++        KeyId::Digit8 => p.rearm_mode = (p.rearm_mode + 1) % (REARM_STEPS.len() as u8 + 1),
 +        KeyId::Digit9 => p.auto_play = !p.auto_play,
 +        KeyId::Digit0 => p.watchdog = !p.watchdog,
 +        KeyId::Pound => {
@@ -1434,7 +1491,7 @@ index 0000000..07cd739
 +    let p = &app.pager;
 +    let baud = if p.baud_2400 && !p.phy_ffsk { 2400 } else { 1200 };
 +    report_line(format_args!(
-+        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} timed={} auto={} wd={} build={}",
++        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} timed={} rearm={} auto={} wd={} build={}",
 +        why,
 +        app.chip_id,
 +        app.master_freq_hz(),
@@ -1449,6 +1506,7 @@ index 0000000..07cd739
 +        p.len_field(),
 +        p.keep_after_done as u8,
 +        p.timed_read as u8,
++        p.rearm_label(),
 +        p.auto_play as u8,
 +        p.watchdog as u8,
 +        BUILD
@@ -1485,7 +1543,7 @@ index 0000000..07cd739
 +        // interrupt flags in hex : ms since the packet's first interrupt : words read
 +        write!(s, "{}{:x}:{}:{}", if i > 0 { "," } else { "" }, f, t / 10, n).ok();
 +    }
-+    write!(s, " gap={} stray={}", p.gap_ms, p.stray_ms).ok();
++    write!(s, " gap={} stray={} rearm={}", p.gap_ms, p.stray_ms, p.rearm_before).ok();
 +    write!(s, " good={} bad={} to={} raw=", st.good_packets, st.bad_packets, p.timeouts).ok();
 +    for b in read {
 +        write!(s, "{:02x}", b).ok();
