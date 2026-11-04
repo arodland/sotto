@@ -18,12 +18,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install numpy pytest
+      - run: pip install numpy scipy soundfile pytest
       - name: pager reassembly and playback vs the M0 decoder path
         run: |
           make -C c VARIANT=v3.7 fixed PYTHON=false
           make -C c/k6
-          python -m pytest -q tests/test_k6_pager.py
+          python -m pytest -q tests/test_k6_pager.py tests/test_k6_harness.py
 
   aura-pager:
     runs-on: ubuntu-latest

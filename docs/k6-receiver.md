@@ -125,10 +125,13 @@ code. Freeing 58 KB takes one of these:
 
 ## Files
 
-- `c/k6/sotto_pager.[ch]`: the library API (`sp_init`, `sp_packet`, `sp_status`, `sp_play_start`,
-  `sp_play_pwm`, `sp_auto_gain_q8`, `sp_test_packet`).
+- `c/k6/sotto_pager.[ch]`: the library API (`sp_init`, `sp_packet`, `sp_check`, `sp_status`,
+  `sp_play_start`, `sp_play_pwm`, `sp_auto_gain_q8`, `sp_test_packet`, `sp_test_errors`).
 - `c/k6/pager_host.c`: the same path on x86 (`make -C c/k6`). `-t` prints the calibration packet,
-  and `-p` writes PWM values.
+  `-p` writes PWM values, and `-e` prints each packet's bit errors against the test message.
+- `modem/k6_harness.py`: the PC side of the radio's serial report. It listens to the K6's
+  programming cable, scores each packet, and sweeps IC-7100 speed and level settings
+  (`tests/test_k6_harness.py`; usage in the firmware README).
 - `c/k6/bench_k6.py`: the M0 cycle bench.
 - `c/k6/k6fsk_ref.py`: a copy of the spec's reference packer.
 - `tests/test_k6_pager.py`: spec test vector, loss, repeats, new message, truncation, profile S,
