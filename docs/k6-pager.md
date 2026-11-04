@@ -35,6 +35,12 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
 - **Timing:** 150 ms of 0x55 after keying (`--lead-ms`; it was 400, but a long run of 0x55
   made the K6 false-sync on the first packet), carrier and 0x55 kept up between packets, 2
   bytes of 0x55 before unkeying.
+- **Throwaway first packet** (`--prime`, on by default): a copy of the first packet goes in
+  front. The K6 (839924e) re-arms on an idle RX-done with no sync about 50 ms before the first
+  sync word, which is too little preamble to lock, so the first packet failed in 10 of 20
+  bursts. With the copy in front, the first real packet was good in 20 of 20, and VE9QRP as L
+  arrived 500/500 frames (2026-11-04). A longer first preamble (8 to 48 bytes) didn't help.
+  `--prime` replaces `--repeat-first` (the copy at the end, now off), for the same air time.
 
 | | Air time per packet | Speech per packet | 15 s message |
 |---|---:|---:|---:|

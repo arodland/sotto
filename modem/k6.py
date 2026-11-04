@@ -122,15 +122,15 @@ def _tx_opts(p):
     p.add_argument("--max-gain", type=float, default=30.0, help="compensation gain cap, dB (default 30)")
     p.add_argument("--lead-ms", type=float, default=150.0, help="0x55 lead-in after keying (default 150; 400 made the K6 false-sync on the first packet)")
     p.add_argument("--rate", type=int, default=48000, help="audio sample rate (default 48000)")
-    p.add_argument("--repeat-first", action=argparse.BooleanOptionalAction, default=True,
-                   help="tx/send: send the first packet again at the end (default on). The K6 loses "
-                        "the first packet of a burst more often than any other (2026-11-04: XL 31/32 "
-                        "twice, seq 0 both times); the copy costs one packet of air time")
-    p.add_argument("--prime", action=argparse.BooleanOptionalAction, default=False,
-                   help="send a throwaway copy of the first packet before the burst. The K6 loses "
-                        "or false-locks on the first packet of a burst about 40%% of the time and "
-                        "almost never on the next one (2026-11-04: packet 0 7/12, packets 2-3 "
-                        "22/22), so the loss falls on the copy; costs one packet of air time")
+    p.add_argument("--repeat-first", action=argparse.BooleanOptionalAction, default=False,
+                   help="tx/send: send the first packet again at the end (off since --prime; "
+                        "2026-11-04 VE9QRP L: repeat-first 492/500, seq 1 lost)")
+    p.add_argument("--prime", action=argparse.BooleanOptionalAction, default=True,
+                   help="send a throwaway copy of the first packet before the burst (default on). "
+                        "On 839924e the K6 re-arms on an idle no-sync RX-done about 50 ms before "
+                        "the first sync (gap=42-53), and the first packet failed in 10/20 bursts; "
+                        "with the copy first, the first real packet was good in 20/20 and VE9QRP "
+                        "L arrived 500/500 (2026-11-04). Costs one packet, as --repeat-first did")
     p.add_argument("--first-preamble", type=int, metavar="BYTES",
                    help="0x55 bytes before the first packet only (default 16, as every packet). "
                         "For tests: the K6 re-arms about 50 ms before the first sync (gap=42-53 "
