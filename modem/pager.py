@@ -196,18 +196,28 @@ class Air:
     lead_ms of 0x55 after keying, then per packet 0x55 x preamble_bytes, the sync word and
     the payload; the carrier stays up with 0x55 between packets (the next preamble); 2 bytes
     of 0x55 before unkeying. preamble_bytes=0 is the stream framing: packets back to back
-    with only the sync word between them."""
+    with only the sync word between them.
+
+    second_extra_ms more 0x55 go before the second packet only: the K6 usually notices the
+    first packet's sync late (its main loop redraws the screen for 41 ms), so it re-arms late
+    after it and missed the second packet every time (f190a46: 15/16, always seq 1). From the
+    second packet on it waits in a tight loop and is on time."""
     sync: bytes = SYNC
     preamble_bytes: int = 16
     lead_ms: float = 150.0
     tail_bytes: int = 2
+    second_extra_ms: float = 50.0
 
     preamble_byte = PREAMBLE_BYTE
+
+    def _extra(self, baud):
+        return int(np.ceil(self.second_extra_ms / 1000 * baud / 8))
 
     def burst(self, payloads, baud=1200):
         lead = int(np.ceil(self.lead_ms / 1000 * baud / 8))
         p = bytes([PREAMBLE_BYTE])
-        raw = p * lead + b"".join(p * self.preamble_bytes + self.sync + bytes(x) for x in payloads)
+        raw = p * lead + b"".join(p * (self.preamble_bytes + (self._extra(baud) if i == 1 else 0))
+                                  + self.sync + bytes(x) for i, x in enumerate(payloads))
         return raw + p * self.tail_bytes
 
     def burst_bits(self, payloads, baud=1200):
@@ -216,4 +226,5 @@ class Air:
     def seconds(self, n_packets, payload=64, baud=1200):
         lead = int(np.ceil(self.lead_ms / 1000 * baud / 8))
         nbytes = lead + n_packets * (self.preamble_bytes + len(self.sync) + payload) + self.tail_bytes
+        nbytes += self._extra(baud) if n_packets > 1 else 0
         return nbytes * 8 / baud
