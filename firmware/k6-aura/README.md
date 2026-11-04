@@ -73,15 +73,15 @@ can clone Aura.
 ## Using VOICE MSG
 
 1. Flash `aura-pager-only.bin` and power on. The radio goes straight to VOICE MSG and listens,
-   with the speaker muted, on the frequency stock Aura last saved. The pager-only image writes
-   nothing to flash, not even at power-off.
-2. **Set the frequency** with **#**, then six digits in kHz, the same way as Aura's VFO entry.
-   For example, `# 4 3 9 5 0 0` gives 439.500 MHz, and `# 1 4 6 5 2` then MENU gives 146.520 MHz
+   with the speaker muted, on 440.850 MHz (`DEFAULT_FREQ_HZ` in `pager.rs`: WWARA's packet
+   simplex sub-band, 440.800-440.900; change it there for another region). The pager-only image
+   writes nothing to flash, not even at power-off.
+2. **Change the frequency** with **#**, then six digits in kHz, the same way as Aura's VFO entry.
+   For example, `# 4 4 0 8 5 0` gives 440.850 MHz, and `# 1 4 6 5 2` then MENU gives 146.520 MHz
    (MENU fills the rest with zeros). Below 100 MHz, start with a 0. EXIT deletes a digit, or
    cancels when nothing has been typed. The frequency is kept in RAM only, so at power-on the
-   radio is back on the frequency Aura saved. To change that default, set it in stock Aura. The
-   bandwidth (wide or narrow) and offset are Aura's saved settings, too. FM wide is the usual
-   setting.
+   radio is back on the default. The bandwidth (wide or narrow) and offset are Aura's saved
+   settings. FM wide is the usual setting.
 3. The message plays by itself once every frame has arrived, or 3 s after the last packet if some
    are missing. Missing 20 ms frames are concealed. **MENU** plays it again, and **EXIT** stops a
    playback.
@@ -111,7 +111,7 @@ MENU again; EXIT leaves the app.)
 The screen:
 
 ```
-VOICE MSG  439.50000     frequency
+VOICE MSG  440.85000     frequency
 D L 1200 i-x-s+ e+ +0    PHY, frames, baud, chip invert, soft invert, byte swap, emphasis, dB
 ID 42  640/640  80/80    message id, frames received/stored, packets received/total
 SYNC P CRC ok A7 TO 0    last sync polarity, CRC, magic byte (A7 = right), FIFO timeouts

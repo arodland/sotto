@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..1dcd5cf
+index 0000000..7206228
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1856 @@
+@@ -0,0 +1,1875 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -260,6 +260,12 @@ index 0000000..1dcd5cf
 +/// The FD6818 (BK4819 family) needs CHIPID 0x4819; the FD6818B (0x4829) has
 +/// other registers.
 +const FD6818_CHIP_ID: u16 = 0x4819;
++
++/// Pager-only image: the frequency VOICE MSG starts on at power-on, instead of the VFO stock
++/// Aura saved: 440.850 MHz, in WWARA's packet simplex sub-band (440.800-440.900). `#` still
++/// retunes in RAM.
++#[cfg(feature = "pager-only")]
++const DEFAULT_FREQ_HZ: u32 = 440_850_000;
 +
 +mod ffi {
 +    #[repr(C)]
@@ -745,12 +751,14 @@ index 0000000..1dcd5cf
 +pub(super) fn enter(app: &mut App, syst: &mut SYST) {
 +    app.mode = Mode::Pager;
 +    app.input.clear();
-+    app.sync_watching_to_master(syst);
-+    app.pager.chip_ok = app.chip_id == FD6818_CHIP_ID;
 +    if app.pager.store_frames == 0 {
++        // first entry since power-on
++        default_freq(app);
 +        app.pager.store_frames =
 +            unsafe { ffi::sp_init(addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) } as u16;
 +    }
++    app.sync_watching_to_master(syst);
++    app.pager.chip_ok = app.chip_id == FD6818_CHIP_ID;
 +    refresh_status(app);
 +    app.pager.last_tick = uptime::now();
 +    paint_free_ram();
@@ -759,6 +767,17 @@ index 0000000..1dcd5cf
 +    }
 +    report_cfg(app, "enter");
 +}
++
++/// Pager-only image: start on DEFAULT_FREQ_HZ (RAM only, like `#`); the full image keeps the VFO.
++#[cfg(feature = "pager-only")]
++fn default_freq(app: &mut App) {
++    let s = &mut app.sides[app.master];
++    s.vfo_chan = ChVfoMode::Vfo;
++    s.rx_freq_hz = DEFAULT_FREQ_HZ;
++    s.refresh_cfg_freqs();
++}
++#[cfg(not(feature = "pager-only"))]
++fn default_freq(_app: &mut App) {}
 +
 +fn exit(app: &mut App, syst: &mut SYST) {
 +    disarm(app, syst);
