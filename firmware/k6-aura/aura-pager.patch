@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..b919d03
+index 0000000..59a2956
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1127 @@
+@@ -0,0 +1,1242 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -397,6 +397,10 @@ index 0000000..b919d03
 +    pub keep_after_done: bool,
 +    /// key 9: play a message by itself once it's complete or 3 s after its last packet
 +    pub auto_play: bool,
++    /// key 0: a SysTick watchdog around each frame's decode that reports where the CPU is
++    /// stuck (`K6 HANG pc=`); off by default until the bootloader's SysTick trampoline
++    /// (UserVectors[0]) is known to work on this radio
++    pub watchdog: bool,
 +    /// this packet's interrupts: (flags, 100 us ticks since the first, words read)
 +    ev: [(u16, u16, u8); 12],
 +    ev_n: u8,
@@ -446,6 +450,7 @@ index 0000000..b919d03
 +            len_mode: 0,
 +            keep_after_done: false,
 +            auto_play: true,
++            watchdog: false,
 +            ev: [(0, 0, 0); 12],
 +            ev_n: 0,
 +            // The FD6818's FIFO words go low byte first on air (Jeff's first test burst,
@@ -861,6 +866,7 @@ index 0000000..b919d03
 +        }
 +        KeyId::Digit8 => p.keep_after_done = !p.keep_after_done,
 +        KeyId::Digit9 => p.auto_play = !p.auto_play,
++        KeyId::Digit0 => p.watchdog = !p.watchdog,
 +        KeyId::Pound => {
 +            p.freq_entry = true;
 +            app.input.clear();
@@ -988,12 +994,46 @@ index 0000000..b919d03
 +    unsafe { ffi::sp_play_start() };
 +    report_line(format_args!("K6 STEP decoder reset gain={}", auto));
 +
-+    let mut fill = |audio: &mut PwmAudio, i: usize, g: i32, done: &mut bool, tail: &mut usize| {
++    let wd = app.pager.watchdog;
++    // the stack: the least ever free since VOICE MSG started, then painted again for playback
++    let before = free_ram();
++    paint_free_ram();
++    report_line(format_args!(
++        "K6 STEP stack sp={:08x} floor={:08x} least_free={} free={} wd={}",
++        sp_now(),
++        addr_of!(__sheap) as u32,
++        before,
++        free_ram(),
++        wd as u8
++    ));
++    let mut traced = 0u32;
++    let mut fill = |audio: &mut PwmAudio, syst: &mut SYST, i: usize, g: i32, done: &mut bool, tail: &mut usize| {
 +        let seg = audio.segment(i);
 +        if !*done {
++            // the first frames one by one: which one the radio stops in, and the stack left
++            let trace = traced < 6;
++            if trace {
++                report_line(format_args!("K6 STEP frame {} pos={} sp={:08x}", traced, unsafe { ffi::sp_play_pos() }, sp_now()));
++            }
++            if wd {
++                watchdog_arm(syst);
++            }
 +            let t = uptime::now();
 +            let more = unsafe { ffi::sp_play_pwm(seg.as_mut_ptr(), pwm_audio::TOP as u32, g, emph) };
 +            let dt = uptime::now().wrapping_sub(t);
++            if wd {
++                watchdog_disarm(syst);
++            }
++            if trace {
++                report_line(format_args!(
++                    "K6 STEP frame {} done more={} us={} stack_free={}",
++                    traced,
++                    more,
++                    dt as u32 * 100,
++                    free_ram()
++                ));
++                traced += 1;
++            }
 +            if more != 0 {
 +                dsum += dt as u32;
 +                dmax = dmax.max(dt);
@@ -1007,7 +1047,7 @@ index 0000000..b919d03
 +    };
 +
 +    for i in 0..pwm_audio::NSEG {
-+        fill(&mut audio, i, g, &mut done, &mut tail);
++        fill(&mut audio, syst, i, g, &mut done, &mut tail);
 +        if i == 0 {
 +            report_line(format_args!("K6 STEP first frame decoded"));
 +        }
@@ -1040,7 +1080,7 @@ index 0000000..b919d03
 +            break;
 +        }
 +        while wr != cur {
-+            fill(&mut audio, wr, g, &mut done, &mut tail);
++            fill(&mut audio, syst, wr, g, &mut done, &mut tail);
 +            wr = (wr + 1) % pwm_audio::NSEG;
 +        }
 +        app.keypad.poll(syst);
@@ -1188,6 +1228,7 @@ index 0000000..b919d03
 +
 +fn key_name(k: KeyId) -> &'static str {
 +    match k {
++        KeyId::Digit0 => "key0",
 +        KeyId::Digit1 => "key1",
 +        KeyId::Digit2 => "key2",
 +        KeyId::Digit3 => "key3",
@@ -1208,7 +1249,7 @@ index 0000000..b919d03
 +    let p = &app.pager;
 +    let baud = if p.baud_2400 && !p.phy_ffsk { 2400 } else { 1200 };
 +    report_line(format_args!(
-+        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} auto={} build={}",
++        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} auto={} wd={} build={}",
 +        why,
 +        app.chip_id,
 +        app.master_freq_hz(),
@@ -1223,6 +1264,7 @@ index 0000000..b919d03
 +        p.len_field(),
 +        p.keep_after_done as u8,
 +        p.auto_play as u8,
++        p.watchdog as u8,
 +        BUILD
 +    ));
 +}
@@ -1323,6 +1365,79 @@ index 0000000..b919d03
 +        )),
 +        None => report_line(format_args!("K6 PANIC {} build={}", info.message(), BUILD)),
 +    }
++    for _ in 0..2_000_000 {
++        cortex_m::asm::nop();
++    }
++    cortex_m::peripheral::SCB::sys_reset()
++}
++
++// ---- hang hunting: stack use and a decode watchdog ----
++
++fn sp_now() -> u32 {
++    cortex_m::register::msp::read()
++}
++
++// The bootloader owns the vector table and forwards SysTick to the function at UserVectors[0]
++// (0x2000_1000), as it forwards USART1 to [1] (hal/uart.rs). Armed around each frame's decode,
++// SysTick wraps every 2^24 cycles (175 ms); after 6 wraps (about 1 s, against 1-2 ms per frame)
++// the handler reports the interrupted code's pc and lr and reboots. A HardFault outranks
++// SysTick, so a decode that stops with no HANG line stopped in a fault, not a loop.
++
++const USER_VECTOR_SYSTICK: usize = 0;
++static mut WD_ARMED: bool = false;
++static mut WD_TICKS: u32 = 0;
++
++fn watchdog_arm(syst: &mut SYST) {
++    unsafe {
++        core::ptr::write_volatile((0x2000_1000 + USER_VECTOR_SYSTICK * 4) as *mut usize, wd_tick as unsafe extern "C" fn() as usize);
++        WD_TICKS = 0;
++        WD_ARMED = true;
++    }
++    syst.set_reload(0x00FF_FFFF);
++    syst.clear_current();
++    syst.enable_interrupt();
++    syst.enable_counter();
++}
++
++fn watchdog_disarm(syst: &mut SYST) {
++    syst.disable_interrupt();
++    syst.disable_counter();
++    unsafe { WD_ARMED = false };
++}
++
++unsafe extern "C" fn wd_tick() {
++    if !WD_ARMED {
++        return;
++    }
++    WD_TICKS += 1;
++    if WD_TICKS < 6 {
++        return;
++    }
++    // the exception frame (r0 r1 r2 r3 r12 lr pc xpsr) sits above the bootloader handler's
++    // push, which ends with its EXC_RETURN lr (0xFFFFFFF1/9/D)
++    let sp = sp_now();
++    let mut frame = 0u32;
++    for i in 0..32u32 {
++        let w = core::ptr::read_volatile((sp + 4 * i) as *const u32);
++        if w & 0xFFFF_FFF0 == 0xFFFF_FFF0 {
++            frame = sp + 4 * i + 4;
++            break;
++        }
++    }
++    let rd = |k: u32| if frame != 0 { core::ptr::read_volatile((frame + 4 * k) as *const u32) } else { 0 };
++    report_line(format_args!(
++        "K6 HANG pc={:08x} lr={:08x} r0={:08x} r1={:08x} r2={:08x} r3={:08x} sp={:08x} frame={:08x} pos={} build={}",
++        rd(6),
++        rd(5),
++        rd(0),
++        rd(1),
++        rd(2),
++        rd(3),
++        sp,
++        frame,
++        ffi::sp_play_pos(),
++        BUILD
++    ));
 +    for _ in 0..2_000_000 {
 +        cortex_m::asm::nop();
 +    }

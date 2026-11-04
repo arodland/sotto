@@ -103,6 +103,7 @@ MENU again; EXIT leaves the app.)
 | 7 | bring-up: how the packet length goes into REG_5D (bytes - 1, words - 1, or the longest), serial report only |
 | 8 | bring-up: keep reading after an early RX-done until the whole packet came, serial report only |
 | 9 | auto-play on/off (on by default; MENU still plays) |
+| 0 | decode watchdog on/off (off by default; `CFG wd=`): reports `K6 HANG pc=` if a frame takes over 1 s |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
 | PTT | calibration transmit: test packet 0, twice in D and then twice in F, on the VFO's TX frequency and power |
@@ -235,4 +236,15 @@ A CPU fault should print `K6 FAULT pc=... lr=...` and reboot. That only works if
 bootloader's HardFault handler forwards to ours, though: this MCU has no VTOR, and the
 exception vectors belong to the bootloader. Either way, the last `K6 STEP` line says how far
 playback got.
+
+**Second playback test (2026-11-04, image 72b6e3b).** 34 of 40 profile-S packets arrived, all
+with clean CRCs, and the radio stopped inside the decoder: after `first frame decoded`, before
+the four-frame line. The PC decodes the same 34 packets in 4 ms. The next image prints, for
+each of the first 6 frames, a `K6 STEP frame n pos=` line before it and `done ... us= stack_free=`
+after it, plus the stack pointer, the stack floor and the least free stack at playback start.
+Key 0 adds a SysTick watchdog around each decode. It relies on the bootloader forwarding
+SysTick through UserVectors[0], as it forwards USART1 through [1], which isn't confirmed yet
+(the stock firmware uses that slot). So it is off by default. When it's on, a frame that
+takes over a second prints the interrupted pc and lr and reboots. A stop with no `K6 HANG`
+line points to a fault, because a HardFault outranks SysTick.
 Key 9 turns auto-play off, so receive tests can run without it.
