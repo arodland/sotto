@@ -112,17 +112,56 @@ code. Freeing 58 KB takes one of these:
   (for example `-Os`, and dropping apps), and nothing measured yet shows where those bytes would
   come from.
 
+## On air (2026-11-04)
+
+The first message played out of the K6's speaker on 2026-11-04, on image 314a306. The IC-7100
+was in FM-D at minimum power on 439.500 MHz, sending profile F (FFSK 1200) over its USB audio
+with `python -m modem.k6`. The 10 s VE9QRP clip went out as 64 packets of 64 bytes (36.3 s on air)
+and the K6 played it by itself when the message completed. Jeff's verdict on the speaker: "Perfectly clear. Some artifact but really passable." The serial harness
+(`python -m modem.k6_harness`, see `firmware/k6-aura/README.md`) measured these results:
+
+- **Packets.** Every packet received passed its CRC with 0 bit errors (8 of 8 in a 10-packet
+  burst, 12 of 16 in the full test message). The misses were packets the chip never detected,
+  not damaged ones. Profile S (16 bytes) was also clean but caught only about 1 packet in 1.7.
+- **Playback.** All 70 frames of the test message played (60 received, 10 concealed). The
+  decoder's own timer gave **13.5 ms mean and 21.3 ms worst per 20 ms frame**. That is 65 MHz
+  mean, inside the model's ±25%, but the worst frame is 15% over the model's worst. The 80 ms
+  ring absorbed it with no underrun, but there's little headroom.
+- **Stack.** 1,468 bytes were left at the deepest point.
+
+What it took, in order:
+
+1. **FD6818 packet mode stops at 16 bytes.** The chip's "FIFO almost full" interrupt (0x1000)
+   follows the REG_5D packet length, firing about 14 bytes before the end, not at the FIFO
+   threshold. The 8-word RX FIFO therefore overflowed after 16 bytes of a 64-byte packet. The fix
+   is **timed reads**: after sync the firmware reads one FIFO word every 13.33 ms (key 8, on by
+   default). The chip's own RX-done arrives about 50 ms after the timed read finishes and must be
+   dropped. Otherwise it is taken as a new, misaligned packet. A stream mode (REG_5D = 0x00FF,
+   software sync search, key 7) also gave 0 bit errors and is kept as a fallback.
+2. **Playback hung after one frame: a stack overflow.** With LTO, Aura's `main` was inlined into
+   a single 8,336-byte frame, holding the whole App and its temporaries, so the decoder's 3.5 KB
+   ran into static RAM. `tools/k6_frames.py` (run in CI on every build) lists the largest frames.
+   The fix: the App lives in a static built by an `#[inline(never)]` function, and the pager's
+   functions are `#[inline(never)]`. `-DFX_CS512_CONST` moves the 2 KB cos/sin table into flash
+   (+1.3 MHz mean), and playback decodes in place. `main`'s frame is now 2,944 bytes.
+3. **RAM below 0x20001000 is not free.** Aura's linker script starts at 0x20001028, and the
+   bootloader keeps state below it. Two images that put the message store there hung at boot.
+   The bootloader also owns the vector table (no VTOR), so a HardFault handler in Aura may never
+   run.
+4. **Know which image is running.** Every image prints `K6 BOOT build=<sha>-<time>` on its
+   cable and shows the sha on screen, and the harness's `sweep --expect-build` refuses to send
+   to anything else.
+
 ## What is not verified yet
 
 - The firmware is built only in CI (*K6 pager firmware*). This sandbox won't run Aura's cargo
   build, so the Rust was type-checked here against stubs and compiled for real in CI.
-- FD6818 FSK receive has never been shown working by anyone. Aura's FSK functions are dead code.
-  The register sequence follows the spec, from the BK4819 register list and egzumer's 72-byte
-  AIRCOPY. The screen shows sync polarity, CRC, magic byte and timeouts for the first test.
-- PWM playback with this DMA setup follows the stock firmware's `AudioHard_Init` register for
-  register, but Aura never drives PA11, so it is untested under Aura.
-- The cycle counts come from a model (±25%), not the chip.
-
+- Only PHY F (FFSK) has been received on air. PHY D (direct FSK) over the IC-7100's USB audio
+  got nothing in two early bursts. That was before the timed-read fix, and its USB path in FM-D
+  turns out to be wide (`docs/k6-pager.md`), so D is worth retrying.
+- Only about 75-80% of 64-byte packets are detected, so a message needs repeats to fill holes.
+- The artifact Jeff heard isn't traced yet. Candidates are concealed frames, the 8 kHz PWM
+  through the RC filter, and the slow worst-case frames.
 ## Files
 
 - `c/k6/sotto_pager.[ch]`: the library API (`sp_init`, `sp_packet`, `sp_check`, `sp_status`,

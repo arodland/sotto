@@ -52,6 +52,14 @@ for the chip):
 
 So: **use DATA2 and profile D if you can, and profile F over USB if you can't.**
 
+*2026-11-04, measured:* the IC-7100's USB audio in **FM-D** is much wider than a voice path, at
+least on receive. Open-squelch discriminator noise on a clear channel, recorded from its USB codec,
+is flat from 20 Hz to 2 kHz, 3 dB down at 4.5 kHz, 6 dB at 6 kHz and 10 dB at 8 kHz. That only
+measures the receive chain. If the transmit chain is as flat, profile D could work over USB in FM-D
+without DATA2. That is still untested: the first D bursts over USB got nothing, but that was
+before the receiver's 64-byte fix. Profile F over USB is what has worked on air
+(`docs/k6-receiver.md`, *On air*).
+
 Over a simulated FM link (`tools/k6_link_sim.py`: 2.5 kHz deviation, 12.5 kHz channel, white
 noise, no fading), the share of packets that decode is:
 
@@ -178,7 +186,7 @@ can't be undone all the way down to DC.
 |---|---|
 | Bit 1 = +deviation (D) or 1200 Hz (F) | Calibration step 2 (`rx` reports inverted packets) |
 | FIFO words go high byte first | **Settled 2026-11-04: the chip sends each word low byte first.** The K6's first test burst (recorded on the IC-7100's USB audio) decoded bit-perfect in D and F once words were swapped; `rx` now accepts swapped packets and says so |
-| The chip accepts 64-byte frames | Step 4; fall back to `--payload S` |
+| The chip accepts 64-byte frames | **Settled 2026-11-04: yes, with timed FIFO reads** in the receiver (packet mode's FIFO interrupt can't keep up past 16 bytes). 0 bit errors in F |
 | ±2.5 kHz deviation suits the K6's receiver | Steps 2-3 (match the K6's own transmitter) |
-| The IC-7100's DATA2 9600 input is flat to ~20 Hz | `cal` / `fit` |
+| The IC-7100's DATA2 9600 input is flat to ~20 Hz | `cal` / `fit`. Its USB audio in FM-D is flat 20 Hz-2 kHz on receive (measured 2026-11-04); transmit untested |
 | Our demodulator is a fair stand-in for the chip | The first on-air tests |
