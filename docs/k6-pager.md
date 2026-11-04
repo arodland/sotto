@@ -21,11 +21,15 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
 - **Interleave:** 8 packets per group. A lost packet costs 8 isolated 20 ms frames 160 ms
   apart, which sotto's concealment bridges.
 - **Profile XL** (`--payload XL`, K6 key 2): 128-byte payload, the same header, 20 frames, no
-  reserved bytes; groups of 8 packets carry 160 frames.
+  reserved bytes; groups of 8 packets carry 160 frames. In packet mode the preamble is 16 bytes
+  before the first packet and 24 before the rest: after a 128-byte packet the K6's chip reports
+  its end late, and with 16 bytes the K6 false-synced on the next one. On air (2026-11-04, K6
+  build b0ff399, F/1200): 8/8, 0 bit errors; a 12 s clip is 33.4 s on air against 45.0 s in L.
 - **Stream framing** (`--stream`, K6 key 7 stream mode): after the lead-in, packets go back to
   back with only the sync word between them. The K6 finds the sync in software.
-- **F at 2400 baud** (`--phy F --baud 2400`, K6 keys 1 and 5): 1200/2400 Hz tones, MSK. Not yet
-  tried on air.
+- **F at 2400 baud** (`--phy F --baud 2400`, K6 keys 1 and 5): 1200/2400 Hz tones, MSK. On air
+  the K6 transmits it (the PC decodes it), but it never synced in receive (2026-11-04: six
+  REG_58 values, levels 0.1-0.7, two tilts).
 - **Profile S** (`--payload S`, 16 bytes) is still made here, but the K6 firmware no longer
   takes it.
 - **Timing:** 150 ms of 0x55 after keying (`--lead-ms`; it was 400, but a long run of 0x55
@@ -37,6 +41,7 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
 | 1200 baud, profile L | 560 ms | 160 ms | 54 s |
 | 2400 baud, profile L | 280 ms | 160 ms | 27 s |
 | 1200 baud, profile S | 240 ms | 40 ms | 90 s |
+| 1200 baud, XL (packet mode) | 1,050 ms | 400 ms | 42 s |
 | 1200 baud, XL, stream | 880 ms | 400 ms | 35 s |
 | 2400 baud, XL, stream | 440 ms | 400 ms | 18 s |
 

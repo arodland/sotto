@@ -73,7 +73,9 @@ def msg_id_for(frames):
 
 
 def build_audio(payloads, a, fs):
-    air = pager.Air(lead_ms=a.lead_ms, preamble_bytes=0 if a.stream else 16)
+    # XL: 24 bytes of preamble after the first packet (see pager.Air)
+    air = pager.Air(lead_ms=a.lead_ms, preamble_bytes=0 if a.stream else 16,
+                    later_preamble_bytes=24 if a.payload == "XL" and not a.stream else None)
     bits = air.burst_bits(payloads, a.baud)
     x = fsk.modulate(bits, a.phy, a.baud, fs, a.level, a.invert, comp=load_comp(a.comp),
                      max_gain_db=a.max_gain)

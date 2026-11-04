@@ -201,9 +201,17 @@ class Air:
     second_extra_ms more 0x55 go before the second packet only: the K6 usually notices the
     first packet's sync late (its main loop redraws the screen for 41 ms), so it re-arms late
     after it and missed the second packet every time (f190a46: 15/16, always seq 1). From the
-    second packet on it waits in a tight loop and is on time."""
+    second packet on it waits in a tight loop and is on time.
+
+    later_preamble_bytes (None: preamble_bytes) is the preamble of every packet after the first.
+    XL wants 24 (modem.k6 sets it): after a 128-byte packet the FD6818's own RX-done comes about
+    144 ms after the K6's timed read ends, and with 16 bytes the K6's re-arm then false-synced
+    in the next preamble (b0ff399: 5-6/8); 24 or 32 everywhere false-synced on the first packet
+    instead (a long 0x55 run before the first sync, as with a 400 ms lead-in), 7/8; 16 first and
+    24 after: 8/8, 0 bit errors."""
     sync: bytes = SYNC
     preamble_bytes: int = 16
+    later_preamble_bytes: int | None = None
     lead_ms: float = 150.0
     tail_bytes: int = 2
     second_extra_ms: float = 50.0
@@ -213,11 +221,19 @@ class Air:
     def _extra(self, baud):
         return int(np.ceil(self.second_extra_ms / 1000 * baud / 8))
 
+    def _pre(self, i, baud):
+        """0x55 bytes before packet i."""
+        if i == 0 or self.later_preamble_bytes is None:
+            n = self.preamble_bytes
+        else:
+            n = self.later_preamble_bytes
+        return n + (self._extra(baud) if i == 1 else 0)
+
     def burst(self, payloads, baud=1200):
         lead = int(np.ceil(self.lead_ms / 1000 * baud / 8))
         p = bytes([PREAMBLE_BYTE])
-        raw = p * lead + b"".join(p * (self.preamble_bytes + (self._extra(baud) if i == 1 else 0))
-                                  + self.sync + bytes(x) for i, x in enumerate(payloads))
+        raw = p * lead + b"".join(p * self._pre(i, baud) + self.sync + bytes(x)
+                                  for i, x in enumerate(payloads))
         return raw + p * self.tail_bytes
 
     def burst_bits(self, payloads, baud=1200):
@@ -225,6 +241,6 @@ class Air:
 
     def seconds(self, n_packets, payload=64, baud=1200):
         lead = int(np.ceil(self.lead_ms / 1000 * baud / 8))
-        nbytes = lead + n_packets * (self.preamble_bytes + len(self.sync) + payload) + self.tail_bytes
-        nbytes += self._extra(baud) if n_packets > 1 else 0
+        nbytes = lead + n_packets * (len(self.sync) + payload) + self.tail_bytes
+        nbytes += sum(self._pre(i, baud) for i in range(n_packets))
         return nbytes * 8 / baud
