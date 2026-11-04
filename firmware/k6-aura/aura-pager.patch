@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..0ad4c98
+index 0000000..fb70f0f
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1857 @@
+@@ -0,0 +1,1859 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -366,7 +366,8 @@ index 0000000..0ad4c98
 +/// guess: the FSK demodulator sits behind the AF receive filters, and de-emphasis (-6 dB at
 +/// 2400 against 1200) or the 3 kHz low-pass spoils a 2400-baud signal. REG_2B (BK4819 notes):
 +/// <10> RX 300 Hz HPF off, <9> RX 3 kHz LPF off, <8> RX de-emphasis off. D at 2400 keeps
-+/// CFG_D_2400 and takes only the REG_2B bits. At 1200 REG_2B stays as the chip had it.
++/// CFG_D_2400 and takes only the REG_2B bits, and so do D and F at 1200 (Jeff: does D/1200,
++/// which slipped over USB, do better without de-emphasis? does F/1200 notice at all?).
 +const RX2400_VARIANTS: [(u16, u16); 7] = [
 +    (CFG_F_2400, 0),
 +    (CFG_F_2400, 0x0100),
@@ -788,7 +789,7 @@ index 0000000..0ad4c98
 +        (CFG_D_1200, BAUD_1200, GAIN_D)
 +    };
 +    let len_field = p.len_field();
-+    let filt_or = if p.baud_2400 { var2b } else { 0 };
++    let filt_or = var2b;
 +    let known = app.pager.reg2b_base;
 +    let base = match known {
 +        Some(b) => b,
@@ -1423,7 +1424,8 @@ index 0000000..0ad4c98
 +        }
 +        KeyId::Digit8 => p.rearm_mode = (p.rearm_mode + 1) % (REARM_STEPS.len() as u8 + 1),
 +        KeyId::Digit9 => p.auto_play = !p.auto_play,
-+        // key 0 was the decode watchdog (unproven, off); now the F/2400 receive variants
++        // key 0 was the decode watchdog (unproven, off); now the receive variants (REG_58 at
++        // F/2400, REG_2B at any PHY and baud)
 +        KeyId::Digit0 => {
 +            p.f2400_var = (p.f2400_var + 1) % RX2400_VARIANTS.len() as u8;
 +            rearm = true;
@@ -1831,7 +1833,7 @@ index 0000000..0ad4c98
 +        p.stream() as u8,
 +        p.f2400_var,
 +        p.rx2400().0,
-+        p.reg2b_base.unwrap_or(0) | if p.baud_2400 { p.rx2400().1 } else { 0 },
++        p.reg2b_base.unwrap_or(0) | p.rx2400().1,
 +        p.invert as u8,
 +        p.soft_inv as u8,
 +        p.swap as u8,
