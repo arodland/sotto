@@ -33,17 +33,18 @@ index 34078b1..8a73bcc 100644
      watch_git_dir();
  }
 diff --git a/memory.x b/memory.x
-index 4fe73cb..8567797 100644
+index 4fe73cb..3dedaf2 100644
 --- a/memory.x
 +++ b/memory.x
-@@ -9,5 +9,17 @@ MEMORY
+@@ -9,5 +9,18 @@ MEMORY
  {
    FLASH : ORIGIN = 0x08002000, LENGTH = 120K
    RAM   : ORIGIN = 0x20001028, LENGTH = 17720
-+  /* sotto pager: the 4 KB below UserVectors. The stock firmware puts its .data here
-+   * (its linker script starts RAM at 0x20000000), so nothing of the bootloader's lives
-+   * here once an application runs. Holds the pager's message store (.ram0, NOLOAD). */
-+  RAM0  : ORIGIN = 0x20000000, LENGTH = 4K
++  /* sotto pager: RAM below UserVectors, which Aura leaves unused. Its first bytes hold the
++   * live interrupt vector table (an image that cleared 0x20000000.. hung at boot on the radio,
++   * 2026-11-04), so the first 256 bytes stay untouched. Holds the pager's message store
++   * (.ram0, NOLOAD). */
++  RAM0  : ORIGIN = 0x20000100, LENGTH = 0xF00
  }
  
 +SECTIONS
@@ -219,7 +220,7 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..92e3fa7
+index 0000000..d072873
 --- /dev/null
 +++ b/src/app/pager.rs
 @@ -0,0 +1,1387 @@
@@ -271,10 +272,10 @@ index 0000000..92e3fa7
 +    BUILD.get(..7).unwrap_or(BUILD)
 +}
 +
-+const STORE_BYTES: usize = 4096;
-+/// In RAM0 (memory.x: 0x2000_0000, the 4 KB below UserVectors that the stock firmware uses for
-+/// its .data and Aura leaves empty), so the main stack keeps those 4 KB: on the radio, playback
-+/// started with 236 bytes of stack left and the decoder overran it. NOLOAD: sp_init clears it.
++const STORE_BYTES: usize = 3840; // all of RAM0: 608 frames, 12.2 s
++/// In RAM0 (memory.x: 0x2000_0100, below UserVectors, which Aura leaves empty), so the main
++/// stack keeps those 3.75 KB: on the radio, playback started with 236 bytes of stack left and
++/// the decoder overran it. NOLOAD: sp_init clears it.
 +#[link_section = ".ram0"]
 +static mut STORE: [u32; STORE_BYTES / 4] = [0; STORE_BYTES / 4];
 +
@@ -1796,7 +1797,7 @@ index 0000000..eb97a85
 +    }
 +}
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..dc23c0c 100644
+index 9d2b0c0..f4b8a65 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -14,7 +14,7 @@ mod ui;
@@ -1808,15 +1809,23 @@ index 9d2b0c0..dc23c0c 100644
  
  use app::satellite;
  use device::display::{Backlight, Display};
-@@ -79,6 +79,7 @@ fn main() -> ! {
+@@ -79,6 +79,15 @@ fn main() -> ! {
      uart::install_bootloader_trampoline();
      unsafe { cortex_m::peripheral::NVIC::unmask(kd32f328_pac::Interrupt::USART1) };
      writeln!(dbg, "bfk6-fw boot, sysclk={}Hz", clock::SYSCLK_HZ).ok();
 +    writeln!(dbg, "K6 BOOT build={}", app::pager::BUILD).ok();
++    // what the bootloader left at the bottom of RAM (the live vector table, it seems): the
++    // initial SP and the 15 system exception vectors, then SysTick and the first IRQs
++    write!(dbg, "K6 VEC").ok();
++    for i in 0..20u32 {
++        let w = unsafe { core::ptr::read_volatile((0x2000_0000 + 4 * i) as *const u32) };
++        write!(dbg, " {:08x}", w).ok();
++    }
++    writeln!(dbg).ok();
  
      let mut cp = cortex_m::Peripherals::take().unwrap();
      unsafe { cp.NVIC.set_priority(kd32f328_pac::Interrupt::USART1, 0) };
-@@ -301,6 +302,37 @@ fn main() -> ! {
+@@ -301,6 +310,37 @@ fn main() -> ! {
      )
      .ok();
  
@@ -1854,7 +1863,7 @@ index 9d2b0c0..dc23c0c 100644
      // scheduler + main loop
      let mut scheduler = scheduler::Scheduler::new();
      let mut applied_contrast: u8 = u8::MAX;
-@@ -329,6 +361,18 @@ fn main() -> ! {
+@@ -329,6 +369,18 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -1873,7 +1882,7 @@ index 9d2b0c0..dc23c0c 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +445,8 @@ fn main() -> ! {
+@@ -401,6 +453,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -1882,7 +1891,7 @@ index 9d2b0c0..dc23c0c 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +511,13 @@ fn main() -> ! {
+@@ -465,9 +519,13 @@ fn main() -> ! {
              }
          }
  

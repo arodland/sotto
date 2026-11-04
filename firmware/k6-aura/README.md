@@ -259,9 +259,12 @@ sync word in software (byte aligned, up to 2 wrong bits, inverted too), and keep
 the stack pointer was only 236 bytes above the end of static RAM. Aura had used 8.3 KB of the
 8.5 KB stack (its `App` and the main loop live on the stack), and the decoder needs about
 3.5 KB more. Frame 0 overran into static RAM and frame 1 never finished. The fix moves the
-4 KB message store into the 4 KB of RAM below UserVectors (0x2000_0000, `RAM0` in memory.x).
-The stock firmware keeps its `.data` there, but Aura leaves it unused. That gives the stack
-back 4 KB. `build.sh` reports RAM0's use, and warns when under 12 KB is left for the stack.
+message store into the RAM below UserVectors (`RAM0` in memory.x), which Aura leaves unused.
+The first try used all 4 KB from 0x2000_0000 and hung at boot, at the Aura main screen, when
+the store was cleared. The bottom of that RAM evidently holds the live interrupt vector table.
+RAM0 now starts at 0x2000_0100, leaving the first 256 bytes alone. The store is 3,840 bytes
+(608 frames, 12.2 s), and the stack gets those 3.75 KB back. At power-on the image prints
+`K6 VEC` with the first 20 words at 0x2000_0000, to show what the bootloader keeps there. `build.sh` reports RAM0's use, and warns when under 12 KB is left for the stack.
 
 **Timed reads on air (image 480d312).** The first full-length packets passed: 3 of 10 had
 64 bytes, 0 bit errors and a good CRC. Each time, the chip's own RX-done for the packet came
