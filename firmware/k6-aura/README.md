@@ -103,7 +103,7 @@ MENU again; EXIT leaves the app.)
 | 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, then two stream modes, 0xFF00 and 0xFFE0 (chip armed once, sync found in software at any bit offset, packets back to back; screen `stream`, `SYNC W`, `RS` = re-arms) |
 | 8 | Re-arm delay after each packet: 40, 50, 30, 60, 20, 0, 80 ms after its end, then a per-packet sweep (`CFG rearm=`; -1 = sweep). FIFO reads are always on a timer now |
 | 9 | auto-play on/off (on by default; MENU still plays) |
-| 0 | F at 2400 only: the next REG_58 receive variant (`CFG f2400= reg58=`): 0x73E9, 0x7329 (bits 7:6 = 00), 0x73E3 (RX BW 001), 0x7FE9 (RX mode 111), 0x70E9 (RX gain 00), 0x63E9 (RX mode 000). It was the decode watchdog, which stays off |
+| 0 | 2400 baud only: the next receive variant (`CFG f2400= reg58= reg2b=`). On b0ff399 the six REG_58 values (0x73E9, 0x7329, 0x73E3, 0x7FE9, 0x70E9, 0x63E9) all gave 0 syncs at F/2400. Now: 0x73E9 with REG_2B as is, then with RX de-emphasis off (+0x0100), de-emphasis and 3 kHz LPF off (+0x0300), and also the 300 Hz HPF off (+0x0700), then 0x7FE9, 0x63E9 and 0x7329 with +0x0300. D at 2400 takes only the REG_2B bits; at 1200 REG_2B stays as the chip had it. It was the decode watchdog, which stays off |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
 | PTT | calibration transmit: test packet 0, twice in D and then twice in F, at key 5's baud rate, on the VFO's TX frequency and power |

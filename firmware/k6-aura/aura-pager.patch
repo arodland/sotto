@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..4548c4f
+index 0000000..48ea369
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1800 @@
+@@ -0,0 +1,1833 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -358,12 +358,24 @@ index 0000000..4548c4f
 +/// Untested on air: the register list has the tone pair, not whether its demodulator follows
 +/// REG_72 to 2400 baud.
 +const CFG_F_2400: u16 = 0x73E9;
-+/// Key 0 (F at 2400 only): REG_58 values to try for receive. On air (f190a46) the K6 sent
-+/// F/2400 right with CFG_F_2400 (the PC decoded it; 1200/2400 Hz tones) but never synced on
-+/// it in receive. The BK4819 notes leave bits 7:6 unknown and may have the RX fields wrong,
-+/// so: as is; bits 7:6 = 00; RX BW 001; RX mode 111; RX gain 00; RX mode 000. TX mode stays
-+/// 011 in all of them.
-+const F2400_RX_VARIANTS: [u16; 6] = [CFG_F_2400, 0x7329, 0x73E3, 0x7FE9, 0x70E9, 0x63E9];
++/// Key 0 (2400 baud only): receive variants, (REG_58 for F, bits ORed into REG_2B). On air
++/// (f190a46, b0ff399) the K6 sent F/2400 right with CFG_F_2400 (the PC decoded it; 1200/2400
++/// Hz tones) but never synced on it in receive, with REG_58 as is, bits 7:6 = 00, RX BW 001,
++/// RX mode 111, RX gain 00 or RX mode 000 (0x73E9 0x7329 0x73E3 0x7FE9 0x70E9 0x63E9). Next
++/// guess: the FSK demodulator sits behind the AF receive filters, and de-emphasis (-6 dB at
++/// 2400 against 1200) or the 3 kHz low-pass spoils a 2400-baud signal. REG_2B (BK4819 notes):
++/// <10> RX 300 Hz HPF off, <9> RX 3 kHz LPF off, <8> RX de-emphasis off. D at 2400 keeps
++/// CFG_D_2400 and takes only the REG_2B bits. At 1200 REG_2B stays as the chip had it.
++const RX2400_VARIANTS: [(u16, u16); 7] = [
++    (CFG_F_2400, 0),
++    (CFG_F_2400, 0x0100),
++    (CFG_F_2400, 0x0300),
++    (CFG_F_2400, 0x0700),
++    (0x7FE9, 0x0300),
++    (0x63E9, 0x0300),
++    (0x7329, 0x0300),
++];
++const REG_AF_FILT: u8 = 0x2B;
 +const BAUD_1200: u16 = 0x3065;
 +const BAUD_2400: u16 = 0x60CA;
 +const GAIN_D: u16 = 0x00E0;
@@ -419,8 +431,10 @@ index 0000000..4548c4f
 +    pub xl: bool,
 +    /// key 5: 2400 baud (D: direct FSK; F: FFSK 1200/2400 Hz tones)
 +    pub baud_2400: bool,
-+    /// key 0: which of F2400_RX_VARIANTS REG_58 gets at F/2400
++    /// key 0: which of RX2400_VARIANTS applies at 2400 baud
 +    pub f2400_var: u8,
++    /// REG_2B as the chip had it (read once, restored at 1200)
++    pub reg2b_base: Option<u16>,
 +    /// the chip's RX invert bit (REG_59<10>), key 3 only
 +    pub invert: bool,
 +    /// payload bits inverted in software (found from the magic byte / CRC)
@@ -569,6 +583,7 @@ index 0000000..4548c4f
 +            xl: false,
 +            baud_2400: false,
 +            f2400_var: 0,
++            reg2b_base: None,
 +            invert: false,
 +            soft_inv: false,
 +            raw: [0; 16],
@@ -655,6 +670,11 @@ index 0000000..4548c4f
 +            3 => 0xFFE0,
 +            _ => (len - 1) << 8,
 +        }
++    }
++
++    /// key 0's receive variant at 2400: (REG_58 for F, REG_2B bits)
++    fn rx2400(&self) -> (u16, u16) {
++        RX2400_VARIANTS[self.f2400_var as usize % RX2400_VARIANTS.len()]
 +    }
 +
 +    fn stream(&self) -> bool {
@@ -748,8 +768,9 @@ index 0000000..4548c4f
 +
 +fn configure(app: &mut App, syst: &mut SYST) {
 +    let p = &app.pager;
++    let (var58, var2b) = p.rx2400();
 +    let (cfg, baud, gain) = if p.phy_ffsk && p.baud_2400 {
-+        (F2400_RX_VARIANTS[p.f2400_var as usize % F2400_RX_VARIANTS.len()], BAUD_2400, GAIN_F)
++        (var58, BAUD_2400, GAIN_F)
 +    } else if p.phy_ffsk {
 +        (CFG_F_1200, BAUD_1200, GAIN_F)
 +    } else if p.baud_2400 {
@@ -758,7 +779,18 @@ index 0000000..4548c4f
 +        (CFG_D_1200, BAUD_1200, GAIN_D)
 +    };
 +    let len_field = p.len_field();
++    let filt_or = if p.baud_2400 { var2b } else { 0 };
++    let known = app.pager.reg2b_base;
++    let base = match known {
++        Some(b) => b,
++        None => {
++            let b = app.radio.fd6818.reg_read(syst, REG_AF_FILT);
++            app.pager.reg2b_base = Some(b);
++            b
++        }
++    };
 +    let fd = &mut app.radio.fd6818;
++    fd.reg_write(syst, REG_AF_FILT, base | filt_or);
 +    fd.reg_write(syst, REG_IRQ_EN, 0);
 +    fd.reg_write(syst, REG_FSK_CFG, cfg);
 +    fd.reg_write(syst, REG_BAUD, baud);
@@ -1382,7 +1414,7 @@ index 0000000..4548c4f
 +        KeyId::Digit9 => p.auto_play = !p.auto_play,
 +        // key 0 was the decode watchdog (unproven, off); now the F/2400 receive variants
 +        KeyId::Digit0 => {
-+            p.f2400_var = (p.f2400_var + 1) % F2400_RX_VARIANTS.len() as u8;
++            p.f2400_var = (p.f2400_var + 1) % RX2400_VARIANTS.len() as u8;
 +            rearm = true;
 +        }
 +        KeyId::Pound => {
@@ -1777,7 +1809,7 @@ index 0000000..4548c4f
 +    let p = &app.pager;
 +    let baud = if p.baud_2400 { 2400 } else { 1200 };
 +    report_line(format_args!(
-+        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} stream={} f2400={} reg58={:04x} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} timed={} rearm={} auto={} wd={} draw={} build={}",
++        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} stream={} f2400={} reg58={:04x} reg2b={:04x} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} timed={} rearm={} auto={} wd={} draw={} build={}",
 +        why,
 +        app.chip_id,
 +        app.master_freq_hz(),
@@ -1786,7 +1818,8 @@ index 0000000..4548c4f
 +        baud,
 +        p.stream() as u8,
 +        p.f2400_var,
-+        F2400_RX_VARIANTS[p.f2400_var as usize % F2400_RX_VARIANTS.len()],
++        p.rx2400().0,
++        p.reg2b_base.unwrap_or(0) | if p.baud_2400 { p.rx2400().1 } else { 0 },
 +        p.invert as u8,
 +        p.soft_inv as u8,
 +        p.swap as u8,
