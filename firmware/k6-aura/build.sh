@@ -57,6 +57,22 @@ breakdown() {
     | sort -rn | head -45
 }
 
+# The build ID every pager image reports (serial `K6 BOOT build=` at power-on and in each
+# `K6 CFG`; its commit on the VOICE MSG screen): sotto's commit, -dirty if tracked files are
+# changed, and the UTC build time. CI passes the PR head as SOTTO_SHA; SOTTO_BUILD overrides all.
+if [ -z "$SOTTO_BUILD" ]; then
+  if [ -n "$SOTTO_SHA" ]; then
+    SHA=$(printf %.7s "$SOTTO_SHA")
+  else
+    SHA=$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo nogit)
+    [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ] && SHA="$SHA-dirty"
+  fi
+  SOTTO_BUILD="$SHA-$(date -u +%Y%m%dT%H%MZ)"
+fi
+export SOTTO_BUILD
+echo "$SOTTO_BUILD" > "$OUT/build-id.txt"
+echo "build ID $SOTTO_BUILD"
+
 # Baseline: stock Aura at the same commit, for comparison (AURA_BASELINE=0 skips it)
 if [ "${AURA_BASELINE:-1}" = 1 ]; then
   (cd "$WORK" && cargo build --release)
@@ -93,6 +109,7 @@ variant() {
     (cd "$WORK" && cargo objcopy --release "$@" -- -O binary "$OUT/$name.bin")
   fi
   ls -l "$OUT/$name.bin"
+  (cd "$OUT" && sha256sum "$name.bin" | tee "$name.bin.sha256")
 }
 
 # Full Aura with VOICE MSG in its launcher: 58 KB too big at edf3b98, so this is a report only

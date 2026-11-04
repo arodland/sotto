@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..f0d95ed
+index 0000000..b919d03
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1088 @@
+@@ -0,0 +1,1127 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -235,6 +235,20 @@ index 0000000..f0d95ed
 +/// RAM for the message: 6.2 bytes per 20 ms frame, so 4 KB holds 640 frames
 +/// (12.8 s). Raise it if the RAM report on the pager screen ("FREE") shows
 +/// room; every 1 KB is 3.2 s more.
++/// The firmware build: the sotto commit and UTC build time from sotto's
++/// firmware/k6-aura/build.sh (SOTTO_BUILD), on the serial report at power-on
++/// (`K6 BOOT`) and in every `K6 CFG` line, and its commit on the VOICE MSG
++/// screen, so a test always knows which image it ran on.
++pub const BUILD: &str = match option_env!("SOTTO_BUILD") {
++    Some(b) => b,
++    None => "local",
++};
++
++/// The commit part of `BUILD`, for the screen.
++pub fn build_short() -> &'static str {
++    BUILD.get(..7).unwrap_or(BUILD)
++}
++
 +const STORE_BYTES: usize = 4096;
 +static mut STORE: [u32; STORE_BYTES / 4] = [0; STORE_BYTES / 4];
 +
@@ -1194,7 +1208,7 @@ index 0000000..f0d95ed
 +    let p = &app.pager;
 +    let baud = if p.baud_2400 && !p.phy_ffsk { 2400 } else { 1200 };
 +    report_line(format_args!(
-+        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} auto={}",
++        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} auto={} build={}",
 +        why,
 +        app.chip_id,
 +        app.master_freq_hz(),
@@ -1208,7 +1222,8 @@ index 0000000..f0d95ed
 +        p.vol_db(),
 +        p.len_field(),
 +        p.keep_after_done as u8,
-+        p.auto_play as u8
++        p.auto_play as u8,
++        BUILD
 +    ));
 +}
 +
@@ -1269,7 +1284,9 @@ index 0000000..f0d95ed
 +}
 +
 +/// A CPU fault (a bad address, say) would otherwise hang the radio with no clue: say where
-+/// on the serial report, then reboot.
++/// on the serial report, then reboot. Caveat: this MCU has no VTOR and the exception vectors
++/// are the bootloader's (memory.x), so this runs only if its HardFault forwards to ours; the
++/// `K6 STEP` lines before a hang say where it stopped either way.
 +#[cfg(target_arch = "arm")]
 +#[cortex_m_rt::exception]
 +unsafe fn HardFault(ef: &cortex_m_rt::ExceptionFrame) -> ! {
@@ -1284,6 +1301,28 @@ index 0000000..f0d95ed
 +        ef.r3(),
 +        ef.r12()
 +    ));
++    for _ in 0..2_000_000 {
++        cortex_m::asm::nop();
++    }
++    cortex_m::peripheral::SCB::sys_reset()
++}
++
++/// A Rust panic (a slice index out of range, say) used to stop the radio silently in
++/// panic_halt's loop: say where on the serial report, then reboot.
++#[cfg(target_arch = "arm")]
++#[panic_handler]
++fn panic(info: &core::panic::PanicInfo) -> ! {
++    cortex_m::interrupt::disable();
++    match info.location() {
++        Some(l) => report_line(format_args!(
++            "K6 PANIC {}:{} {} build={}",
++            l.file(),
++            l.line(),
++            info.message(),
++            BUILD
++        )),
++        None => report_line(format_args!("K6 PANIC {} build={}", info.message(), BUILD)),
++    }
 +    for _ in 0..2_000_000 {
 +        cortex_m::asm::nop();
 +    }
@@ -1475,10 +1514,27 @@ index 0000000..eb97a85
 +    }
 +}
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..b87f89a 100644
+index 9d2b0c0..dc23c0c 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -301,6 +301,37 @@ fn main() -> ! {
+@@ -14,7 +14,7 @@ mod ui;
+ use core::fmt::Write as _;
+ use cortex_m_rt::entry;
+ use kd32f328_pac::Peripherals;
+-use panic_halt as _;
++// panics: app::pager reports them on the serial cable and reboots (was panic_halt)
+ 
+ use app::satellite;
+ use device::display::{Backlight, Display};
+@@ -79,6 +79,7 @@ fn main() -> ! {
+     uart::install_bootloader_trampoline();
+     unsafe { cortex_m::peripheral::NVIC::unmask(kd32f328_pac::Interrupt::USART1) };
+     writeln!(dbg, "bfk6-fw boot, sysclk={}Hz", clock::SYSCLK_HZ).ok();
++    writeln!(dbg, "K6 BOOT build={}", app::pager::BUILD).ok();
+ 
+     let mut cp = cortex_m::Peripherals::take().unwrap();
+     unsafe { cp.NVIC.set_priority(kd32f328_pac::Interrupt::USART1, 0) };
+@@ -301,6 +302,37 @@ fn main() -> ! {
      )
      .ok();
  
@@ -1516,7 +1572,7 @@ index 9d2b0c0..b87f89a 100644
      // scheduler + main loop
      let mut scheduler = scheduler::Scheduler::new();
      let mut applied_contrast: u8 = u8::MAX;
-@@ -329,6 +360,18 @@ fn main() -> ! {
+@@ -329,6 +361,18 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -1535,7 +1591,7 @@ index 9d2b0c0..b87f89a 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +444,8 @@ fn main() -> ! {
+@@ -401,6 +445,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -1544,7 +1600,7 @@ index 9d2b0c0..b87f89a 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +510,13 @@ fn main() -> ! {
+@@ -465,9 +511,13 @@ fn main() -> ! {
              }
          }
  
@@ -1605,10 +1661,10 @@ index cdfa0f7..6ca5a70 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..fbce4d0
+index 0000000..15f8d61
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,201 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
@@ -1792,7 +1848,8 @@ index 0000000..fbce4d0
 +        )
 +        .ok();
 +    } else {
-+        write!(b, "ok {} bad {}", st.good_packets, st.bad_packets).ok();
++        // and the image's sotto commit, as on the serial report's BOOT/CFG lines
++        write!(b, "ok {} bad {} {}", st.good_packets, st.bad_packets, crate::app::pager::build_short()).ok();
 +    }
 +    line(lcd, 49, b.as_str());
 +

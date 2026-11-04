@@ -188,6 +188,15 @@ python -m modem.k6_harness sweep --k6 /dev/ttyUSB2 --port /dev/ttyUSB0 --phy F -
 python -m modem.k6_harness listen --file k6.txt     # score a saved log again
 ```
 
+**Which image is running.** Every image reports its build: the sotto commit it was built
+from, then the UTC build time (`K6 BOOT build=72b6e3b-20261104T0555Z` at power-on, and
+`build=` at the end of each `CFG` line). The commit also shows on the VOICE MSG screen's
+fourth line, after `ok n bad n`. CI names the artifact `aura-pager-<commit>` and stores each
+.bin's SHA-256 next to it. `listen` and `sweep` print the build when it changes, and every
+`--log` line carries it. With `sweep --expect-build <commit>`, nothing is transmitted until the
+K6 reports that build, and the sweep stops if the K6 reboots into another one. Images from
+before this change report no build at all.
+
 `listen` prints one line per packet:
 
 ```
@@ -221,5 +230,9 @@ path that doesn't run can't lock up the radio.
 **First playback on the radio (2026-11-04).** After good 16-byte packets, the first
 auto-playback hung the K6 before its playback loop, and only pulling the battery cleared it.
 The image now prints `K6 STEP ...` lines through playback, so the serial report shows how far
-it got. A CPU fault prints `K6 FAULT pc=... lr=...` and reboots the radio instead of hanging.
+it got. A Rust panic prints `K6 PANIC file:line message` and reboots the radio instead of hanging.
+A CPU fault should print `K6 FAULT pc=... lr=...` and reboot. That only works if the
+bootloader's HardFault handler forwards to ours, though: this MCU has no VTOR, and the
+exception vectors belong to the bootloader. Either way, the last `K6 STEP` line says how far
+playback got.
 Key 9 turns auto-play off, so receive tests can run without it.
