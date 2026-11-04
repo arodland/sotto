@@ -30,7 +30,8 @@ The firmware's lines (one per event):
   K6 PKT n=12 got=64 sync=N res=-1 magic=a7 rswap=1 soft=0 swap=1 be=3 bseq=0 bswap=1 binv=0
          blk=0,0,0,1,0,0,0,2 ev=2:0:0,1000:27:4,... good=0 bad=12 to=0 raw=58a31d...
          (one line on the wire; ev: each interrupt's flags in hex, ms, FIFO words read)
-  K6 PLAY id=42 total=70 stored=70 got=70 packets=16/16 played=71 dec_mean_us=11800 ...
+  K6 PLAY id=42 total=70 stored=70 got=70 packets=16/16 played=71 dec_mean_us=11800 ... missing=0
+                      (missing=2:3,17 = seqs 3 and 17 never arrived; the first 8 are listed)
   K6 CAL sent tx=439500000
 
 `raw` is the packet as the K6 read it from its FIFO, with the byte swap it had then (`rswap`),
@@ -54,9 +55,10 @@ _TEST = {}
 
 
 def test_packets(profile):
-    """The spec's 70-frame test message, whitened, as the K6 compares against (16 in L, 40 in S)."""
+    """The spec's 70-frame test message, whitened, as the K6 compares against (16 in L, 8 in
+    XL, 40 in S)."""
     if profile not in _TEST:
-        pk = pager.PROFILES[profile].pack(TEST_FRAMES, 0x42 if profile == "L" else 5)
+        pk = pager.PROFILES[profile].pack(TEST_FRAMES, 5 if profile == "S" else 0x42)
         _TEST[profile] = np.array([np.frombuffer(p, np.uint8) for p in pk])
     return _TEST[profile]
 
@@ -106,9 +108,10 @@ def analyse(raw, rswap=1):
     quarter (a lost or extra bit shows as shift +-1 there with few errors)."""
     raw = np.frombuffer(bytes(raw), np.uint8)
     n = len(raw)
-    if n not in (pager.L.payload, pager.S.payload):
+    by_len = {pr.payload: name for name, pr in pager.PROFILES.items()}
+    if n not in by_len:
         return None
-    ref = test_packets("L" if n == pager.L.payload else "S")
+    ref = test_packets(by_len[n])
     best = None
     for sw in (0, 1):
         r = raw.reshape(-1, 2)[:, ::-1].reshape(-1) if sw else raw
@@ -192,6 +195,8 @@ def timing(d):
         t += f"  stray {d['stray']}"
     if isinstance(d.get("rearm"), int) and d["rearm"] >= 0:
         t += f"  rearm {d['rearm']}"
+    if isinstance(d.get("restarts"), int):
+        t += f"  restarts {d['restarts']}"          # stream mode: the chip re-armed this often
     return t
 
 
@@ -385,8 +390,9 @@ def check_cfg(cfg, a, out, strict=False):
     if not cfg:
         out("note: no K6 CFG line seen yet; press a key on the K6 (e.g. 4 twice) to make it report")
         return
-    want = {"phy": a.phy, "frames": a.payload, "baud": a.baud}
-    bad = {k: (cfg.get(k), v) for k, v in want.items() if str(cfg.get(k)) != str(v)}
+    want = {"phy": a.phy, "frames": a.payload, "baud": a.baud, "stream": int(getattr(a, "stream", False))}
+    # (an image older than a setting doesn't report it)
+    bad = {k: (cfg.get(k), v) for k, v in want.items() if k in cfg and str(cfg.get(k)) != str(v)}
     if bad:
         msg = "the K6 is set differently: " + ", ".join(f"{k} K6 {have} vs sweep {v}" for k, (have, v) in bad.items())
         if strict:

@@ -32,11 +32,11 @@ def frames_of(n, seed=1):
     return [bytes(rng.integers(0, 256, 6, dtype=np.uint8)) for _ in range(n)]
 
 
-def run_host(packets, profile_s=False, store=6144, pwm=False):
+def run_host(packets, xl=False, store=6144, pwm=False):
     with tempfile.TemporaryDirectory() as d:
         with open(f"{d}/p.bin", "wb") as f:
             f.write(b"".join(packets))
-        args = [HOST] + (["-s"] if profile_s else []) + (["-p"] if pwm else []) + ["-b", str(store), f"{d}/p.bin", f"{d}/o.raw"]
+        args = [HOST] + (["-x"] if xl else []) + (["-p"] if pwm else []) + ["-b", str(store), f"{d}/p.bin", f"{d}/o.raw"]
         out = subprocess.run(args, check=True, capture_output=True, text=True).stdout.split()
         st = dict(kv.split("=", 1) for kv in out)
         st["results"] = [int(x) for x in st["results"].split(",") if x]
@@ -65,6 +65,7 @@ def test_spec_vector_lost_packet_3():
     st, _ = run_host(pl[:3] + pl[4:])
     assert st["total"] == "70" and st["packets"] == "15" and st["of"] == "16"
     assert st["got"] == str(70 - 8) and st["complete"] == "0"
+    assert st["missing"] == "1:3"
 
 
 @pytest.mark.parametrize("lost", [[], [3], [0, 9, 10, 17], list(range(8, 16))])
@@ -80,6 +81,7 @@ def test_playback_equals_m0_decoder(lost):
     assert np.all(pcm[:160] == 0)
     assert np.array_equal(pcm[160:], want)
     assert st["results"][0] == 2 and (st["complete"] == "1") == (not lost)
+    assert st["missing"] == (f"{len(lost)}:" + ",".join(map(str, lost[:8])) if lost else "0")
 
 
 def test_second_pass_fills_holes():
@@ -111,20 +113,38 @@ def test_store_truncates_long_message():
     assert np.array_equal(pcm[160:], run_dec(fr[:96], [1] * 96))
 
 
-def test_profile_s():
-    fr = frames_of(70, 6)
-    fr[69] = bytes([1, 2, 3, 4, 5, 6])          # a non-zero last frame: the padding after it is dropped
-    ps = ref.s_pack_message(fr, 5)
+def test_profile_xl():
+    """128-byte packets, 20 frames each: the same header as L, frames g*160 + s*8 + k"""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    fr = frames_of(300, 6)
+    px = pager.XL.pack(b"".join(fr), 7)
+    assert len(px) == 16 and all(len(p) == 128 for p in px)
     lost = {2, 13}
-    keep = [p for i, p in enumerate(ps) if i not in lost]
-    st, pcm = run_host(keep, profile_s=True)
-    good = [1] * 70
+    keep = [p for i, p in enumerate(px) if i not in lost]
+    st, pcm = run_host(keep, xl=True)
+    good = [1] * 300
     for seq in lost:
-        for f in ref.s_packet_frames(seq):
-            if f < 70:
+        for f in pager.XL.packet_frames(seq):
+            if f < 300:
                 good[f] = 0
-    assert st["total"] == "80" and st["of"] == "40" and st["packets"] == "38"
+    assert st["total"] == "300" and st["of"] == "16" and st["packets"] == "14" and st["complete"] == "0"
+    assert st["got"] == str(sum(good))
     assert np.array_equal(pcm[160:], run_dec(fr, good))
+
+
+def test_xl_and_l_play_the_same():
+    """one message sent as XL or as L plays the same"""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    fr = frames_of(70, 8)
+    x = pager.XL.pack(b"".join(fr), 4)
+    l = ref.pack_message(fr, 4)
+    st, pcm_x = run_host(x, xl=True)
+    assert st["complete"] == "1" and st["of"] == "8"
+    st, pcm_l = run_host(l)
+    assert st["complete"] == "1" and st["of"] == "16"
+    assert np.array_equal(pcm_x, pcm_l)          # the same frames play the same
 
 
 def test_auto_gain_and_pwm_conversion():
@@ -145,24 +165,24 @@ def test_auto_gain_and_pwm_conversion():
     assert np.array_equal(pwm, np.clip(1000 + ((t * 1000) >> 15), 0, 2000))
 
 
-def run_errors(packets, profile_s=False):
+def run_errors(packets, xl=False):
     with tempfile.TemporaryDirectory() as d:
         with open(f"{d}/p.bin", "wb") as f:
             f.write(b"".join(packets))
-        out = subprocess.run([HOST, "-e"] + (["-s"] if profile_s else []) + [f"{d}/p.bin"],
+        out = subprocess.run([HOST, "-e"] + (["-x"] if xl else []) + [f"{d}/p.bin"],
                              check=True, capture_output=True, text=True).stdout
         return [[int(x) for x in ln.split()] for ln in out.splitlines()]
 
 
-@pytest.mark.parametrize("prof", ["L", "S"])
+@pytest.mark.parametrize("prof", ["L", "XL"])
 def test_bit_errors_against_test_message(prof):
     """sp_test_errors finds the test packet, the byte order and the polarity, and puts each
     flipped bit in its eighth of the packet"""
     sys.path.insert(0, ROOT)
     from modem import pager
     fr = b"".join(bytes([f & 0xFF, f >> 8, 0x11, 0x22, 0x33, 0x44]) for f in range(70))
-    pk = pager.PROFILES[prof].pack(fr, 0x42 if prof == "L" else 5)
-    assert len(pk) == (16 if prof == "L" else 40)
+    pk = pager.PROFILES[prof].pack(fr, 0x42)
+    assert len(pk) == (16 if prof == "L" else 8)
     n = len(pk[0])
 
     def flip(p, bits):
@@ -180,7 +200,7 @@ def test_bit_errors_against_test_message(prof):
     seq = len(pk) - 3
     bits = [3, 8 * n - 1, 8 * n - 9]          # one in the first eighth, two in the last
     got = run_errors([pk[0], flip(pk[seq], bits), swap(flip(pk[1], bits)), inv(pk[2]), inv(swap(pk[5]))],
-                     prof == "S")
+                     prof == "XL")
     blocks = [1, 0, 0, 0, 0, 0, 0, 2]
     assert got[0] == [0, 0, 0, 0] + [0] * 8
     assert got[1] == [3, seq, 0, 0] + blocks

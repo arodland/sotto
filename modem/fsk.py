@@ -7,7 +7,9 @@ flat modulation input (the IC-7100's DATA jack in 9600 bps mode). Bit 1 = positi
 
 Profile F (fallback): FFSK, phase-continuous 1200 Hz / 1800 Hz tones at 1200 baud, bit 1 =
 1200 Hz (MDC1200 convention, assumed). Survives a voice audio path (USB audio, pre-emphasis,
-300 Hz high-pass).
+300 Hz high-pass). At 2400 baud profile F uses 1200 / 2400 Hz tones (the chip's FFSK 1200/2400
+mode with its baud register doubled): half a cycle of 1200 Hz or a whole one of 2400 Hz per
+bit, which is MSK, the same modulation index as 1200/1800 at 1200 baud.
 
 Channel models a voice transmitter's audio path: optional +6 dB/octave pre-emphasis, a
 high-pass and a low-pass. It is used to simulate, and `Channel.inverse` pre-compensates
@@ -27,6 +29,11 @@ from scipy import signal
 
 FS = 48000
 MARK, SPACE = 1200.0, 1800.0          # profile F: bit 1, bit 0
+
+
+def ffsk_tones(baud=1200):
+    """Profile F's (bit 1, bit 0) tones: 1200/1800 Hz at 1200 baud, 1200/2400 Hz at 2400."""
+    return (MARK, 2400.0) if baud >= 2400 else (MARK, SPACE)
 
 
 @dataclass
@@ -141,7 +148,7 @@ def modulate(bits, profile="D", baud=1200, fs=FS, level=0.5, invert=False, bt=0.
     deviation (optional; the chip's FFSK receiver may not care)."""
     if invert:
         bits = 1 - np.asarray(bits)
-    x = nrz(bits, baud, fs, bt) if profile == "D" else ffsk(bits, baud, fs)
+    x = nrz(bits, baud, fs, bt) if profile == "D" else ffsk(bits, baud, fs, *ffsk_tones(baud))
     if comp is not None:
         x = precompensate(x, comp.response, fs, max_gain_db)
     x = x / max(np.max(np.abs(x)), 1e-9) * level
@@ -154,7 +161,7 @@ def bits_of(data):
 
 def tone_freq(x, fs=FS, baud=1200):
     """Profile F audio -> instantaneous tone frequency (Hz), smoothed over about a bit."""
-    b = signal.firwin(int(fs / 300) | 1, [700, 2600], pass_zero=False, fs=fs)
+    b = signal.firwin(int(fs / 300) | 1, [700, ffsk_tones(baud)[1] + 800], pass_zero=False, fs=fs)
     a = signal.hilbert(signal.filtfilt(b, [1.0], x))
     d = np.angle(a[1:] * np.conj(a[:-1])) * fs / (2 * np.pi)
     return np.concatenate([d[:1], d])
@@ -167,12 +174,15 @@ class Demodulator:
     modulator's own output); for profile F it is the received tones. `payload` is 64 for
     profile L and 16 for profile S."""
 
-    def __init__(self, profile="D", baud=1200, fs=FS, payload=64, threshold=0.7, air_sync=None):
+    def __init__(self, profile="D", baud=1200, fs=FS, payload=64, threshold=0.7, air_sync=None,
+                 stream=False):
         from .pager import PREAMBLE_BYTE, SYNC
         self.profile, self.baud, self.fs, self.thr, self.payload = profile, baud, fs, threshold, payload
         self.sps = fs / baud
+        self.mark, self.space = ffsk_tones(baud)
         self.lp = signal.firwin(2 * int(round(self.sps)) + 1, 0.75 * baud, fs=fs)
-        ref_bits = bits_of(bytes([PREAMBLE_BYTE]) + (air_sync or SYNC))
+        # stream framing: no preamble byte before each sync, only the last payload's end
+        ref_bits = bits_of((b"" if stream else bytes([PREAMBLE_BYTE])) + (air_sync or SYNC))
         self.ref = nrz(ref_bits, baud, fs, 0.5)
         self.ref -= self.ref.mean()
         self.ref_bits = len(ref_bits)
@@ -182,7 +192,7 @@ class Demodulator:
         """-> NRZ-like signal, positive = bit 1 (before any inversion)."""
         x = np.asarray(x, float)
         if self.profile == "F":
-            x = (0.5 * (MARK + SPACE) - tone_freq(x, self.fs, self.baud)) / (0.5 * (SPACE - MARK))
+            x = (0.5 * (self.mark + self.space) - tone_freq(x, self.fs, self.baud)) / (0.5 * (self.space - self.mark))
         return signal.filtfilt(self.lp, [1.0], x)
 
     def correlate(self, y):
@@ -238,7 +248,7 @@ class Demodulator:
         return out
 
 
-def receive(x, fs, profile="D", baud=1200, payload_profile=None, invert=False):
+def receive(x, fs, profile="D", baud=1200, payload_profile=None, invert=False, stream=False):
     """Audio at any rate -> (Assembler with the messages, list of (start time s, CRC ok,
     inverted, amplitude)). The amplitude is half the eye opening measured on the preamble
     and sync, in input units (Hz for IQ input); for profile F it is relative to the tone
@@ -246,7 +256,7 @@ def receive(x, fs, profile="D", baud=1200, payload_profile=None, invert=False):
     amplitudes match."""
     from .pager import L, Assembler
     pp = payload_profile or L
-    d = Demodulator(profile, baud, FS, pp.payload)
+    d = Demodulator(profile, baud, FS, pp.payload, stream=stream)
     y = resample(x, fs, FS)
     a = Assembler(pp)
     times = []

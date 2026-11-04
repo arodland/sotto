@@ -14,16 +14,22 @@ Profile L (primary), 64-byte payload, before whitening:
     54-61   reserved, zero
     62-63   CRC-16/CCITT-FALSE of bytes 0-61, big-endian
 
-Profile S (fallback if the chip won't take 64-byte frames), 16 bytes: msg_id (4 bits) |
+Profile XL (128-byte payload, 2026-11-04): the same 6-byte header, 20 sotto frames in bytes
+6-125, no reserved bytes, CRC of bytes 0-125 in 126-127. 120 of 128 bytes are speech, against
+48 of 64 in L.
+
+Profile S (the first fallback, 16 bytes; the K6 firmware no longer takes it): msg_id (4 bits) |
 last-group flag | seq bits 10-8, seq bits 7-0, 2 sotto frames, CRC of bytes 0-13.
 
-Both are then XORed with PN9 whitening (x^9 + x^5 + 1, seed 0x1FF: FF E1 1D 9A ...), which
+All are then XORed with PN9 whitening (x^9 + x^5 + 1, seed 0x1FF: FF E1 1D 9A ...), which
 restarts at every packet. Interleave: groups of 8 packets. In profile L packet k of group g
-carries frames g*64 + s*8 + k (s = 0..7), in profile S frames g*16 + s*8 + k (s = 0, 1), so a
+carries frames g*64 + s*8 + k (s = 0..7), in XL g*160 + s*8 + k (s = 0..19), in profile S frames g*16 + s*8 + k (s = 0, 1), so a
 lost packet only costs isolated 20 ms frames 160 ms apart.
 
 On air (Air): 0x55 x 16, sync 07 6B 3E 36, payload, MSB first. The chip CRC and scrambler
-are off; all checking is ours.
+are off; all checking is ours. Stream framing (Air(preamble_bytes=0)): the lead-in, then each
+packet as just the sync word and the payload, back to back, for a receiver that finds the sync
+in software and never re-arms (the K6's key 7 stream mode).
 """
 from dataclasses import dataclass
 
@@ -55,7 +61,7 @@ def pn9(n):
     return bytes(out)
 
 
-WHITEN = pn9(64)
+WHITEN = pn9(128)
 
 
 def _whiten(p):
@@ -91,17 +97,18 @@ class Profile:
         """frames: bytes (6 per frame) -> list of whitened payloads in transmit order."""
         fr = _split(frames)
         total = len(fr)
-        if self.name == "L" and total > 0xFFFF:
-            raise ValueError("message too long for profile L (65535 frames)")
+        if self.name != "S" and total > 0xFFFF:
+            raise ValueError(f"message too long for profile {self.name} (65535 frames)")
         npk = self.n_packets(total)
         if self.name == "S" and npk > 2048:
             raise ValueError("message too long for profile S (2048 packets)")
         out = []
         for seq in range(npk):
             body = b"".join(fr[f] if f < total else bytes(6) for f in self.packet_frames(seq))
-            if self.name == "L":
+            if self.name != "S":
                 p = bytes([MAGIC, msg_id & 0xFF]) + seq.to_bytes(2, "big") + total.to_bytes(2, "big")
-                p += body + bytes(8)
+                p += body
+                p += bytes(self.payload - 2 - len(p))         # L: 8 reserved bytes
             else:
                 last = int(seq // GROUP == npk // GROUP - 1)
                 p = bytes([(msg_id & 15) << 4 | last << 3 | (seq >> 8) & 7, seq & 0xFF]) + body
@@ -113,7 +120,7 @@ class Profile:
         p = _whiten(payload)
         if len(p) != self.payload or crc16_ccitt(p[:-2]) != int.from_bytes(p[-2:], "big"):
             return None
-        if self.name == "L":
+        if self.name != "S":
             if p[0] != MAGIC:
                 return None
             return dict(msg_id=p[1], seq=int.from_bytes(p[2:4], "big"),
@@ -124,8 +131,9 @@ class Profile:
 
 
 L = Profile("L", 64, 8)
+XL = Profile("XL", 128, 20)
 S = Profile("S", 16, 2)
-PROFILES = {"L": L, "S": S}
+PROFILES = {"L": L, "XL": XL, "S": S}
 
 
 def swap_words(p):
@@ -187,18 +195,45 @@ class Air:
 
     lead_ms of 0x55 after keying, then per packet 0x55 x preamble_bytes, the sync word and
     the payload; the carrier stays up with 0x55 between packets (the next preamble); 2 bytes
-    of 0x55 before unkeying."""
+    of 0x55 before unkeying. preamble_bytes=0 is the stream framing: packets back to back
+    with only the sync word between them.
+
+    second_extra_ms more 0x55 go before the second packet only: the K6 usually notices the
+    first packet's sync late (its main loop redraws the screen for 41 ms), so it re-arms late
+    after it and missed the second packet every time (f190a46: 15/16, always seq 1). From the
+    second packet on it waits in a tight loop and is on time.
+
+    later_preamble_bytes (None: preamble_bytes) is the preamble of every packet after the first.
+    XL wants 24 (modem.k6 sets it): after a 128-byte packet the FD6818's own RX-done comes about
+    144 ms after the K6's timed read ends, and with 16 bytes the K6's re-arm then false-synced
+    in the next preamble (b0ff399: 5-6/8); 24 or 32 everywhere false-synced on the first packet
+    instead (a long 0x55 run before the first sync, as with a 400 ms lead-in), 7/8; 16 first and
+    24 after: 8/8, 0 bit errors."""
     sync: bytes = SYNC
     preamble_bytes: int = 16
+    later_preamble_bytes: int | None = None
     lead_ms: float = 150.0
     tail_bytes: int = 2
+    second_extra_ms: float = 50.0
 
     preamble_byte = PREAMBLE_BYTE
+
+    def _extra(self, baud):
+        return int(np.ceil(self.second_extra_ms / 1000 * baud / 8))
+
+    def _pre(self, i, baud):
+        """0x55 bytes before packet i."""
+        if i == 0 or self.later_preamble_bytes is None:
+            n = self.preamble_bytes
+        else:
+            n = self.later_preamble_bytes
+        return n + (self._extra(baud) if i == 1 else 0)
 
     def burst(self, payloads, baud=1200):
         lead = int(np.ceil(self.lead_ms / 1000 * baud / 8))
         p = bytes([PREAMBLE_BYTE])
-        raw = p * lead + b"".join(p * self.preamble_bytes + self.sync + bytes(x) for x in payloads)
+        raw = p * lead + b"".join(p * self._pre(i, baud) + self.sync + bytes(x)
+                                  for i, x in enumerate(payloads))
         return raw + p * self.tail_bytes
 
     def burst_bits(self, payloads, baud=1200):
@@ -206,5 +241,6 @@ class Air:
 
     def seconds(self, n_packets, payload=64, baud=1200):
         lead = int(np.ceil(self.lead_ms / 1000 * baud / 8))
-        nbytes = lead + n_packets * (self.preamble_bytes + len(self.sync) + payload) + self.tail_bytes
+        nbytes = lead + n_packets * (len(self.sync) + payload) + self.tail_bytes
+        nbytes += sum(self._pre(i, baud) for i in range(n_packets))
         return nbytes * 8 / baud

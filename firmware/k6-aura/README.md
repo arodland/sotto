@@ -94,19 +94,19 @@ MENU again; EXIT leaves the app.)
 | MENU | play the message (again) |
 | EXIT | stop playback / leave |
 | UP / DOWN | volume, 3 dB steps on top of the automatic level (-9 to +12 dB) |
-| 1 | PHY: D (direct 2-FSK, the default) or F (FFSK 1200/1800 Hz) |
-| 2 | frames: L (64-byte packets, the default) or S (16-byte fallback) |
+| 1 | PHY: D (direct 2-FSK, the default) or F (FFSK 1200/1800 Hz; 1200/2400 Hz at 2400 baud) |
+| 2 | frames: L (64-byte packets, 8 frames, the default) or XL (128 bytes, 20 frames; screen `X`). Profile S is gone |
 | 3 | the RF chip's RX invert bit (REG_59<10>), by hand only |
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
 | 6 | raw view: the last packet's first 16 bytes in hex, its sync and length, and its bit errors against the test message (below) |
-| 5 | 1200 / 2400 baud (profile D) |
-| 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, or 0x00FF = stream mode (sync found in software; screen `SYNC W`) |
+| 5 | 1200 / 2400 baud, D or F (F at 2400: REG_58 0x73E9, FFSK 1200/2400 Hz; untested on air) |
+| 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, then two stream modes, 0xFF00 and 0xFFE0 (chip armed once, sync found in software at any bit offset, packets back to back; screen `stream`, `SYNC W`, `RS` = re-arms) |
 | 8 | Re-arm delay after each packet: 40, 50, 30, 60, 20, 0, 80 ms after its end, then a per-packet sweep (`CFG rearm=`; -1 = sweep). FIFO reads are always on a timer now |
 | 9 | auto-play on/off (on by default; MENU still plays) |
-| 0 | decode watchdog on/off (off by default; `CFG wd=`): reports `K6 HANG pc=` if a frame takes over 1 s |
+| 0 | The next receive variant (`CFG f2400= reg58= reg2b=`): REG_2B (AF receive filters) as is (0xC000), +0x0100 RX de-emphasis off, +0x0300 and the 3 kHz LPF, +0x0700 and the 300 Hz HPF, +0x0400 HPF only, +0x0500 HPF and de-emphasis. REG_58 stays 0x73E9 at F/2400. The REG_2B bits apply to D and F at any baud. On air: F/2400 never synced (REG_58 0x73E9, 0x7329, 0x73E3, 0x7FE9, 0x70E9, 0x63E9; REG_2B up to +0x0700), nor D/2400; D/1200 test message 4/16 as is, 4 with +0100, 0 with +0300, 6 with +0700 (58f1255). It was the decode watchdog, which stays off |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
-| PTT | calibration transmit: test packet 0, twice in D and then twice in F, on the VFO's TX frequency and power |
+| PTT | calibration transmit: test packet 0, twice in D and then twice in F, at key 5's baud rate, on the VFO's TX frequency and power |
 
 The screen:
 
@@ -217,7 +217,9 @@ in percent, and baud and tones shift together, as a sound-card clock error would
 the K6's reports and ends with a table of packets seen, CRC passes, mean bit errors and errors
 per eighth of the packet. The K6's PHY, frames and baud are still set with its keys. `sweep`
 refuses to transmit if the K6's last `CFG` line doesn't match (`--anyway` sends regardless). Press any setting key twice to make the K6
-send a `CFG` line. `--dry-run` listens without keying.
+send a `CFG` line (every key sends one; **4** is the harmless one, it only toggles playback
+pre-emphasis). From build 0a1fb98 on, the K6 also sends one every 10 s while idle (`why=tick`, not
+within 2 s of a good packet). `--dry-run` listens without keying.
 
 **64-byte receive, first on-air result (2026-11-04).** With FFSK from the IC-7100, the first
 16 bytes of every 64-byte packet arrived with no bit errors at every speed (-1 to +1 %) and
@@ -295,6 +297,53 @@ or RX-done interrupt. One 64-byte packet came through that way with 0 bit errors
 That length setting is now a stream mode: the firmware reads 4 words per interrupt, finds the
 sync word in software (byte aligned, up to 2 wrong bits, inverted too), and keeps the next 64
 (or 16) bytes. The sync letter shows `W`, or `w` if the sync came inverted.
+
+**Faster link (2026-11-04, after 6661d40/fb0a69e).** Three options (packet spec section 12);
+only XL works on air so far, see below:
+
+- **F at 2400 baud** (keys 1 and 5): FFSK 1200/2400 Hz, MSK at 2400 baud. It halves the air
+  time if the chip's FFSK receiver follows the baud register. The calibration transmit now
+  uses key 5's rate, so a PTT press with F/2400 set, recorded on the IC-7100, shows what the
+  chip really sends.
+- **Profile XL** (key 2): 128-byte packets with 20 frames, 120 of 128 bytes speech (L: 48 of
+  64). Timed reads and the re-arm rule work for it as for L.
+- **Stream mode for whole messages** (key 7 pressed twice, or three times for REG_5D 0xFFE0):
+  the chip is armed once, and the firmware searches every bit for the sync word, takes the
+  payload and searches again, so the sender (`modem.k6 --stream`) puts only a sync word between
+  packets: no per-packet preamble and no re-arm. While a signal is on (a run of preamble, a
+  sync or a good packet in the last 1.5 packets) poll stays in a 0.5 ms loop, since the
+  screen redraw would let the FIFO overflow at 2400 baud; in noise it returns after one look.
+  An RX-done or 300 ms without a FIFO interrupt while a signal is on re-arms the chip and
+  counts in `restarts=` (screen `RS`); idle, it re-arms after 1 s without one. The old
+  per-packet stream reading (byte-aligned search, re-arm after each packet) is gone.
+
+On air (e2411fe, F/L/1200): stream mode caught 0 of 16 back-to-back packets and 1 of 16 with
+preambles, after 26 re-arms. Each re-arm in stream mode now prints `K6 SRST why= ms= bytes= full=
+syncirq= mind= pre= collect= head= n=`: D = the chip's RX-done, S = a stall with a signal on, I
+= a stall while idle; `mind` is the fewest wrong bits against the sync word seen in any bit
+position since the arm, `pre` how many bit positions looked like preamble, `head` the first 8
+bytes after the arm. The same image showed packet mode losing the packet after a failed one
+(11 of 16): the burst loop left on the first failure; it now leaves after two in a row.
+
+F/2400: the K6 transmits it right (the PC decoded its CAL burst, 1200/2400 Hz tones, 280 ms per
+packet, preamble and sync bit-identical to ours) but never synced on the PC's F/2400 in receive
+(f190a46, b0ff399, b2ecda4): not at levels 0.1-0.7, with two tilts, with a 1 s lead-in and
+128-byte preambles, with REG_58 0x73E9, 0x7329, 0x73E3, 0x7FE9, 0x70E9 or 0x63E9, nor with the
+AF receive filters off (REG_2B +0x0100/+0x0300/+0x0700). D/2400 neither. Parked.
+
+**What works: XL at F/1200 (b0ff399, b2ecda4).** The 8-packet XL test message 8/8, 0 bit
+errors, once the softmodem gives every packet after the first 24 bytes of preamble (16 before
+the first: a longer run of 0x55 before the first sync made the chip false-lock; 16 after a
+128-byte packet left the re-arm in the next preamble when the chip's late RX-done came, about
+144 ms after the timed end). A 12 s clip (female_libri198): 580/600 frames in 33.4 s, twice
+with seq 0 the lost packet; with `modem.k6`'s new default of sending the first packet again at
+the end, **600/600 in 34.5 s** (L: 45.0 s). Packet mode F/1200 L: 16/16 twice once the
+softmodem added 50 ms of preamble before the second packet (seq 1 had always been lost: the
+K6 re-armed late after the first, which its main loop notices during a screen redraw).
+
+For a 12 s message: F 1200 L 45 s; **F 1200 XL 34.5 s (tested)**; F 1200 XL stream 28 s and
+F 2400 L 23 s (not working yet). Profile S (16 bytes) is removed from the firmware and the C
+library; the PC softmodem still makes it.
 
 **Playback hang found (2026-11-04, image 480d312): the stack ran out.** When playback started,
 the stack pointer was only 236 bytes above the end of static RAM. Aura had used 8.3 KB of the

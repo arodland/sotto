@@ -1,8 +1,8 @@
 /* sotto voice pager: receive a sotto message as FSK packets, keep it in RAM, play it.
  *
  * The receive side of the K6 voice pager (docs/k6-receiver.md): the radio's FSK modem hands
- * over 64-byte packets in the K6 voice-pager packet format, version 1 (profile L), or 16-byte
- * packets (profile S); this code de-whitens them, checks them, puts each sotto frame in its
+ * over 64-byte packets in the K6 voice-pager packet format, version 1 (profile L), or 128-byte
+ * packets (profile XL); this code de-whitens them, checks them, puts each sotto frame in its
  * place in a RAM store with a good flag, and plays the message through the fixed-point
  * decoder. Nothing is written to flash. The radio code (Aura, Rust) owns the FSK registers,
  * the screen and the PWM output; it calls only the functions below.
@@ -10,7 +10,10 @@
  * The packet format: k6-fsk-packet-spec.md (project files, ht-survey/k6fsk/), reference
  * k6fsk_ref.py. In short, profile L: PN9-whitened 64 bytes = magic 0xA7, msg_id, seq (2),
  * total frames (2), 8 frames of 6 bytes, 8 reserved, CRC-16/CCITT-FALSE (2); packet k of a
- * group g of 8 carries frames g*64 + s*8 + k, s = 0..7.
+ * group g of 8 carries frames g*64 + s*8 + k, s = 0..7. Profile XL: the same 6-byte header,
+ * 20 frames, no reserved bytes, CRC (128 bytes); packet k of group g carries frames
+ * g*160 + s*8 + k, s = 0..19. (Profile S, 16 bytes, is no longer taken: the radio reads
+ * 64-byte packets fine.)
  *
  * No heap, no floating point, no 64-bit division: everything lives in the caller's buffer
  * (sp_init) and in this library's static decoder state (about 0.9 KB plus a 2 KB cos/sin
@@ -25,7 +28,8 @@ extern "C" {
 #endif
 
 #define SP_PAYLOAD_L 64           /* profile L packet */
-#define SP_PAYLOAD_S 16           /* profile S packet */
+#define SP_PAYLOAD_XL 128         /* profile XL packet */
+#define SP_PAYLOAD_MAX SP_PAYLOAD_XL
 #define SP_MAGIC 0xA7
 #define SP_FRAME_BYTES 6
 #define SP_FRAME_SAMPLES 160      /* 20 ms at 8 kHz */
@@ -34,7 +38,7 @@ extern "C" {
 /* sp_packet results */
 enum {
   SP_BAD_LENGTH = -3,
-  SP_BAD_MAGIC = -2,             /* de-whitened byte 0 is not 0xA7 (profile L) */
+  SP_BAD_MAGIC = -2,             /* de-whitened byte 0 is not 0xA7 */
   SP_BAD_CRC = -1,
   SP_DUP = 0,                    /* good packet, nothing new in it */
   SP_ADDED = 1,                  /* good packet with new frames */
@@ -47,12 +51,12 @@ enum {
    or 0 if the buffer is too small. Clears any message. */
 int sp_init(void *mem, unsigned bytes);
 
-/* One received packet, as the chip's FIFO gave it (whitened), SP_PAYLOAD_L or SP_PAYLOAD_S
+/* One received packet, as the chip's FIFO gave it (whitened), SP_PAYLOAD_L or SP_PAYLOAD_XL
    bytes. Returns one of the codes above. The checked, de-whitened packet is kept for
    sp_last_packet. */
 int sp_packet(const uint8_t *payload, int len);
 
-/* 1 if the packet's magic byte (profile L) and CRC are right, else 0. It changes nothing:
+/* 1 if the packet's magic byte and CRC are right, else 0. It changes nothing:
    the radio uses it to try the other byte order or polarity before the first good packet. */
 int sp_check(const uint8_t *payload, int len);
 
@@ -63,8 +67,8 @@ const uint8_t *sp_last_packet(void);
 typedef struct {
   int16_t have;                  /* 1 while a message is in the store */
   uint8_t msg_id;
-  uint8_t profile;               /* 'L' or 'S' */
-  uint16_t total;                /* frames in the message (profile S: known once its last group came) */
+  uint8_t profile;               /* 'L' or 'X' (XL) */
+  uint16_t total;                /* frames in the message */
   uint16_t stored;               /* frames that fit the store (= total unless it was truncated) */
   uint16_t frames_got;           /* frames received, of stored */
   uint16_t packets_got;          /* distinct packets received */
@@ -74,6 +78,9 @@ typedef struct {
   int16_t complete;              /* every stored frame arrived */
 } sp_status_t;
 void sp_status(sp_status_t *st);
+/* The seqs (packets of one pass) not received yet, up to max of them into out; returns how many
+   are missing in all (0 while the total is unknown). */
+int sp_missing(uint16_t *out, int max);
 
 /* Playback. sp_play_start resets the decoder and starts at frame 0 (it can be called again
    to replay). sp_play_frame decodes the next 20 ms into pcm (160 samples, 8 kHz) and returns
@@ -109,15 +116,15 @@ void sp_test_packet(uint8_t out[SP_PAYLOAD_L]);
 
 /* Bit errors of a received packet (as sp_packet would take it) against the spec's 70-frame
    test message, for the first on-air tests: the closest of the message's packets (16 in L,
-   40 in S; the calibration key and `modem.k6 test` send packet 0), read as given, with each
+   8 in XL; the calibration key and `modem.k6 test` send packet 0), read as given, with each
    16-bit word's two bytes swapped, with every bit inverted, and both. Errors rising towards
    the end of the packet (block) point at a baud-rate mismatch; a burst at one place, at a
    lost or extra bit. Returns errors, or -1 for a wrong len. About 1 ms on the K6. */
 typedef struct {
-  int16_t errors;                /* bit errors against the closest reading (of 512, or 128 in S) */
+  int16_t errors;                /* bit errors against the closest reading (of 512, or 1024 in XL) */
   int16_t seq;                   /* which test packet that was */
   uint8_t swap, invert;          /* 1 if that reading swapped the bytes / inverted the bits */
-  uint8_t block[8];              /* errors in each eighth of the packet (8 bytes in L, 2 in S) */
+  uint8_t block[8];              /* errors in each eighth of the packet (8 bytes in L, 16 in XL) */
 } sp_biterr_t;
 int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e);
 

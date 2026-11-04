@@ -23,16 +23,19 @@ void sp_free(void *p) { if (p == (void *)dec_mem) dec_taken = 0; }
 
 /* ---- packet format v1 ------------------------------------------------------------------- */
 #define FPP_L 8                   /* frames per packet, profile L */
+#define FPP_XL 20                 /* profile XL: 6 + 20 x 6 + 2 = 128 bytes, nothing reserved */
 #define GROUP 8                   /* packets per interleave group (both profiles) */
-#define FPG_L (FPP_L * GROUP)     /* 64 frames per group */
-#define FPG_S (2 * GROUP)         /* 16 */
+#define HDR 6                     /* magic, msg_id, seq (2), total (2) */
+#define TEST_FRAMES 70            /* the spec's test message (section 10) */
 
-static uint8_t pn9[SP_PAYLOAD_L];
-static uint8_t last_pkt[SP_PAYLOAD_L];
+static uint8_t pn9[SP_PAYLOAD_MAX];
+static uint8_t last_pkt[SP_PAYLOAD_MAX];
+
+static int fpp_of(int len) { return len == SP_PAYLOAD_XL ? FPP_XL : FPP_L; }
 
 static void pn9_init(void) {
   unsigned s = 0x1FF, i, b;
-  for (i = 0; i < SP_PAYLOAD_L; i++) {
+  for (i = 0; i < SP_PAYLOAD_MAX; i++) {
     pn9[i] = (uint8_t)s;
     for (b = 0; b < 8; b++) s = (s >> 1) | (((s ^ (s >> 5)) & 1u) << 8);
   }
@@ -52,10 +55,9 @@ static unsigned crc16(const uint8_t *p, int n) {
 typedef struct {
   sp_status_t st;
   int max_frames;
-  int s_last_group;               /* profile S: group flagged last, -1 until seen */
   uint8_t *frames;                /* max_frames x 6 */
   uint8_t *good;                  /* bit per frame */
-  uint8_t *seen;                  /* bit per packet (max_frames / 2 packets: profile S) */
+  uint8_t *seen;                  /* bit per packet (up to max_frames / 2 packets) */
 } store_t;
 
 static store_t S;
@@ -67,19 +69,19 @@ static int bit(const uint8_t *m, int i) { return (m[i >> 3] >> (i & 7)) & 1; }
 static void set_bit(uint8_t *m, int i) { m[i >> 3] |= (uint8_t)(1u << (i & 7)); }
 
 int sp_init(void *mem, unsigned bytes) {
-  /* per frame: 6 bytes, 1 good bit, 1/2 seen bit (packets hold at least 2 frames) */
+  /* per frame: 6 bytes, 1 good bit, 1/2 seen bit (room for 2-frame packets, as the retired
+     profile S had; the store size stays as it was) */
   unsigned n = (bytes * 16u) / (6u * 16u + 2u + 1u);
   pn9_init();
   memset(&S, 0, sizeof S);
   memset(mem, 0, bytes);          /* the good/seen bitmaps start clear (the K6 keeps mem in NOLOAD RAM) */
-  n &= ~15u;                      /* whole profile S groups; the bitmaps then round evenly */
+  n &= ~15u;                      /* the bitmaps round evenly */
   if (n > 65535u) n = 65520u;
   if (n == 0) return 0;
   S.max_frames = (int)n;
   S.frames = (uint8_t *)mem;
   S.good = S.frames + 6u * n;
   S.seen = S.good + n / 8u;
-  S.s_last_group = -1;
   return (int)n;
 }
 
@@ -90,7 +92,6 @@ static void clear_message(uint8_t msg_id, uint8_t profile) {
   memset(&S.st, 0, sizeof S.st);
   S.st.good_packets = gp, S.st.bad_packets = bp;
   S.st.have = 1, S.st.msg_id = msg_id, S.st.profile = profile;
-  S.s_last_group = -1;
 }
 
 static void put_frame(int f, const uint8_t *src) {
@@ -111,82 +112,69 @@ static int finish_packet(int seq, int was_new, unsigned before) {
   return S.st.frames_got != before ? SP_ADDED : SP_DUP;
 }
 
-static int packet_l(const uint8_t *p) {
-  int seq = p[2] << 8 | p[3], total = p[4] << 8 | p[5], s, was_new = 0;
+/* profile L or XL (fpp frames per packet), checked and de-whitened */
+static int packet(const uint8_t *p, int fpp, uint8_t profile) {
+  int seq = p[2] << 8 | p[3], total = p[4] << 8 | p[5], s, was_new = 0, fpg = fpp * GROUP;
   unsigned before;
-  if (!S.st.have || S.st.profile != 'L' || p[1] != S.st.msg_id || total != S.st.total) {
-    clear_message(p[1], 'L');
+  if (!S.st.have || S.st.profile != profile || p[1] != S.st.msg_id || total != S.st.total) {
+    clear_message(p[1], profile);
     S.st.total = (uint16_t)total;
     S.st.stored = (uint16_t)(total < S.max_frames ? total : S.max_frames);
-    S.st.packets_total = (uint16_t)((total + FPG_L - 1) / FPG_L * GROUP);
+    S.st.packets_total = (uint16_t)((total + fpg - 1) / fpg * GROUP);
     was_new = 1;
   }
   before = S.st.frames_got;
-  for (s = 0; s < FPP_L; s++) {
-    long f = (long)(seq / GROUP) * FPG_L + s * GROUP + seq % GROUP;
-    if (f < S.st.stored) put_frame((int)f, p + 6 + 6 * s);
+  for (s = 0; s < fpp; s++) {
+    long f = (long)(seq / GROUP) * fpg + s * GROUP + seq % GROUP;
+    if (f < S.st.stored) put_frame((int)f, p + HDR + 6 * s);
   }
-  return finish_packet(seq, was_new, before);
-}
-
-static int packet_s(const uint8_t *p) {
-  int id = p[0] >> 4, last = (p[0] >> 3) & 1, seq = (p[0] & 7) << 8 | p[1], g = seq / GROUP, k = seq % GROUP;
-  int was_new = 0, j;
-  unsigned before;
-  if (!S.st.have || S.st.profile != 'S' || id != S.st.msg_id) {
-    clear_message((uint8_t)id, 'S');
-    S.st.stored = (uint16_t)S.max_frames;        /* until the last group is known */
-    was_new = 1;
-  }
-  if (last && S.s_last_group < 0) {
-    long total = (long)(g + 1) * FPG_S;
-    S.s_last_group = g;
-    S.st.total = (uint16_t)(total < 65535 ? total : 65535);
-    S.st.stored = (uint16_t)(total < S.max_frames ? total : S.max_frames);
-    S.st.packets_total = (uint16_t)((g + 1) * GROUP);
-    /* frames_got may already count frames past the end: recount */
-    S.st.frames_got = 0;
-    for (j = 0; j < S.max_frames; j++)
-      if (bit(S.good, j)) {
-        if (j < S.st.stored) S.st.frames_got++;
-      }
-  }
-  before = S.st.frames_got;
-  if ((long)g * FPG_S + k < S.st.stored) put_frame(g * FPG_S + k, p + 2);
-  if ((long)g * FPG_S + 8 + k < S.st.stored) put_frame(g * FPG_S + 8 + k, p + 8);
   return finish_packet(seq, was_new, before);
 }
 
 int sp_packet(const uint8_t *payload, int len) {
   int i, r;
-  if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_S) return SP_BAD_LENGTH;
+  if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return SP_BAD_LENGTH;
   if (!pn9[0]) pn9_init();
   for (i = 0; i < len; i++) last_pkt[i] = payload[i] ^ pn9[i];
-  for (; i < SP_PAYLOAD_L; i++) last_pkt[i] = 0;
-  if (len == SP_PAYLOAD_L && last_pkt[0] != SP_MAGIC) { S.st.bad_packets++; return SP_BAD_MAGIC; }
+  for (; i < SP_PAYLOAD_MAX; i++) last_pkt[i] = 0;
+  if (last_pkt[0] != SP_MAGIC) { S.st.bad_packets++; return SP_BAD_MAGIC; }
   if (crc16(last_pkt, len - 2) != ((unsigned)last_pkt[len - 2] << 8 | last_pkt[len - 1])) {
     S.st.bad_packets++;
     return SP_BAD_CRC;
   }
   S.st.good_packets++;
   if (!S.max_frames) return SP_DUP;
-  r = len == SP_PAYLOAD_L ? packet_l(last_pkt) : packet_s(last_pkt);
+  r = packet(last_pkt, fpp_of(len), len == SP_PAYLOAD_XL ? 'X' : 'L');
   return r;
 }
 
 int sp_check(const uint8_t *payload, int len) {
-  uint8_t p[SP_PAYLOAD_L];
   int i;
-  if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_S) return 0;
+  unsigned c = 0xFFFF;
+  if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return 0;
   if (!pn9[0]) pn9_init();
-  for (i = 0; i < len; i++) p[i] = payload[i] ^ pn9[i];
-  if (len == SP_PAYLOAD_L && p[0] != SP_MAGIC) return 0;
-  return crc16(p, len - 2) == ((unsigned)p[len - 2] << 8 | p[len - 1]);
+  if ((payload[0] ^ pn9[0]) != SP_MAGIC) return 0;
+  for (i = 0; i < len - 2; i++) {     /* the CRC as crc16(), de-whitening on the way: no copy */
+    int b;
+    c ^= (unsigned)(payload[i] ^ pn9[i]) << 8;
+    for (b = 0; b < 8; b++) c = (c & 0x8000) ? ((c << 1) ^ 0x1021) & 0xFFFF : (c << 1) & 0xFFFF;
+  }
+  return c == ((unsigned)(payload[len - 2] ^ pn9[len - 2]) << 8 | (payload[len - 1] ^ pn9[len - 1]));
 }
 
 const uint8_t *sp_last_packet(void) { return last_pkt; }
 
 void sp_status(sp_status_t *st) { *st = S.st; }
+
+int sp_missing(uint16_t *out, int max) {
+  int n = 0;
+  for (unsigned q = 0; q < S.st.packets_total && q < (unsigned)S.max_frames / 2u; q++)
+    if (!bit(S.seen, q)) {
+      if (n < max) out[n] = (uint16_t)q;
+      n++;
+    }
+  return n;
+}
 
 /* ---- playback ---------------------------------------------------------------------------- */
 void sp_play_start(void) {
@@ -194,12 +182,6 @@ void sp_play_start(void) {
   dec = sotto_dec_create();
   play_pos = 0;
   play_end = S.st.have ? S.st.stored : 0;
-  if (S.st.profile == 'S') {
-    /* the sender pads the last group with zero frames: drop them, and frames past the
-       last one that arrived if the last group never did */
-    static const uint8_t zero[6];
-    while (play_end > 0 && (!bit(S.good, play_end - 1) || !memcmp(S.frames + 6 * (play_end - 1), zero, 6))) play_end--;
-  }
   emph1 = emph2 = 0;
 }
 
@@ -263,21 +245,18 @@ int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int e
 }
 
 /* packet seq of the spec's 70-frame test message (section 10: frame f is f as 16 bits little
-   endian, then 11 22 33 44; msg_id 0x42, or 5 in profile S), whitened, len bytes (L or S) */
+   endian, then 11 22 33 44; msg_id 0x42) in profile L or XL (len bytes), whitened */
 static void test_packet(uint8_t *out, int len, int seq) {
-  uint8_t p[SP_PAYLOAD_L];
-  int slots = len == SP_PAYLOAD_L ? FPP_L : 2, hdr = len == SP_PAYLOAD_L ? 6 : 2, s, i;
+  uint8_t p[SP_PAYLOAD_MAX];
+  int slots = fpp_of(len), s, i;
   unsigned c;
   if (!pn9[0]) pn9_init();
   memset(p, 0, sizeof p);
-  if (len == SP_PAYLOAD_L)
-    p[0] = SP_MAGIC, p[1] = 0x42, p[2] = (uint8_t)(seq >> 8), p[3] = (uint8_t)seq, p[5] = 70;
-  else                                               /* 70 frames = 5 groups; the last is seq 32..39 */
-    p[0] = (uint8_t)(5 << 4 | (seq / GROUP == 4) << 3 | (seq >> 8 & 7)), p[1] = (uint8_t)seq;
+  p[0] = SP_MAGIC, p[1] = 0x42, p[2] = (uint8_t)(seq >> 8), p[3] = (uint8_t)seq, p[5] = TEST_FRAMES;
   for (s = 0; s < slots; s++) {
     int f = seq / GROUP * slots * GROUP + s * GROUP + seq % GROUP;
-    uint8_t *q = p + hdr + 6 * s;
-    if (f < 70) q[0] = (uint8_t)f, q[1] = (uint8_t)(f >> 8), q[2] = 0x11, q[3] = 0x22, q[4] = 0x33, q[5] = 0x44;
+    uint8_t *q = p + HDR + 6 * s;
+    if (f < TEST_FRAMES) q[0] = (uint8_t)f, q[1] = (uint8_t)(f >> 8), q[2] = 0x11, q[3] = 0x22, q[4] = 0x33, q[5] = 0x44;
   }
   c = crc16(p, len - 2);
   p[len - 2] = (uint8_t)(c >> 8), p[len - 1] = (uint8_t)c;
@@ -292,22 +271,25 @@ static int ones(unsigned v) {
 }
 
 int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e) {
-  uint8_t t[SP_PAYLOAD_L], best[SP_PAYLOAD_L];
-  int npk = len == SP_PAYLOAD_L ? 16 : 40, seq, how, i, n;
+  uint8_t t[SP_PAYLOAD_MAX];
+  int npk, fpg, seq, how, i, n, best_seq = 0;
   memset(e, 0, sizeof *e);
   e->errors = -1;
-  if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_S) return -1;
+  if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return -1;
+  fpg = fpp_of(len) * GROUP;
+  npk = (TEST_FRAMES + fpg - 1) / fpg * GROUP;        /* 16 in L, 8 in XL */
   for (seq = 0; seq < npk; seq++) {
     test_packet(t, len, seq);
     for (how = 0; how < 4; how++) {                  /* bit 0: bytes swapped, bit 1: inverted */
       unsigned x = how & 2 ? 0xFF : 0;
       for (i = n = 0; i < len; i++) n += ones(payload[i ^ (how & 1)] ^ t[i] ^ x);
       if (e->errors < 0 || n < e->errors)
-        e->errors = (int16_t)n, e->seq = (int16_t)seq, e->swap = how & 1, e->invert = how >> 1, memcpy(best, t, len);
+        e->errors = (int16_t)n, e->seq = (int16_t)seq, e->swap = how & 1, e->invert = how >> 1, best_seq = seq;
     }
   }
+  test_packet(t, len, best_seq);                      /* again, instead of a second buffer */
   for (i = 0; i < len; i++)
-    e->block[i * 8 / len] += (uint8_t)ones(payload[i ^ e->swap] ^ best[i] ^ (e->invert ? 0xFF : 0));
+    e->block[i * 8 / len] += (uint8_t)ones(payload[i ^ e->swap] ^ t[i] ^ (e->invert ? 0xFF : 0));
   return e->errors;
 }
 
