@@ -167,9 +167,11 @@ What it took, in order:
 
 - The firmware is built only in CI (*K6 pager firmware*). This sandbox won't run Aura's cargo
   build, so the Rust was type-checked here against stubs and compiled for real in CI.
-- Only PHY F (FFSK) has been received on air. PHY D (direct FSK) over the IC-7100's USB audio
-  got nothing in two early bursts. That was before the timed-read fix, and its USB path in FM-D
-  turns out to be wide (`docs/k6-pager.md`), so D is worth retrying.
+- PHY D (direct FSK) over the IC-7100's USB audio in FM-D is marginal. On 6661d40, D at 1200
+  baud delivered 8 of 16 test packets and only 9 of VE9QRP's 64, with bit slips or lost lock at
+  random points. FFSK on the same image delivered 63 of 64, so use F over USB. D at 2400 got no
+  sync at all. Next steps for D: a level sweep, and a recording of the IC-7100's own D signal to
+  see its eye.
 - The first packet of each burst is still usually lost during lock-in. A longer lead-in may fix it.
 - The artifacts Jeff heard on the first run were mostly concealment (29% of frames missing).
   Listening at 1.6% loss is still to do.

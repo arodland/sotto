@@ -57,8 +57,10 @@ least on receive. Open-squelch discriminator noise on a clear channel, recorded 
 is flat from 20 Hz to 2 kHz, 3 dB down at 4.5 kHz, 6 dB at 6 kHz and 10 dB at 8 kHz. That only
 measures the receive chain. If the transmit chain is as flat, profile D could work over USB in FM-D
 without DATA2. That is still untested: the first D bursts over USB got nothing, but that was
-before the receiver's 64-byte fix. Profile F over USB is what has worked on air
-(`docs/k6-receiver.md`, *On air*).
+before the receiver's 64-byte fix. Retried on the fixed receiver the same night: D at 1200
+baud over USB in FM-D delivered 8 of 16 test packets and 9 of 64 for a speech clip, with slips at
+random points, while F delivered 63 of 64. D at 2400 got no sync. So over USB, **use F**. Profile F
+over USB is what works on air (`docs/k6-receiver.md`, *On air*).
 
 Over a simulated FM link (`tools/k6_link_sim.py`: 2.5 kHz deviation, 12.5 kHz channel, white
 noise, no fading), the share of packets that decode is:
