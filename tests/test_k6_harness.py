@@ -42,6 +42,13 @@ def test_parse_line():
     assert h.parse_line("bfk6-fw boot") is None
 
 
+def test_events():
+    assert h.events("2:0:0,1000:27:4,1000:53:4,2000:107:24") == "S@0 F@27+4 F@53+4 D@107+24"
+    assert h.events("3002:0:8,") == "SFD@0+8" and h.events("") == ""
+    d = h.parse_line(pkt_line(PK0, extra="ev=2:0:0,2000:107:32 "))
+    assert "[S@0 D@107+32]" in h.describe(d, h.analyse(d["raw"], 1))
+
+
 def test_analyse_finds_reading_and_errors():
     a = h.analyse(PK0, rswap=1)
     assert a["errors"] == 0 and a["seq"] == 0 and a["swap"] == 1 and a["inv"] == 0 and a["first"] == -1

@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..e4f4b02
+index 0000000..9778606
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,980 @@
+@@ -0,0 +1,1028 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -375,6 +375,15 @@ index 0000000..e4f4b02
 +    pub ber_n: u16,
 +    /// packets reported on the serial line, so the PC can spot a lost line
 +    pub reported: u16,
++    /// key 7, bring-up: how REG_5D gets the packet length (0: bytes - 1, the
++    /// BK4819 way; 1: words - 1; 2: 0xFF, the longest)
++    pub len_mode: u8,
++    /// key 8, bring-up: an RX-done before the whole packet came doesn't end it;
++    /// keep reading on FIFO interrupts until the length or the timeout
++    pub keep_after_done: bool,
++    /// this packet's interrupts: (flags, 100 us ticks since the first, words read)
++    ev: [(u16, u16, u8); 12],
++    ev_n: u8,
 +    pub emphasis: bool,
 +    pub vol: u8,
 +    /// b'-' none yet, b'P' SyncPositive, b'N' SyncNegative (then RX invert is set)
@@ -418,6 +427,10 @@ index 0000000..e4f4b02
 +            ber_sum: 0,
 +            ber_n: 0,
 +            reported: 0,
++            len_mode: 0,
++            keep_after_done: false,
++            ev: [(0, 0, 0); 12],
++            ev_n: 0,
 +            // The FD6818's FIFO words go low byte first on air (Jeff's first test burst,
 +            // 2026-11-04: all four packets bit-exact once swapped), so RX swaps by default
 +            swap: true,
@@ -446,6 +459,16 @@ index 0000000..e4f4b02
 +
 +    pub fn vol_db(&self) -> i8 {
 +        (self.vol as i8 - VOL_0DB as i8) * 3
++    }
++
++    /// REG_5D's packet-length field for `len_mode`
++    fn len_field(&self) -> u16 {
++        let len = self.payload_len() as u16;
++        match self.len_mode {
++            1 => (len / 2 - 1) << 8,
++            2 => 0xFF00,
++            _ => (len - 1) << 8,
++        }
 +    }
 +
 +    fn payload_len(&self) -> usize {
@@ -528,7 +551,7 @@ index 0000000..e4f4b02
 +    } else {
 +        (CFG_D_1200, BAUD_1200, GAIN_D)
 +    };
-+    let len_field = ((p.payload_len() as u16) - 1) << 8;
++    let len_field = p.len_field();
 +    let fd = &mut app.radio.fd6818;
 +    fd.reg_write(syst, REG_IRQ_EN, 0);
 +    fd.reg_write(syst, REG_FSK_CFG, cfg);
@@ -640,7 +663,9 @@ index 0000000..e4f4b02
 +    let mut waited: u32 = 0;
 +    let mut last = t0;
 +    let mut saw_sync = false;
++    app.pager.ev_n = 0;
 +    loop {
++        let words_before = got / 2;
 +        if flags & IRQ_RX_SYNC != 0 {
 +            saw_sync = true;
 +            let s = app.radio.fd6818.reg_read(syst, REG_SYNC_STATUS);
@@ -656,11 +681,20 @@ index 0000000..e4f4b02
 +            let n = (words - got / 2).min(4);
 +            read_words(app, syst, &mut buf, &mut got, n);
 +        }
-+        if flags & IRQ_RX_DONE != 0 {
++        let early = flags & IRQ_RX_DONE != 0 && got / 2 < words && app.pager.keep_after_done;
++        if flags & IRQ_RX_DONE != 0 && !early {
 +            if got / 2 < words {
 +                let n = words - got / 2;
 +                read_words(app, syst, &mut buf, &mut got, n);
 +            }
++        }
++        let k = app.pager.ev_n as usize;
++        if k < app.pager.ev.len() {
++            let dt = last.wrapping_sub(t0);
++            app.pager.ev[k] = (flags, dt, (got / 2 - words_before) as u8);
++            app.pager.ev_n += 1;
++        }
++        if (flags & IRQ_RX_DONE != 0 && !early) || got / 2 >= words {
 +            break;
 +        }
 +        // wait for the next interrupt
@@ -803,6 +837,11 @@ index 0000000..e4f4b02
 +        }
 +        KeyId::Digit4 => p.emphasis = !p.emphasis,
 +        KeyId::Digit6 => p.raw_view = !p.raw_view,
++        KeyId::Digit7 => {
++            p.len_mode = (p.len_mode + 1) % 3;
++            rearm = true;
++        }
++        KeyId::Digit8 => p.keep_after_done = !p.keep_after_done,
 +        KeyId::Pound => {
 +            p.freq_entry = true;
 +            app.input.clear();
@@ -1105,6 +1144,8 @@ index 0000000..e4f4b02
 +        KeyId::Digit4 => "key4",
 +        KeyId::Digit5 => "key5",
 +        KeyId::Asterisk => "clear",
++        KeyId::Digit7 => "key7",
++        KeyId::Digit8 => "key8",
 +        KeyId::Menu => "menu",
 +        KeyId::Up | KeyId::Down => "vol",
 +        _ => "key",
@@ -1116,7 +1157,7 @@ index 0000000..e4f4b02
 +    let p = &app.pager;
 +    let baud = if p.baud_2400 && !p.phy_ffsk { 2400 } else { 1200 };
 +    report_line(format_args!(
-+        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={}",
++        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={}",
 +        why,
 +        app.chip_id,
 +        app.master_freq_hz(),
@@ -1127,7 +1168,9 @@ index 0000000..e4f4b02
 +        p.soft_inv as u8,
 +        p.swap as u8,
 +        p.emphasis as u8,
-+        p.vol_db()
++        p.vol_db(),
++        p.len_field(),
++        p.keep_after_done as u8
 +    ));
 +}
 +
@@ -1155,7 +1198,12 @@ index 0000000..e4f4b02
 +        }
 +        write!(s, " ").ok();
 +    }
-+    write!(s, "good={} bad={} to={} raw=", st.good_packets, st.bad_packets, p.timeouts).ok();
++    write!(s, "ev=").ok();
++    for (i, &(f, t, n)) in p.ev[..p.ev_n as usize].iter().enumerate() {
++        // interrupt flags in hex : ms since the packet's first interrupt : words read
++        write!(s, "{}{:x}:{}:{}", if i > 0 { "," } else { "" }, f, t / 10, n).ok();
++    }
++    write!(s, " good={} bad={} to={} raw=", st.good_packets, st.bad_packets, p.timeouts).ok();
 +    for b in read {
 +        write!(s, "{:02x}", b).ok();
 +    }

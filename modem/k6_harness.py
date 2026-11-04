@@ -18,7 +18,8 @@ The firmware's lines (one per event):
 
   K6 CFG why=enter chip=4819 freq=439500000 phy=F frames=L baud=1200 inv=0 soft=0 swap=1 ...
   K6 PKT n=12 got=64 sync=N res=-1 magic=a7 rswap=1 soft=0 swap=1 be=3 bseq=0 bswap=1 binv=0
-         blk=0,0,0,1,0,0,0,2 good=0 bad=12 to=0 raw=58a31d...       (one line on the wire)
+         blk=0,0,0,1,0,0,0,2 ev=2:0:0,1000:27:4,... good=0 bad=12 to=0 raw=58a31d...
+         (one line on the wire; ev: each interrupt's flags in hex, ms, FIFO words read)
   K6 PLAY id=42 total=70 stored=70 got=70 packets=16/16 played=71 dec_mean_us=11800 ...
   K6 CAL sent tx=439500000
 
@@ -125,6 +126,24 @@ def analyse(raw, rswap=1):
             "tail_errors": shifts}
 
 
+IRQ_NAMES = ((0x0002, "S"), (0x1000, "F"), (0x2000, "D"))     # sync, FIFO almost full, RX done
+
+
+def events(ev):
+    """The firmware's ev field ('flags:ms:words,...') -> 'S@0 F@27+4 D@108+28': which
+    interrupts came when in the packet (ms after the first), and how many FIFO words each read."""
+    out = []
+    for item in str(ev).split(","):
+        try:
+            f, ms, n = item.split(":")
+            f, ms, n = int(f, 16), int(ms), int(n)
+        except ValueError:
+            continue
+        name = "".join(c for bit, c in IRQ_NAMES if f & bit) or f"{f:x}"
+        out.append(f"{name}@{ms}" + (f"+{n}" if n else ""))
+    return " ".join(out)
+
+
 def error_map(per_byte):
     """'.' for a right byte, else its count of wrong bits (1-8)."""
     return "".join("." if c == 0 else str(c) for c in per_byte)
@@ -136,7 +155,7 @@ def describe(d, a):
     crc = "short" if res == "short" else ("ok " if isinstance(res, int) and res >= 0 else "BAD")
     s = f"#{d.get('n', '?'):<4} sync {d.get('sync', '?')}  {crc}  got {d.get('got', '?')}"
     if a is None:
-        return s
+        return s + (f"  [{events(d['ev'])}]" if d.get("ev") else "")
     s += (f"  BE {a['errors']:3d}/{a['bits']}  s{'+' if a['swap'] else '-'}x{'+' if a['inv'] else '-'}"
           f"  pkt {a['seq']:2d}  {error_map(a['per_byte'])}")
     if a["tail_shift"]:
@@ -144,6 +163,8 @@ def describe(d, a):
     fw = d.get("be")
     if fw is not None and fw != a["errors"]:
         s += f"  (radio said {fw})"
+    if d.get("ev"):
+        s += f"  [{events(d['ev'])}]"
     return s
 
 
