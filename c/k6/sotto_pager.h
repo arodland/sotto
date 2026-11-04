@@ -137,9 +137,12 @@ int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e);
 #define SP_CTL_MAGIC 0xA8
 #define SP_CTL_REC 8
 enum { SP_CTL_PHY = 1, SP_CTL_FRAMES = 2, SP_CTL_BAUD = 4, SP_CTL_AUTO = 8, SP_CTL_EMPH = 16,
-       SP_CTL_VAR = 32, SP_CTL_VOL = 64 };    /* mask bits; the value is the same bit of byte 3
-                                                 (phy 1 = F, frames 1 = XL, baud 1 = 2400) */
-enum { SP_CTL_NONE = 0, SP_CTL_PLAY = 1, SP_CTL_CLEAR = 2, SP_CTL_REPORT = 3 };  /* byte 5 */
+       SP_CTL_VAR = 32, SP_CTL_VOL = 64, SP_CTL_IDLE_KEEP = 128 };
+/* mask bits; the value is the same bit of byte 3 (phy 1 = F, frames 1 = XL, baud 1 = 2400,
+   idle keep 1 = no re-arm on an idle RX-done with no sync) */
+enum { SP_CTL_NONE = 0, SP_CTL_PLAY = 1, SP_CTL_CLEAR = 2, SP_CTL_REPORT = 3,  /* byte 5 */
+       SP_CTL_REG = 4,      /* write register byte 2 = bytes 3-4 (high first); 0 drops all */
+       SP_CTL_REGS = 5 };   /* print the FSK registers */
 int sp_control(const uint8_t *payload, int len, uint8_t rec[6]);
 
 /* Bytes of static RAM this library uses (decoder state, cos/sin table and the rest). */

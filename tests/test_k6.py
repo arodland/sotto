@@ -156,7 +156,7 @@ def test_cli(tmp_path):
     from modem.k6 import _read
     x, fs = _read(wav)
     asm, t = fsk.receive(x, fs, "F")
-    assert sum(t_[1] for t_ in t) == 3 and asm.messages[0x42]["pk"][0] == \
+    assert sum(t_[1] for t_ in t) == 4 and asm.messages[0x42]["pk"][0] == \
         [TEST_FRAMES[f * 6:f * 6 + 6] for f in range(0, 64, 8)]
     assert cli(["send", sot, "--dry-run", "--ptt", "none"]) == 0
     assert cli(["cal", wav]) == 0
@@ -170,6 +170,21 @@ def test_byte_swapped_words_are_accepted():
     assert a.push(pager.swap_words(pk[0])) is not None
     assert a.swapped == 1 and a.bad == 0
     assert pager.swap_words(b"\x01\x02\x03\x04") == b"\x02\x01\x04\x03"
+
+
+def test_prime_sends_a_throwaway_first_copy(tmp_path):
+    """--prime puts a copy of the first packet in front; the real first packet then gets
+    the second packet's extra preamble, and every packet still decodes."""
+    from modem.k6 import _read
+    wav = str(tmp_path / "p.wav")
+    for prime, n in ((["--no-prime"], 3), (["--prime"], 4)):
+        assert cli(["test", wav, "--repeat", "3", "--phy", "F"] + prime) == 0
+        x, fs = _read(wav)
+        asm, t = fsk.receive(x, fs, "F")
+        assert sum(t_[1] for t_ in t) == n
+    assert cli(["test", wav, "--repeat", "3", "--phy", "F", "--no-prime", "--first-preamble", "32"]) == 0
+    x, fs = _read(wav)
+    assert sum(t_[1] for t_ in fsk.receive(x, fs, "F")[1]) == 3
 
 
 def test_later_preamble():
@@ -209,6 +224,12 @@ def test_control_record_fields():
     assert r[:6] == bytes([0xA8, 3, 1 | 4 | 16 | 32 | 64, 4, 5 | 6 << 4, 0])
     assert pager.crc16_ccitt(r[:6]) == r[6] << 8 | r[7]
     assert pager.control_record(4)[2] == 0          # confirmation only: nothing changes
+    assert pager.control_record(5, {"idlekeep": 1})[2:4] == bytes([128, 128])
     import pytest
     with pytest.raises(ValueError):
         pager.control_record(1, {"freq": 440850})
+    r = pager.control_reg_record(9, 0x58, 0x73E9)
+    assert r[:6] == bytes([0xA8, 9, 0x58, 0x73, 0xE9, 4])
+    assert pager.parse_control(pager.control_packet(9, length=64, reg=(0x58, 0x73E9)))[:6] == r[:6]
+    with pytest.raises(ValueError):
+        pager.control_reg_record(1, 0x30, 0)            # REG_30 (TX/RX enables): refused

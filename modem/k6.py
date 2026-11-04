@@ -77,9 +77,13 @@ def msg_id_for(frames):
 
 
 def build_audio(payloads, a, fs):
+    if getattr(a, "prime", False) and payloads:
+        payloads = [payloads[0]] + list(payloads)   # the throwaway copy goes first
     # XL: 24 bytes of preamble after the first packet (see pager.Air)
-    air = pager.Air(lead_ms=a.lead_ms, preamble_bytes=0 if a.stream else 16,
-                    later_preamble_bytes=24 if a.payload == "XL" and not a.stream else None)
+    later = 24 if a.payload == "XL" else 16
+    first = getattr(a, "first_preamble", None) or 16
+    air = pager.Air(lead_ms=a.lead_ms, preamble_bytes=0 if a.stream else first,
+                    later_preamble_bytes=None if a.stream else later)
     bits = air.burst_bits(payloads, a.baud)
     x = fsk.modulate(bits, a.phy, a.baud, fs, a.level, a.invert, comp=load_comp(a.comp),
                      max_gain_db=a.max_gain)
@@ -118,10 +122,19 @@ def _tx_opts(p):
     p.add_argument("--max-gain", type=float, default=30.0, help="compensation gain cap, dB (default 30)")
     p.add_argument("--lead-ms", type=float, default=150.0, help="0x55 lead-in after keying (default 150; 400 made the K6 false-sync on the first packet)")
     p.add_argument("--rate", type=int, default=48000, help="audio sample rate (default 48000)")
-    p.add_argument("--repeat-first", action=argparse.BooleanOptionalAction, default=True,
-                   help="tx/send: send the first packet again at the end (default on). The K6 loses "
-                        "the first packet of a burst more often than any other (2026-11-04: XL 31/32 "
-                        "twice, seq 0 both times); the copy costs one packet of air time")
+    p.add_argument("--repeat-first", action=argparse.BooleanOptionalAction, default=False,
+                   help="tx/send: send the first packet again at the end (off since --prime; "
+                        "2026-11-04 VE9QRP L: repeat-first 492/500, seq 1 lost)")
+    p.add_argument("--prime", action=argparse.BooleanOptionalAction, default=True,
+                   help="send a throwaway copy of the first packet before the burst (default on). "
+                        "On 839924e the K6 re-arms on an idle no-sync RX-done about 50 ms before "
+                        "the first sync (gap=42-53), and the first packet failed in 10/20 bursts; "
+                        "with the copy first, the first real packet was good in 20/20 and VE9QRP "
+                        "L arrived 500/500 (2026-11-04). Costs one packet, as --repeat-first did")
+    p.add_argument("--first-preamble", type=int, metavar="BYTES",
+                   help="0x55 bytes before the first packet only (default 16, as every packet). "
+                        "For tests: the K6 re-arms about 50 ms before the first sync (gap=42-53 "
+                        "in every burst on 839924e), and a longer first preamble may give it room")
     p.add_argument("--cw-id", metavar="CALL", help="append a Morse ID (FCC 97.119) after the data")
     p.add_argument("--cw-wpm", type=int, default=20)
 
@@ -184,6 +197,10 @@ def main(argv=None):
                         "none: a confirmation only (a good packet that keeps a change)")
     k.add_argument("--action", choices=tuple(pager.CTL_ACTIONS), default="none",
                    help="play: play the stored message; clear: drop it; report: a CFG line")
+    k.add_argument("--reg", metavar="ADDR=VALUE",
+                   help="write one FD6818 receive register, hex, e.g. 58=73e9 (allowed: 2b 58 59 5c 72; "
+                        "59 low byte only; 0=0 drops every write); the K6 prints K6 REGS and undoes "
+                        "the writes after 60 s without a good packet. --action regs only prints them")
     k.add_argument("--seq", type=int, help="0-255; the K6 applies one seq once (default: from the clock)")
     k.add_argument("--copies", type=int, default=3, help="packets per PHY (default 3)")
     k.add_argument("--also", choices="DF", help="send the same packets again in this PHY after --phy "
@@ -242,7 +259,8 @@ def main(argv=None):
         settings = dict(kv.split("=", 1) for kv in a.set)
         seq = a.seq if a.seq is not None else int(time.time()) & 0xFF
         length = pager.PROFILES[a.payload].payload
-        pk = pager.control_packet(seq, settings, a.action, length)
+        reg = tuple(int(v, 16) for v in a.reg.split("=", 1)) if a.reg else None
+        pk = pager.control_packet(seq, settings, a.action, length, reg=reg)
         cw_id, a.cw_id = a.cw_id, None
         parts = []
         for phy in [a.phy] + ([a.also] if a.also and a.also != a.phy else []):
@@ -254,7 +272,8 @@ def main(argv=None):
         if cw_id:
             x = np.concatenate([x, cw(cw_id, a.rate, a.cw_wpm, level=min(a.level, 0.4))])
         _write(a.output, x, a.rate)
-        log(f"control seq {seq} record {pager.control_record(seq, settings, a.action).hex()}: "
+        rec = pager.control_reg_record(seq, *reg) if reg else pager.control_record(seq, settings, a.action)
+        log(f"control seq {seq} record {rec.hex()}: "
             f"{(len(parts) + 1) // 2 * a.copies} packets, {len(x) / a.rate:.1f} s on air")
         return 0
 
