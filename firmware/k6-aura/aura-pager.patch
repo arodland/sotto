@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..1dab0cd
+index 0000000..c7fc58c
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1278 @@
+@@ -0,0 +1,1369 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -655,6 +655,84 @@ index 0000000..1dab0cd
 +    }
 +}
 +
++/// Stream mode (key 7's third length, REG_5D 0x00FF). On air (2026-11-04) the FD6818 then
++/// passed whole 64-byte packets with no bit errors, preamble and sync word included, byte
++/// aligned, with a FIFO interrupt every 4 words (53 ms at 1200 baud) and no sync or RX-done
++/// interrupt. Reads 4 words per FIFO interrupt, looks for the sync word (07 6B 3E 36, up to
++/// 2 bits wrong; inverted too), then keeps the next `len` bytes. Gives up after 32 words
++/// with no sync (longer while preamble bytes keep coming), or 200 ms without an interrupt.
++/// Returns whether the sync came inverted (the payload is then inverted back), or None.
++fn receive_stream(app: &mut App, syst: &mut SYST, mut flags: u16, buf: &mut [u8; 64], len: usize) -> Option<bool> {
++    const SYNC: u32 = 0x076B_3E36;
++    let t0 = uptime::now();
++    let mut last = t0;
++    let mut reg: u32 = 0;
++    let mut seen = 0u32; // bytes looked at for the sync
++    let mut found: Option<bool> = None;
++    let mut got = 0usize;
++    let mut budget = 32usize;
++    loop {
++        let before = got;
++        if flags & IRQ_RX_FULL != 0 {
++            for _ in 0..4 {
++                let w = app.radio.fd6818.reg_read(syst, REG_FIFO);
++                let w = if app.pager.swap { w.swap_bytes() } else { w };
++                for byte in [(w >> 8) as u8, w as u8] {
++                    match found {
++                        None => {
++                            reg = (reg << 8) | byte as u32;
++                            seen += 1;
++                            if seen >= 4 {
++                                if (reg ^ SYNC).count_ones() <= 2 {
++                                    found = Some(false);
++                                } else if (reg ^ !SYNC).count_ones() <= 2 {
++                                    found = Some(true);
++                                }
++                            }
++                            if byte == 0x55 || byte == 0xAA {
++                                budget = budget.max(4); // preamble: the sync is near
++                            }
++                        }
++                        Some(inv) => {
++                            if got < len {
++                                buf[got] = if inv { !byte } else { byte };
++                                got += 1;
++                            }
++                        }
++                    }
++                }
++                if found.is_none() {
++                    budget = budget.saturating_sub(1);
++                }
++            }
++        }
++        let k = app.pager.ev_n as usize;
++        if found.is_some() && k < app.pager.ev.len() {
++            app.pager.ev[k] = (flags, last.wrapping_sub(t0), ((got - before) / 2) as u8);
++            app.pager.ev_n += 1;
++        }
++        if got >= len {
++            return found;
++        }
++        if found.is_none() && budget == 0 {
++            return None;
++        }
++        // the next FIFO interrupt
++        let start = uptime::now();
++        loop {
++            delay::us(syst, 500);
++            last = uptime::now();
++            flags = take_irq(app, syst);
++            if flags != 0 {
++                break;
++            }
++            if last.wrapping_sub(start) > 2000 {
++                return None;
++            }
++        }
++    }
++}
++
 +/// Called from the main loop in pager mode: picks up packets, and starts the
 +/// playback 3 s after the last packet of an incomplete message.
 +pub(super) fn poll(app: &mut App, syst: &mut SYST) {
@@ -699,7 +777,20 @@ index 0000000..1dab0cd
 +    let timed = app.pager.timed_read;
 +    let mut t_sync = t0;
 +    app.pager.ev_n = 0;
-+    loop {
++    // key 7's third length (REG_5D 0x00FF): the chip streams what it demodulates, preamble
++    // and sync included, with a FIFO interrupt every 4 words; find the sync in software
++    let stream = app.pager.len_mode == 2;
++    if stream {
++        match receive_stream(app, syst, flags, &mut buf, len) {
++            None => return,
++            Some(inv) => {
++                got = len;
++                saw_sync = true;
++                app.pager.last_sync = if inv { b'w' } else { b'W' };
++            }
++        }
++    }
++    while !stream {
 +        let words_before = got / 2;
 +        if flags & IRQ_RX_SYNC != 0 {
 +            if !saw_sync {

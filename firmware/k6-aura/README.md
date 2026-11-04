@@ -100,7 +100,7 @@ MENU again; EXIT leaves the app.)
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
 | 6 | raw view: the last packet's first 16 bytes in hex, its sync and length, and its bit errors against the test message (below) |
 | 5 | 1200 / 2400 baud (profile D) |
-| 7 | bring-up: how the packet length goes into REG_5D (bytes - 1, words - 1, or the longest), serial report only |
+| 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, or 0x00FF = stream mode (sync found in software; screen `SYNC W`) |
 | 8 | FIFO reads on a timer (on by default; `CFG timed=`) or at the chip's FIFO interrupt (off) |
 | 9 | auto-play on/off (on by default; MENU still plays) |
 | 0 | decode watchdog on/off (off by default; `CFG wd=`): reports `K6 HANG pc=` if a frame takes over 1 s |
@@ -247,6 +247,13 @@ the FIFO. The fix is to read the FIFO on a timer from the sync interrupt, one wo
 (16 bits at 1200 baud) with one word of lead, and read the rest at RX-done. That's now the
 default; key 8 switches back to the interrupt reads for comparison. With timed reads, a
 packet's `ev` ends in `T@ms+n` when the timer read its last word.
+
+With REG_5D at 0x00FF (key 7 pressed twice), the chip instead streamed everything it
+demodulated, preamble and sync word included, with a FIFO interrupt every 4 words and no sync
+or RX-done interrupt. One 64-byte packet came through that way with 0 bit errors over 60 bytes.
+That length setting is now a stream mode: the firmware reads 4 words per interrupt, finds the
+sync word in software (byte aligned, up to 2 wrong bits, inverted too), and keeps the next 64
+(or 16) bytes. The sync letter shows `W`, or `w` if the sync came inverted.
 
 **Second playback test (2026-11-04, image 72b6e3b).** 34 of 40 profile-S packets arrived, all
 with clean CRCs, and the radio stopped inside the decoder: after `first frame decoded`, before
