@@ -52,6 +52,10 @@ int sp_init(void *mem, unsigned bytes);
    sp_last_packet. */
 int sp_packet(const uint8_t *payload, int len);
 
+/* 1 if the packet's magic byte (profile L) and CRC are right, else 0. It changes nothing:
+   the radio uses it to try the other byte order or polarity before the first good packet. */
+int sp_check(const uint8_t *payload, int len);
+
 /* Per-packet diagnostics: the de-whitened bytes of the last packet passed to sp_packet,
    good or bad (the screen shows the magic byte and the CRC result). */
 const uint8_t *sp_last_packet(void);

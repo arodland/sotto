@@ -14,7 +14,7 @@
 #include "sotto_pager.h"
 
 int main(int argc, char **argv) {
-  int len = SP_PAYLOAD_L, n, r, pwm = 0;
+  int len = SP_PAYLOAD_L, n, r, c, pwm = 0;
   unsigned bytes = 6144;
   static uint32_t mem[65536];
   uint8_t pkt[SP_PAYLOAD_L];
@@ -42,7 +42,9 @@ int main(int argc, char **argv) {
   n = sp_init(mem, bytes);
   printf("max_frames=%d static=%u results=", n, sp_static_bytes());
   while (fread(pkt, 1, (size_t)len, in) == (size_t)len) {
+    c = sp_check(pkt, len);
     r = sp_packet(pkt, len);
+    if (c != (r >= 0)) { fprintf(stderr, "sp_check %d disagrees with sp_packet %d\n", c, r); return 2; }
     printf("%d,", r);
   }
   sp_status(&st);

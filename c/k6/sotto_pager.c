@@ -173,6 +173,16 @@ int sp_packet(const uint8_t *payload, int len) {
   return r;
 }
 
+int sp_check(const uint8_t *payload, int len) {
+  uint8_t p[SP_PAYLOAD_L];
+  int i;
+  if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_S) return 0;
+  if (!pn9[0]) pn9_init();
+  for (i = 0; i < len; i++) p[i] = payload[i] ^ pn9[i];
+  if (len == SP_PAYLOAD_L && p[0] != SP_MAGIC) return 0;
+  return crc16(p, len - 2) == ((unsigned)p[len - 2] << 8 | p[len - 1]);
+}
+
 const uint8_t *sp_last_packet(void) { return last_pkt; }
 
 void sp_status(sp_status_t *st) { *st = S.st; }
