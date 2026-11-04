@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..1949d4b
+index 0000000..dc32405
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1721 @@
+@@ -0,0 +1,1779 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -458,6 +458,17 @@ index 0000000..1949d4b
 +    st_t_end: u16,
 +    /// re-arms of the stream (the chip stopped, or an RX-done came) since entering it
 +    st_restarts: u16,
++    /// what the chip did since the last arm, for `K6 SRST` (stream mode): uptime at the arm,
++    /// bytes and FIFO interrupts, ms to its first sync interrupt (-1 none), the fewest wrong
++    /// bits against the sync word in any bit position, bit positions that looked like
++    /// preamble, and the first 8 bytes
++    st_t_arm: u16,
++    st_bytes: u16,
++    st_nfull: u16,
++    st_sync_irq_ms: i16,
++    st_min_d: u8,
++    st_pre: u16,
++    st_head: [u8; 8],
 +    /// key 8, bring-up: an RX-done before the whole packet came doesn't end it;
 +    /// keep reading on FIFO interrupts until the length or the timeout
 +    pub keep_after_done: bool,
@@ -573,6 +584,13 @@ index 0000000..1949d4b
 +            st_t_sync: 0,
 +            st_t_end: 0,
 +            st_restarts: 0,
++            st_t_arm: 0,
++            st_bytes: 0,
++            st_nfull: 0,
++            st_sync_irq_ms: -1,
++            st_min_d: 32,
++            st_pre: 0,
++            st_head: [0; 8],
 +            keep_after_done: false,
 +            timed_read: true,
 +            rearm_mode: 0,
@@ -762,6 +780,12 @@ index 0000000..1949d4b
 +    p.st_seen = 0;
 +    p.st_collect = false;
 +    p.st_ready = false;
++    p.st_t_arm = p.t_rearm;
++    p.st_bytes = 0;
++    p.st_nfull = 0;
++    p.st_sync_irq_ms = -1;
++    p.st_min_d = 32;
++    p.st_pre = 0;
 +}
 +
 +fn arm(app: &mut App, syst: &mut SYST) {
@@ -852,6 +876,7 @@ index 0000000..1949d4b
 +        }
 +        // wrong bits against the sync; 32 - d against the inverted sync
 +        let d = (p.st_reg ^ STREAM_SYNC).count_ones();
++        p.st_min_d = p.st_min_d.min(d.min(32 - d) as u8);
 +        if d <= STREAM_SYNC_ERRORS || 32 - d <= STREAM_SYNC_ERRORS {
 +            p.st_collect = true;
 +            p.st_inv = d > STREAM_SYNC_ERRORS;
@@ -862,6 +887,7 @@ index 0000000..1949d4b
 +            p.ev_n = 0;
 +        } else if p.st_reg == 0x5555_5555 || p.st_reg == 0xAAAA_AAAA {
 +            p.st_live = now; // preamble: a packet is coming
++            p.st_pre = p.st_pre.saturating_add(1);
 +        }
 +    }
 +}
@@ -872,9 +898,13 @@ index 0000000..1949d4b
 +fn stream_irq(app: &mut App, syst: &mut SYST, flags: u16) {
 +    let now = uptime::now();
 +    app.pager.st_last_irq = now;
++    if flags & IRQ_RX_SYNC != 0 && app.pager.st_sync_irq_ms < 0 {
++        app.pager.st_sync_irq_ms = (now.wrapping_sub(app.pager.st_t_arm) / 10) as i16;
++    }
 +    if flags & IRQ_RX_FULL != 0 {
 +        let len = app.pager.payload_len();
 +        let p = &mut app.pager;
++        p.st_nfull = p.st_nfull.saturating_add(1);
 +        let k = p.ev_n as usize;
 +        if p.st_collect && k < p.ev.len() {
 +            p.ev[k] = (flags, now.wrapping_sub(p.st_t_sync), 4);
@@ -884,6 +914,11 @@ index 0000000..1949d4b
 +            let w = app.radio.fd6818.reg_read(syst, REG_FIFO);
 +            let w = if app.pager.swap { w.swap_bytes() } else { w };
 +            for byte in [(w >> 8) as u8, w as u8] {
++                let p = &mut app.pager;
++                if (p.st_bytes as usize) < p.st_head.len() {
++                    p.st_head[p.st_bytes as usize] = byte;
++                }
++                p.st_bytes = p.st_bytes.saturating_add(1);
 +                stream_byte(&mut app.pager, byte, len, now);
 +                if app.pager.st_ready {
 +                    app.pager.st_ready = false;
@@ -894,8 +929,30 @@ index 0000000..1949d4b
 +    }
 +    if flags & IRQ_RX_DONE != 0 {
 +        app.pager.st_restarts = app.pager.st_restarts.saturating_add(1);
++        report_srst(app, 'D');
 +        rearm_rx(app, syst);
 +    }
++}
++
++/// Stream mode, at each re-arm: what the chip gave since the last one (why: D = its RX-done,
++/// S = a stall with a signal on, I = a stall while idle).
++#[inline(never)] // its locals only while it runs, not in main's frame for good
++fn report_srst(app: &App, why: char) {
++    let p = &app.pager;
++    let h = &p.st_head;
++    report_line(format_args!(
++        "K6 SRST why={} ms={} bytes={} full={} syncirq={} mind={} pre={} collect={} head={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x} n={}",
++        why,
++        uptime::now().wrapping_sub(p.st_t_arm) / 10,
++        p.st_bytes,
++        p.st_nfull,
++        p.st_sync_irq_ms,
++        p.st_min_d,
++        p.st_pre,
++        if p.st_collect { p.st_got as i16 } else { -1 },
++        h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7],
++        p.st_restarts
++    ));
 +}
 +
 +/// A whole payload from the stream.
@@ -941,6 +998,7 @@ index 0000000..1949d4b
 +            if on {
 +                app.pager.st_restarts = app.pager.st_restarts.saturating_add(1);
 +            }
++            report_srst(app, if on { 'S' } else { 'I' });
 +            rearm_rx(app, syst);
 +        }
 +        n += 1;

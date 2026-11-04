@@ -315,6 +315,14 @@ air yet (packet spec section 12):
   counts in `restarts=` (screen `RS`); idle, it re-arms after 1 s without one. The old
   per-packet stream reading (byte-aligned search, re-arm after each packet) is gone.
 
+On air (e2411fe, F/L/1200): stream mode caught 0 of 16 back-to-back packets and 1 of 16 with
+preambles, after 26 re-arms. Each re-arm in stream mode now prints `K6 SRST why= ms= bytes= full=
+syncirq= mind= pre= collect= head= n=`: D = the chip's RX-done, S = a stall with a signal on, I
+= a stall while idle; `mind` is the fewest wrong bits against the sync word seen in any bit
+position since the arm, `pre` how many bit positions looked like preamble, `head` the first 8
+bytes after the arm. The same image showed packet mode losing the packet after a failed one
+(11 of 16): the burst loop left on the first failure; it now leaves after two in a row.
+
 For a 12 s message: F 1200 L 45 s today; F 1200 XL stream 28 s; F 2400 L 23 s; F 2400 XL stream
 14 s. Profile S (16 bytes) is removed from the firmware and the C library; the PC softmodem
 still makes it.
