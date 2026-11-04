@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..ffd8ceb
+index 0000000..6f77377
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2088 @@
+@@ -0,0 +1,2093 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -538,6 +538,8 @@ index 0000000..ffd8ceb
 +    /// revert or a key press (`poke=` in K6 REGS)
 +    poke: [(u8, u16); POKE_MAX],
 +    poke_n: u8,
++    /// poke_n when ctl_prev was taken: a revert keeps the writes that were confirmed with it
++    poke_prev: u8,
 +    /// key 8 (with key 7's lengths): read the RX FIFO on a timer after the sync, one word per
 +    /// 13.3 ms (16 bits at 1200 baud), instead of at the chip's 0x1000 interrupt. On air that
 +    /// interrupt follows REG_5D's length (it comes about 14 bytes before the end of the
@@ -674,6 +676,7 @@ index 0000000..ffd8ceb
 +            idle_rd: 0,
 +            poke: [(0, 0); POKE_MAX],
 +            poke_n: 0,
++            poke_prev: 0,
 +            timed_read: true,
 +            rearm_mode: 0,
 +            rearm_sweep: 0,
@@ -1205,7 +1208,7 @@ index 0000000..ffd8ceb
 +            app.pager.ctl_prev = None;
 +            let p = &mut app.pager;
 +            (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var, p.idle_keep) = prev;
-+            p.poke_n = 0;
++            p.poke_n = p.poke_prev; // the writes confirmed with those settings stay
 +            settings_changed(app, syst);
 +            report_line(format_args!("K6 CTL revert: no good packet in 60 s"));
 +            report_cfg(app, "revert");
@@ -1635,6 +1638,7 @@ index 0000000..ffd8ceb
 +        // keep the oldest settings that worked if a second change comes before a good packet
 +        if p.ctl_prev.is_none() {
 +            p.ctl_prev = Some(before);
++            p.poke_prev = p.poke_n;
 +        }
 +        p.ctl_wait = 0;
 +    }
@@ -1661,12 +1665,13 @@ index 0000000..ffd8ceb
 +    if reg == 0 {
 +        p.poke_n = 0;
 +    } else if POKE_OK.contains(&reg) && (p.poke_n as usize) < POKE_MAX {
++        if p.ctl_prev.is_none() {
++            p.ctl_prev = Some((p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var, p.idle_keep));
++            p.poke_prev = p.poke_n;
++        }
 +        // in order, so a later write to the same register wins
 +        p.poke[p.poke_n as usize] = (reg, val);
 +        p.poke_n += 1;
-+        if p.ctl_prev.is_none() {
-+            p.ctl_prev = Some((p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var, p.idle_keep));
-+        }
 +        p.ctl_wait = 0;
 +    } else {
 +        return; // not a receive register, or POKE_MAX held: refused (poke= unchanged)
