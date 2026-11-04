@@ -4,10 +4,10 @@ name: K6 pager firmware
 on:
   push:
     branches: [main]
-    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tests/test_k6_pager.py",
+    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
             "tests/test_k6_harness.py", "modem/k6_harness.py", ".github/workflows/k6-firmware.yml"]
   pull_request:
-    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tests/test_k6_pager.py",
+    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
             "tests/test_k6_harness.py", "modem/k6_harness.py", ".github/workflows/k6-firmware.yml"]
 
 jobs:
@@ -58,4 +58,5 @@ jobs:
             firmware/k6-aura/out/*.elf
             firmware/k6-aura/out/size-*.txt
             firmware/k6-aura/out/build-id.txt
+            firmware/k6-aura/out/frames-*.txt
             firmware/k6-aura/out/*.sha256

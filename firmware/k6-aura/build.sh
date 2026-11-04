@@ -111,6 +111,11 @@ variant() {
   fi
   ls -l "$OUT/$name.bin"
   (cd "$OUT" && sha256sum "$name.bin" | tee "$name.bin.sha256")
+  # stack frames, largest first (the K6's stack ran out at playback)
+  if command -v llvm-objdump >/dev/null 2>&1; then
+    llvm-objdump -d -C --no-show-raw-insn "$ELF" | python3 "$ROOT/tools/k6_frames.py" 40 > "$OUT/frames-$name.txt" &&
+      { echo "== stack frames, $title"; cat "$OUT/frames-$name.txt"; }
+  fi
 }
 
 # Full Aura with VOICE MSG in its launcher: 58 KB too big at edf3b98, so this is a report only
