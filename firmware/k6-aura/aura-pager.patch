@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..f566791
+index 0000000..1949d4b
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1718 @@
+@@ -0,0 +1,1721 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -972,14 +972,17 @@ index 0000000..f566791
 +        take_irq(app, syst)
 +    };
 +    let mut packets = 0u16;
++    let mut fails = 0u8;
 +    while flags & (IRQ_RX_SYNC | IRQ_RX_FULL | IRQ_RX_DONE) != 0 {
 +        app.pager.last_ok = false;
 +        receive_packet(app, syst, flags);
 +        packets += 1;
-+        // stay in this loop only through a burst of good packets: a false sync on noise
-+        // (no signal) fails its CRC and goes back to the main loop, or the keys and the
-+        // power switch would never be seen (6661d40 froze idle)
-+        if !app.pager.timed_read || !app.pager.last_ok || packets >= MAX_BURST_PACKETS {
++        fails = if app.pager.last_ok { 0 } else { fails + 1 };
++        // stay in this loop through a burst: after two failed packets in a row (a false sync
++        // on noise, no signal) go back to the main loop, or the keys and the power switch
++        // would never be seen (6661d40 froze idle). Leaving after one failure (e2411fe) cost
++        // the packets after it too: the main loop noticed the next sync late (11/16 on air)
++        if !app.pager.timed_read || fails >= 2 || packets >= MAX_BURST_PACKETS {
 +            break;
 +        }
 +        // Back to back, the next packet's sync comes about 90 ms after the re-arm. Wait for
