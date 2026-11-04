@@ -254,7 +254,11 @@ to 150 ms for the chip's own RX-done before re-arming, but the next packet's syn
 145 ms after the last word. It now re-arms at once and drops that RX-done when it comes. Each
 `K6 PKT` line has `gap=`, ms from the last re-arm to this packet (about 145 back to back, about
 700 more per packet missed), and `stray=`, how long after the timed finish the chip's RX-done
-came (-1 for not before the next packet).
+came (-1 for not before the next packet). A late RX-done that lands inside the next packet
+(sooner than 60% of its air time after the sync) is dropped too, so it can't end that packet
+early. A gap test the same night ruled out the alternative: 53 or 100 ms of extra 0x55 between
+packets caught no more, and 100 ms made the chip fill its FIFO and false-sync on the preamble,
+so the spec's 16-byte preamble stays.
 
 With REG_5D at 0x00FF (key 7 pressed twice), the chip instead streamed everything it
 demodulated, preamble and sync word included, with a FIFO interrupt every 4 words and no sync

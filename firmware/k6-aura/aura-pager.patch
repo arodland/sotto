@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..215cf6a
+index 0000000..07cd739
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1429 @@
+@@ -0,0 +1,1445 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -363,6 +363,9 @@ index 0000000..215cf6a
 +/// were already waiting 22-33 ms after it, so the interrupt is seen at least 2 words late;
 +/// one word of lead keeps 2-4 words in the 8-word FIFO, away from both empty and overflow.
 +const TIMED_LEAD_WORDS: usize = 1;
++/// With timed reads, an RX-done sooner than 60% of the payload's air time after the sync
++/// (67 ticks a byte at 1200 baud) is the last packet's, not this one's
++const STRAY_DONE_TICKS_PER_BYTE: usize = 40;
 +
 +/// Volume steps on top of the automatic level, 3 dB apart: -9 .. +12 dB.
 +const VOL_Q8: [i32; 8] = [91, 128, 181, 256, 362, 512, 724, 1024];
@@ -795,7 +798,7 @@ index 0000000..215cf6a
 +    }
 +    let t_first = uptime::now();
 +    app.pager.gap_ms = t_first.wrapping_sub(app.pager.t_rearm) / 10;
-+    if app.pager.t_timed_done.take().is_some() {
++    if app.pager.t_timed_done.is_some() {
 +        app.pager.stray_ms = -1;
 +    }
 +    let len = app.pager.payload_len();
@@ -843,6 +846,19 @@ index 0000000..215cf6a
 +            let n = (words - got / 2).min(4);
 +            read_words(app, syst, &mut buf, &mut got, n);
 +        }
++        let flags_seen = flags;
++        if timed
++            && saw_sync
++            && flags & IRQ_RX_DONE != 0
++            && (uptime::now().wrapping_sub(t_sync) as usize) < len * STRAY_DONE_TICKS_PER_BYTE
++        {
++            // far too soon for this packet's end: the last packet's own RX-done, late. Taken
++            // as this one's end it would cut it short
++            flags &= !IRQ_RX_DONE;
++            if let Some(t) = app.pager.t_timed_done.take() {
++                app.pager.stray_ms = (uptime::now().wrapping_sub(t) / 10) as i16;
++            }
++        }
 +        let early = flags & IRQ_RX_DONE != 0 && got / 2 < words && app.pager.keep_after_done;
 +        if flags & IRQ_RX_DONE != 0 && !early {
 +            if got / 2 < words {
@@ -853,7 +869,7 @@ index 0000000..215cf6a
 +        let k = app.pager.ev_n as usize;
 +        if k < app.pager.ev.len() {
 +            let dt = last.wrapping_sub(t0);
-+            app.pager.ev[k] = (flags, dt, (got / 2 - words_before) as u8);
++            app.pager.ev[k] = (flags_seen, dt, (got / 2 - words_before) as u8);
 +            app.pager.ev_n += 1;
 +        }
 +        if (flags & IRQ_RX_DONE != 0 && !early) || got / 2 >= words {
