@@ -200,7 +200,7 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..cd130e2
+index 0000000..ffd8ceb
 --- /dev/null
 +++ b/src/app/pager.rs
 @@ -0,0 +1,2088 @@
@@ -670,7 +670,7 @@ index 0000000..cd130e2
 +            st_pre: 0,
 +            st_head: [0; 8],
 +            keep_after_done: false,
-+            idle_keep: false,
++            idle_keep: true, // on air 2026-11-04 (0438507): first packet 20/20 vs 7/20
 +            idle_rd: 0,
 +            poke: [(0, 0); POKE_MAX],
 +            poke_n: 0,

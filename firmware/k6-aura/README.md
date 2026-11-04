@@ -148,15 +148,17 @@ new settings. A key press wins over all of it. Control packets change nothing el
 frequency, and nothing that transmits. Anyone on the channel could send one, but it only
 changes this receiver's settings, and only until the next key press or power cycle.
 
-**`idlekeep=1` (experiment, not yet on air).** While idle, the chip gives an RX-done with no sync
-every 40 to 53 ms in the lead-in's 0x55, and the K6 re-armed on each one. So the last re-arm
-always came 40 to 53 ms before the first packet's sync (`gap=`), too little preamble to lock, and
-the first packet of a burst failed about half the time (839924e, 2026-11-04). With `idlekeep=1`
-the K6 leaves the chip hunting instead, as it already does for the late RX-done inside a burst.
-It is off at power-on. Turn it on with a control packet, and if the radio goes deaf the 60 s
-revert turns it off again. The CFG line shows `idlekeep=` and `idlerd=`, the count of idle no-sync
-RX-dones since the last CFG line. The softmodem's `--prime` (a throwaway first packet, on by
-default) works around the same loss without it.
+**`idlekeep` (on at power-on from the build after 0438507).** While idle, the chip gives an
+RX-done with no sync every 40 to 53 ms in the lead-in's 0x55, and the K6 used to re-arm on each
+one. So the last re-arm always came 40 to 53 ms before the first packet's sync (`gap=`), too
+little preamble to lock, and the first packet of a burst failed about half the time (839924e,
+2026-11-04). With `idlekeep=1` the K6 leaves the chip hunting instead, as it already does for
+the late RX-done inside a burst. On air (0438507, 2026-11-04, no throwaway packet, 20 bursts
+each): first packet good 20/20 and 60/60 packets with idlekeep=1, against 7/20 and 46/60 with 0;
+VE9QRP as L 500/500 frames. `ctl --set idlekeep=0` turns it off (it reverts after 60 s without a
+good packet). The CFG line shows `idlekeep=` and `idlerd=`, the count of idle no-sync RX-dones since
+the last CFG line. The softmodem's `--prime` (a throwaway first packet, on by default) is the
+workaround for images before this one; it costs one packet and is harmless after it.
 
 **Register writes (`--reg`, experiment, not yet on air).** For settings the register list
 doesn't settle, such as 2400 baud receive, a control packet can write one FD6818 register:
