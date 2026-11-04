@@ -170,8 +170,12 @@ What it took, in order:
 - PHY D (direct FSK) over the IC-7100's USB audio in FM-D is marginal. On 6661d40, D at 1200
   baud delivered 8 of 16 test packets and only 9 of VE9QRP's 64, with bit slips or lost lock at
   random points. FFSK on the same image delivered 63 of 64, so use F over USB. D at 2400 got no
-  sync at all. Next steps for D: a level sweep, and a recording of the IC-7100's own D signal to
-  see its eye.
+  sync at all. A level sweep (0.15-0.9) and a speed sweep (±1%) on 814206c topped out at 8 of
+  16, at level 0.15-0.2 and -1%. Higher levels got worse, and 0.9 never synced. Errors grow along
+  each packet, and in bad packets the chip stops delivering words for 40-60 ms (lost bit sync), so
+  the limit is the NRZ waveform itself. Next: look at its eye (the IC-7100 recording the K6's
+  own D test transmit), then try transmit pre-compensation or other FD6818 D-mode filter and
+  gain settings.
 - The first packet of each burst is still usually lost during lock-in. A longer lead-in may fix it.
 - The artifacts Jeff heard on the first run were mostly concealment (29% of frames missing).
   Listening at 1.6% loss is still to do.
