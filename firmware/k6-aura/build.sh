@@ -38,9 +38,10 @@ fit() {
     $1 == ".vector_table" || $1 == ".text" || $1 == ".rodata" || $1 == ".gnu.sgstubs" { flash += $2 }
     $1 == ".data" { flash += $2; ram += $2 }
     $1 == ".bss" || $1 == ".uninit" { ram += $2 }
-    END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 17720 (%d left for the stack)\n",
-            flash, 122880 - flash, ram, 17720 - ram
-          if (17720 - ram < 6144) print "warning: under 6 KB of stack left (the decoder alone needs 3.5 KB)"
+    $1 == ".ram0" { ram0 += $2 }
+    END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 17720 (%d left for the stack); RAM0 %d of 4096\n",
+            flash, 122880 - flash, ram, 17720 - ram, ram0
+          if (17720 - ram < 12288) print "warning: under 12 KB of stack left (on the radio Aura had used 8.3 KB of it when playback started; the decoder needs 3.5 KB more)"
           if (flash > 122880) { print "DOES NOT FIT in the 120 KB application flash"; exit 1 } }'
 }
 # where the flash goes: demangled symbols grouped by Rust module path (C symbols by name)

@@ -255,6 +255,20 @@ That length setting is now a stream mode: the firmware reads 4 words per interru
 sync word in software (byte aligned, up to 2 wrong bits, inverted too), and keeps the next 64
 (or 16) bytes. The sync letter shows `W`, or `w` if the sync came inverted.
 
+**Playback hang found (2026-11-04, image 480d312): the stack ran out.** When playback started,
+the stack pointer was only 236 bytes above the end of static RAM. Aura had used 8.3 KB of the
+8.5 KB stack (its `App` and the main loop live on the stack), and the decoder needs about
+3.5 KB more. Frame 0 overran into static RAM and frame 1 never finished. The fix moves the
+4 KB message store into the 4 KB of RAM below UserVectors (0x2000_0000, `RAM0` in memory.x).
+The stock firmware keeps its `.data` there, but Aura leaves it unused. That gives the stack
+back 4 KB. `build.sh` reports RAM0's use, and warns when under 12 KB is left for the stack.
+
+**Timed reads on air (image 480d312).** The first full-length packets passed: 3 of 10 had
+64 bytes, 0 bit errors and a good CRC. Each time, the chip's own RX-done for the packet came
+after the timer had read it, and the firmware took it as a new packet, which put the next
+one out of step. The firmware now waits for that RX-done after a timed packet and drops it.
+It also ignores an RX-done that comes without a sync.
+
 **Second playback test (2026-11-04, image 72b6e3b).** 34 of 40 profile-S packets arrived, all
 with clean CRCs, and the radio stopped inside the decoder: after `first frame decoded`, before
 the four-frame line. The PC decodes the same 34 packets in 4 ms. The next image prints, for
