@@ -162,6 +162,23 @@ int sp_check(const uint8_t *payload, int len) {
   return c == ((unsigned)(payload[len - 2] ^ pn9[len - 2]) << 8 | (payload[len - 1] ^ pn9[len - 1]));
 }
 
+int sp_control(const uint8_t *payload, int len, uint8_t rec[6]) {
+  int how, o, i;
+  uint8_t r[SP_CTL_REC];
+  if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return 0;
+  if (!pn9[0]) pn9_init();
+  for (how = 0; how < 4; how++)
+    for (o = 0; o + SP_CTL_REC <= len; o += SP_CTL_REC) {
+      for (i = 0; i < SP_CTL_REC; i++)
+        r[i] = (uint8_t)(payload[(o + i) ^ (how & 1)] ^ (how & 2 ? 0xFF : 0) ^ pn9[o + i]);
+      if (r[0] == SP_CTL_MAGIC && crc16(r, 6) == ((unsigned)r[6] << 8 | r[7])) {
+        for (i = 0; i < 6; i++) rec[i] = r[i];
+        return 1 + how;
+      }
+    }
+  return 0;
+}
+
 const uint8_t *sp_last_packet(void) { return last_pkt; }
 
 void sp_status(sp_status_t *st) { *st = S.st; }

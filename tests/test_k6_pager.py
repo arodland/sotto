@@ -215,3 +215,37 @@ def test_cs512_const_table_matches():
     import sys as _sys
     r = subprocess.run([_sys.executable, os.path.join(ROOT, "tools", "gen_cs512.py"), "--check"])
     assert r.returncode == 0, "regenerate with python3 tools/gen_cs512.py"
+
+
+def run_control(packets, xl=False):
+    with tempfile.TemporaryDirectory() as d:
+        with open(f"{d}/p.bin", "wb") as f:
+            f.write(b"".join(packets))
+        args = [HOST] + (["-x"] if xl else []) + ["-c", f"{d}/p.bin"]
+        out = subprocess.run(args, check=True, capture_output=True, text=True).stdout
+        return [ln.split() for ln in out.splitlines()]
+
+
+def test_control_packet_records():
+    """sp_control finds the record pager.control_packet wrote, in L and XL, through the
+    radio's byte swap and inversion, and after early copies are damaged; voice packets and
+    noise give none."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    want = pager.control_record(9, {"phy": "F", "frames": "XL", "auto": 1, "var": 2}, "play")[:6].hex()
+    pk = pager.control_packet(9, {"phy": "F", "frames": "XL", "auto": 1, "var": 2}, "play")
+    bad = bytearray(pk)
+    for i in range(0, 40):                     # first five copies hit
+        bad[i] ^= 0x10
+    inv = bytes(b ^ 0xFF for b in pk)
+    rows = run_control([pk, pager.swap_words(pk), inv, pager.swap_words(inv), bytes(bad)])
+    assert [r[0] for r in rows] == ["1", "2", "3", "4", "1"]
+    assert all("".join(r[1:]) == want for r in rows)
+    # an L control packet read as XL (the K6 in XL takes 128 bytes) still has its records first
+    xl_rows = run_control([pk + bytes(64), pager.control_packet(9, {"phy": "D"}, length=128)], xl=True)
+    assert xl_rows[0][0] == "1" and "".join(xl_rows[0][1:]) == want
+    assert xl_rows[1][0] == "1" and xl_rows[1][3] == "01"
+    # a voice packet and noise are not control packets
+    noise = bytes(np.random.default_rng(3).integers(0, 256, 64, dtype=np.uint8))
+    assert [r[0] for r in run_control([SPEC_PACKET0, noise])] == ["0", "0"]
+    assert pager.parse_control(pk).hex() == want and pager.parse_control(SPEC_PACKET0) is None

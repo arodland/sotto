@@ -136,6 +136,68 @@ S = Profile("S", 16, 2)
 PROFILES = {"L": L, "XL": XL, "S": S}
 
 
+# ---- control packets (spec section 13) ----------------------------------------------------
+#
+# A control packet changes the K6's receive settings over the air, so the PC doesn't need the
+# cable's PC-to-radio wire (the PTT line). It is an L or XL payload, whitened like a voice
+# packet, filled with copies of one 8-byte record: 0xA8, seq, mask, values, var | vol << 4,
+# action, CRC-16 of those 6 bytes (big-endian). The K6 takes the first copy whose CRC checks,
+# so copies early in the packet get through a link that slips later in it (D/1200). A record
+# with a seq the K6 just applied is only a confirmation. After a change of PHY, profile, baud
+# or variant, the K6 goes back to its previous settings unless a good packet (voice or
+# control) arrives within 60 s, so a command can't leave it deaf.
+
+CTL_MAGIC = 0xA8
+CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, "vol": 64}
+CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3}
+
+
+def control_record(seq, settings=None, action="none"):
+    """settings: {"phy": "F"|"D", "frames": "L"|"XL", "baud": 1200|2400, "auto": 0|1,
+    "emph": 0|1, "var": 0..15 (key 0's receive variant), "vol": 0..7 (key Up/Down steps,
+    3 = 0 dB)}; only the ones given change."""
+    mask = val = vv = 0
+    for k, v in (settings or {}).items():
+        if k not in CTL_BITS:
+            raise ValueError(f"unknown setting {k!r} (have {', '.join(CTL_BITS)})")
+        bit = CTL_BITS[k]
+        mask |= bit
+        if k == "phy":
+            on = {"F": 1, "D": 0}[str(v).upper()]
+        elif k == "frames":
+            on = {"XL": 1, "L": 0}[str(v).upper()]
+        elif k == "baud":
+            on = {2400: 1, 1200: 0}[int(v)]
+        elif k in ("auto", "emph"):
+            on = int(bool(int(v)))
+        elif k == "var":
+            vv |= int(v) & 0x0F
+            on = 0
+        else:  # vol
+            vv |= (min(int(v), 7) & 0x0F) << 4
+            on = 0
+        val |= bit if on else 0
+    r = bytes([CTL_MAGIC, seq & 0xFF, mask, val, vv, CTL_ACTIONS[action]])
+    c = crc16_ccitt(r)
+    return r + bytes([c >> 8, c & 0xFF])
+
+
+def control_packet(seq, settings=None, action="none", length=64):
+    """A whitened control payload: the record repeated to fill `length` (64 = L, 128 = XL)."""
+    rec = control_record(seq, settings, action)
+    return _whiten(rec * (length // len(rec)))
+
+
+def parse_control(payload):
+    """The first record whose CRC checks in a (whitened) payload, as the K6 reads it, or None."""
+    d = _whiten(payload)
+    for o in range(0, len(d) - 7, 8):
+        r = d[o:o + 8]
+        if r[0] == CTL_MAGIC and crc16_ccitt(r[:6]) == (r[6] << 8 | r[7]):
+            return r[:6]
+    return None
+
+
 def swap_words(p):
     """Swap the two bytes of every 16-bit word."""
     p = bytes(p)

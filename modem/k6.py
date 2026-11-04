@@ -12,6 +12,10 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
   python -m modem.k6 fit rec.wav ic7100.json           measure the path from a flat receiver
   python -m modem.k6 tx msg.sot tx.wav --comp ic7100.json   ... and pre-compensate it
   python -m modem.k6 send msg.sot --port /dev/ttyUSB0  key the IC-7100 over CI-V and play
+  python -m modem.k6 ctl ctl.wav --phy D --set phy=F frames=XL --also F
+                                                       a control packet (spec 13): change the K6's
+                                                       receive settings over the air, sent in D
+                                                       (where it is now) and again in F
 
 Make .sot files with c/sotto_enc (8 kHz, 16-bit mono raw in) and play them back with
 c/sotto_dec back.sot out.raw g.u8 (the good-flag file conceals lost frames). Packet format:
@@ -172,6 +176,19 @@ def main(argv=None):
     s.add_argument("--max-tx", type=float, default=180.0, help="refuse transmissions longer than this, s")
     s.add_argument("--dry-run", action="store_true", help="print what would happen; don't key or play")
 
+    k = sub.add_parser("ctl", help="control packet: change the K6's receive settings over the air")
+    k.add_argument("output")
+    _tx_opts(k)
+    k.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
+                   help="phy=F|D frames=L|XL baud=1200|2400 auto=0|1 emph=0|1 var=N vol=0..7; "
+                        "none: a confirmation only (a good packet that keeps a change)")
+    k.add_argument("--action", choices=tuple(pager.CTL_ACTIONS), default="none",
+                   help="play: play the stored message; clear: drop it; report: a CFG line")
+    k.add_argument("--seq", type=int, help="0-255; the K6 applies one seq once (default: from the clock)")
+    k.add_argument("--copies", type=int, default=3, help="packets per PHY (default 3)")
+    k.add_argument("--also", choices="DF", help="send the same packets again in this PHY after --phy "
+                                                 "(when the K6's PHY isn't known)")
+
     r = sub.add_parser("rx", help="recording -> .sot")
     r.add_argument("input")
     r.add_argument("output", nargs="?")
@@ -219,6 +236,26 @@ def main(argv=None):
         x = build_audio(_test_payloads(a), a, a.rate)
         _write(a.output, x, a.rate)
         log(f"{len(x) / a.rate:.1f} s of test packets")
+        return 0
+
+    if a.cmd == "ctl":
+        settings = dict(kv.split("=", 1) for kv in a.set)
+        seq = a.seq if a.seq is not None else int(time.time()) & 0xFF
+        length = pager.PROFILES[a.payload].payload
+        pk = pager.control_packet(seq, settings, a.action, length)
+        cw_id, a.cw_id = a.cw_id, None
+        parts = []
+        for phy in [a.phy] + ([a.also] if a.also and a.also != a.phy else []):
+            if parts:      # 1 s of carrier: the K6 applies a change after its burst ends
+                parts.append(np.zeros(a.rate))
+            a.phy = phy
+            parts.append(build_audio([pk] * a.copies, a, a.rate))
+        x = np.concatenate(parts)
+        if cw_id:
+            x = np.concatenate([x, cw(cw_id, a.rate, a.cw_wpm, level=min(a.level, 0.4))])
+        _write(a.output, x, a.rate)
+        log(f"control seq {seq} record {pager.control_record(seq, settings, a.action).hex()}: "
+            f"{(len(parts) + 1) // 2 * a.copies} packets, {len(x) / a.rate:.1f} s on air")
         return 0
 
     if a.cmd == "rx":

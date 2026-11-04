@@ -180,3 +180,35 @@ def test_later_preamble():
     assert len(raw) == 3 * (4 + 128) + 16 + 24 + extra + 24
     assert raw[:16] == b"\x55" * 16 and raw[16:20] == pager.SYNC
     assert a.seconds(3, 128) == len(raw) * 8 / 1200
+
+
+def test_control_packet_on_air(tmp_path):
+    """`ctl` writes control packets that our own demodulator reads back, in D and then F
+    (--also), at both lengths; the record carries the settings the K6 applies."""
+    import soundfile as sf
+    from modem import fsk, k6, pager
+    for payload in ("L", "XL"):
+        out = tmp_path / f"ctl-{payload}.wav"
+        assert k6.main(["ctl", str(out), "--phy", "D", "--also", "F", "--payload", payload,
+                        "--set", "phy=F", "frames=XL", "auto=1", "--action", "play",
+                        "--seq", "17", "--copies", "2"]) == 0
+        x, fs = sf.read(out)
+        want = pager.control_record(17, {"phy": "F", "frames": "XL", "auto": 1}, "play")[:6]
+        y = fsk.resample(x, fs, fsk.FS)
+        n = pager.PROFILES[payload].payload
+        for phy in "DF":
+            got = fsk.Demodulator(phy, 1200, fsk.FS, n).demodulate(y)
+            recs = [pager.parse_control(p) for _, p, inv, _ in got if not inv]
+            assert recs.count(want) >= 2, (payload, phy, recs)
+    assert want == bytes([0xA8, 17, 0x0B, 0x0B, 0x00, 0x01])
+
+
+def test_control_record_fields():
+    from modem import pager
+    r = pager.control_record(3, {"phy": "D", "baud": 2400, "var": 5, "vol": 6, "emph": 0})
+    assert r[:6] == bytes([0xA8, 3, 1 | 4 | 16 | 32 | 64, 4, 5 | 6 << 4, 0])
+    assert pager.crc16_ccitt(r[:6]) == r[6] << 8 | r[7]
+    assert pager.control_record(4)[2] == 0          # confirmation only: nothing changes
+    import pytest
+    with pytest.raises(ValueError):
+        pager.control_record(1, {"freq": 440850})

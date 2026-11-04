@@ -128,6 +128,20 @@ typedef struct {
 } sp_biterr_t;
 int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e);
 
+/* Control packet (spec section 13): an L or XL payload, whitened like a voice packet, that
+   holds 8-byte records repeated end to end, each 0xA8, seq, mask, values, var|vol<<4, action,
+   CRC-16 (big-endian) of the 6 bytes before it. The radio applies the first record whose CRC
+   checks. Copies early in the packet survive a link that slips later in the packet (D/1200).
+   Reads the payload as given, with each 16-bit word's bytes swapped, inverted, and both.
+   Returns 0 if no record checks, else 1 + (swapped | inverted << 1) with the record in rec. */
+#define SP_CTL_MAGIC 0xA8
+#define SP_CTL_REC 8
+enum { SP_CTL_PHY = 1, SP_CTL_FRAMES = 2, SP_CTL_BAUD = 4, SP_CTL_AUTO = 8, SP_CTL_EMPH = 16,
+       SP_CTL_VAR = 32, SP_CTL_VOL = 64 };    /* mask bits; the value is the same bit of byte 3
+                                                 (phy 1 = F, frames 1 = XL, baud 1 = 2400) */
+enum { SP_CTL_NONE = 0, SP_CTL_PLAY = 1, SP_CTL_CLEAR = 2, SP_CTL_REPORT = 3 };  /* byte 5 */
+int sp_control(const uint8_t *payload, int len, uint8_t rec[6]);
+
 /* Bytes of static RAM this library uses (decoder state, cos/sin table and the rest). */
 unsigned sp_static_bytes(void);
 
