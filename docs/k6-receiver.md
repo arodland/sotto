@@ -114,15 +114,18 @@ code. Freeing 58 KB takes one of these:
 
 ## On air (2026-11-04)
 
-The first message played out of the K6's speaker on 2026-11-04, on image 314a306. The IC-7100
+The first message played out of the K6's speaker on 2026-11-04, on image 314a306; image 6661d40
+fixed the packet losses. The IC-7100
 was in FM-D at minimum power on 439.500 MHz, sending profile F (FFSK 1200) over its USB audio
 with `python -m modem.k6`. The 10 s VE9QRP clip went out as 64 packets of 64 bytes (36.3 s on air)
 and the K6 played it by itself when the message completed. Jeff's verdict on the speaker: "Perfectly clear. Some artifact but really passable." The serial harness
 (`python -m modem.k6_harness`, see `firmware/k6-aura/README.md`) measured these results:
 
-- **Packets.** Every packet received passed its CRC with 0 bit errors (8 of 8 in a 10-packet
-  burst, 12 of 16 in the full test message). The misses were packets the chip never detected,
-  not damaged ones. Profile S (16 bytes) was also clean but caught only about 1 packet in 1.7.
+- **Packets.** Every packet received passed its CRC with 0 bit errors. On image 314a306 the
+  radio caught only about 3 packets in 4 (46 of VE9QRP's 64), because of how it re-armed between
+  back-to-back packets (see item 1 below). On **6661d40** it caught 16 of 16 and 14 of 16 on the
+  test message, and **63 of 64 on VE9QRP (492 of 500 frames)**. The one loss in each run is the
+  first packet of a burst, while the chip locks on. Profile S (16 bytes) was also clean.
 - **Playback.** All 70 frames of the test message played (60 received, 10 concealed). The
   decoder's own timer gave **13.5 ms mean and 21.3 ms worst per 20 ms frame**. That is 65 MHz
   mean, inside the model's ±25%, but the worst frame is 15% over the model's worst. The 80 ms
@@ -148,7 +151,15 @@ What it took, in order:
    bootloader keeps state below it. Two images that put the message store there hung at boot.
    The bootloader also owns the vector table (no VTOR), so a HardFault handler in Aura may never
    run.
-4. **Know which image is running.** Every image prints `K6 BOOT build=<sha>-<time>` on its
+4. **Re-arming between back-to-back packets is a narrow window.** After a packet read on the
+   timer, the receiver must be re-armed while the next packet's 107 ms preamble is on air. Re-arm
+   before the chip's own RX-done and that RX-done comes late, and acting on it false-syncs on the
+   preamble. Re-arm 60 ms or more after the payload's end and too little preamble is left for
+   the chip's bit clock. A per-packet sweep (key 8) put the window at about 40 ms after the
+   end, once the RX-done is in. The main loop also has to stay out of the way: with its screen
+   redraw every 50 ms it noticed syncs 30-50 ms late, so the firmware now waits for the next
+   sync in a tight loop.
+5. **Know which image is running.** Every image prints `K6 BOOT build=<sha>-<time>` on its
    cable and shows the sha on screen, and the harness's `sweep --expect-build` refuses to send
    to anything else.
 
@@ -159,9 +170,9 @@ What it took, in order:
 - Only PHY F (FFSK) has been received on air. PHY D (direct FSK) over the IC-7100's USB audio
   got nothing in two early bursts. That was before the timed-read fix, and its USB path in FM-D
   turns out to be wide (`docs/k6-pager.md`), so D is worth retrying.
-- Only about 75-80% of 64-byte packets are detected, so a message needs repeats to fill holes.
-- The artifact Jeff heard isn't traced yet. Candidates are concealed frames, the 8 kHz PWM
-  through the RC filter, and the slow worst-case frames.
+- The first packet of each burst is still usually lost during lock-in. A longer lead-in may fix it.
+- The artifacts Jeff heard on the first run were mostly concealment (29% of frames missing).
+  Listening at 1.6% loss is still to do.
 ## Files
 
 - `c/k6/sotto_pager.[ch]`: the library API (`sp_init`, `sp_packet`, `sp_check`, `sp_status`,
