@@ -172,6 +172,21 @@ def test_byte_swapped_words_are_accepted():
     assert pager.swap_words(b"\x01\x02\x03\x04") == b"\x02\x01\x04\x03"
 
 
+def test_prime_sends_a_throwaway_first_copy(tmp_path):
+    """--prime puts a copy of the first packet in front; the real first packet then gets
+    the second packet's extra preamble, and every packet still decodes."""
+    from modem.k6 import _read
+    wav = str(tmp_path / "p.wav")
+    for prime, n in (([], 3), (["--prime"], 4)):
+        assert cli(["test", wav, "--repeat", "3", "--phy", "F"] + prime) == 0
+        x, fs = _read(wav)
+        asm, t = fsk.receive(x, fs, "F")
+        assert sum(t_[1] for t_ in t) == n
+    assert cli(["test", wav, "--repeat", "3", "--phy", "F", "--first-preamble", "32"]) == 0
+    x, fs = _read(wav)
+    assert sum(t_[1] for t_ in fsk.receive(x, fs, "F")[1]) == 3
+
+
 def test_later_preamble():
     """XL's framing: 16 bytes of 0x55 before the first packet, 24 (+ the second's extra) after."""
     a = pager.Air(lead_ms=0, tail_bytes=0, later_preamble_bytes=24)

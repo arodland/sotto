@@ -77,9 +77,13 @@ def msg_id_for(frames):
 
 
 def build_audio(payloads, a, fs):
+    if getattr(a, "prime", False) and payloads:
+        payloads = [payloads[0]] + list(payloads)   # the throwaway copy goes first
     # XL: 24 bytes of preamble after the first packet (see pager.Air)
-    air = pager.Air(lead_ms=a.lead_ms, preamble_bytes=0 if a.stream else 16,
-                    later_preamble_bytes=24 if a.payload == "XL" and not a.stream else None)
+    later = 24 if a.payload == "XL" else 16
+    first = getattr(a, "first_preamble", None) or 16
+    air = pager.Air(lead_ms=a.lead_ms, preamble_bytes=0 if a.stream else first,
+                    later_preamble_bytes=None if a.stream else later)
     bits = air.burst_bits(payloads, a.baud)
     x = fsk.modulate(bits, a.phy, a.baud, fs, a.level, a.invert, comp=load_comp(a.comp),
                      max_gain_db=a.max_gain)
@@ -122,6 +126,15 @@ def _tx_opts(p):
                    help="tx/send: send the first packet again at the end (default on). The K6 loses "
                         "the first packet of a burst more often than any other (2026-11-04: XL 31/32 "
                         "twice, seq 0 both times); the copy costs one packet of air time")
+    p.add_argument("--prime", action=argparse.BooleanOptionalAction, default=False,
+                   help="send a throwaway copy of the first packet before the burst. The K6 loses "
+                        "or false-locks on the first packet of a burst about 40%% of the time and "
+                        "almost never on the next one (2026-11-04: packet 0 7/12, packets 2-3 "
+                        "22/22), so the loss falls on the copy; costs one packet of air time")
+    p.add_argument("--first-preamble", type=int, metavar="BYTES",
+                   help="0x55 bytes before the first packet only (default 16, as every packet). "
+                        "For tests: the K6 re-arms about 50 ms before the first sync (gap=42-53 "
+                        "in every burst on 839924e), and a longer first preamble may give it room")
     p.add_argument("--cw-id", metavar="CALL", help="append a Morse ID (FCC 97.119) after the data")
     p.add_argument("--cw-wpm", type=int, default=20)
 
