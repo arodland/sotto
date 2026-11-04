@@ -96,8 +96,9 @@ MENU again; EXIT leaves the app.)
 | UP / DOWN | volume, 3 dB steps on top of the automatic level (-9 to +12 dB) |
 | 1 | PHY: D (direct 2-FSK, the default) or F (FFSK 1200/1800 Hz) |
 | 2 | frames: L (64-byte packets, the default) or S (16-byte fallback) |
-| 3 | RX polarity invert (set automatically on a SyncNegative) |
+| 3 | the RF chip's RX invert bit (REG_59<10>), by hand only |
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
+| 6 | raw view: the last packet's first 16 bytes in hex, its sync and length |
 | 5 | 1200 / 2400 baud (profile D) |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
@@ -107,7 +108,7 @@ The screen:
 
 ```
 VOICE MSG  439.50000     frequency
-D L 1200 i- s+ e+ +0     PHY, frames, baud, invert, FIFO byte swap, emphasis, volume dB
+D L 1200 i-x-s+ e+ +0    PHY, frames, baud, chip invert, soft invert, byte swap, emphasis, dB
 ID 42  640/640  80/80    message id, frames received/stored, packets received/total
 SYNC P CRC ok A7 TO 0    last sync polarity, CRC, magic byte (A7 = right), FIFO timeouts
 DEC 11.8/17.2ms 2930     after a playback: decode ms per 20 ms frame, mean/worst; free RAM bytes
@@ -129,13 +130,16 @@ bytes per frame. Raise it if the free-RAM figure leaves room.
 2. **IC-7100 transmits test packets, K6 receives.** Watch the SYNC line.
    - `SYNC -` that never changes: no sync found. Check the level and deviation, or press 1 for
      profile F.
-   - `SYNC N`: the polarity is inverted. The radio switches to inverted RX by itself, so the next
-     packet should show `SYNC P` and `i+`.
-   - `CRC ok A7`: the packet arrived intact. `s+` is the measured default (FIFO low byte first). If
-     the receive FIFO turns out to differ, the radio finds that from the magic byte on the first
-     good packet and shows `s-`.
-   - `CRC BAD`: bit errors, or a byte order it couldn't detect. A rising `TO` count means the
-     chip's FIFO interrupts didn't arrive as expected. Try 2 for the 16-byte frames.
+   - `SYNC N`: the chip found the sync with inverted polarity. Until the first good packet, the
+     radio tries each packet four ways: as read, bytes swapped, bits inverted, and both. The
+     check is the magic byte, or the CRC for profile S. It keeps whichever works: `x+` means
+     inverted in software, and `s+`/`s-` is the byte order (`s+`, low byte first, is the measured
+     default). The chip's own invert bit (`i`) only changes with key 3.
+   - `CRC ok A7`: the packet arrived intact.
+   - `CRC BAD`: none of the four ways passed, so there are bit errors or a framing problem.
+     Press 6 for the raw view and compare its 16 bytes with the start of the transmitted packet
+     (whitened, as on air). A rising `TO` count means the chip's FIFO interrupts didn't arrive as
+     expected. Try 2 for the 16-byte frames.
 3. **A test message, then a real sotto clip.** The PC encodes with `c/sotto_enc` (v3.7 frames), and
    the softmodem sends them (`python -m modem.k6 tx`, see `docs/k6-pager.md`). After it plays, note the DEC line. The
    emulator predicts about 11-13 ms mean and 15-18 ms worst per 20 ms frame. Note the free RAM too:

@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..ea72220
+index 0000000..9c6fb2e
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,758 @@
+@@ -0,0 +1,797 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -269,6 +269,7 @@ index 0000000..ea72220
 +    extern "C" {
 +        pub fn sp_init(mem: *mut u8, bytes: u32) -> i32;
 +        pub fn sp_packet(payload: *const u8, len: i32) -> i32;
++        pub fn sp_check(payload: *const u8, len: i32) -> i32;
 +        pub fn sp_last_packet() -> *const u8;
 +        pub fn sp_status(st: *mut SpStatus);
 +        pub fn sp_play_start();
@@ -337,9 +338,18 @@ index 0000000..ea72220
 +    pub phy_ffsk: bool,
 +    pub short_frames: bool,
 +    pub baud_2400: bool,
++    /// the chip's RX invert bit (REG_59<10>), key 3 only
 +    pub invert: bool,
++    /// payload bits inverted in software (found from the magic byte / CRC)
++    pub soft_inv: bool,
 +    /// FIFO words taken low byte first (found from the magic byte, spec section 9)
 +    pub swap: bool,
++    /// the last packet's first 16 bytes as read (after the byte swap, before soft_inv)
++    pub raw: [u8; 16],
++    /// how many bytes the last packet gave
++    pub raw_len: u8,
++    /// key 6: the screen shows `raw`
++    pub raw_view: bool,
 +    pub emphasis: bool,
 +    pub vol: u8,
 +    /// b'-' none yet, b'P' SyncPositive, b'N' SyncNegative (then RX invert is set)
@@ -375,6 +385,10 @@ index 0000000..ea72220
 +            short_frames: false,
 +            baud_2400: false,
 +            invert: false,
++            soft_inv: false,
++            raw: [0; 16],
++            raw_len: 0,
++            raw_view: false,
 +            // The FD6818's FIFO words go low byte first on air (Jeff's first test burst,
 +            // 2026-11-04: all four packets bit-exact once swapped), so RX swaps by default
 +            swap: true,
@@ -633,30 +647,54 @@ index 0000000..ea72220
 +        }
 +    }
 +
-+    // SyncN: the transmitter's polarity is the other way round; invert RX
-+    // from now on (spec section 2) and drop this packet's bits.
-+    let flip = app.pager.last_sync == b'N' && !app.pager.invert;
-+    if flip {
-+        app.pager.invert = true;
-+    }
 +    rearm_rx(app, syst);
-+    if flip || got < len {
++    let n = got.min(16);
++    app.pager.raw[..n].copy_from_slice(&buf[..n]);
++    app.pager.raw_len = got.min(255) as u8;
++    if got < len {
 +        return;
 +    }
 +
-+    let mut r = unsafe { ffi::sp_packet(buf.as_ptr(), len as i32) };
-+    if r < 0 && app.pager.status.good_packets == 0 {
-+        // until the first good packet: the other FIFO byte order? (the magic
-+        // byte, or the CRC for profile S, tells)
-+        for w in buf[..len].chunks_exact_mut(2) {
-+            w.swap(0, 1);
-+        }
-+        let r2 = unsafe { ffi::sp_packet(buf.as_ptr(), len as i32) };
-+        if r2 >= 0 {
-+            app.pager.swap = !app.pager.swap;
-+            r = r2;
++    if app.pager.soft_inv {
++        for b in buf[..len].iter_mut() {
++            *b = !*b;
 +        }
 +    }
++    // Until the first good packet, try the other FIFO byte order and the other
++    // polarity (the magic byte, or the CRC for profile S, tells), in software, so a
++    // wrong guess about what the chip's SyncN means can't lock RX out. SyncN puts
++    // the inverted tries first.
++    if app.pager.status.good_packets == 0 && unsafe { ffi::sp_check(buf.as_ptr(), len as i32) } == 0 {
++        let tries: [(bool, bool); 3] = if app.pager.last_sync == b'N' {
++            [(false, true), (true, true), (true, false)]
++        } else {
++            [(true, false), (false, true), (true, true)]
++        };
++        for &(sw, inv) in tries.iter() {
++            let mut t = buf;
++            if sw {
++                for w in t[..len].chunks_exact_mut(2) {
++                    w.swap(0, 1);
++                }
++            }
++            if inv {
++                for b in t[..len].iter_mut() {
++                    *b = !*b;
++                }
++            }
++            if unsafe { ffi::sp_check(t.as_ptr(), len as i32) } != 0 {
++                buf = t;
++                if sw {
++                    app.pager.swap = !app.pager.swap;
++                }
++                if inv {
++                    app.pager.soft_inv = !app.pager.soft_inv;
++                }
++                break;
++            }
++        }
++    }
++    let r = unsafe { ffi::sp_packet(buf.as_ptr(), len as i32) };
 +    app.pager.last_result = r as i8;
 +    app.pager.last_magic = unsafe { *ffi::sp_last_packet() };
 +    refresh_status(app);
@@ -707,6 +745,7 @@ index 0000000..ea72220
 +            rearm = true;
 +        }
 +        KeyId::Digit4 => p.emphasis = !p.emphasis,
++        KeyId::Digit6 => p.raw_view = !p.raw_view,
 +        KeyId::Pound => {
 +            p.freq_entry = true;
 +            app.input.clear();
@@ -1269,17 +1308,17 @@ index cdfa0f7..6ca5a70 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..919e321
+index 0000000..bcd0b3a
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,141 @@
+@@ -0,0 +1,160 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
 +//!
 +//! ```text
 +//! VOICE MSG   439.50000
-+//! D L 1200 i- s- e+ +0      (PHY, frames, baud, invert, byte swap, emphasis, dB)
++//! D L 1200 i-x-s+ e+ +0     (PHY, frames, baud, chip invert, soft invert, byte swap, emphasis, dB)
 +//! ID 42  640/640  80/80
 +//! SYNC P CRC ok A7 TO 0
 +//! ok 81 bad 2 FREE 3120
@@ -1343,17 +1382,36 @@ index 0000000..919e321
 +    let mut b: TextBuf<24> = TextBuf::new();
 +    write!(
 +        b,
-+        "{} {} {} i{} s{} e{} {:+}",
++        "{} {} {} i{}x{}s{} e{} {:+}",
 +        if p.phy_ffsk { 'F' } else { 'D' },
 +        if p.short_frames { 'S' } else { 'L' },
 +        if p.baud_2400 && !p.phy_ffsk { 2400 } else { 1200 },
 +        if p.invert { '+' } else { '-' },
++        if p.soft_inv { '+' } else { '-' },
 +        if p.swap { '+' } else { '-' },
 +        if p.emphasis { '+' } else { '-' },
 +        p.vol_db()
 +    )
 +    .ok();
 +    line(lcd, 19, b.as_str());
++
++    if p.raw_view {
++        // key 6: the last packet's first 16 bytes as the FIFO gave them (after the s swap,
++        // before the x inversion), for comparing with the transmitted packet
++        for (row, y) in [(0usize, 29), (1, 39)] {
++            let mut b: TextBuf<24> = TextBuf::new();
++            write!(b, "R{:<2}", row * 8).ok();
++            for v in &p.raw[row * 8..row * 8 + 8] {
++                write!(b, "{:02X}", v).ok();
++            }
++            line(lcd, y, b.as_str());
++        }
++        let mut b: TextBuf<24> = TextBuf::new();
++        write!(b, "SYNC {} {:02X} len {}", p.last_sync as char, p.last_magic, p.raw_len).ok();
++        line(lcd, 49, b.as_str());
++        line(lcd, 60, "RAW  6 back");
++        return;
++    }
 +
 +    let mut b: TextBuf<24> = TextBuf::new();
 +    if st.have != 0 {
