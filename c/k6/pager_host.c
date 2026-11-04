@@ -35,6 +35,17 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[1], "-b") && argc > 2) bytes = (unsigned)atoi(argv[2]), argv += 2, argc -= 2;
     else break;
   }
+  if (argc == 3 && !strcmp(argv[1], "-c")) {        /* control records found in each packet */
+    uint8_t rec[6];
+    if (!(in = fopen(argv[2], "rb"))) { perror("pager_host"); return 1; }
+    while (fread(pkt, 1, (size_t)len, in) == (size_t)len) {
+      int how = sp_control(pkt, len, rec), i;
+      printf("%d", how);
+      for (i = 0; how && i < 6; i++) printf(" %02x", rec[i]);
+      printf("\n");
+    }
+    return 0;
+  }
   if (ber && argc == 2) {                             /* bit errors against the test message */
     sp_biterr_t e;
     if (!(in = fopen(argv[1], "rb"))) { perror("pager_host"); return 1; }
@@ -48,7 +59,7 @@ int main(int argc, char **argv) {
     return 0;
   }
   if (argc != 3 || bytes > sizeof mem) {
-    fprintf(stderr, "usage: %s [-x] [-p] [-b BYTES] PACKETS.bin OUT.raw\n", argv[0]);
+    fprintf(stderr, "usage: %s [-x] [-p] [-b BYTES] PACKETS.bin OUT.raw | [-x] -c PACKETS.bin\n", argv[0]);
     return 1;
   }
   in = fopen(argv[1], "rb"), out = fopen(argv[2], "wb");

@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..7206228
+index 0000000..cbd323a
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1875 @@
+@@ -0,0 +1,1997 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -320,6 +320,7 @@ index 0000000..7206228
 +        pub fn sp_play_pos() -> i32;
 +        pub fn sp_auto_gain_q8() -> i32;
 +        pub fn sp_test_packet(out: *mut u8);
++        pub fn sp_control(payload: *const u8, len: i32, rec: *mut u8) -> i32;
 +    }
 +}
 +pub use ffi::{SpBiterr, SpStatus};
@@ -407,6 +408,18 @@ index 0000000..7206228
 +const CFG_EVERY_TICKS: u32 = 100_000;
 +/// ... but only this long after the last good packet (2 s), not inside a burst
 +const CFG_QUIET_TICKS: u32 = 20_000;
++/// A control packet's change of PHY, profile, baud or variant is undone unless a good packet
++/// (voice or control) arrives this soon after it (100 us ticks; 60 s), so a command can't
++/// leave the radio deaf to the sender (Jeff can't press keys all day, 2026-11-04)
++const CTL_REVERT_TICKS: u32 = 600_000;
++// control record mask bits (c/k6/sotto_pager.h SP_CTL_*; the value is the same bit of byte 3)
++const CTL_PHY: u8 = 1;
++const CTL_FRAMES: u8 = 2;
++const CTL_BAUD: u8 = 4;
++const CTL_AUTO: u8 = 8;
++const CTL_EMPH: u8 = 16;
++const CTL_VAR: u8 = 32;
++const CTL_VOL: u8 = 64;
 +/// An RX-done this soon (ms) after a timed packet's last word, coming after our re-arm, is
 +/// that packet's and is dropped without another re-arm
 +const STRAY_IGNORE_MS: u16 = 300;
@@ -553,6 +566,14 @@ index 0000000..7206228
 +    pub store_frames: u16,
 +    pub play_pending: bool,
 +    pub cal_pending: bool,
++    /// a control record (magic, seq, mask, values, var|vol<<4, action) waiting for poll
++    ctl: Option<[u8; 6]>,
++    /// seq of the last control record applied, -1 none
++    ctl_seq: i16,
++    /// the settings before a control packet's change (phy_ffsk, xl, baud_2400, f2400_var),
++    /// until a good packet keeps the change; CTL_REVERT_TICKS without one puts them back
++    ctl_prev: Option<(bool, bool, bool, u8)>,
++    ctl_wait: u32,
 +    pub cal_result: u8, // 0 none, b'K' sent, b'X' TX refused (band lock / not FM)
 +    /// played this message (auto-play only once per message)
 +    played_id: i16,
@@ -591,7 +612,7 @@ index 0000000..7206228
 +    pub const fn new() -> Self {
 +        PagerState {
 +            chip_ok: false,
-+            phy_ffsk: false,
++            phy_ffsk: true, // F: the mode that works over the IC-7100's USB audio
 +            xl: false,
 +            baud_2400: false,
 +            f2400_var: 0,
@@ -656,6 +677,10 @@ index 0000000..7206228
 +            store_frames: 0,
 +            play_pending: false,
 +            cal_pending: false,
++            ctl: None,
++            ctl_seq: -1,
++            ctl_prev: None,
++            ctl_wait: 0,
 +            freq_entry: false,
 +            cal_result: 0,
 +            played_id: -1,
@@ -1134,6 +1159,20 @@ index 0000000..7206228
 +    // the burst's time isn't idle time (auto-play waits GAP_TICKS after the last packet)
 +    app.pager.last_tick = uptime::now();
 +
++    if let Some(rec) = app.pager.ctl.take() {
++        apply_control(app, syst, rec);
++    } else if let Some(prev) = app.pager.ctl_prev {
++        app.pager.ctl_wait = app.pager.ctl_wait.saturating_add(dt);
++        if app.pager.ctl_wait >= CTL_REVERT_TICKS {
++            app.pager.ctl_prev = None;
++            let p = &mut app.pager;
++            (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var) = prev;
++            settings_changed(app, syst);
++            report_line(format_args!("K6 CTL revert: no good packet in 60 s"));
++            report_cfg(app, "revert");
++        }
++    }
++
 +    let st = &app.pager.status;
 +    if st.have != 0
 +        && app.pager.auto_play
@@ -1386,6 +1425,15 @@ index 0000000..7206228
 +    if r != SP_BAD_CRC && r != SP_BAD_MAGIC && r >= 0 {
 +        app.pager.idle_ticks = 0;
 +        app.pager.last_ok = true;
++        app.pager.ctl_prev = None; // a good packet in these settings: keep them
++    } else if !stream {
++        // not a voice packet: a control packet? (any byte order or polarity; poll applies it)
++        let mut rec = [0u8; 6];
++        if unsafe { ffi::sp_control(read.as_ptr(), len as i32, rec.as_mut_ptr()) } != 0 {
++            app.pager.last_ok = true;
++            app.pager.ctl_prev = None;
++            app.pager.ctl = Some(rec);
++        }
 +    }
 +    if r == SP_COMPLETE && app.pager.auto_play && app.pager.played_id != app.pager.status.msg_id as i16 {
 +        app.pager.play_pending = true;
@@ -1454,28 +1502,102 @@ index 0000000..7206228
 +            p.baud_2400 = !p.baud_2400;
 +            rearm = true;
 +        }
-+        KeyId::Asterisk => {
-+            p.store_frames =
-+                unsafe { ffi::sp_init(addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) } as u16;
-+            p.played_id = -1;
-+            p.last_result = i8::MIN;
-+            p.ber = ffi::NO_BITERR;
-+            p.ber_sum = 0;
-+            p.ber_n = 0;
-+            refresh_status(app);
-+        }
++        KeyId::Asterisk => clear_store(app),
 +        _ => {}
 +    }
-+    if rearm && app.pager.chip_ok {
++    if rearm {
++        // a key press is the person's choice: no control-packet revert over it
++        app.pager.ctl_prev = None;
++        settings_changed(app, syst);
++    }
++    if !matches!(ev.key, KeyId::Digit6 | KeyId::Pound) {
++        report_cfg(app, key_name(ev.key));
++    }
++}
++
++/// The receive settings changed: set the chip up again.
++fn settings_changed(app: &mut App, syst: &mut SYST) {
++    if app.pager.chip_ok {
 +        app.pager.last_sync = b'-';
 +        app.pager.ber = ffi::NO_BITERR;
 +        app.pager.ber_sum = 0;
 +        app.pager.ber_n = 0;
 +        arm(app, syst);
 +    }
-+    if !matches!(ev.key, KeyId::Digit6 | KeyId::Pound) {
-+        report_cfg(app, key_name(ev.key));
++}
++
++/// Drop the stored message (key *, control action clear).
++fn clear_store(app: &mut App) {
++    let p = &mut app.pager;
++    p.store_frames = unsafe { ffi::sp_init(addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) } as u16;
++    p.played_id = -1;
++    p.last_result = i8::MIN;
++    p.ber = ffi::NO_BITERR;
++    p.ber_sum = 0;
++    p.ber_n = 0;
++    refresh_status(app);
++}
++
++// ---- control packets (spec section 13) ----
++//
++// The PC changes the receive settings over the air: a control packet is a whitened L or XL
++// payload of repeated 8-byte records (0xA8, seq, mask, values, var | vol << 4, action, CRC).
++// Only receive-side settings and play/clear; nothing here transmits or touches the frequency.
++// A change of PHY, profile, baud or variant is undone after CTL_REVERT_TICKS without a good
++// packet, and a key press wins over it. A record with the seq just applied only confirms.
++
++#[inline(never)] // its locals only while it runs, not in main's frame for good
++fn apply_control(app: &mut App, syst: &mut SYST, rec: [u8; 6]) {
++    let (seq, mask, val, vv, action) = (rec[1], rec[2], rec[3], rec[4], rec[5]);
++    if app.pager.ctl_seq == seq as i16 {
++        report_line(format_args!("K6 CTL seq={} repeat", seq));
++        return;
 +    }
++    app.pager.ctl_seq = seq as i16;
++    let p = &mut app.pager;
++    let before = (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var);
++    if mask & CTL_PHY != 0 {
++        p.phy_ffsk = val & CTL_PHY != 0;
++    }
++    if mask & CTL_FRAMES != 0 {
++        p.xl = val & CTL_FRAMES != 0;
++    }
++    if mask & CTL_BAUD != 0 {
++        p.baud_2400 = val & CTL_BAUD != 0;
++    }
++    if mask & CTL_AUTO != 0 {
++        p.auto_play = val & CTL_AUTO != 0;
++    }
++    if mask & CTL_EMPH != 0 {
++        p.emphasis = val & CTL_EMPH != 0;
++    }
++    if mask & CTL_VAR != 0 {
++        p.f2400_var = (vv & 0x0F) % RX2400_VARIANTS.len() as u8;
++    }
++    if mask & CTL_VOL != 0 {
++        p.vol = (vv >> 4).min(VOL_Q8.len() as u8 - 1);
++    }
++    let changed = (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var) != before;
++    if changed {
++        // keep the oldest settings that worked if a second change comes before a good packet
++        if p.ctl_prev.is_none() {
++            p.ctl_prev = Some(before);
++        }
++        p.ctl_wait = 0;
++    }
++    match action {
++        1 if app.pager.status.have != 0 => app.pager.play_pending = true,
++        2 => clear_store(app),
++        _ => {}
++    }
++    report_line(format_args!(
++        "K6 CTL seq={} mask={:02x} val={:02x} var_vol={:02x} action={} changed={}",
++        seq, mask, val, vv, action, changed as u8
++    ));
++    if changed {
++        settings_changed(app, syst);
++    }
++    report_cfg(app, "ctl");
 +}
 +
 +// ---- frequency entry (#) ----

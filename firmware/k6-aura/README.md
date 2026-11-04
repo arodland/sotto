@@ -94,7 +94,7 @@ MENU again; EXIT leaves the app.)
 | MENU | play the message (again) |
 | EXIT | stop playback / leave |
 | UP / DOWN | volume, 3 dB steps on top of the automatic level (-9 to +12 dB) |
-| 1 | PHY: D (direct 2-FSK, the default) or F (FFSK 1200/1800 Hz; 1200/2400 Hz at 2400 baud) |
+| 1 | PHY: F (FFSK 1200/1800 Hz; 1200/2400 Hz at 2400 baud; the default) or D (direct 2-FSK) |
 | 2 | frames: L (64-byte packets, 8 frames, the default) or XL (128 bytes, 20 frames; screen `X`). Profile S is gone |
 | 3 | the RF chip's RX invert bit (REG_59<10>), by hand only |
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
@@ -122,6 +122,32 @@ MENU play  PTT test
 A message holds up to 640 frames (12.8 s). `STORE_BYTES` in `src/app/pager.rs` sets that, at 6.2
 bytes per frame. Raise it if the free-RAM figure leaves room.
 
+## Control packets over the air (spec section 13)
+
+The PC can change the receive settings without a key press: `python -m modem.k6 ctl` makes a
+control packet, an ordinary L or XL payload (whitened, same preamble and sync) filled with
+copies of one 8-byte record (`A8`, seq, mask, values, variant | volume << 4, action, CRC-16).
+The K6 takes the first copy whose CRC checks, in any byte order or polarity, so the early copies
+get through even on D/1200, where errors build up later in a packet.
+
+```
+python -m modem.k6 ctl ctl.wav --phy F --set frames=XL            # F/L -> F/XL
+python -m modem.k6 ctl ok.wav --phy F --payload XL                # confirm (no change)
+python -m modem.k6 ctl ctl.wav --phy D --also F --set phy=F       # PHY unknown: D, then F
+python -m modem.k6 ctl play.wav --phy F --action play             # play the stored message
+```
+
+Settings: `phy=F|D frames=L|XL baud=1200|2400 auto=0|1 emph=0|1 var=N vol=0..7`; actions
+`play`, `clear`, `report`. The K6 prints `K6 CTL seq=… mask=… changed=…` and a CFG line with
+`why=ctl`; a record whose seq it just applied only confirms (`K6 CTL seq=… repeat`).
+
+**It can't strand the radio.** After a change of PHY, profile, baud or variant, the K6 goes back
+to the settings before it unless a good packet (voice or control) arrives within 60 s, and says
+`K6 CTL revert` with a CFG line `why=revert`. So follow every change with a confirmation in the
+new settings. A key press wins over all of it. Control packets change nothing else: not the
+frequency, and nothing that transmits. Anyone on the channel could send one, but it only
+changes this receiver's settings, and only until the next key press or power cycle.
+
 ## First tests (spec section 8)
 
 1. **K6 transmits, IC-7100 records.** In VOICE MSG, press PTT. The radio keys up for about 3 s and
@@ -133,7 +159,7 @@ bytes per frame. Raise it if the free-RAM figure leaves room.
    `TX not allowed here` means Aura's band lock refused that frequency or the VFO isn't FM.
 2. **IC-7100 transmits test packets, K6 receives.** Watch the SYNC line.
    - `SYNC -` that never changes, with no `bad` count either: no sync found. Check the level and
-     deviation, or press 1 for profile F. Lower-case `p`/`n` mean the sync interrupt didn't fire
+     deviation, or press 1 to try profile D. Lower-case `p`/`n` mean the sync interrupt didn't fire
      but the chip's polarity flags were set when the packet ended.
    - Jeff's first IC-7100 → K6 test in F (2026-11-04, old build) gave magic byte `58`, which is
      `A7` with every bit inverted. The FD6818's FFSK receive seems to map the two tones the opposite
