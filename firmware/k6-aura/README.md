@@ -102,6 +102,7 @@ MENU again; EXIT leaves the app.)
 | 5 | 1200 / 2400 baud (profile D) |
 | 7 | bring-up: how the packet length goes into REG_5D (bytes - 1, words - 1, or the longest), serial report only |
 | 8 | bring-up: keep reading after an early RX-done until the whole packet came, serial report only |
+| 9 | auto-play on/off (on by default; MENU still plays) |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
 | PTT | calibration transmit: test packet 0, twice in D and then twice in F, on the VFO's TX frequency and power |
@@ -217,3 +218,8 @@ this is reported on the serial line, so watch it with `listen`.
 If the playback's DMA doesn't move for 200 ms, the radio stops playback and goes back to
 listening. It also writes `K6 PWM stalled ...` with the DMA and timer registers, so a PWM
 path that doesn't run can't lock up the radio.
+**First playback on the radio (2026-11-04).** After good 16-byte packets, the first
+auto-playback hung the K6 before its playback loop, and only pulling the battery cleared it.
+The image now prints `K6 STEP ...` lines through playback, so the serial report shows how far
+it got. A CPU fault prints `K6 FAULT pc=... lr=...` and reboots the radio instead of hanging.
+Key 9 turns auto-play off, so receive tests can run without it.
