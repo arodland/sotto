@@ -22,8 +22,9 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
   apart, which sotto's concealment bridges.
 - **Profile S** is the 16-byte fallback (`--payload S`), only if the FD6818 won't take 64-byte
   frames.
-- **Timing:** 400 ms of 0x55 after keying, carrier and 0x55 kept up between packets, 2 bytes
-  of 0x55 before unkeying.
+- **Timing:** 150 ms of 0x55 after keying (`--lead-ms`; it was 400, but a long run of 0x55
+  made the K6 false-sync on the first packet), carrier and 0x55 kept up between packets, 2
+  bytes of 0x55 before unkeying.
 
 | | Air time per packet | Speech per packet | 15 s message |
 |---|---:|---:|---:|

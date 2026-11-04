@@ -190,7 +190,7 @@ class Air:
     of 0x55 before unkeying."""
     sync: bytes = SYNC
     preamble_bytes: int = 16
-    lead_ms: float = 400.0
+    lead_ms: float = 150.0
     tail_bytes: int = 2
 
     preamble_byte = PREAMBLE_BYTE

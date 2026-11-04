@@ -102,7 +102,7 @@ def _tx_opts(p):
     p.add_argument("--invert", action="store_true", help="flip the bit polarity")
     p.add_argument("--comp", help="pre-compensate: a fit JSON, 'voice' (generic model) or 'preemph'")
     p.add_argument("--max-gain", type=float, default=30.0, help="compensation gain cap, dB (default 30)")
-    p.add_argument("--lead-ms", type=float, default=400.0, help="0x55 lead-in after keying (default 400)")
+    p.add_argument("--lead-ms", type=float, default=150.0, help="0x55 lead-in after keying (default 150; 400 made the K6 false-sync on the first packet)")
     p.add_argument("--rate", type=int, default=48000, help="audio sample rate (default 48000)")
     p.add_argument("--cw-id", metavar="CALL", help="append a Morse ID (FCC 97.119) after the data")
     p.add_argument("--cw-wpm", type=int, default=20)
