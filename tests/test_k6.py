@@ -224,6 +224,7 @@ def test_control_record_fields():
     assert r[:6] == bytes([0xA8, 3, 1 | 4 | 16 | 32 | 64, 4, 5 | 6 << 4, 0])
     assert pager.crc16_ccitt(r[:6]) == r[6] << 8 | r[7]
     assert pager.control_record(4)[2] == 0          # confirmation only: nothing changes
+    assert pager.control_record(5, {"idlekeep": 1})[2:4] == bytes([128, 128])
     import pytest
     with pytest.raises(ValueError):
         pager.control_record(1, {"freq": 440850})

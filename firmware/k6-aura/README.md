@@ -137,16 +137,26 @@ python -m modem.k6 ctl ctl.wav --phy D --also F --set phy=F       # PHY unknown:
 python -m modem.k6 ctl play.wav --phy F --action play             # play the stored message
 ```
 
-Settings: `phy=F|D frames=L|XL baud=1200|2400 auto=0|1 emph=0|1 var=N vol=0..7`; actions
+Settings: `phy=F|D frames=L|XL baud=1200|2400 auto=0|1 emph=0|1 var=N vol=0..7 idlekeep=0|1`; actions
 `play`, `clear`, `report`. The K6 prints `K6 CTL seq=… mask=… changed=…` and a CFG line with
 `why=ctl`; a record whose seq it just applied only confirms (`K6 CTL seq=… repeat`).
 
-**It can't strand the radio.** After a change of PHY, profile, baud or variant, the K6 goes back
+**It can't strand the radio.** After a change of PHY, profile, baud, variant or idlekeep, the K6 goes back
 to the settings before it unless a good packet (voice or control) arrives within 60 s, and says
 `K6 CTL revert` with a CFG line `why=revert`. So follow every change with a confirmation in the
 new settings. A key press wins over all of it. Control packets change nothing else: not the
 frequency, and nothing that transmits. Anyone on the channel could send one, but it only
 changes this receiver's settings, and only until the next key press or power cycle.
+
+**`idlekeep=1` (experiment, not yet on air).** While idle, the chip gives an RX-done with no sync
+every 40 to 53 ms in the lead-in's 0x55, and the K6 re-armed on each one. So the last re-arm
+always came 40 to 53 ms before the first packet's sync (`gap=`), too little preamble to lock, and
+the first packet of a burst failed about half the time (839924e, 2026-11-04). With `idlekeep=1`
+the K6 leaves the chip hunting instead, as it already does for the late RX-done inside a burst.
+It is off at power-on. Turn it on with a control packet, and if the radio goes deaf the 60 s
+revert turns it off again. The CFG line shows `idlekeep=` and `idlerd=`, the count of idle no-sync
+RX-dones since the last CFG line. The softmodem's `--prime` (a throwaway first packet, on by
+default) works around the same loss without it.
 
 ## First tests (spec section 8)
 

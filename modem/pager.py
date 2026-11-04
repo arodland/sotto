@@ -148,14 +148,16 @@ PROFILES = {"L": L, "XL": XL, "S": S}
 # control) arrives within 60 s, so a command can't leave it deaf.
 
 CTL_MAGIC = 0xA8
-CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, "vol": 64}
+CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, "vol": 64,
+            "idlekeep": 128}
 CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3}
 
 
 def control_record(seq, settings=None, action="none"):
     """settings: {"phy": "F"|"D", "frames": "L"|"XL", "baud": 1200|2400, "auto": 0|1,
     "emph": 0|1, "var": 0..15 (key 0's receive variant), "vol": 0..7 (key Up/Down steps,
-    3 = 0 dB)}; only the ones given change."""
+    3 = 0 dB), "idlekeep": 0|1 (no re-arm on an idle no-sync RX-done)}; only the ones given
+    change."""
     mask = val = vv = 0
     for k, v in (settings or {}).items():
         if k not in CTL_BITS:
@@ -168,7 +170,7 @@ def control_record(seq, settings=None, action="none"):
             on = {"XL": 1, "L": 0}[str(v).upper()]
         elif k == "baud":
             on = {2400: 1, 1200: 0}[int(v)]
-        elif k in ("auto", "emph"):
+        elif k in ("auto", "emph", "idlekeep"):
             on = int(bool(int(v)))
         elif k == "var":
             vv |= int(v) & 0x0F

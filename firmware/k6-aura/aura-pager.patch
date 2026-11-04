@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..cbd323a
+index 0000000..ee76083
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1997 @@
+@@ -0,0 +1,2017 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -420,6 +420,7 @@ index 0000000..cbd323a
 +const CTL_EMPH: u8 = 16;
 +const CTL_VAR: u8 = 32;
 +const CTL_VOL: u8 = 64;
++const CTL_IDLE_KEEP: u8 = 128;
 +/// An RX-done this soon (ms) after a timed packet's last word, coming after our re-arm, is
 +/// that packet's and is dropped without another re-arm
 +const STRAY_IGNORE_MS: u16 = 300;
@@ -517,6 +518,13 @@ index 0000000..cbd323a
 +    /// key 8, bring-up: an RX-done before the whole packet came doesn't end it;
 +    /// keep reading on FIFO interrupts until the length or the timeout
 +    pub keep_after_done: bool,
++    /// an RX-done with no sync while idle leaves the chip hunting instead of re-arming it:
++    /// on 839924e that re-arm came 40-53 ms before every burst's first sync (a chain of them
++    /// in the lead-in's 0x55), too little preamble to lock; inside a burst the late stray
++    /// RX-done is already left alone and the next packet still syncs
++    idle_keep: bool,
++    /// idle no-sync RX-dones since the last K6 CFG line (`idlerd=`)
++    idle_rd: u16,
 +    /// key 8 (with key 7's lengths): read the RX FIFO on a timer after the sync, one word per
 +    /// 13.3 ms (16 bits at 1200 baud), instead of at the chip's 0x1000 interrupt. On air that
 +    /// interrupt follows REG_5D's length (it comes about 14 bytes before the end of the
@@ -572,7 +580,7 @@ index 0000000..cbd323a
 +    ctl_seq: i16,
 +    /// the settings before a control packet's change (phy_ffsk, xl, baud_2400, f2400_var),
 +    /// until a good packet keeps the change; CTL_REVERT_TICKS without one puts them back
-+    ctl_prev: Option<(bool, bool, bool, u8)>,
++    ctl_prev: Option<(bool, bool, bool, u8, bool)>,
 +    ctl_wait: u32,
 +    pub cal_result: u8, // 0 none, b'K' sent, b'X' TX refused (band lock / not FM)
 +    /// played this message (auto-play only once per message)
@@ -649,6 +657,8 @@ index 0000000..cbd323a
 +            st_pre: 0,
 +            st_head: [0; 8],
 +            keep_after_done: false,
++            idle_keep: false,
++            idle_rd: 0,
 +            timed_read: true,
 +            rearm_mode: 0,
 +            rearm_sweep: 0,
@@ -1166,7 +1176,7 @@ index 0000000..cbd323a
 +        if app.pager.ctl_wait >= CTL_REVERT_TICKS {
 +            app.pager.ctl_prev = None;
 +            let p = &mut app.pager;
-+            (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var) = prev;
++            (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var, p.idle_keep) = prev;
 +            settings_changed(app, syst);
 +            report_line(format_args!("K6 CTL revert: no good packet in 60 s"));
 +            report_cfg(app, "revert");
@@ -1199,7 +1209,10 @@ index 0000000..cbd323a
 +                return;
 +            }
 +        }
-+        rearm_rx(app, syst);
++        app.pager.idle_rd = app.pager.idle_rd.saturating_add(1);
++        if !app.pager.idle_keep {
++            rearm_rx(app, syst);
++        }
 +        return;
 +    }
 +    let t_first = uptime::now();
@@ -1555,7 +1568,7 @@ index 0000000..cbd323a
 +    }
 +    app.pager.ctl_seq = seq as i16;
 +    let p = &mut app.pager;
-+    let before = (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var);
++    let before = (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var, p.idle_keep);
 +    if mask & CTL_PHY != 0 {
 +        p.phy_ffsk = val & CTL_PHY != 0;
 +    }
@@ -1577,7 +1590,10 @@ index 0000000..cbd323a
 +    if mask & CTL_VOL != 0 {
 +        p.vol = (vv >> 4).min(VOL_Q8.len() as u8 - 1);
 +    }
-+    let changed = (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var) != before;
++    if mask & CTL_IDLE_KEEP != 0 {
++        p.idle_keep = val & CTL_IDLE_KEEP != 0;
++    }
++    let changed = (p.phy_ffsk, p.xl, p.baud_2400, p.f2400_var, p.idle_keep) != before;
 +    if changed {
 +        // keep the oldest settings that worked if a second change comes before a good packet
 +        if p.ctl_prev.is_none() {
@@ -1959,9 +1975,10 @@ index 0000000..cbd323a
 +fn report_cfg(app: &mut App, why: &str) {
 +    app.pager.cfg_ticks = 0;
 +    let p = &app.pager;
++    let idle_rd = p.idle_rd;
 +    let baud = if p.baud_2400 { 2400 } else { 1200 };
 +    report_line(format_args!(
-+        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} stream={} f2400={} reg58={:04x} reg2b={:04x} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} timed={} rearm={} auto={} wd={} draw={} build={}",
++        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} stream={} f2400={} reg58={:04x} reg2b={:04x} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} idlekeep={} idlerd={} timed={} rearm={} auto={} wd={} draw={} build={}",
 +        why,
 +        app.chip_id,
 +        app.master_freq_hz(),
@@ -1979,6 +1996,8 @@ index 0000000..cbd323a
 +        p.vol_db(),
 +        p.len_field(),
 +        p.keep_after_done as u8,
++        p.idle_keep as u8,
++        idle_rd,
 +        p.timed_read as u8,
 +        p.rearm_label(),
 +        p.auto_play as u8,
@@ -1986,6 +2005,7 @@ index 0000000..cbd323a
 +        p.draw_max / 10,
 +        BUILD
 +    ));
++    app.pager.idle_rd = 0;
 +}
 +
 +/// One packet: the bytes as read (with the byte swap `swap` was then, before
