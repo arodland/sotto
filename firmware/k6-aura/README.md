@@ -274,7 +274,9 @@ late by the radio's clock (F about 300 ms after the sync instead of 340), so the
 started late and slipped: the main loop checks the chip once a pass, between a 10 ms sleep and a
 screen redraw every 50 ms. So after each packet the firmware now waits for the next sync in a
 tight loop (every 0.5 ms, up to 250 ms after the re-arm), and the screen catches up after the
-burst. That got 16 of 16 and 14 of 16 on the test message and 63 of 64 on VE9QRP, losing only
+burst (6661d40). That loop goes back to the main loop after any packet that fails its CRC:
+6661d40 kept looping on false syncs in noise when no one was sending and froze, with keys and
+the power switch dead until a battery pull. That got 16 of 16 and 14 of 16 on the test message and 63 of 64 on VE9QRP, losing only
 the first packet of each burst. A `K6 PKT` line carries `raw=` only for a packet that failed its
 CRC, to keep the line short between back-to-back packets (about 11 ms instead of 28), and the
 re-arm delay is in bit times, so at 2400 baud it is half as many ms. Timed reads also follow the baud rate (a word
