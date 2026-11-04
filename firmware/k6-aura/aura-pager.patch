@@ -200,7 +200,7 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..7206228
+index 0000000..ef76cec
 --- /dev/null
 +++ b/src/app/pager.rs
 @@ -0,0 +1,1875 @@
@@ -591,7 +591,7 @@ index 0000000..7206228
 +    pub const fn new() -> Self {
 +        PagerState {
 +            chip_ok: false,
-+            phy_ffsk: false,
++            phy_ffsk: true, // F: the mode that works over the IC-7100's USB audio
 +            xl: false,
 +            baud_2400: false,
 +            f2400_var: 0,

@@ -94,7 +94,7 @@ MENU again; EXIT leaves the app.)
 | MENU | play the message (again) |
 | EXIT | stop playback / leave |
 | UP / DOWN | volume, 3 dB steps on top of the automatic level (-9 to +12 dB) |
-| 1 | PHY: D (direct 2-FSK, the default) or F (FFSK 1200/1800 Hz; 1200/2400 Hz at 2400 baud) |
+| 1 | PHY: F (FFSK 1200/1800 Hz; 1200/2400 Hz at 2400 baud; the default) or D (direct 2-FSK) |
 | 2 | frames: L (64-byte packets, 8 frames, the default) or XL (128 bytes, 20 frames; screen `X`). Profile S is gone |
 | 3 | the RF chip's RX invert bit (REG_59<10>), by hand only |
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
@@ -133,7 +133,7 @@ bytes per frame. Raise it if the free-RAM figure leaves room.
    `TX not allowed here` means Aura's band lock refused that frequency or the VFO isn't FM.
 2. **IC-7100 transmits test packets, K6 receives.** Watch the SYNC line.
    - `SYNC -` that never changes, with no `bad` count either: no sync found. Check the level and
-     deviation, or press 1 for profile F. Lower-case `p`/`n` mean the sync interrupt didn't fire
+     deviation, or press 1 to try profile D. Lower-case `p`/`n` mean the sync interrupt didn't fire
      but the chip's polarity flags were set when the packet ended.
    - Jeff's first IC-7100 → K6 test in F (2026-11-04, old build) gave magic byte `58`, which is
      `A7` with every bit inverted. The FD6818's FFSK receive seems to map the two tones the opposite
