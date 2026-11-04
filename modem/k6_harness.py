@@ -54,9 +54,10 @@ _TEST = {}
 
 
 def test_packets(profile):
-    """The spec's 70-frame test message, whitened, as the K6 compares against (16 in L, 40 in S)."""
+    """The spec's 70-frame test message, whitened, as the K6 compares against (16 in L, 8 in
+    XL, 40 in S)."""
     if profile not in _TEST:
-        pk = pager.PROFILES[profile].pack(TEST_FRAMES, 0x42 if profile == "L" else 5)
+        pk = pager.PROFILES[profile].pack(TEST_FRAMES, 5 if profile == "S" else 0x42)
         _TEST[profile] = np.array([np.frombuffer(p, np.uint8) for p in pk])
     return _TEST[profile]
 
@@ -106,9 +107,10 @@ def analyse(raw, rswap=1):
     quarter (a lost or extra bit shows as shift +-1 there with few errors)."""
     raw = np.frombuffer(bytes(raw), np.uint8)
     n = len(raw)
-    if n not in (pager.L.payload, pager.S.payload):
+    by_len = {pr.payload: name for name, pr in pager.PROFILES.items()}
+    if n not in by_len:
         return None
-    ref = test_packets("L" if n == pager.L.payload else "S")
+    ref = test_packets(by_len[n])
     best = None
     for sw in (0, 1):
         r = raw.reshape(-1, 2)[:, ::-1].reshape(-1) if sw else raw
@@ -192,6 +194,8 @@ def timing(d):
         t += f"  stray {d['stray']}"
     if isinstance(d.get("rearm"), int) and d["rearm"] >= 0:
         t += f"  rearm {d['rearm']}"
+    if isinstance(d.get("restarts"), int):
+        t += f"  restarts {d['restarts']}"          # stream mode: the chip re-armed this often
     return t
 
 
@@ -385,8 +389,9 @@ def check_cfg(cfg, a, out, strict=False):
     if not cfg:
         out("note: no K6 CFG line seen yet; press a key on the K6 (e.g. 4 twice) to make it report")
         return
-    want = {"phy": a.phy, "frames": a.payload, "baud": a.baud}
-    bad = {k: (cfg.get(k), v) for k, v in want.items() if str(cfg.get(k)) != str(v)}
+    want = {"phy": a.phy, "frames": a.payload, "baud": a.baud, "stream": int(getattr(a, "stream", False))}
+    # (an image older than a setting doesn't report it)
+    bad = {k: (cfg.get(k), v) for k, v in want.items() if k in cfg and str(cfg.get(k)) != str(v)}
     if bad:
         msg = "the K6 is set differently: " + ", ".join(f"{k} K6 {have} vs sweep {v}" for k, (have, v) in bad.items())
         if strict:

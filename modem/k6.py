@@ -3,6 +3,9 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
 
   python -m modem.k6 tx msg.sot tx.wav                 audio for the radio (profile D, 1200 baud)
   python -m modem.k6 tx msg.sot tx.wav --phy F         FFSK tones, for a voice / USB audio input
+  python -m modem.k6 tx msg.sot tx.wav --phy F --baud 2400 --payload XL --stream
+                                                       fastest: FFSK 1200/2400 Hz, 128-byte packets,
+                                                       no preamble between them (K6 keys 5, 2, 7)
   python -m modem.k6 rx rx.wav back.sot --good g.u8    decode a recording (or our own tx.wav)
   python -m modem.k6 test test.wav                     spec test packet 0, repeated (calibration)
   python -m modem.k6 cal cal.wav                       modulation-path calibration signal
@@ -70,7 +73,7 @@ def msg_id_for(frames):
 
 
 def build_audio(payloads, a, fs):
-    air = pager.Air(lead_ms=a.lead_ms)
+    air = pager.Air(lead_ms=a.lead_ms, preamble_bytes=0 if a.stream else 16)
     bits = air.burst_bits(payloads, a.baud)
     x = fsk.modulate(bits, a.phy, a.baud, fs, a.level, a.invert, comp=load_comp(a.comp),
                      max_gain_db=a.max_gain)
@@ -95,9 +98,14 @@ def _read(path, iq=None):
 def _tx_opts(p):
     p.add_argument("--phy", choices="DF", default="D",
                    help="D: direct NRZ 2-FSK (flat input, IC-7100 DATA2 in 9600 bps mode); "
-                        "F: FFSK 1200/1800 Hz tones (any audio input)")
-    p.add_argument("--payload", choices="LS", default="L", help="L: 64-byte packets; S: 16-byte fallback")
+                        "F: FFSK 1200/1800 Hz tones (any audio input); 1200/2400 Hz at --baud 2400")
+    p.add_argument("--payload", choices=("L", "XL", "S"), default="L",
+                   help="L: 64-byte packets, 8 frames; XL: 128-byte, 20 frames (K6 key 2); "
+                        "S: 16-byte (the K6 no longer takes it)")
     p.add_argument("--baud", type=int, choices=(1200, 2400), default=1200)
+    p.add_argument("--stream", action="store_true",
+                   help="packets back to back with only the sync word between them, no per-packet "
+                        "preamble (for the K6's stream mode, key 7; about 20%% less air time)")
     p.add_argument("--level", type=float, default=0.5, help="peak audio, 0..1 (default 0.5)")
     p.add_argument("--invert", action="store_true", help="flip the bit polarity")
     p.add_argument("--comp", help="pre-compensate: a fit JSON, 'voice' (generic model) or 'preemph'")
@@ -118,7 +126,7 @@ def _payloads(a, frames):
 def _test_payloads(a):
     frames = b"".join(bytes([f & 0xFF, f >> 8, 0x11, 0x22, 0x33, 0x44]) for f in range(70))
     prof = pager.PROFILES[a.payload]
-    pk = prof.pack(frames, 0x42 if a.payload == "L" else 5)
+    pk = prof.pack(frames, 5 if a.payload == "S" else 0x42)
     return pk if a.message else [pk[0]] * a.repeat
 
 
@@ -159,7 +167,8 @@ def main(argv=None):
     r.add_argument("input")
     r.add_argument("output", nargs="?")
     r.add_argument("--phy", choices="DF", default="D")
-    r.add_argument("--payload", choices="LS", default="L")
+    r.add_argument("--payload", choices=("L", "XL", "S"), default="L")
+    r.add_argument("--stream", action="store_true", help="the packets were sent with --stream")
     r.add_argument("--baud", type=int, choices=(1200, 2400), default=1200)
     r.add_argument("--invert", action="store_true")
     r.add_argument("--iq", type=int, metavar="RATE", help="input is complex64 IQ at RATE samples/s")
@@ -190,7 +199,8 @@ def main(argv=None):
             log(f"warning: {n} frames is more than the K6 receiver holds by default "
                 f"({K6_STORE_FRAMES} frames, {K6_STORE_FRAMES / 50:.1f} s); split the message")
         log(f"{n} frames ({n / 50:.1f} s of speech), msg_id {mid}, {len(pk)} packets, "
-            f"{len(x) / a.rate:.1f} s on air (profile {a.payload}, phy {a.phy}, {a.baud} baud)")
+            f"{len(x) / a.rate:.1f} s on air (profile {a.payload}, phy {a.phy}, {a.baud} baud"
+            f"{', stream' if a.stream else ''})")
         if a.cmd == "tx":
             _write(a.output, x, a.rate)
             return 0
@@ -205,7 +215,7 @@ def main(argv=None):
     if a.cmd == "rx":
         x, fs = _read(a.input, a.iq)
         prof = pager.PROFILES[a.payload]
-        asm, times = fsk.receive(x, fs, a.phy, a.baud, prof, a.invert)
+        asm, times = fsk.receive(x, fs, a.phy, a.baud, prof, a.invert, a.stream)
         good = sum(g for _, g, _, _ in times)
         invs = sum(1 for _, g, i, _ in times if g and i)
         log(f"{len(times)} packets found, {good} good, {asm.bad} bad CRC"

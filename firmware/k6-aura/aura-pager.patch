@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..27741d2
+index 0000000..f566791
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1565 @@
+@@ -0,0 +1,1718 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -352,6 +352,12 @@ index 0000000..27741d2
 +const CFG_D_1200: u16 = 0x00E1; // direct 2-FSK, preamble 0x55
 +const CFG_D_2400: u16 = 0x00E9;
 +const CFG_F_1200: u16 = 0x3FE3; // FFSK 1200/1800
++/// FFSK 1200/2400 (TX mode 011, RX mode 100, RX BW 100 = "FSK 2.4K and FFSK 1200/2400" in the
++/// BK4819 register list; gains and preamble type as CFG_F_1200), run at 2400 baud: half a
++/// cycle of 1200 Hz or a whole one of 2400 Hz per bit, MSK like 1200/1800 at 1200 baud.
++/// Untested on air: the register list has the tone pair, not whether its demodulator follows
++/// REG_72 to 2400 baud.
++const CFG_F_2400: u16 = 0x73E9;
 +const BAUD_1200: u16 = 0x3065;
 +const BAUD_2400: u16 = 0x60CA;
 +const GAIN_D: u16 = 0x00E0;
@@ -361,7 +367,7 @@ index 0000000..27741d2
 +
 +const TICKS_PER_S: u32 = 10_000; // uptime: 100 us
 +const GAP_TICKS: u32 = 3 * TICKS_PER_S; // play 3 s after the last packet
-+const PACKET_TIMEOUT_TICKS: u32 = TICKS_PER_S; // a 64-byte packet is 427 ms at 1200 baud
++const PACKET_TIMEOUT_TICKS: u32 = 2 * TICKS_PER_S; // a 128-byte packet is 853 ms at 1200 baud
 +/// Timed FIFO reads: words taken right at the sync interrupt. On air (profile S), 4 good words
 +/// were already waiting 22-33 ms after it, so the interrupt is seen at least 2 words late;
 +/// one word of lead keeps 2-4 words in the 8-word FIFO, away from both empty and overflow.
@@ -383,6 +389,16 @@ index 0000000..27741d2
 +const REARM_SWEEP_STEPS: u8 = 13; // 0, 10, ... 120 ms
 +/// 100 us ticks a byte takes at 1200 baud (66.7)
 +const TICKS_PER_BYTE: usize = 67;
++/// The largest payload (profile XL)
++const MAX_PAYLOAD: usize = 128;
++/// Stream mode: the sync word, found in software at any bit offset, with up to this many
++/// wrong bits (its other bit offsets, next to a 0x55 preamble or random payload, are at least
++/// 5 bits away)
++const STREAM_SYNC: u32 = 0x076B_3E36;
++const STREAM_SYNC_ERRORS: u32 = 2;
++/// Stream mode: re-arm if the FIFO interrupts stop for this long while a signal is on
++/// (the chip may stop after REG_5D's length), 100 us ticks
++const STREAM_STALL_TICKS: u16 = 3000;
 +
 +/// Volume steps on top of the automatic level, 3 dB apart: -9 .. +12 dB.
 +const VOL_Q8: [i32; 8] = [91, 128, 181, 256, 362, 512, 724, 1024];
@@ -393,7 +409,9 @@ index 0000000..27741d2
 +    /// typing a frequency (#), in kHz like Aura's VFO entry; RAM only, never saved
 +    pub freq_entry: bool,
 +    pub phy_ffsk: bool,
-+    pub short_frames: bool,
++    /// key 2: profile XL (128-byte packets, 20 frames) instead of L (64 bytes, 8 frames)
++    pub xl: bool,
++    /// key 5: 2400 baud (D: direct FSK; F: FFSK 1200/2400 Hz tones)
 +    pub baud_2400: bool,
 +    /// the chip's RX invert bit (REG_59<10>), key 3 only
 +    pub invert: bool,
@@ -415,9 +433,31 @@ index 0000000..27741d2
 +    pub ber_n: u16,
 +    /// packets reported on the serial line, so the PC can spot a lost line
 +    pub reported: u16,
-+    /// key 7, bring-up: how REG_5D gets the packet length (0: bytes - 1, the
-+    /// BK4819 way; 1: words - 1; 2: 0xFF, the longest)
++    /// key 7: how REG_5D gets the packet length (0: bytes - 1, the BK4819 way; 1: words - 1;
++    /// 2: 0xFF00 and 3: 0xFFE0, stream mode: the chip passes everything it demodulates and the
++    /// sync is found in software, so packets can come back to back with no preamble between
++    /// them. 0xFFE0 also sets bits 7:5, which may be the length's high bits, 2048 bytes)
 +    pub len_mode: u8,
++    /// stream mode's receiver: the last 32 bits off the air, bits seen since the search
++    /// started, the payload byte being built and its bits, whether a payload is being
++    /// collected (and inverted), bytes collected, and a whole payload waiting
++    st_reg: u32,
++    st_seen: u8,
++    st_cur: u8,
++    st_bits: u8,
++    st_collect: bool,
++    st_inv: bool,
++    st_got: u8,
++    st_ready: bool,
++    st_buf: [u8; MAX_PAYLOAD],
++    /// uptime at the last sign of a signal (a run of preamble, a sync, a good packet), the
++    /// last FIFO interrupt, the last sync, and the last packet's end
++    st_live: u16,
++    st_last_irq: u16,
++    st_t_sync: u16,
++    st_t_end: u16,
++    /// re-arms of the stream (the chip stopped, or an RX-done came) since entering it
++    st_restarts: u16,
 +    /// key 8, bring-up: an RX-done before the whole packet came doesn't end it;
 +    /// keep reading on FIFO interrupts until the length or the timeout
 +    pub keep_after_done: bool,
@@ -507,7 +547,7 @@ index 0000000..27741d2
 +        PagerState {
 +            chip_ok: false,
 +            phy_ffsk: false,
-+            short_frames: false,
++            xl: false,
 +            baud_2400: false,
 +            invert: false,
 +            soft_inv: false,
@@ -519,6 +559,20 @@ index 0000000..27741d2
 +            ber_n: 0,
 +            reported: 0,
 +            len_mode: 0,
++            st_reg: 0,
++            st_seen: 0,
++            st_cur: 0,
++            st_bits: 0,
++            st_collect: false,
++            st_inv: false,
++            st_got: 0,
++            st_ready: false,
++            st_buf: [0; MAX_PAYLOAD],
++            st_live: 0,
++            st_last_irq: 0,
++            st_t_sync: 0,
++            st_t_end: 0,
++            st_restarts: 0,
 +            keep_after_done: false,
 +            timed_read: true,
 +            rearm_mode: 0,
@@ -571,15 +625,33 @@ index 0000000..27741d2
 +        match self.len_mode {
 +            1 => (len / 2 - 1) << 8,
 +            2 => 0xFF00,
++            3 => 0xFFE0,
 +            _ => (len - 1) << 8,
 +        }
 +    }
 +
++    fn stream(&self) -> bool {
++        self.len_mode >= 2
++    }
++
++    pub fn stream_restarts(&self) -> u16 {
++        self.st_restarts
++    }
++
 +    fn payload_len(&self) -> usize {
-+        if self.short_frames {
-+            16
++        if self.xl {
++            MAX_PAYLOAD
 +        } else {
 +            64
++        }
++    }
++
++    /// 100 us ticks per byte on air
++    fn tpb(&self) -> usize {
++        if self.baud_2400 {
++            TICKS_PER_BYTE / 2
++        } else {
++            TICKS_PER_BYTE
 +        }
 +    }
 +}
@@ -649,7 +721,9 @@ index 0000000..27741d2
 +
 +fn configure(app: &mut App, syst: &mut SYST) {
 +    let p = &app.pager;
-+    let (cfg, baud, gain) = if p.phy_ffsk {
++    let (cfg, baud, gain) = if p.phy_ffsk && p.baud_2400 {
++        (CFG_F_2400, BAUD_2400, GAIN_F)
++    } else if p.phy_ffsk {
 +        (CFG_F_1200, BAUD_1200, GAIN_F)
 +    } else if p.baud_2400 {
 +        (CFG_D_2400, BAUD_2400, GAIN_D)
@@ -681,7 +755,13 @@ index 0000000..27741d2
 +    fd.reg_write(syst, REG_FSK_CTRL, ctrl | CTRL_RX_EN);
 +    fd.reg_write(syst, REG_IRQ_FLAGS, 0);
 +    fd.reg_write(syst, REG_IRQ_EN, IRQ_RX_DONE | IRQ_RX_FULL | IRQ_RX_SYNC);
-+    app.pager.t_rearm = uptime::now();
++    let p = &mut app.pager;
++    p.t_rearm = uptime::now();
++    p.st_last_irq = p.t_rearm;
++    p.st_reg = 0;
++    p.st_seen = 0;
++    p.st_collect = false;
++    p.st_ready = false;
 +}
 +
 +fn arm(app: &mut App, syst: &mut SYST) {
@@ -715,7 +795,7 @@ index 0000000..27741d2
 +    flags
 +}
 +
-+fn read_words(app: &mut App, syst: &mut SYST, buf: &mut [u8; 64], got: &mut usize, n: usize) {
++fn read_words(app: &mut App, syst: &mut SYST, buf: &mut [u8], got: &mut usize, n: usize) {
 +    let swap = app.pager.swap;
 +    let fd = &mut app.radio.fd6818;
 +    for _ in 0..n {
@@ -729,82 +809,145 @@ index 0000000..27741d2
 +    }
 +}
 +
-+/// Stream mode (key 7's third length, REG_5D 0x00FF). On air (2026-11-04) the FD6818 then
-+/// passed whole 64-byte packets with no bit errors, preamble and sync word included, byte
-+/// aligned, with a FIFO interrupt every 4 words (53 ms at 1200 baud) and no sync or RX-done
-+/// interrupt. Reads 4 words per FIFO interrupt, looks for the sync word (07 6B 3E 36, up to
-+/// 2 bits wrong; inverted too), then keeps the next `len` bytes. Gives up after 32 words
-+/// with no sync (longer while preamble bytes keep coming), or 200 ms without an interrupt.
-+/// Returns whether the sync came inverted (the payload is then inverted back), or None.
++// ---- stream mode (key 7's third and fourth lengths) ----
++//
++// With REG_5D at 0xFF00 the FD6818 passed everything it demodulated on air (2026-11-04):
++// preamble, sync word and payload, with a FIFO interrupt every 4 words (53 ms at 1200 baud)
++// and no sync or RX-done interrupt; one 64-byte packet came through with no bit errors. So
++// here the chip is armed once and the firmware does the rest: it looks for the sync word in
++// every bit position, takes the next 64 (or 128) bytes, and goes straight back to looking.
++// Packets can then come back to back with only a sync word between them (`modem.k6
++// --stream`), with no preamble and no re-arm between packets. Not yet tried on air: whether
++// the chip keeps streaming past REG_5D's length (an RX-done or a stall here re-arms it and
++// counts `restarts=`), and whether it streams in noise.
++
++/// One byte off the air (first on air first, after the FIFO byte swap), a bit at a time:
++/// through the sync search, or into the payload after a sync. A whole payload sets st_ready,
++/// and the search starts again with the next bit.
++fn stream_byte(p: &mut PagerState, byte: u8, len: usize, now: u16) {
++    for i in (0..8).rev() {
++        let bit = (byte >> i) & 1;
++        if p.st_collect {
++            p.st_cur = (p.st_cur << 1) | (bit ^ p.st_inv as u8);
++            p.st_bits += 1;
++            if p.st_bits == 8 {
++                p.st_buf[p.st_got as usize] = p.st_cur;
++                p.st_got += 1;
++                p.st_bits = 0;
++                if p.st_got as usize >= len {
++                    p.st_collect = false;
++                    p.st_ready = true;
++                    p.st_reg = 0;
++                    p.st_seen = 0;
++                }
++            }
++            continue;
++        }
++        p.st_reg = (p.st_reg << 1) | bit as u32;
++        if p.st_seen < 32 {
++            p.st_seen += 1;
++            if p.st_seen < 32 {
++                continue;
++            }
++        }
++        // wrong bits against the sync; 32 - d against the inverted sync
++        let d = (p.st_reg ^ STREAM_SYNC).count_ones();
++        if d <= STREAM_SYNC_ERRORS || 32 - d <= STREAM_SYNC_ERRORS {
++            p.st_collect = true;
++            p.st_inv = d > STREAM_SYNC_ERRORS;
++            p.st_got = 0;
++            p.st_bits = 0;
++            p.st_t_sync = now;
++            p.st_live = now;
++            p.ev_n = 0;
++        } else if p.st_reg == 0x5555_5555 || p.st_reg == 0xAAAA_AAAA {
++            p.st_live = now; // preamble: a packet is coming
++        }
++    }
++}
++
++/// A stream-mode interrupt: 4 FIFO words through the bit search, any payload they finish
++/// to the pager. An RX-done means the chip stopped (REG_5D's length): listen again.
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
-+fn receive_stream(app: &mut App, syst: &mut SYST, mut flags: u16, buf: &mut [u8; 64], len: usize) -> Option<bool> {
-+    const SYNC: u32 = 0x076B_3E36;
-+    let t0 = uptime::now();
-+    let mut last = t0;
-+    let mut reg: u32 = 0;
-+    let mut seen = 0u32; // bytes looked at for the sync
-+    let mut found: Option<bool> = None;
-+    let mut got = 0usize;
-+    let mut budget = 32usize;
++fn stream_irq(app: &mut App, syst: &mut SYST, flags: u16) {
++    let now = uptime::now();
++    app.pager.st_last_irq = now;
++    if flags & IRQ_RX_FULL != 0 {
++        let len = app.pager.payload_len();
++        let p = &mut app.pager;
++        let k = p.ev_n as usize;
++        if p.st_collect && k < p.ev.len() {
++            p.ev[k] = (flags, now.wrapping_sub(p.st_t_sync), 4);
++            p.ev_n += 1;
++        }
++        for _ in 0..4 {
++            let w = app.radio.fd6818.reg_read(syst, REG_FIFO);
++            let w = if app.pager.swap { w.swap_bytes() } else { w };
++            for byte in [(w >> 8) as u8, w as u8] {
++                stream_byte(&mut app.pager, byte, len, now);
++                if app.pager.st_ready {
++                    app.pager.st_ready = false;
++                    stream_packet(app, len);
++                }
++            }
++        }
++    }
++    if flags & IRQ_RX_DONE != 0 {
++        app.pager.st_restarts = app.pager.st_restarts.saturating_add(1);
++        rearm_rx(app, syst);
++    }
++}
++
++/// A whole payload from the stream.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
++fn stream_packet(app: &mut App, len: usize) {
++    let mut buf = [0u8; MAX_PAYLOAD];
++    buf[..len].copy_from_slice(&app.pager.st_buf[..len]);
++    let p = &mut app.pager;
++    p.last_sync = if p.st_inv { b'w' } else { b'W' };
++    let now = uptime::now();
++    // ms from the last packet's end to this one's sync, as the interrupts saw them
++    p.gap_ms = p.st_t_sync.wrapping_sub(p.st_t_end) / 10;
++    p.st_t_end = now;
++    p.stray_ms = -1;
++    p.rearm_before = -1;
++    let swap = p.swap;
++    take_payload(app, &mut buf, len, len, swap, true);
++    if app.pager.last_ok {
++        app.pager.st_live = now;
++    }
++}
++
++/// poll for stream mode. While a signal is on (a preamble, a sync or a good packet within the
++/// last 1.5 packets, or a payload half in), it stays here and checks the chip every 0.5 ms:
++/// the main loop's screen redraw (41 ms) would let the 8-word FIFO overflow at 2400 baud. In
++/// noise it goes back after one look, so keys and the power switch keep working.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
++fn poll_stream(app: &mut App, syst: &mut SYST) {
++    let len = app.pager.payload_len();
++    let live = ((len + 8) * app.pager.tpb() * 3 / 2) as u16;
++    let mut n: u32 = 0;
 +    loop {
-+        let before = got;
-+        if flags & IRQ_RX_FULL != 0 {
-+            for _ in 0..4 {
-+                let w = app.radio.fd6818.reg_read(syst, REG_FIFO);
-+                let w = if app.pager.swap { w.swap_bytes() } else { w };
-+                for byte in [(w >> 8) as u8, w as u8] {
-+                    match found {
-+                        None => {
-+                            reg = (reg << 8) | byte as u32;
-+                            seen += 1;
-+                            if seen >= 4 {
-+                                if (reg ^ SYNC).count_ones() <= 2 {
-+                                    found = Some(false);
-+                                } else if (reg ^ !SYNC).count_ones() <= 2 {
-+                                    found = Some(true);
-+                                }
-+                            }
-+                            if byte == 0x55 || byte == 0xAA {
-+                                budget = budget.max(4); // preamble: the sync is near
-+                            }
-+                        }
-+                        Some(inv) => {
-+                            if got < len {
-+                                buf[got] = if inv { !byte } else { byte };
-+                                got += 1;
-+                            }
-+                        }
-+                    }
-+                }
-+                if found.is_none() {
-+                    budget = budget.saturating_sub(1);
-+                }
++        let flags = take_irq(app, syst);
++        if flags != 0 {
++            stream_irq(app, syst, flags);
++        }
++        let now = uptime::now();
++        let p = &app.pager;
++        let on = p.st_collect || now.wrapping_sub(p.st_live) < live;
++        // no FIFO interrupt for a while: the chip may have stopped streaming
++        let stall = if on { STREAM_STALL_TICKS } else { TICKS_PER_S as u16 };
++        if now.wrapping_sub(p.st_last_irq) > stall {
++            if on {
++                app.pager.st_restarts = app.pager.st_restarts.saturating_add(1);
 +            }
++            rearm_rx(app, syst);
 +        }
-+        let k = app.pager.ev_n as usize;
-+        if found.is_some() && k < app.pager.ev.len() {
-+            app.pager.ev[k] = (flags, last.wrapping_sub(t0), ((got - before) / 2) as u8);
-+            app.pager.ev_n += 1;
++        n += 1;
++        if !on || n > 200_000 {
++            break;
 +        }
-+        if got >= len {
-+            return found;
-+        }
-+        if found.is_none() && budget == 0 {
-+            return None;
-+        }
-+        // the next FIFO interrupt
-+        let start = uptime::now();
-+        loop {
-+            delay::us(syst, 500);
-+            last = uptime::now();
-+            flags = take_irq(app, syst);
-+            if flags != 0 {
-+                break;
-+            }
-+            if last.wrapping_sub(start) > 2000 {
-+                return None;
-+            }
-+        }
++        delay::us(syst, 500);
 +    }
 +}
 +
@@ -822,7 +965,12 @@ index 0000000..27741d2
 +        .saturating_add(now.wrapping_sub(app.pager.last_tick) as u32);
 +    app.pager.last_tick = now;
 +
-+    let mut flags = take_irq(app, syst);
++    let mut flags = if app.pager.stream() {
++        poll_stream(app, syst);
++        0
++    } else {
++        take_irq(app, syst)
++    };
 +    let mut packets = 0u16;
 +    while flags & (IRQ_RX_SYNC | IRQ_RX_FULL | IRQ_RX_DONE) != 0 {
 +        app.pager.last_ok = false;
@@ -831,7 +979,7 @@ index 0000000..27741d2
 +        // stay in this loop only through a burst of good packets: a false sync on noise
 +        // (no signal) fails its CRC and goes back to the main loop, or the keys and the
 +        // power switch would never be seen (6661d40 froze idle)
-+        if !app.pager.timed_read || app.pager.len_mode == 2 || !app.pager.last_ok || packets >= MAX_BURST_PACKETS {
++        if !app.pager.timed_read || !app.pager.last_ok || packets >= MAX_BURST_PACKETS {
 +            break;
 +        }
 +        // Back to back, the next packet's sync comes about 90 ms after the re-arm. Wait for
@@ -865,7 +1013,7 @@ index 0000000..27741d2
 +/// 4 words at a time until RX finished, waiting here (at most ~0.5 s).
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
 +fn receive_packet(app: &mut App, syst: &mut SYST, mut flags: u16) {
-+    if app.pager.timed_read && app.pager.len_mode != 2 && flags & (IRQ_RX_SYNC | IRQ_RX_FULL) == 0 {
++    if app.pager.timed_read && flags & (IRQ_RX_SYNC | IRQ_RX_FULL) == 0 {
 +        // an RX-done with no sync: the end of a packet already finished on the timer
 +        if let Some(t) = app.pager.t_timed_done.take() {
 +            let ms = uptime::now().wrapping_sub(t) / 10;
@@ -889,7 +1037,7 @@ index 0000000..27741d2
 +    let len = app.pager.payload_len();
 +    let words = len / 2;
 +    let swap_read = app.pager.swap;
-+    let mut buf = [0u8; 64];
++    let mut buf = [0u8; MAX_PAYLOAD];
 +    let mut got = 0usize; // bytes
 +    let t0 = uptime::now();
 +    let mut waited: u32 = 0;
@@ -897,25 +1045,11 @@ index 0000000..27741d2
 +    let mut saw_sync = false;
 +    let timed = app.pager.timed_read;
 +    // timed reads: a 16-bit word every 13.3 ms at 1200 baud (3 words per 400 ticks), 6.7 at 2400
-+    let fast = app.pager.baud_2400 && !app.pager.phy_ffsk;
-+    let words_div: usize = if fast { 200 } else { 400 };
-+    let tpb = if fast { TICKS_PER_BYTE / 2 } else { TICKS_PER_BYTE };
++    let words_div: usize = if app.pager.baud_2400 { 200 } else { 400 };
++    let tpb = app.pager.tpb();
 +    let mut t_sync = t0;
 +    app.pager.ev_n = 0;
-+    // key 7's third length (REG_5D 0x00FF): the chip streams what it demodulates, preamble
-+    // and sync included, with a FIFO interrupt every 4 words; find the sync in software
-+    let stream = app.pager.len_mode == 2;
-+    if stream {
-+        match receive_stream(app, syst, flags, &mut buf, len) {
-+            None => return,
-+            Some(inv) => {
-+                got = len;
-+                saw_sync = true;
-+                app.pager.last_sync = if inv { b'w' } else { b'W' };
-+            }
-+        }
-+    }
-+    while !stream {
++    loop {
 +        let words_before = got / 2;
 +        if flags & IRQ_RX_SYNC != 0 {
 +            if !saw_sync {
@@ -1042,10 +1176,19 @@ index 0000000..27741d2
 +        };
 +    }
 +    rearm_rx(app, syst);
++    take_payload(app, &mut buf, got, len, swap_read, false);
++}
++
++/// A payload read in packet or stream mode (`got` of `len` bytes): the raw view, bit errors
++/// against the test message, the polarity and byte order tries before the first good packet
++/// (packet mode; in stream mode the sync's polarity already set it, and a wrong byte order
++/// finds no sync), then the pager, the serial report and auto-play.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
++fn take_payload(app: &mut App, buf: &mut [u8; MAX_PAYLOAD], got: usize, len: usize, swap_read: bool, stream: bool) {
 +    let n = got.min(16);
 +    app.pager.raw[..n].copy_from_slice(&buf[..n]);
 +    app.pager.raw_len = got.min(255) as u8;
-+    let read = buf;
++    let read = *buf;
 +    if got < len {
 +        report_packet(app, &read[..got.min(len)], swap_read, None);
 +        return;
@@ -1060,7 +1203,7 @@ index 0000000..27741d2
 +        app.pager.ber_n = app.pager.ber_n.saturating_add(1);
 +    }
 +
-+    if app.pager.soft_inv {
++    if app.pager.soft_inv && !stream {
 +        for b in buf[..len].iter_mut() {
 +            *b = !*b;
 +        }
@@ -1069,14 +1212,14 @@ index 0000000..27741d2
 +    // polarity (the magic byte, or the CRC for profile S, tells), in software, so a
 +    // wrong guess about what the chip's SyncN means can't lock RX out. SyncN puts
 +    // the inverted tries first.
-+    if app.pager.status.good_packets == 0 && unsafe { ffi::sp_check(buf.as_ptr(), len as i32) } == 0 {
++    if !stream && app.pager.status.good_packets == 0 && unsafe { ffi::sp_check(buf.as_ptr(), len as i32) } == 0 {
 +        let tries: [(bool, bool); 3] = if matches!(app.pager.last_sync, b'N' | b'n') {
 +            [(false, true), (true, true), (true, false)]
 +        } else {
 +            [(true, false), (false, true), (true, true)]
 +        };
 +        for &(sw, inv) in tries.iter() {
-+            let mut t = buf;
++            let mut t = *buf;
 +            if sw {
 +                for w in t[..len].chunks_exact_mut(2) {
 +                    w.swap(0, 1);
@@ -1088,7 +1231,7 @@ index 0000000..27741d2
 +                }
 +            }
 +            if unsafe { ffi::sp_check(t.as_ptr(), len as i32) } != 0 {
-+                buf = t;
++                *buf = t;
 +                if sw {
 +                    app.pager.swap = !app.pager.swap;
 +                }
@@ -1145,7 +1288,7 @@ index 0000000..27741d2
 +            rearm = true;
 +        }
 +        KeyId::Digit2 => {
-+            p.short_frames = !p.short_frames;
++            p.xl = !p.xl;
 +            rearm = true;
 +        }
 +        KeyId::Digit3 => {
@@ -1155,7 +1298,8 @@ index 0000000..27741d2
 +        KeyId::Digit4 => p.emphasis = !p.emphasis,
 +        KeyId::Digit6 => p.raw_view = !p.raw_view,
 +        KeyId::Digit7 => {
-+            p.len_mode = (p.len_mode + 1) % 3;
++            p.len_mode = (p.len_mode + 1) % 4;
++            p.st_restarts = 0;
 +            rearm = true;
 +        }
 +        KeyId::Digit8 => p.rearm_mode = (p.rearm_mode + 1) % (REARM_STEPS.len() as u8 + 1),
@@ -1444,7 +1588,9 @@ index 0000000..27741d2
 +}
 +
 +/// Keys up on the master side's TX frequency and power (FM, no CTCSS) and
-+/// sends test packet 0 of the spec twice in profile D, then twice in F.
++/// sends test packet 0 of the spec (profile L) twice in profile D, then twice in F, at the
++/// baud rate key 5 set (F at 2400: the FFSK 1200/2400 Hz mode, for checking on the IC-7100
++/// that the chip really sends it at 2400 baud).
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn cal_tx(app: &mut App, syst: &mut SYST) {
 +    app.pager.cal_pending = false;
@@ -1476,16 +1622,17 @@ index 0000000..27741d2
 +        return;
 +    }
 +    delay::ms(syst, 300); // carrier lead-in for the IC-7100's AGC
-+    let saved = (app.pager.phy_ffsk, app.pager.short_frames, app.pager.baud_2400);
-+    app.pager.short_frames = false;
-+    app.pager.baud_2400 = false;
++    // REG_5D sets the TX length too: 64 bytes, whatever key 2 and key 7 chose
++    let saved = (app.pager.phy_ffsk, app.pager.xl, app.pager.len_mode);
++    app.pager.xl = false;
++    app.pager.len_mode = 0;
 +    for &ffsk in [false, false, true, true].iter() {
 +        app.pager.phy_ffsk = ffsk;
 +        configure(app, syst);
 +        tx_packet(app, syst, &words);
 +        delay::ms(syst, 100);
 +    }
-+    (app.pager.phy_ffsk, app.pager.short_frames, app.pager.baud_2400) = saved;
++    (app.pager.phy_ffsk, app.pager.xl, app.pager.len_mode) = saved;
 +    disarm(app, syst);
 +    app.radio.enter_rx(syst); // not end_tx: no roger tone after the test
 +    app.sync_watching_to_master(syst);
@@ -1548,15 +1695,16 @@ index 0000000..27741d2
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
 +fn report_cfg(app: &App, why: &str) {
 +    let p = &app.pager;
-+    let baud = if p.baud_2400 && !p.phy_ffsk { 2400 } else { 1200 };
++    let baud = if p.baud_2400 { 2400 } else { 1200 };
 +    report_line(format_args!(
-+        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} timed={} rearm={} auto={} wd={} draw={} build={}",
++        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} stream={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} timed={} rearm={} auto={} wd={} draw={} build={}",
 +        why,
 +        app.chip_id,
 +        app.master_freq_hz(),
 +        if p.phy_ffsk { 'F' } else { 'D' },
-+        if p.short_frames { 'S' } else { 'L' },
++        if p.xl { "XL" } else { "L" },
 +        baud,
++        p.stream() as u8,
 +        p.invert as u8,
 +        p.soft_inv as u8,
 +        p.swap as u8,
@@ -1604,12 +1752,17 @@ index 0000000..27741d2
 +        write!(s, "{}{:x}:{}:{}", if i > 0 { "," } else { "" }, f, t / 10, n).ok();
 +    }
 +    write!(s, " gap={} stray={} rearm={}", p.gap_ms, p.stray_ms, p.rearm_before).ok();
++    if p.stream() {
++        write!(s, " restarts={}", p.st_restarts).ok();
++    }
 +    write!(s, " good={} bad={} to={}", st.good_packets, st.bad_packets, p.timeouts).ok();
 +    // the bytes only for a packet that failed (about 130 characters, 11 ms at 115200): this line
-+    // goes out between back-to-back packets, and at 2400 baud that quiet stretch is ~45 ms
++    // goes out between back-to-back packets, and at 2400 baud that quiet stretch is ~45 ms. At
++    // 2400 baud only the first 64 bytes (an XL packet's 256 hex digits alone take 22 ms)
 +    if !matches!(res, Some(r) if r >= 0) {
 +        s.write_str(" raw=").ok();
-+        for b in read {
++        let n = if p.baud_2400 { read.len().min(64) } else { read.len() };
++        for b in &read[..n] {
 +            write!(s, "{:02x}", b).ok();
 +        }
 +    }
@@ -2176,10 +2329,10 @@ index cdfa0f7..6ca5a70 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..15f8d61
+index 0000000..82fc020
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,201 @@
+@@ -0,0 +1,204 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
@@ -2262,8 +2415,8 @@ index 0000000..15f8d61
 +        b,
 +        "{} {} {} i{}x{}s{} e{} {:+}",
 +        if p.phy_ffsk { 'F' } else { 'D' },
-+        if p.short_frames { 'S' } else { 'L' },
-+        if p.baud_2400 && !p.phy_ffsk { 2400 } else { 1200 },
++        if p.xl { 'X' } else { 'L' },
++        if p.baud_2400 { 2400 } else { 1200 },
 +        if p.invert { '+' } else { '-' },
 +        if p.soft_inv { '+' } else { '-' },
 +        if p.swap { '+' } else { '-' },
@@ -2338,14 +2491,17 @@ index 0000000..15f8d61
 +    if !p.chip_ok {
 +        write!(b, "RF chip not FD6818").ok();
 +    } else if p.last_result == i8::MIN {
-+        write!(b, "SYNC {} listening", p.last_sync as char).ok();
++        let how = if p.len_mode >= 2 { "stream" } else { "listening" };
++        write!(b, "SYNC {} {}", p.last_sync as char, how).ok();
 +    } else {
 +        let crc = match p.last_result {
 +            -1 => "BAD",
 +            -2 => "ok?",
 +            _ => "ok",
 +        };
-+        write!(b, "SYNC {} CRC {} {:02X} TO {}", p.last_sync as char, crc, p.last_magic, p.timeouts).ok();
++        // stream mode: RS = the stream's re-arms (restarts) instead of FIFO timeouts
++        let (to, n) = if p.len_mode >= 2 { ("RS", p.stream_restarts()) } else { ("TO", p.timeouts) };
++        write!(b, "SYNC {} CRC {} {:02X} {} {}", p.last_sync as char, crc, p.last_magic, to, n).ok();
 +    }
 +    line(lcd, 39, b.as_str());
 +

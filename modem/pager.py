@@ -14,16 +14,22 @@ Profile L (primary), 64-byte payload, before whitening:
     54-61   reserved, zero
     62-63   CRC-16/CCITT-FALSE of bytes 0-61, big-endian
 
-Profile S (fallback if the chip won't take 64-byte frames), 16 bytes: msg_id (4 bits) |
+Profile XL (128-byte payload, 2026-11-04): the same 6-byte header, 20 sotto frames in bytes
+6-125, no reserved bytes, CRC of bytes 0-125 in 126-127. 120 of 128 bytes are speech, against
+48 of 64 in L.
+
+Profile S (the first fallback, 16 bytes; the K6 firmware no longer takes it): msg_id (4 bits) |
 last-group flag | seq bits 10-8, seq bits 7-0, 2 sotto frames, CRC of bytes 0-13.
 
-Both are then XORed with PN9 whitening (x^9 + x^5 + 1, seed 0x1FF: FF E1 1D 9A ...), which
+All are then XORed with PN9 whitening (x^9 + x^5 + 1, seed 0x1FF: FF E1 1D 9A ...), which
 restarts at every packet. Interleave: groups of 8 packets. In profile L packet k of group g
-carries frames g*64 + s*8 + k (s = 0..7), in profile S frames g*16 + s*8 + k (s = 0, 1), so a
+carries frames g*64 + s*8 + k (s = 0..7), in XL g*160 + s*8 + k (s = 0..19), in profile S frames g*16 + s*8 + k (s = 0, 1), so a
 lost packet only costs isolated 20 ms frames 160 ms apart.
 
 On air (Air): 0x55 x 16, sync 07 6B 3E 36, payload, MSB first. The chip CRC and scrambler
-are off; all checking is ours.
+are off; all checking is ours. Stream framing (Air(preamble_bytes=0)): the lead-in, then each
+packet as just the sync word and the payload, back to back, for a receiver that finds the sync
+in software and never re-arms (the K6's key 7 stream mode).
 """
 from dataclasses import dataclass
 
@@ -55,7 +61,7 @@ def pn9(n):
     return bytes(out)
 
 
-WHITEN = pn9(64)
+WHITEN = pn9(128)
 
 
 def _whiten(p):
@@ -91,17 +97,18 @@ class Profile:
         """frames: bytes (6 per frame) -> list of whitened payloads in transmit order."""
         fr = _split(frames)
         total = len(fr)
-        if self.name == "L" and total > 0xFFFF:
-            raise ValueError("message too long for profile L (65535 frames)")
+        if self.name != "S" and total > 0xFFFF:
+            raise ValueError(f"message too long for profile {self.name} (65535 frames)")
         npk = self.n_packets(total)
         if self.name == "S" and npk > 2048:
             raise ValueError("message too long for profile S (2048 packets)")
         out = []
         for seq in range(npk):
             body = b"".join(fr[f] if f < total else bytes(6) for f in self.packet_frames(seq))
-            if self.name == "L":
+            if self.name != "S":
                 p = bytes([MAGIC, msg_id & 0xFF]) + seq.to_bytes(2, "big") + total.to_bytes(2, "big")
-                p += body + bytes(8)
+                p += body
+                p += bytes(self.payload - 2 - len(p))         # L: 8 reserved bytes
             else:
                 last = int(seq // GROUP == npk // GROUP - 1)
                 p = bytes([(msg_id & 15) << 4 | last << 3 | (seq >> 8) & 7, seq & 0xFF]) + body
@@ -113,7 +120,7 @@ class Profile:
         p = _whiten(payload)
         if len(p) != self.payload or crc16_ccitt(p[:-2]) != int.from_bytes(p[-2:], "big"):
             return None
-        if self.name == "L":
+        if self.name != "S":
             if p[0] != MAGIC:
                 return None
             return dict(msg_id=p[1], seq=int.from_bytes(p[2:4], "big"),
@@ -124,8 +131,9 @@ class Profile:
 
 
 L = Profile("L", 64, 8)
+XL = Profile("XL", 128, 20)
 S = Profile("S", 16, 2)
-PROFILES = {"L": L, "S": S}
+PROFILES = {"L": L, "XL": XL, "S": S}
 
 
 def swap_words(p):
@@ -187,7 +195,8 @@ class Air:
 
     lead_ms of 0x55 after keying, then per packet 0x55 x preamble_bytes, the sync word and
     the payload; the carrier stays up with 0x55 between packets (the next preamble); 2 bytes
-    of 0x55 before unkeying."""
+    of 0x55 before unkeying. preamble_bytes=0 is the stream framing: packets back to back
+    with only the sync word between them."""
     sync: bytes = SYNC
     preamble_bytes: int = 16
     lead_ms: float = 150.0

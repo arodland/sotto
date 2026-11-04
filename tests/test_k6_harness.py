@@ -62,7 +62,7 @@ def test_analyse_finds_reading_and_errors():
 
 
 @pytest.mark.skipif(not os.path.exists(HOST), reason="needs make -C c/k6")
-@pytest.mark.parametrize("prof", ["L", "S"])
+@pytest.mark.parametrize("prof", ["L", "XL"])
 def test_analyse_matches_firmware(prof):
     rng = np.random.default_rng(3)
     ref = h.test_packets(prof)
@@ -78,7 +78,7 @@ def test_analyse_matches_firmware(prof):
     pk.append(bytes(rng.integers(0, 256, len(ref[0]), dtype=np.uint8)))    # noise
     with tempfile.TemporaryDirectory() as d:
         open(f"{d}/p.bin", "wb").write(b"".join(pk))
-        out = subprocess.run([HOST, "-e"] + (["-s"] if prof == "S" else []) + [f"{d}/p.bin"],
+        out = subprocess.run([HOST, "-e"] + (["-x"] if prof == "XL" else []) + [f"{d}/p.bin"],
                              check=True, capture_output=True, text=True).stdout.splitlines()
     for p, ln in zip(pk, out):
         c = [int(x) for x in ln.split()]
