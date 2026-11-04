@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..9778606
+index 0000000..f12153d
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1028 @@
+@@ -0,0 +1,1048 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -994,8 +994,21 @@ index 0000000..9778606
 +
 +    let mut wr = 0usize;
 +    let mut aborted = false;
++    // a DMA that doesn't move (PWM path not running) would hold this loop for good:
++    // give up after 200 ms without progress and say so on the serial report
++    let mut seen = audio.play_segment();
++    let mut moved = uptime::now();
++    let mut stalled = false;
 +    while tail < pwm_audio::NSEG {
 +        let cur = audio.play_segment();
++        if cur != seen {
++            seen = cur;
++            moved = uptime::now();
++        } else if uptime::now().wrapping_sub(moved) > 2000 {
++            stalled = true;
++            aborted = true;
++            break;
++        }
 +        while wr != cur {
 +            fill(&mut audio, wr, g, &mut done, &mut tail);
 +            wr = (wr + 1) % pwm_audio::NSEG;
@@ -1019,9 +1032,16 @@ index 0000000..9778606
 +        }
 +    }
 +
++    let probe = audio.probe();
 +    app.radio.set_speaker(false);
 +    delay::ms(syst, 20);
 +    audio.stop();
++    if stalled {
++        report_line(format_args!(
++            "K6 PWM stalled cndtr={} tim_cnt={} dma_ccr={:x} dma_isr={:x}",
++            probe.0, probe.1, probe.2, probe.3
++        ));
++    }
 +
 +    app.pager.aborted = aborted;
 +    app.pager.played_frames = unsafe { ffi::sp_play_pos() } as u16;
@@ -1264,10 +1284,10 @@ index 57e9999..3717bb7 100644
  pub mod timer;
 diff --git a/src/hal/pwm_audio.rs b/src/hal/pwm_audio.rs
 new file mode 100644
-index 0000000..a1df792
+index 0000000..eb97a85
 --- /dev/null
 +++ b/src/hal/pwm_audio.rs
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,146 @@
 +//! 8 kHz PCM out of the MCU's PWM pin, the path the stock firmware uses for
 +//! its voice prompts: PA11 = TIM1_CH4 (AF2) -> two RC poles (4.7k/3.9n,
 +//! 4.7k/22n) -> 22k -> the speaker amplifier's input, summed with the RF
@@ -1391,6 +1411,12 @@ index 0000000..a1df792
 +        let left = (rd(DMA_CNDTR5) & 0xFFFF) as usize;
 +        let pos = if left == 0 || left > RING { 0 } else { RING - left };
 +        pos / SEG
++    }
++
++    /// For bring-up reports: DMA channel 5's count left, TIM1's counter, DMA
++    /// channel 5's control word and DMA1's interrupt status.
++    pub fn probe(&self) -> (u32, u32, u32, u32) {
++        (rd(DMA_CNDTR5) & 0xFFFF, rd(TIM1 + 0x24) & 0xFFFF, rd(DMA_CCR5), rd(0x4002_0000))
 +    }
 +
 +    /// Stops the timer and DMA and returns PA11 to an input, as at reset

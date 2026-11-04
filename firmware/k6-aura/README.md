@@ -214,3 +214,6 @@ level (0.2 to 0.7). After them, the FIFO only repeated an old word. Each PKT lin
 (`[S@0 F@27+4 ...]` in `listen`) shows when the sync, FIFO-almost-full and RX-done interrupts
 came, and how many words each one read. Keys 7 and 8 try other length settings. All of
 this is reported on the serial line, so watch it with `listen`.
+If the playback's DMA doesn't move for 200 ms, the radio stops playback and goes back to
+listening. It also writes `K6 PWM stalled ...` with the DMA and timer registers, so a PWM
+path that doesn't run can't lock up the radio.
