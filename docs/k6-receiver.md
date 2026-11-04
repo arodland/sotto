@@ -112,17 +112,73 @@ code. Freeing 58 KB takes one of these:
   (for example `-Os`, and dropping apps), and nothing measured yet shows where those bytes would
   come from.
 
+## On air (2026-11-04)
+
+The first message played out of the K6's speaker on 2026-11-04, on image 314a306; image 6661d40
+fixed the packet losses. The IC-7100
+was in FM-D at minimum power on 439.500 MHz, sending profile F (FFSK 1200) over its USB audio
+with `python -m modem.k6`. The 10 s VE9QRP clip went out as 64 packets of 64 bytes (36.3 s on air)
+and the K6 played it by itself when the message completed. Jeff's verdict on the speaker: "Perfectly clear. Some artifact but really passable." The serial harness
+(`python -m modem.k6_harness`, see `firmware/k6-aura/README.md`) measured these results:
+
+- **Packets.** Every packet received passed its CRC with 0 bit errors. On image 314a306 the
+  radio caught only about 3 packets in 4 (46 of VE9QRP's 64), because of how it re-armed between
+  back-to-back packets (see item 1 below). On **6661d40** it caught 16 of 16 and 14 of 16 on the
+  test message, and **63 of 64 on VE9QRP (492 of 500 frames)**. The one loss in each run is the
+  first packet of a burst, while the chip locks on. Profile S (16 bytes) was also clean.
+- **Playback.** All 70 frames of the test message played (60 received, 10 concealed). The
+  decoder's own timer gave **13.5 ms mean and 21.3 ms worst per 20 ms frame**. That is 65 MHz
+  mean, inside the model's ±25%, but the worst frame is 15% over the model's worst. The 80 ms
+  ring absorbed it with no underrun, but there's little headroom.
+- **Stack.** 1,468 bytes were left at the deepest point.
+
+What it took, in order:
+
+1. **FD6818 packet mode stops at 16 bytes.** The chip's "FIFO almost full" interrupt (0x1000)
+   follows the REG_5D packet length, firing about 14 bytes before the end, not at the FIFO
+   threshold. The 8-word RX FIFO therefore overflowed after 16 bytes of a 64-byte packet. The fix
+   is **timed reads**: after sync the firmware reads one FIFO word every 13.33 ms (key 8, on by
+   default). The chip's own RX-done arrives about 50 ms after the timed read finishes and must be
+   dropped. Otherwise it is taken as a new, misaligned packet. A stream mode (REG_5D = 0x00FF,
+   software sync search, key 7) also gave 0 bit errors and is kept as a fallback.
+2. **Playback hung after one frame: a stack overflow.** With LTO, Aura's `main` was inlined into
+   a single 8,336-byte frame, holding the whole App and its temporaries, so the decoder's 3.5 KB
+   ran into static RAM. `tools/k6_frames.py` (run in CI on every build) lists the largest frames.
+   The fix: the App lives in a static built by an `#[inline(never)]` function, and the pager's
+   functions are `#[inline(never)]`. `-DFX_CS512_CONST` moves the 2 KB cos/sin table into flash
+   (+1.3 MHz mean), and playback decodes in place. `main`'s frame is now 2,944 bytes.
+3. **RAM below 0x20001000 is not free.** Aura's linker script starts at 0x20001028, and the
+   bootloader keeps state below it. Two images that put the message store there hung at boot.
+   The bootloader also owns the vector table (no VTOR), so a HardFault handler in Aura may never
+   run.
+4. **Re-arming between back-to-back packets is a narrow window.** After a packet read on the
+   timer, the receiver must be re-armed while the next packet's 107 ms preamble is on air. Re-arm
+   before the chip's own RX-done and that RX-done comes late, and acting on it false-syncs on the
+   preamble. Re-arm 60 ms or more after the payload's end and too little preamble is left for
+   the chip's bit clock. A per-packet sweep (key 8) put the window at about 40 ms after the
+   end, once the RX-done is in. The main loop also has to stay out of the way: with its screen
+   redraw every 50 ms it noticed syncs 30-50 ms late, so the firmware now waits for the next
+   sync in a tight loop.
+5. **Know which image is running.** Every image prints `K6 BOOT build=<sha>-<time>` on its
+   cable and shows the sha on screen, and the harness's `sweep --expect-build` refuses to send
+   to anything else.
+
 ## What is not verified yet
 
 - The firmware is built only in CI (*K6 pager firmware*). This sandbox won't run Aura's cargo
   build, so the Rust was type-checked here against stubs and compiled for real in CI.
-- FD6818 FSK receive has never been shown working by anyone. Aura's FSK functions are dead code.
-  The register sequence follows the spec, from the BK4819 register list and egzumer's 72-byte
-  AIRCOPY. The screen shows sync polarity, CRC, magic byte and timeouts for the first test.
-- PWM playback with this DMA setup follows the stock firmware's `AudioHard_Init` register for
-  register, but Aura never drives PA11, so it is untested under Aura.
-- The cycle counts come from a model (±25%), not the chip.
-
+- PHY D (direct FSK) over the IC-7100's USB audio in FM-D is marginal. On 6661d40, D at 1200
+  baud delivered 8 of 16 test packets and only 9 of VE9QRP's 64, with bit slips or lost lock at
+  random points. FFSK on the same image delivered 63 of 64, so use F over USB. D at 2400 got no
+  sync at all. A level sweep (0.15-0.9) and a speed sweep (±1%) on 814206c topped out at 8 of
+  16, at level 0.15-0.2 and -1%. Higher levels got worse, and 0.9 never synced. Errors grow along
+  each packet, and in bad packets the chip stops delivering words for 40-60 ms (lost bit sync), so
+  the limit is the NRZ waveform itself. Next: look at its eye (the IC-7100 recording the K6's
+  own D test transmit), then try transmit pre-compensation or other FD6818 D-mode filter and
+  gain settings.
+- The first packet of each burst is still usually lost during lock-in. A longer lead-in may fix it.
+- The artifacts Jeff heard on the first run were mostly concealment (29% of frames missing).
+  Listening at 1.6% loss is still to do.
 ## Files
 
 - `c/k6/sotto_pager.[ch]`: the library API (`sp_init`, `sp_packet`, `sp_check`, `sp_status`,

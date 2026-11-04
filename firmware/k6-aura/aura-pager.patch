@@ -106,7 +106,7 @@ index 55f04b6..b5a34d0 100644
      }
  }
 diff --git a/src/app/mod.rs b/src/app/mod.rs
-index 5f006e4..c4d567f 100644
+index 5f006e4..113eedb 100644
 --- a/src/app/mod.rs
 +++ b/src/app/mod.rs
 @@ -9,6 +9,7 @@ mod input;
@@ -143,7 +143,7 @@ index 5f006e4..c4d567f 100644
          }
      }
  
-@@ -1436,6 +1442,51 @@ impl App {
+@@ -1436,6 +1442,54 @@ impl App {
      pub fn poll_spectrum(&mut self, syst: &mut SYST) {
          spectrum::poll(self, syst);
      }
@@ -151,6 +151,9 @@ index 5f006e4..c4d567f 100644
 +    // voice pager (pager.rs)
 +    pub fn poll_pager(&mut self, syst: &mut SYST) {
 +        pager::poll(self, syst);
++    }
++    pub fn note_pager_draw(&mut self, ticks: u16) {
++        pager::note_draw(self, ticks);
 +    }
 +    pub fn pager(&self) -> &pager::PagerState {
 +        &self.pager
@@ -197,10 +200,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..e4f4b02
+index 0000000..27741d2
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,980 @@
+@@ -0,0 +1,1565 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -235,7 +238,23 @@ index 0000000..e4f4b02
 +/// RAM for the message: 6.2 bytes per 20 ms frame, so 4 KB holds 640 frames
 +/// (12.8 s). Raise it if the RAM report on the pager screen ("FREE") shows
 +/// room; every 1 KB is 3.2 s more.
++/// The firmware build: the sotto commit and UTC build time from sotto's
++/// firmware/k6-aura/build.sh (SOTTO_BUILD), on the serial report at power-on
++/// (`K6 BOOT`) and in every `K6 CFG` line, and its commit on the VOICE MSG
++/// screen, so a test always knows which image it ran on.
++pub const BUILD: &str = match option_env!("SOTTO_BUILD") {
++    Some(b) => b,
++    None => "local",
++};
++
++/// The commit part of `BUILD`, for the screen.
++pub fn build_short() -> &'static str {
++    BUILD.get(..7).unwrap_or(BUILD)
++}
++
 +const STORE_BYTES: usize = 4096;
++// (The RAM below UserVectors, 0x2000_0000-0x2000_0FFF, is not free: images that put the store
++// there, even from 0x2000_0100, hung at boot on the radio on 2026-11-04.)
 +static mut STORE: [u32; STORE_BYTES / 4] = [0; STORE_BYTES / 4];
 +
 +/// The FD6818 (BK4819 family) needs CHIPID 0x4819; the FD6818B (0x4829) has
@@ -343,6 +362,27 @@ index 0000000..e4f4b02
 +const TICKS_PER_S: u32 = 10_000; // uptime: 100 us
 +const GAP_TICKS: u32 = 3 * TICKS_PER_S; // play 3 s after the last packet
 +const PACKET_TIMEOUT_TICKS: u32 = TICKS_PER_S; // a 64-byte packet is 427 ms at 1200 baud
++/// Timed FIFO reads: words taken right at the sync interrupt. On air (profile S), 4 good words
++/// were already waiting 22-33 ms after it, so the interrupt is seen at least 2 words late;
++/// one word of lead keeps 2-4 words in the 8-word FIFO, away from both empty and overflow.
++const TIMED_LEAD_WORDS: usize = 1;
++/// With timed reads, an RX-done sooner than 60% of the payload's air time after the sync
++/// (67 ticks a byte at 1200 baud) is the last packet's, not this one's
++const STRAY_DONE_TICKS_PER_BYTE: usize = 40;
++/// key 8's re-arm delays after a timed packet's end, ms; after them, a sweep
++const REARM_STEPS: [u8; 7] = [40, 50, 30, 60, 20, 0, 80];
++/// After the earliest re-arm, wait this long more for the chip's RX-done (100 us ticks)
++const REARM_WAIT_TICKS: u16 = 100;
++/// An RX-done this soon (ms) after a timed packet's last word, coming after our re-arm, is
++/// that packet's and is dropped without another re-arm
++const STRAY_IGNORE_MS: u16 = 300;
++/// After a re-arm, how long poll waits in a tight loop for the next packet (100 us ticks)
++const NEXT_SYNC_WAIT_TICKS: u16 = 2500;
++/// poll's burst loop goes back to the main loop after this many packets regardless
++const MAX_BURST_PACKETS: u16 = 160;
++const REARM_SWEEP_STEPS: u8 = 13; // 0, 10, ... 120 ms
++/// 100 us ticks a byte takes at 1200 baud (66.7)
++const TICKS_PER_BYTE: usize = 67;
 +
 +/// Volume steps on top of the automatic level, 3 dB apart: -9 .. +12 dB.
 +const VOL_Q8: [i32; 8] = [91, 128, 181, 256, 362, 512, 724, 1024];
@@ -375,6 +415,48 @@ index 0000000..e4f4b02
 +    pub ber_n: u16,
 +    /// packets reported on the serial line, so the PC can spot a lost line
 +    pub reported: u16,
++    /// key 7, bring-up: how REG_5D gets the packet length (0: bytes - 1, the
++    /// BK4819 way; 1: words - 1; 2: 0xFF, the longest)
++    pub len_mode: u8,
++    /// key 8, bring-up: an RX-done before the whole packet came doesn't end it;
++    /// keep reading on FIFO interrupts until the length or the timeout
++    pub keep_after_done: bool,
++    /// key 8 (with key 7's lengths): read the RX FIFO on a timer after the sync, one word per
++    /// 13.3 ms (16 bits at 1200 baud), instead of at the chip's 0x1000 interrupt. On air that
++    /// interrupt follows REG_5D's length (it comes about 14 bytes before the end of the
++    /// packet), not the FIFO's fill, so a 64-byte packet overflowed the 8-word FIFO first.
++    pub timed_read: bool,
++    /// key 8: when to re-arm after a packet read on the timer, as an index into REARM_STEPS
++    /// (ms after the payload's end); the last index sweeps 0-120 ms, a step per packet
++    pub rearm_mode: u8,
++    rearm_sweep: u8,
++    /// the delay (ms) of the re-arm after the last timed packet, and of the one before this
++    /// packet (`rearm=` in K6 PKT; -1: not after a timed packet)
++    rearm_last: i16,
++    rearm_before: i16,
++    /// key 9: play a message by itself once it's complete or 3 s after its last packet
++    pub auto_play: bool,
++    /// key 0: a SysTick watchdog around each frame's decode that reports where the CPU is
++    /// stuck (`K6 HANG pc=`); off by default until the bootloader's SysTick trampoline
++    /// (UserVectors[0]) is known to work on this radio
++    pub watchdog: bool,
++    /// this packet's interrupts: (flags, 100 us ticks since the first, words read)
++    ev: [(u16, u16, u8); 12],
++    ev_n: u8,
++    /// uptime at the last re-arm, for `gap=` (ms from re-arm to the next packet's first
++    /// interrupt: back to back, about 145 ms; about 700 more for each packet missed)
++    t_rearm: u16,
++    /// the longest screen redraw so far, 100 us ticks (`draw=` ms in K6 CFG): while it runs,
++    /// nothing watches the RF chip
++    draw_max: u16,
++    /// the last receive_packet got a packet that passed its CRC
++    last_ok: bool,
++    /// uptime when the last packet finished on the timer, while its own RX-done is still
++    /// to come; `stray=` reports how long after that it came (ms), or -1 for not before
++    /// the next packet
++    t_timed_done: Option<u16>,
++    stray_ms: i16,
++    gap_ms: u16,
 +    pub emphasis: bool,
 +    pub vol: u8,
 +    /// b'-' none yet, b'P' SyncPositive, b'N' SyncNegative (then RX invert is set)
@@ -403,6 +485,24 @@ index 0000000..e4f4b02
 +}
 +
 +impl PagerState {
++    /// The re-arm delay after this timed packet (ms after its payload's end): key 8's step,
++    /// or the sweep's next. 40 ms measured best (2026-11-04).
++    fn rearm_delay_ms(&mut self) -> u8 {
++        match REARM_STEPS.get(self.rearm_mode as usize) {
++            Some(&ms) => ms,
++            None => {
++                let ms = self.rearm_sweep * 10;
++                self.rearm_sweep = (self.rearm_sweep + 1) % REARM_SWEEP_STEPS;
++                ms
++            }
++        }
++    }
++
++    fn rearm_label(&self) -> i16 {
++        // -1 in the CFG line: the sweep
++        REARM_STEPS.get(self.rearm_mode as usize).map_or(-1, |&ms| ms as i16)
++    }
++
 +    pub const fn new() -> Self {
 +        PagerState {
 +            chip_ok: false,
@@ -418,6 +518,23 @@ index 0000000..e4f4b02
 +            ber_sum: 0,
 +            ber_n: 0,
 +            reported: 0,
++            len_mode: 0,
++            keep_after_done: false,
++            timed_read: true,
++            rearm_mode: 0,
++            rearm_sweep: 0,
++            rearm_last: -1,
++            rearm_before: -1,
++            auto_play: true,
++            watchdog: false,
++            ev: [(0, 0, 0); 12],
++            ev_n: 0,
++            t_rearm: 0,
++            draw_max: 0,
++            last_ok: false,
++            t_timed_done: None,
++            stray_ms: -1,
++            gap_ms: 0,
 +            // The FD6818's FIFO words go low byte first on air (Jeff's first test burst,
 +            // 2026-11-04: all four packets bit-exact once swapped), so RX swaps by default
 +            swap: true,
@@ -446,6 +563,16 @@ index 0000000..e4f4b02
 +
 +    pub fn vol_db(&self) -> i8 {
 +        (self.vol as i8 - VOL_0DB as i8) * 3
++    }
++
++    /// REG_5D's packet-length field for `len_mode`
++    fn len_field(&self) -> u16 {
++        let len = self.payload_len() as u16;
++        match self.len_mode {
++            1 => (len / 2 - 1) << 8,
++            2 => 0xFF00,
++            _ => (len - 1) << 8,
++        }
 +    }
 +
 +    fn payload_len(&self) -> usize {
@@ -488,6 +615,7 @@ index 0000000..e4f4b02
 +
 +// ---- mode entry and exit ----
 +
++#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn enter(app: &mut App, syst: &mut SYST) {
 +    app.mode = Mode::Pager;
 +    app.input.clear();
@@ -528,7 +656,7 @@ index 0000000..e4f4b02
 +    } else {
 +        (CFG_D_1200, BAUD_1200, GAIN_D)
 +    };
-+    let len_field = ((p.payload_len() as u16) - 1) << 8;
++    let len_field = p.len_field();
 +    let fd = &mut app.radio.fd6818;
 +    fd.reg_write(syst, REG_IRQ_EN, 0);
 +    fd.reg_write(syst, REG_FSK_CFG, cfg);
@@ -553,6 +681,7 @@ index 0000000..e4f4b02
 +    fd.reg_write(syst, REG_FSK_CTRL, ctrl | CTRL_RX_EN);
 +    fd.reg_write(syst, REG_IRQ_FLAGS, 0);
 +    fd.reg_write(syst, REG_IRQ_EN, IRQ_RX_DONE | IRQ_RX_FULL | IRQ_RX_SYNC);
++    app.pager.t_rearm = uptime::now();
 +}
 +
 +fn arm(app: &mut App, syst: &mut SYST) {
@@ -600,8 +729,88 @@ index 0000000..e4f4b02
 +    }
 +}
 +
++/// Stream mode (key 7's third length, REG_5D 0x00FF). On air (2026-11-04) the FD6818 then
++/// passed whole 64-byte packets with no bit errors, preamble and sync word included, byte
++/// aligned, with a FIFO interrupt every 4 words (53 ms at 1200 baud) and no sync or RX-done
++/// interrupt. Reads 4 words per FIFO interrupt, looks for the sync word (07 6B 3E 36, up to
++/// 2 bits wrong; inverted too), then keeps the next `len` bytes. Gives up after 32 words
++/// with no sync (longer while preamble bytes keep coming), or 200 ms without an interrupt.
++/// Returns whether the sync came inverted (the payload is then inverted back), or None.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
++fn receive_stream(app: &mut App, syst: &mut SYST, mut flags: u16, buf: &mut [u8; 64], len: usize) -> Option<bool> {
++    const SYNC: u32 = 0x076B_3E36;
++    let t0 = uptime::now();
++    let mut last = t0;
++    let mut reg: u32 = 0;
++    let mut seen = 0u32; // bytes looked at for the sync
++    let mut found: Option<bool> = None;
++    let mut got = 0usize;
++    let mut budget = 32usize;
++    loop {
++        let before = got;
++        if flags & IRQ_RX_FULL != 0 {
++            for _ in 0..4 {
++                let w = app.radio.fd6818.reg_read(syst, REG_FIFO);
++                let w = if app.pager.swap { w.swap_bytes() } else { w };
++                for byte in [(w >> 8) as u8, w as u8] {
++                    match found {
++                        None => {
++                            reg = (reg << 8) | byte as u32;
++                            seen += 1;
++                            if seen >= 4 {
++                                if (reg ^ SYNC).count_ones() <= 2 {
++                                    found = Some(false);
++                                } else if (reg ^ !SYNC).count_ones() <= 2 {
++                                    found = Some(true);
++                                }
++                            }
++                            if byte == 0x55 || byte == 0xAA {
++                                budget = budget.max(4); // preamble: the sync is near
++                            }
++                        }
++                        Some(inv) => {
++                            if got < len {
++                                buf[got] = if inv { !byte } else { byte };
++                                got += 1;
++                            }
++                        }
++                    }
++                }
++                if found.is_none() {
++                    budget = budget.saturating_sub(1);
++                }
++            }
++        }
++        let k = app.pager.ev_n as usize;
++        if found.is_some() && k < app.pager.ev.len() {
++            app.pager.ev[k] = (flags, last.wrapping_sub(t0), ((got - before) / 2) as u8);
++            app.pager.ev_n += 1;
++        }
++        if got >= len {
++            return found;
++        }
++        if found.is_none() && budget == 0 {
++            return None;
++        }
++        // the next FIFO interrupt
++        let start = uptime::now();
++        loop {
++            delay::us(syst, 500);
++            last = uptime::now();
++            flags = take_irq(app, syst);
++            if flags != 0 {
++                break;
++            }
++            if last.wrapping_sub(start) > 2000 {
++                return None;
++            }
++        }
++    }
++}
++
 +/// Called from the main loop in pager mode: picks up packets, and starts the
 +/// playback 3 s after the last packet of an incomplete message.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn poll(app: &mut App, syst: &mut SYST) {
 +    if app.mode != Mode::Pager || !app.pager.chip_ok {
 +        return;
@@ -613,13 +822,37 @@ index 0000000..e4f4b02
 +        .saturating_add(now.wrapping_sub(app.pager.last_tick) as u32);
 +    app.pager.last_tick = now;
 +
-+    let flags = take_irq(app, syst);
-+    if flags & (IRQ_RX_SYNC | IRQ_RX_FULL | IRQ_RX_DONE) != 0 {
++    let mut flags = take_irq(app, syst);
++    let mut packets = 0u16;
++    while flags & (IRQ_RX_SYNC | IRQ_RX_FULL | IRQ_RX_DONE) != 0 {
++        app.pager.last_ok = false;
 +        receive_packet(app, syst, flags);
++        packets += 1;
++        // stay in this loop only through a burst of good packets: a false sync on noise
++        // (no signal) fails its CRC and goes back to the main loop, or the keys and the
++        // power switch would never be seen (6661d40 froze idle)
++        if !app.pager.timed_read || app.pager.len_mode == 2 || !app.pager.last_ok || packets >= MAX_BURST_PACKETS {
++            break;
++        }
++        // Back to back, the next packet's sync comes about 90 ms after the re-arm. Wait for
++        // it here, every 0.5 ms, not in the main loop: with the screen redraw in between,
++        // the main loop noticed it 30-50 ms late, the timed reads started late and the
++        // packet slipped (5e60d8f: 7-10/16). The screen catches up after the burst.
++        flags = 0;
++        while uptime::now().wrapping_sub(app.pager.t_rearm) < NEXT_SYNC_WAIT_TICKS {
++            flags = take_irq(app, syst);
++            if flags != 0 {
++                break;
++            }
++            delay::us(syst, 500);
++        }
 +    }
++    // the burst's time isn't idle time (auto-play waits GAP_TICKS after the last packet)
++    app.pager.last_tick = uptime::now();
 +
 +    let st = &app.pager.status;
 +    if st.have != 0
++        && app.pager.auto_play
 +        && st.frames_got > 0
 +        && app.pager.played_id != st.msg_id as i16
 +        && app.pager.idle_ticks >= GAP_TICKS
@@ -630,7 +863,29 @@ index 0000000..e4f4b02
 +
 +/// One packet: a sync was found (or the FIFO filled); collect the payload
 +/// 4 words at a time until RX finished, waiting here (at most ~0.5 s).
++#[inline(never)] // its locals only while it runs, not in main's frame for good
 +fn receive_packet(app: &mut App, syst: &mut SYST, mut flags: u16) {
++    if app.pager.timed_read && app.pager.len_mode != 2 && flags & (IRQ_RX_SYNC | IRQ_RX_FULL) == 0 {
++        // an RX-done with no sync: the end of a packet already finished on the timer
++        if let Some(t) = app.pager.t_timed_done.take() {
++            let ms = uptime::now().wrapping_sub(t) / 10;
++            app.pager.stray_ms = ms as i16;
++            if ms < STRAY_IGNORE_MS {
++                // the last packet's own RX-done, after our re-arm: re-arming again now would
++                // land on the next packet's preamble or sync (key 8 sweep, 2026-11-04)
++                return;
++            }
++        }
++        rearm_rx(app, syst);
++        return;
++    }
++    let t_first = uptime::now();
++    app.pager.gap_ms = t_first.wrapping_sub(app.pager.t_rearm) / 10;
++    if app.pager.t_timed_done.is_some() {
++        app.pager.stray_ms = -1;
++    }
++    app.pager.rearm_before = app.pager.rearm_last;
++    app.pager.rearm_last = -1;
 +    let len = app.pager.payload_len();
 +    let words = len / 2;
 +    let swap_read = app.pager.swap;
@@ -640,8 +895,32 @@ index 0000000..e4f4b02
 +    let mut waited: u32 = 0;
 +    let mut last = t0;
 +    let mut saw_sync = false;
-+    loop {
++    let timed = app.pager.timed_read;
++    // timed reads: a 16-bit word every 13.3 ms at 1200 baud (3 words per 400 ticks), 6.7 at 2400
++    let fast = app.pager.baud_2400 && !app.pager.phy_ffsk;
++    let words_div: usize = if fast { 200 } else { 400 };
++    let tpb = if fast { TICKS_PER_BYTE / 2 } else { TICKS_PER_BYTE };
++    let mut t_sync = t0;
++    app.pager.ev_n = 0;
++    // key 7's third length (REG_5D 0x00FF): the chip streams what it demodulates, preamble
++    // and sync included, with a FIFO interrupt every 4 words; find the sync in software
++    let stream = app.pager.len_mode == 2;
++    if stream {
++        match receive_stream(app, syst, flags, &mut buf, len) {
++            None => return,
++            Some(inv) => {
++                got = len;
++                saw_sync = true;
++                app.pager.last_sync = if inv { b'w' } else { b'W' };
++            }
++        }
++    }
++    while !stream {
++        let words_before = got / 2;
 +        if flags & IRQ_RX_SYNC != 0 {
++            if !saw_sync {
++                t_sync = uptime::now();
++            }
 +            saw_sync = true;
 +            let s = app.radio.fd6818.reg_read(syst, REG_SYNC_STATUS);
 +            app.pager.last_sync = if s & 0x80 != 0 {
@@ -652,27 +931,97 @@ index 0000000..e4f4b02
 +                b'?'
 +            };
 +        }
-+        if flags & IRQ_RX_FULL != 0 && got / 2 < words {
++        if flags & IRQ_RX_FULL != 0 && !timed && got / 2 < words {
 +            let n = (words - got / 2).min(4);
 +            read_words(app, syst, &mut buf, &mut got, n);
 +        }
-+        if flags & IRQ_RX_DONE != 0 {
++        let flags_seen = flags;
++        if timed
++            && saw_sync
++            && flags & IRQ_RX_DONE != 0
++            && (uptime::now().wrapping_sub(t_sync) as usize) < len * STRAY_DONE_TICKS_PER_BYTE * tpb / TICKS_PER_BYTE
++        {
++            // far too soon for this packet's end: the last packet's own RX-done, late. Taken
++            // as this one's end it would cut it short
++            flags &= !IRQ_RX_DONE;
++            if let Some(t) = app.pager.t_timed_done.take() {
++                app.pager.stray_ms = (uptime::now().wrapping_sub(t) / 10) as i16;
++            }
++        }
++        let early = flags & IRQ_RX_DONE != 0 && got / 2 < words && app.pager.keep_after_done;
++        if flags & IRQ_RX_DONE != 0 && !early {
 +            if got / 2 < words {
 +                let n = words - got / 2;
 +                read_words(app, syst, &mut buf, &mut got, n);
 +            }
++        }
++        let k = app.pager.ev_n as usize;
++        if k < app.pager.ev.len() {
++            let dt = last.wrapping_sub(t0);
++            app.pager.ev[k] = (flags_seen, dt, (got / 2 - words_before) as u8);
++            app.pager.ev_n += 1;
++        }
++        if (flags & IRQ_RX_DONE != 0 && !early) || got / 2 >= words {
 +            break;
 +        }
-+        // wait for the next interrupt
++        // wait for the next interrupt (timed reads: taking each word as it falls due)
 +        loop {
 +            delay::us(syst, 500);
 +            let now = uptime::now();
 +            waited += now.wrapping_sub(last) as u32;
 +            last = now;
++            if timed && saw_sync {
++                let due = (TIMED_LEAD_WORDS + now.wrapping_sub(t_sync) as usize * 3 / words_div).min(words);
++                if due > got / 2 {
++                    let n = due - got / 2;
++                    read_words(app, syst, &mut buf, &mut got, n);
++                }
++                if got / 2 >= words {
++                    flags = 0;
++                    break;
++                }
++            }
 +            flags = take_irq(app, syst);
 +            if flags != 0 || waited > PACKET_TIMEOUT_TICKS {
 +                break;
 +            }
++        }
++        if got / 2 >= words {
++            // all words read on the timer: log it as a pseudo event 0, then re-arm once the
++            // chip's own RX-done is in and at least REARM ms (key 8, 40 by default) after the
++            // payload's end, or at REARM + 10 ms without it. Measured on air (2026-11-04,
++            // key 8 sweep over VE9QRP): re-arming before that RX-done (f413547; 0-30 ms)
++            // makes it come late, 110-175 ms after, and any re-arm then lands on the next
++            // packet's preamble and false-syncs; 60 ms or later leaves too little preamble for
++            // the chip's bit clock, and the packet syncs but slips (314a306 waited for the
++            // RX-done, up to a 150 ms timeout that ran past the next sync). 40 ms: 3/3.
++            let k = app.pager.ev_n as usize;
++            if k < app.pager.ev.len() {
++                app.pager.ev[k] = (0, last.wrapping_sub(t0), (got / 2 - words_before) as u8);
++                app.pager.ev_n += 1;
++            }
++            let delay_ms = app.pager.rearm_delay_ms();
++            app.pager.rearm_last = delay_ms as i16;
++            let end = (len * tpb) as u16;
++            // key 8's delays are for 1200 baud; at 2400 the preamble is half as long
++            let rearm_min = end + (delay_ms as usize * 10 * tpb / TICKS_PER_BYTE) as u16;
++            let rearm_max = rearm_min + (REARM_WAIT_TICKS as usize * tpb / TICKS_PER_BYTE) as u16;
++            let t_done = uptime::now();
++            app.pager.t_timed_done = Some(t_done);
++            let mut done = false;
++            loop {
++                if take_irq(app, syst) & IRQ_RX_DONE != 0 && !done {
++                    done = true;
++                    app.pager.t_timed_done = None;
++                    app.pager.stray_ms = (uptime::now().wrapping_sub(t_done) / 10) as i16;
++                }
++                let since = uptime::now().wrapping_sub(t_sync);
++                if (done && since >= rearm_min) || since >= rearm_max {
++                    break;
++                }
++                delay::us(syst, 500);
++            }
++            break;
 +        }
 +        if flags == 0 {
 +            app.pager.timeouts = app.pager.timeouts.saturating_add(1);
@@ -757,14 +1106,16 @@ index 0000000..e4f4b02
 +    report_packet(app, &read[..len], swap_read, Some(r));
 +    if r != SP_BAD_CRC && r != SP_BAD_MAGIC && r >= 0 {
 +        app.pager.idle_ticks = 0;
++        app.pager.last_ok = true;
 +    }
-+    if r == SP_COMPLETE && app.pager.played_id != app.pager.status.msg_id as i16 {
++    if r == SP_COMPLETE && app.pager.auto_play && app.pager.played_id != app.pager.status.msg_id as i16 {
 +        app.pager.play_pending = true;
 +    }
 +}
 +
 +// ---- keys ----
 +
++#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn dispatch(app: &mut App, syst: &mut SYST, ev: KeyEvent) {
 +    if !matches!(ev.kind, KeyEventKind::Single | KeyEventKind::Repeat) {
 +        return;
@@ -803,6 +1154,13 @@ index 0000000..e4f4b02
 +        }
 +        KeyId::Digit4 => p.emphasis = !p.emphasis,
 +        KeyId::Digit6 => p.raw_view = !p.raw_view,
++        KeyId::Digit7 => {
++            p.len_mode = (p.len_mode + 1) % 3;
++            rearm = true;
++        }
++        KeyId::Digit8 => p.rearm_mode = (p.rearm_mode + 1) % (REARM_STEPS.len() as u8 + 1),
++        KeyId::Digit9 => p.auto_play = !p.auto_play,
++        KeyId::Digit0 => p.watchdog = !p.watchdog,
 +        KeyId::Pound => {
 +            p.freq_entry = true;
 +            app.input.clear();
@@ -904,6 +1262,7 @@ index 0000000..e4f4b02
 +
 +/// Plays the message through PWM, blocking (up to the message length).
 +/// EXIT stops it; the power switch stops it too, so main can shut down.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn play(app: &mut App, syst: &mut SYST, power: &PowerSwitch) {
 +    app.pager.play_pending = false;
 +    refresh_status(app);
@@ -918,6 +1277,7 @@ index 0000000..e4f4b02
 +        .fd6818
 +        .set_af_out(syst, AfOutState::Mute, true, Modulation::Fm);
 +
++    report_line(format_args!("K6 STEP play id={:02x} stored={}", app.pager.status.msg_id, app.pager.status.stored));
 +    let auto = unsafe { ffi::sp_auto_gain_q8() };
 +    let gain = |vol: u8| -> i32 { ((auto * VOL_Q8[vol as usize]) >> 8).min(32767) };
 +    let emph = app.pager.emphasis as i32;
@@ -927,13 +1287,48 @@ index 0000000..e4f4b02
 +    let mut tail = 0usize;
 +    let (mut dsum, mut dmax, mut dn) = (0u32, 0u16, 0u32);
 +    unsafe { ffi::sp_play_start() };
++    report_line(format_args!("K6 STEP decoder reset gain={}", auto));
 +
-+    let mut fill = |audio: &mut PwmAudio, i: usize, g: i32, done: &mut bool, tail: &mut usize| {
++    let wd = app.pager.watchdog;
++    // the stack: the least ever free since VOICE MSG started, then painted again for playback
++    let before = free_ram();
++    paint_free_ram();
++    report_line(format_args!(
++        "K6 STEP stack sp={:08x} floor={:08x} least_free={} free={} wd={}",
++        sp_now(),
++        addr_of!(__sheap) as u32,
++        before,
++        free_ram(),
++        wd as u8
++    ));
++    let mut traced = 0u32;
++    let mut fill = |audio: &mut PwmAudio, syst: &mut SYST, i: usize, g: i32, done: &mut bool, tail: &mut usize| {
 +        let seg = audio.segment(i);
 +        if !*done {
++            // the first frames one by one: which one the radio stops in, and the stack left
++            let trace = traced < 6;
++            if trace {
++                report_line(format_args!("K6 STEP frame {} pos={} sp={:08x}", traced, unsafe { ffi::sp_play_pos() }, sp_now()));
++            }
++            if wd {
++                watchdog_arm(syst);
++            }
 +            let t = uptime::now();
 +            let more = unsafe { ffi::sp_play_pwm(seg.as_mut_ptr(), pwm_audio::TOP as u32, g, emph) };
 +            let dt = uptime::now().wrapping_sub(t);
++            if wd {
++                watchdog_disarm(syst);
++            }
++            if trace {
++                report_line(format_args!(
++                    "K6 STEP frame {} done more={} us={} stack_free={}",
++                    traced,
++                    more,
++                    dt as u32 * 100,
++                    free_ram()
++                ));
++                traced += 1;
++            }
 +            if more != 0 {
 +                dsum += dt as u32;
 +                dmax = dmax.max(dt);
@@ -947,18 +1342,40 @@ index 0000000..e4f4b02
 +    };
 +
 +    for i in 0..pwm_audio::NSEG {
-+        fill(&mut audio, i, g, &mut done, &mut tail);
++        fill(&mut audio, syst, i, g, &mut done, &mut tail);
++        if i == 0 {
++            report_line(format_args!("K6 STEP first frame decoded"));
++        }
 +    }
++    report_line(format_args!("K6 STEP {} frames decoded, starting PWM", pwm_audio::NSEG));
 +    audio.start();
 +    delay::ms(syst, 30); // as stock: let the RC filter settle before the amplifier opens
++    let pr = audio.probe();
++    report_line(format_args!(
++        "K6 STEP PWM started cndtr={} tim_cnt={} dma_ccr={:x}",
++        pr.0, pr.1, pr.2
++    ));
 +    app.radio.set_speaker(true);
 +
 +    let mut wr = 0usize;
 +    let mut aborted = false;
++    // a DMA that doesn't move (PWM path not running) would hold this loop for good:
++    // give up after 200 ms without progress and say so on the serial report
++    let mut seen = audio.play_segment();
++    let mut moved = uptime::now();
++    let mut stalled = false;
 +    while tail < pwm_audio::NSEG {
 +        let cur = audio.play_segment();
++        if cur != seen {
++            seen = cur;
++            moved = uptime::now();
++        } else if uptime::now().wrapping_sub(moved) > 2000 {
++            stalled = true;
++            aborted = true;
++            break;
++        }
 +        while wr != cur {
-+            fill(&mut audio, wr, g, &mut done, &mut tail);
++            fill(&mut audio, syst, wr, g, &mut done, &mut tail);
 +            wr = (wr + 1) % pwm_audio::NSEG;
 +        }
 +        app.keypad.poll(syst);
@@ -980,9 +1397,16 @@ index 0000000..e4f4b02
 +        }
 +    }
 +
++    let probe = audio.probe();
 +    app.radio.set_speaker(false);
 +    delay::ms(syst, 20);
 +    audio.stop();
++    if stalled {
++        report_line(format_args!(
++            "K6 PWM stalled cndtr={} tim_cnt={} dma_ccr={:x} dma_isr={:x}",
++            probe.0, probe.1, probe.2, probe.3
++        ));
++    }
 +
 +    app.pager.aborted = aborted;
 +    app.pager.played_frames = unsafe { ffi::sp_play_pos() } as u16;
@@ -1021,6 +1445,7 @@ index 0000000..e4f4b02
 +
 +/// Keys up on the master side's TX frequency and power (FM, no CTCSS) and
 +/// sends test packet 0 of the spec twice in profile D, then twice in F.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn cal_tx(app: &mut App, syst: &mut SYST) {
 +    app.pager.cal_pending = false;
 +    let mut bytes = [0u8; 64];
@@ -1099,24 +1524,33 @@ index 0000000..e4f4b02
 +
 +fn key_name(k: KeyId) -> &'static str {
 +    match k {
++        KeyId::Digit0 => "key0",
 +        KeyId::Digit1 => "key1",
 +        KeyId::Digit2 => "key2",
 +        KeyId::Digit3 => "key3",
 +        KeyId::Digit4 => "key4",
 +        KeyId::Digit5 => "key5",
 +        KeyId::Asterisk => "clear",
++        KeyId::Digit7 => "key7",
++        KeyId::Digit8 => "key8",
++        KeyId::Digit9 => "key9",
 +        KeyId::Menu => "menu",
 +        KeyId::Up | KeyId::Down => "vol",
 +        _ => "key",
 +    }
 +}
 +
++pub(super) fn note_draw(app: &mut App, ticks: u16) {
++    app.pager.draw_max = app.pager.draw_max.max(ticks);
++}
++
 +/// The link settings, after `enter`, a key or a new frequency.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
 +fn report_cfg(app: &App, why: &str) {
 +    let p = &app.pager;
 +    let baud = if p.baud_2400 && !p.phy_ffsk { 2400 } else { 1200 };
 +    report_line(format_args!(
-+        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={}",
++        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} timed={} rearm={} auto={} wd={} draw={} build={}",
 +        why,
 +        app.chip_id,
 +        app.master_freq_hz(),
@@ -1127,13 +1561,22 @@ index 0000000..e4f4b02
 +        p.soft_inv as u8,
 +        p.swap as u8,
 +        p.emphasis as u8,
-+        p.vol_db()
++        p.vol_db(),
++        p.len_field(),
++        p.keep_after_done as u8,
++        p.timed_read as u8,
++        p.rearm_label(),
++        p.auto_play as u8,
++        p.watchdog as u8,
++        p.draw_max / 10,
++        BUILD
 +    ));
 +}
 +
 +/// One packet: the bytes as read (with the byte swap `swap` was then, before
 +/// any inversion), what the radio made of it, and its bit errors against the
 +/// test message. `res` is sp_packet's result, None for a short packet.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
 +fn report_packet(app: &mut App, read: &[u8], swap: bool, res: Option<i32>) {
 +    use core::fmt::Write as _;
 +    let p = &mut app.pager;
@@ -1155,14 +1598,26 @@ index 0000000..e4f4b02
 +        }
 +        write!(s, " ").ok();
 +    }
-+    write!(s, "good={} bad={} to={} raw=", st.good_packets, st.bad_packets, p.timeouts).ok();
-+    for b in read {
-+        write!(s, "{:02x}", b).ok();
++    write!(s, "ev=").ok();
++    for (i, &(f, t, n)) in p.ev[..p.ev_n as usize].iter().enumerate() {
++        // interrupt flags in hex : ms since the packet's first interrupt : words read
++        write!(s, "{}{:x}:{}:{}", if i > 0 { "," } else { "" }, f, t / 10, n).ok();
++    }
++    write!(s, " gap={} stray={} rearm={}", p.gap_ms, p.stray_ms, p.rearm_before).ok();
++    write!(s, " good={} bad={} to={}", st.good_packets, st.bad_packets, p.timeouts).ok();
++    // the bytes only for a packet that failed (about 130 characters, 11 ms at 115200): this line
++    // goes out between back-to-back packets, and at 2400 baud that quiet stretch is ~45 ms
++    if !matches!(res, Some(r) if r >= 0) {
++        s.write_str(" raw=").ok();
++        for b in read {
++            write!(s, "{:02x}", b).ok();
++        }
 +    }
 +    s.write_str("\r\n").ok();
 +}
 +
 +/// After a playback: how much arrived and how long the decoder took.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
 +fn report_play(app: &App) {
 +    let p = &app.pager;
 +    let st = &p.status;
@@ -1181,6 +1636,139 @@ index 0000000..e4f4b02
 +        p.aborted as u8
 +    ));
 +}
++
++/// A CPU fault (a bad address, say) would otherwise hang the radio with no clue: say where
++/// on the serial report, then reboot. Caveat: this MCU has no VTOR and the exception vectors
++/// are the bootloader's (memory.x), so this runs only if its HardFault forwards to ours; the
++/// `K6 STEP` lines before a hang say where it stopped either way.
++#[cfg(target_arch = "arm")]
++#[cortex_m_rt::exception]
++unsafe fn HardFault(ef: &cortex_m_rt::ExceptionFrame) -> ! {
++    report_line(format_args!(
++        "K6 FAULT pc={:08x} lr={:08x} xpsr={:08x} r0={:08x} r1={:08x} r2={:08x} r3={:08x} r12={:08x}",
++        ef.pc(),
++        ef.lr(),
++        ef.xpsr(),
++        ef.r0(),
++        ef.r1(),
++        ef.r2(),
++        ef.r3(),
++        ef.r12()
++    ));
++    for _ in 0..2_000_000 {
++        cortex_m::asm::nop();
++    }
++    cortex_m::peripheral::SCB::sys_reset()
++}
++
++/// A Rust panic (a slice index out of range, say) used to stop the radio silently in
++/// panic_halt's loop: say where on the serial report, then reboot.
++#[cfg(target_arch = "arm")]
++#[panic_handler]
++fn panic(info: &core::panic::PanicInfo) -> ! {
++    cortex_m::interrupt::disable();
++    match info.location() {
++        Some(l) => report_line(format_args!(
++            "K6 PANIC {}:{} {} build={}",
++            l.file(),
++            l.line(),
++            info.message(),
++            BUILD
++        )),
++        None => report_line(format_args!("K6 PANIC {} build={}", info.message(), BUILD)),
++    }
++    for _ in 0..2_000_000 {
++        cortex_m::asm::nop();
++    }
++    cortex_m::peripheral::SCB::sys_reset()
++}
++
++// ---- hang hunting: stack use and a decode watchdog ----
++
++fn sp_now() -> u32 {
++    cortex_m::register::msp::read()
++}
++
++// The bootloader owns the vector table and forwards SysTick to the function at UserVectors[0]
++// (0x2000_1000), as it forwards USART1 to [1] (hal/uart.rs). Armed around each frame's decode,
++// SysTick wraps every 2^24 cycles (175 ms); after 6 wraps (about 1 s, against 1-2 ms per frame)
++// the handler reports the interrupted code's pc and lr and reboots. A HardFault outranks
++// SysTick, so a decode that stops with no HANG line stopped in a fault, not a loop.
++
++const USER_VECTOR_SYSTICK: usize = 0;
++static mut WD_ARMED: bool = false;
++static mut WD_TICKS: u32 = 0;
++
++fn watchdog_arm(syst: &mut SYST) {
++    unsafe {
++        core::ptr::write_volatile((0x2000_1000 + USER_VECTOR_SYSTICK * 4) as *mut usize, wd_tick as unsafe extern "C" fn() as usize);
++        WD_TICKS = 0;
++        WD_ARMED = true;
++    }
++    syst.set_reload(0x00FF_FFFF);
++    syst.clear_current();
++    syst.enable_interrupt();
++    syst.enable_counter();
++}
++
++fn watchdog_disarm(syst: &mut SYST) {
++    syst.disable_interrupt();
++    syst.disable_counter();
++    unsafe { WD_ARMED = false };
++}
++
++unsafe extern "C" fn wd_tick() {
++    if !WD_ARMED {
++        return;
++    }
++    WD_TICKS += 1;
++    if WD_TICKS < 6 {
++        return;
++    }
++    // the exception frame (r0 r1 r2 r3 r12 lr pc xpsr) sits above the bootloader handler's
++    // push, which ends with its EXC_RETURN lr (0xFFFFFFF1/9/D)
++    let sp = sp_now();
++    let mut frame = 0u32;
++    for i in 0..32u32 {
++        let w = core::ptr::read_volatile((sp + 4 * i) as *const u32);
++        if w & 0xFFFF_FFF0 == 0xFFFF_FFF0 {
++            frame = sp + 4 * i + 4;
++            break;
++        }
++    }
++    let rd = |k: u32| if frame != 0 { core::ptr::read_volatile((frame + 4 * k) as *const u32) } else { 0 };
++    report_line(format_args!(
++        "K6 HANG pc={:08x} lr={:08x} r0={:08x} r1={:08x} r2={:08x} r3={:08x} sp={:08x} frame={:08x} pos={} build={}",
++        rd(6),
++        rd(5),
++        rd(0),
++        rd(1),
++        rd(2),
++        rd(3),
++        sp,
++        frame,
++        ffi::sp_play_pos(),
++        BUILD
++    ));
++    for _ in 0..2_000_000 {
++        cortex_m::asm::nop();
++    }
++    cortex_m::peripheral::SCB::sys_reset()
++}
++
++/// Sizes for the build report (build.sh reads them from the image): the App, which lives in
++/// main's stack frame, and its biggest parts.
++#[cfg(target_arch = "arm")]
++#[no_mangle]
++#[used]
++pub static K6_SIZES: [u32; 6] = [
++    core::mem::size_of::<App>() as u32,
++    core::mem::size_of::<PagerState>() as u32,
++    core::mem::size_of::<crate::flash_map::Settings>() as u32,
++    core::mem::size_of::<crate::device::storage::Storage>() as u32,
++    core::mem::size_of::<crate::device::radio::Radio>() as u32,
++    core::mem::size_of::<crate::device::keypad::Keypad>() as u32,
++];
 diff --git a/src/drivers/fd6818.rs b/src/drivers/fd6818.rs
 index a4f1729..1b8d400 100644
 --- a/src/drivers/fd6818.rs
@@ -1216,10 +1804,10 @@ index 57e9999..3717bb7 100644
  pub mod timer;
 diff --git a/src/hal/pwm_audio.rs b/src/hal/pwm_audio.rs
 new file mode 100644
-index 0000000..a1df792
+index 0000000..eb97a85
 --- /dev/null
 +++ b/src/hal/pwm_audio.rs
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,146 @@
 +//! 8 kHz PCM out of the MCU's PWM pin, the path the stock firmware uses for
 +//! its voice prompts: PA11 = TIM1_CH4 (AF2) -> two RC poles (4.7k/3.9n,
 +//! 4.7k/22n) -> 22k -> the speaker amplifier's input, summed with the RF
@@ -1345,6 +1933,12 @@ index 0000000..a1df792
 +        pos / SEG
 +    }
 +
++    /// For bring-up reports: DMA channel 5's count left, TIM1's counter, DMA
++    /// channel 5's control word and DMA1's interrupt status.
++    pub fn probe(&self) -> (u32, u32, u32, u32) {
++        (rd(DMA_CNDTR5) & 0xFFFF, rd(TIM1 + 0x24) & 0xFFFF, rd(DMA_CCR5), rd(0x4002_0000))
++    }
++
 +    /// Stops the timer and DMA and returns PA11 to an input, as at reset
 +    /// (call it with the speaker amplifier already off: the 1 uF coupling
 +    /// capacitor makes the step audible).
@@ -1361,10 +1955,94 @@ index 0000000..a1df792
 +    }
 +}
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..b87f89a 100644
+index 9d2b0c0..9c5cab6 100644
 --- a/src/main.rs
 +++ b/src/main.rs
-@@ -301,6 +301,37 @@ fn main() -> ! {
+@@ -14,7 +14,7 @@ mod ui;
+ use core::fmt::Write as _;
+ use cortex_m_rt::entry;
+ use kd32f328_pac::Peripherals;
+-use panic_halt as _;
++// panics: app::pager reports them on the serial cable and reboots (was panic_halt)
+ 
+ use app::satellite;
+ use device::display::{Backlight, Display};
+@@ -30,6 +30,35 @@ use hal_shim::{ClosurePin, SystDelay};
+ 
+ const DEFAULT_FREQ_HZ: u32 = 439_500_000;
+ 
++static mut APP_SLOT: core::mem::MaybeUninit<app::App> = core::mem::MaybeUninit::uninit();
++
++#[inline(never)]
++#[allow(clippy::too_many_arguments)]
++fn place_app(
++    slot: &'static mut core::mem::MaybeUninit<app::App>,
++    radio: Radio,
++    chip_id: u16,
++    keypad: Keypad,
++    storage: Storage,
++    flashlight: Flashlight,
++    fm_radio: FmRadio<'static>,
++    cfg: ChannelConfig,
++    syst: &mut cortex_m::peripheral::SYST,
++) -> &'static mut app::App {
++    slot.write(app::App::new(radio, chip_id, keypad, storage, flashlight, fm_radio, cfg, syst))
++}
++
++/// The boot logo's 1 KB buffer exists only during this call, instead of in main's stack frame
++/// for good (main never returns, and the pager's decoder needs that stack).
++#[inline(never)]
++fn show_boot_logo<D>(lcd: &mut D, storage: &mut Storage)
++where
++    D: embedded_graphics::draw_target::DrawTarget<Color = embedded_graphics::pixelcolor::BinaryColor>,
++{
++    let logo = storage.read_boot_logo();
++    ui::boot::draw_logo(lcd, &logo);
++}
++
+ #[entry]
+ fn main() -> ! {
+     let _dp = unsafe { Peripherals::steal() };
+@@ -79,6 +108,15 @@ fn main() -> ! {
+     uart::install_bootloader_trampoline();
+     unsafe { cortex_m::peripheral::NVIC::unmask(kd32f328_pac::Interrupt::USART1) };
+     writeln!(dbg, "bfk6-fw boot, sysclk={}Hz", clock::SYSCLK_HZ).ok();
++    writeln!(dbg, "K6 BOOT build={}", app::pager::BUILD).ok();
++    // what the bootloader left at the bottom of RAM (the live vector table, it seems): the
++    // initial SP and the 15 system exception vectors, then SysTick and the first IRQs
++    write!(dbg, "K6 VEC").ok();
++    for i in 0..20u32 {
++        let w = unsafe { core::ptr::read_volatile((0x2000_0000 + 4 * i) as *const u32) };
++        write!(dbg, " {:08x}", w).ok();
++    }
++    writeln!(dbg).ok();
+ 
+     let mut cp = cortex_m::Peripherals::take().unwrap();
+     unsafe { cp.NVIC.set_priority(kd32f328_pac::Interrupt::USART1, 0) };
+@@ -234,7 +272,11 @@ fn main() -> ! {
+     }
+ 
+     // app class
+-    let mut app = app::App::new(
++    // The App (2.7 KB) lives in a static, built by a function of its own: in main's frame it
++    // sat there for good, with the temporary it was built in, and the pager's decoder ran out
++    // of stack on the radio.
++    let mut app: &'static mut app::App = place_app(
++        unsafe { &mut *core::ptr::addr_of_mut!(APP_SLOT) },
+         radio,
+         chip_id,
+         keypad,
+@@ -265,8 +307,7 @@ fn main() -> ! {
+             display.flush();
+         }
+         3 => {
+-            let logo = app.storage_mut().read_boot_logo();
+-            ui::boot::draw_logo(display.as_draw_target(), &logo);
++            show_boot_logo(display.as_draw_target(), app.storage_mut());
+             display.flush();
+         }
+         _ => {}
+@@ -301,6 +342,44 @@ fn main() -> ! {
      )
      .ok();
  
@@ -1393,16 +2071,23 @@ index 9d2b0c0..b87f89a 100644
 +                power.shutdown(&mut cp.SYST);
 +            }
 +            if due.every_50ms {
++                let t = hal::uptime::now();
 +                ui::draw_pager_only(&mut display, &app);
++                app.note_pager_draw(hal::uptime::now().wrapping_sub(t));
 +            }
-+            delay::ms(&mut cp.SYST, 10);
++            // check the RF chip every 0.5 ms through the 10 ms pause: a burst's first sync
++            // noticed late made its timed reads slip (the rest are caught in poll's own loop)
++            for _ in 0..20 {
++                app.poll_pager(&mut cp.SYST);
++                delay::us(&mut cp.SYST, 500);
++            }
 +        }
 +    }
 +
      // scheduler + main loop
      let mut scheduler = scheduler::Scheduler::new();
      let mut applied_contrast: u8 = u8::MAX;
-@@ -329,6 +360,18 @@ fn main() -> ! {
+@@ -329,6 +408,18 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -1421,7 +2106,7 @@ index 9d2b0c0..b87f89a 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +444,8 @@ fn main() -> ! {
+@@ -401,6 +492,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -1430,7 +2115,7 @@ index 9d2b0c0..b87f89a 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +510,13 @@ fn main() -> ! {
+@@ -465,9 +558,13 @@ fn main() -> ! {
              }
          }
  
@@ -1491,10 +2176,10 @@ index cdfa0f7..6ca5a70 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..fbce4d0
+index 0000000..15f8d61
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,200 @@
+@@ -0,0 +1,201 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
@@ -1678,7 +2363,8 @@ index 0000000..fbce4d0
 +        )
 +        .ok();
 +    } else {
-+        write!(b, "ok {} bad {}", st.good_packets, st.bad_packets).ok();
++        // and the image's sotto commit, as on the serial report's BOOT/CFG lines
++        write!(b, "ok {} bad {} {}", st.good_packets, st.bad_packets, crate::app::pager::build_short()).ok();
 +    }
 +    line(lcd, 49, b.as_str());
 +

@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build the K6 voice pager's receive library for the Baofeng UV-K6 (KD32F328, Cortex-M0):
-# c/k6/build/libsotto_k6.a, the v3.7 8 kHz fixed-point decoder (FX_NARROW_MUL, fx_oa_block)
+# c/k6/build/libsotto_k6.a, the v3.7 8 kHz fixed-point decoder (FX_NARROW_MUL, fx_oa_block;
+# FX_CS512_CONST keeps its 2 KB cos|sin table in flash, ~1 MHz more, for the radio's stack)
 # plus the packet reassembly and playback in c/k6/sotto_pager.c, for Aura (Rust) to link.
 # Also c/k6/build/bench.elf, the same code linked alone for c/k6/bench_k6.py's cycle count.
 #
@@ -21,7 +22,7 @@ RES=$("$CC" -print-resource-dir)
 CFLAGS="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -nostdinc
   -isystem $ROOT/c/fixed/cm4/inc -isystem $RES/include -ffunction-sections -fdata-sections -std=c99
   -ffreestanding -fno-builtin-calloc -fno-builtin-free -Wall -Wno-unused-function
-  -DSOTTO_V36 -DSOTTO_PITCH_THIRD -I$ROOT/c -O2 $*"
+  -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DFX_CS512_CONST -I$ROOT/c -O2 $*"
 mkdir -p "$OUT"
 $CC $CFLAGS -c "$ROOT/c/k6/sotto_pager.c" -o "$OUT/sotto_pager.o"
 $CC $CFLAGS -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_dec.c" -o "$OUT/sotto_fx_dec.o"

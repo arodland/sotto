@@ -4,11 +4,11 @@ name: K6 pager firmware
 on:
   push:
     branches: [main]
-    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tests/test_k6_pager.py",
-            ".github/workflows/k6-firmware.yml"]
+    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
+            "tests/test_k6_harness.py", "modem/k6_harness.py", ".github/workflows/k6-firmware.yml"]
   pull_request:
-    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tests/test_k6_pager.py",
-            ".github/workflows/k6-firmware.yml"]
+    paths: ["c/k6/**", "c/fixed/**", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
+            "tests/test_k6_harness.py", "modem/k6_harness.py", ".github/workflows/k6-firmware.yml"]
 
 jobs:
   host-tests:
@@ -33,17 +33,30 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq clang lld llvm
           rustup toolchain install stable --profile minimal --target thumbv6m-none-eabi
+      - name: build ID (the commit the images report as build=)
+        id: bid
+        run: |
+          sha=${{ github.event.pull_request.head.sha || github.sha }}
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=$(printf %.7s "$sha")" >> "$GITHUB_OUTPUT"
       - name: build Aura + pager, check the fit
+        env:
+          SOTTO_SHA: ${{ steps.bid.outputs.sha }}
         run: sh firmware/k6-aura/build.sh
       - name: size reports
         if: always()
-        run: head -3 firmware/k6-aura/out/size-*.txt || true
+        run: |
+          head -3 firmware/k6-aura/out/size-*.txt || true
+          cat firmware/k6-aura/out/build-id.txt firmware/k6-aura/out/*.sha256 || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: aura-pager
+          name: aura-pager-${{ steps.bid.outputs.short }}
           if-no-files-found: ignore
           path: |
             firmware/k6-aura/out/*.bin
             firmware/k6-aura/out/*.elf
             firmware/k6-aura/out/size-*.txt
+            firmware/k6-aura/out/build-id.txt
+            firmware/k6-aura/out/frames-*.txt
+            firmware/k6-aura/out/*.sha256

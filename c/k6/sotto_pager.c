@@ -71,6 +71,7 @@ int sp_init(void *mem, unsigned bytes) {
   unsigned n = (bytes * 16u) / (6u * 16u + 2u + 1u);
   pn9_init();
   memset(&S, 0, sizeof S);
+  memset(mem, 0, bytes);          /* the good/seen bitmaps start clear (the K6 keeps mem in NOLOAD RAM) */
   n &= ~15u;                      /* whole profile S groups; the bitmaps then round evenly */
   if (n > 65535u) n = 65520u;
   if (n == 0) return 0;
@@ -254,7 +255,8 @@ int sp_auto_gain_q8(void) {
 }
 
 int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int emphasis) {
-  static int16_t pcm[SP_FRAME_SAMPLES];
+  int16_t *pcm = (int16_t *)out;   /* decoded in place: the conversion reads each sample before
+                                      writing it (320 bytes less RAM on the K6) */
   if (!sp_play_frame(pcm)) return 0;
   sp_pcm_to_pwm(pcm, out, SP_FRAME_SAMPLES, top, gain_q8, emphasis);
   return 1;

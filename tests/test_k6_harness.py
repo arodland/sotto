@@ -42,6 +42,14 @@ def test_parse_line():
     assert h.parse_line("bfk6-fw boot") is None
 
 
+def test_events():
+    assert h.events("2:0:0,1000:27:4,1000:53:4,2000:107:24") == "S@0 F@27+4 F@53+4 D@107+24"
+    assert h.events("3002:0:8,") == "SFD@0+8" and h.events("") == ""
+    assert h.events("2:0:0,1000:300:22,0:330:10") == "S@0 F@300+22 T@330+10"
+    d = h.parse_line(pkt_line(PK0, extra="ev=2:0:0,2000:107:32 "))
+    assert "[S@0 D@107+32]" in h.describe(d, h.analyse(d["raw"], 1))
+
+
 def test_analyse_finds_reading_and_errors():
     a = h.analyse(PK0, rswap=1)
     assert a["errors"] == 0 and a["seq"] == 0 and a["swap"] == 1 and a["inv"] == 0 and a["first"] == -1
@@ -105,7 +113,7 @@ def test_listen_counts():
     assert (st.pk, st.ok, st.short, st.be, st.lost_lines) == (4, 2, 1, [0, 2, 0], 2)
     assert again.be == st.be
     assert "BE   2/512" in out[2] and "pkt  0" in out[2]
-    assert "3 report lines lost" not in out[-1] and "2 report lines lost" in out[-1]
+    assert "3 report lines lost" not in out[-2] and "2 report lines lost" in out[-2]
 
 
 class FakeK6:
@@ -153,3 +161,83 @@ def test_speed_shift():
     x = np.zeros(48000)
     assert len(h.speed_shift(x, 48000, 1.0)) == pytest.approx(48000 / 1.01, abs=2)
     assert h.speed_shift(x, 48000, 0) is x
+
+
+CFG_B = ("K6 CFG why=key1 chip=4819 freq=439500000 phy=F frames=L baud=1200 inv=0 soft=0 swap=1 emph=1 vol=0 "
+         "len5d=3f00 keep=0 auto=1 build=1234567-20261104T0610Z")
+
+
+def test_build_reported_and_logged():
+    lines = [(0.0, "K6 PKT n=1 got=20 sync=n res=short rswap=1 soft=0 swap=1 good=0 bad=0 to=0 raw=" + PK0[:20].hex()),
+             (0.5, "K6 BOOT build=1234567-20261104T0610Z"),
+             (1.0, CFG_B),
+             (2.0, pkt_line(PK0, n=2, res=0))]
+    out = []
+    with tempfile.TemporaryDirectory() as d:
+        h.listen(iter(lines), f"{d}/log.txt", out.append)
+        logged = open(f"{d}/log.txt").read().splitlines()
+        again = list(h.file_lines(f"{d}/log.txt"))
+    assert h.parse_line(lines[1][1])["build"] == "1234567-20261104T0610Z"     # digits stay a string
+    assert out.count("K6 firmware build 1234567-20261104T0610Z") == 1
+    assert logged[0].split("\t")[1] == "?" and all(ln.split("\t")[1].startswith("1234567") for ln in logged[1:])
+    assert [ln for _, ln in again] == [ln for _, ln in lines]
+    out = []
+    h.listen(iter(lines[3:]), None, out.append)
+    assert "no firmware build reported" in out[-1]
+
+
+def test_sweep_expect_build():
+    from modem import k6
+    import argparse
+    ap = argparse.ArgumentParser()
+    k6._tx_opts(ap)
+    a = ap.parse_args(["--phy", "F"])
+    a.speeds, a.levels, a.repeat, a.message, a.settle, a.gap = "0", None, 2, False, 0.01, 0.0
+    a.build_wait = 0.2
+    for want, cfg, sends in (("1234567", CFG_B, 1), ("72b6e3b", CFG_B, 0), ("1234567", FakeK6().q[0][1], 0)):
+        fake = FakeK6()
+        fake.q = [(0.0, cfg)]
+        n = []
+        a.expect_build = want
+        send = lambda x, b, out: (n.append(1), fake.send(x, b, out))
+        if sends:
+            rows = h.sweep(a, fake, send, lambda s: None)
+            assert rows[0]["ok"] == 2
+        else:
+            with pytest.raises(h.WrongBuild):
+                h.sweep(a, fake, send, lambda s: None)
+        assert len(n) == sends
+
+
+def test_sweep_refuses_other_settings():
+    from modem import k6
+    import argparse
+    ap = argparse.ArgumentParser()
+    k6._tx_opts(ap)
+    a = ap.parse_args(["--phy", "F"])
+    a.speeds, a.levels, a.repeat, a.message, a.settle, a.gap = "0", None, 1, False, 0.01, 0.0
+    a.anyway = False
+    fake = FakeK6()
+    fake.q = [(0.0, fake.q[0][1].replace("phy=F", "phy=D"))]
+    n = []
+    with pytest.raises(h.WrongBuild):
+        h.sweep(a, fake, lambda x, b, out: n.append(1), lambda s: None)
+    assert not n
+
+
+def test_gap_and_stray_shown():
+    from modem.k6_harness import describe, parse_line
+    d = parse_line("K6 PKT n=3 got=64 sync=N res=short ev=2:0:0,0:413:6 gap=146 stray=52 rearm=60 good=1 bad=0 to=0 raw=00")
+    s = describe(d, None)
+    assert "gap 146" in s and "stray 52" in s and "rearm 60" in s
+    d = parse_line("K6 PKT n=4 got=64 sync=N res=short ev=2:0:0 gap=850 stray=-1 good=1 bad=0 to=0 raw=00")
+    assert "stray" not in describe(d, None)
+
+
+def test_ok_packet_without_raw():
+    from modem.k6_harness import Stats, handle
+    st, out = Stats(), []
+    d = handle(0.0, "K6 PKT n=1 got=64 sync=N res=1 magic=a7 rswap=1 soft=0 swap=1 be=0 bseq=3 bswap=1 binv=0 "
+               "blk=0,0,0,0,0,0,0,0 ev=2:0:0 gap=80 stray=-1 rearm=40 good=1 bad=0 to=0", st, out.append)
+    assert d["kind"] == "PKT" and st.ok == 1 and st.be == [0]
+    assert "ok" in out[-1]

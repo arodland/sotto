@@ -100,6 +100,10 @@ MENU again; EXIT leaves the app.)
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
 | 6 | raw view: the last packet's first 16 bytes in hex, its sync and length, and its bit errors against the test message (below) |
 | 5 | 1200 / 2400 baud (profile D) |
+| 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, or 0x00FF = stream mode (sync found in software; screen `SYNC W`) |
+| 8 | Re-arm delay after each packet: 40, 50, 30, 60, 20, 0, 80 ms after its end, then a per-packet sweep (`CFG rearm=`; -1 = sweep). FIFO reads are always on a timer now |
+| 9 | auto-play on/off (on by default; MENU still plays) |
+| 0 | decode watchdog on/off (off by default; `CFG wd=`): reports `K6 HANG pc=` if a frame takes over 1 s |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
 | PTT | calibration transmit: test packet 0, twice in D and then twice in F, on the VFO's TX frequency and power |
@@ -185,6 +189,15 @@ python -m modem.k6_harness sweep --k6 /dev/ttyUSB2 --port /dev/ttyUSB0 --phy F -
 python -m modem.k6_harness listen --file k6.txt     # score a saved log again
 ```
 
+**Which image is running.** Every image reports its build: the sotto commit it was built
+from, then the UTC build time (`K6 BOOT build=72b6e3b-20261104T0555Z` at power-on, and
+`build=` at the end of each `CFG` line). The commit also shows on the VOICE MSG screen's
+fourth line, after `ok n bad n`. CI names the artifact `aura-pager-<commit>` and stores each
+.bin's SHA-256 next to it. `listen` and `sweep` print the build when it changes, and every
+`--log` line carries it. With `sweep --expect-build <commit>`, nothing is transmitted until the
+K6 reports that build, and the sweep stops if the K6 reboots into another one. Images from
+before this change report no build at all.
+
 `listen` prints one line per packet:
 
 ```
@@ -203,5 +216,112 @@ python -m modem.k6_harness listen --file k6.txt     # score a saved log again
 in percent, and baud and tones shift together, as a sound-card clock error would. It collects
 the K6's reports and ends with a table of packets seen, CRC passes, mean bit errors and errors
 per eighth of the packet. The K6's PHY, frames and baud are still set with its keys. `sweep`
-warns if the K6's last `CFG` line doesn't match. Press any setting key twice to make the K6
+refuses to transmit if the K6's last `CFG` line doesn't match (`--anyway` sends regardless). Press any setting key twice to make the K6
 send a `CFG` line. `--dry-run` listens without keying.
+
+**64-byte receive, first on-air result (2026-11-04).** With FFSK from the IC-7100, the first
+16 bytes of every 64-byte packet arrived with no bit errors at every speed (-1 to +1 %) and
+level (0.2 to 0.7). After them, the FIFO only repeated an old word. Each PKT line's `ev` field
+(`[S@0 F@27+4 ...]` in `listen`) shows when the sync, FIFO-almost-full and RX-done interrupts
+came, and how many words each one read. Keys 7 and 8 try other length settings. All of
+this is reported on the serial line, so watch it with `listen`.
+If the playback's DMA doesn't move for 200 ms, the radio stops playback and goes back to
+listening. It also writes `K6 PWM stalled ...` with the DMA and timer registers, so a PWM
+path that doesn't run can't lock up the radio.
+**First playback on the radio (2026-11-04).** After good 16-byte packets, the first
+auto-playback hung the K6 before its playback loop, and only pulling the battery cleared it.
+The image now prints `K6 STEP ...` lines through playback, so the serial report shows how far
+it got. A Rust panic prints `K6 PANIC file:line message` and reboots the radio instead of hanging.
+A CPU fault should print `K6 FAULT pc=... lr=...` and reboot. That only works if the
+bootloader's HardFault handler forwards to ours, though: this MCU has no VTOR, and the
+exception vectors belong to the bootloader. Either way, the last `K6 STEP` line says how far
+playback got.
+
+**Why 64-byte packets failed (2026-11-04, image 72b6e3b).** The `ev` timing showed the chip
+receives the whole 64-byte packet: RX-done comes about 460-510 ms after the sync, as for 64
+bytes. Its 0x1000 interrupt, which the firmware took as "FIFO almost full", comes about 14
+bytes before the end of the packet as REG_5D sets it (F at about 50 bytes for 0x3F00, 18 for
+0x1F00, 3 for a 16-byte packet), not when 4 words are waiting. By then the 8-word FIFO had
+overflowed and kept only the first 16 bytes. Profile S worked because its whole packet fits in
+the FIFO. The fix is to read the FIFO on a timer from the sync interrupt, one word per 13.3 ms
+(16 bits at 1200 baud) with one word of lead, and read the rest at RX-done. That's now the
+default (key 8 used to switch back to the interrupt reads; it now sets the re-arm delay). A
+packet's `ev` ends in `T@ms+n` when the timer read its last word.
+
+**Back-to-back packets (2026-11-04).** On 314a306 only 46 of VE9QRP's 64 packets were
+caught, and each one that arrived had 0 bit errors. The losses are in when the firmware re-arms
+the receiver after a packet read on the timer:
+
+| Image | Re-arm | 16-packet test |
+|---|---|---:|
+| 314a306 | at the chip's own RX-done, or a 150 ms timeout that could run past the next sync | 12-13 |
+| f413547 | at once, before the payload's end | 4-5 |
+| 5d30ee8 | a fixed 60 ms after the payload's end | 4-6 |
+
+A key 8 sweep on 5d30ee8 over VE9QRP (re-arm 0-120 ms after the end, 3 packets each) showed
+two failure modes. Re-arming before the chip's own RX-done (0-30 ms) makes that RX-done come
+late, 110-175 ms after the last word, and re-arming again on it lands on the next packet's
+preamble and false-syncs (`gap` about 53, a FIFO interrupt every 13 ms). Re-arming 60 ms or
+later leaves too little 0x55 for the chip's bit clock: the packet syncs on time but slips (about
+240 bit errors, F early). 40 ms after the end, with the RX-done already in, was 3 of 3. A gap
+test ruled out the preamble length: 53 or 100 ms of extra 0x55 caught no more, and 100 ms made
+the chip false-sync, so the spec's 16-byte preamble stays.
+
+So the firmware now re-arms once the chip's RX-done is in and at least 40 ms after the payload's
+end, or 50 ms after it without the RX-done. A late RX-done after that is dropped without
+re-arming, including one inside the next packet. That got 7-10 of 16. The rest synced 30-50 ms
+late by the radio's clock (F about 300 ms after the sync instead of 340), so the timed reads
+started late and slipped: the main loop checks the chip once a pass, between a 10 ms sleep and a
+screen redraw every 50 ms. So after each packet the firmware now waits for the next sync in a
+tight loop (every 0.5 ms, up to 250 ms after the re-arm), and the screen catches up after the
+burst. On 6661d40 that got 16 of 16 and 14 of 16 on the test message and 63 of 64 on VE9QRP,
+with 0 bit errors. But 6661d40 also froze while idle (keys and power switch dead until a battery
+pull), most likely looping on false syncs in noise, so the loop now goes back to the main loop
+after any packet that fails its CRC. The main loop also checks the chip every 0.5 ms through
+its 10 ms pause, for the first packet of a burst. A `K6 PKT` line carries `raw=` only for a packet that failed its
+CRC, to keep the line short between back-to-back packets (about 11 ms instead of 28), and the
+re-arm delay is in bit times, so at 2400 baud it is half as many ms. Timed reads also follow the baud rate (a word
+per 6.7 ms in D at 2400). Each `K6 PKT` line has `gap=` (ms from the last re-arm to this
+packet; about 90 back to back, about 560 more per packet missed), `stray=` (when the last timed
+packet's RX-done came, in ms after its last word; -1 for not before this packet) and `rearm=`
+(the delay that preceded this packet). **Key 8** steps that delay (ms after the payload's end)
+through 40, 50, 30, 60, 20, 0 and 80, then a sweep that moves it 10 ms per packet from 0 to 120
+(`rearm=-1` in the CFG line). The PC can't set it: the cable's PC-to-radio wire is PA10, the
+PTT input.
+
+With REG_5D at 0x00FF (key 7 pressed twice), the chip instead streamed everything it
+demodulated, preamble and sync word included, with a FIFO interrupt every 4 words and no sync
+or RX-done interrupt. One 64-byte packet came through that way with 0 bit errors over 60 bytes.
+That length setting is now a stream mode: the firmware reads 4 words per interrupt, finds the
+sync word in software (byte aligned, up to 2 wrong bits, inverted too), and keeps the next 64
+(or 16) bytes. The sync letter shows `W`, or `w` if the sync came inverted.
+
+**Playback hang found (2026-11-04, image 480d312): the stack ran out.** When playback started,
+the stack pointer was only 236 bytes above the end of static RAM. Aura had used 8.3 KB of the
+8.5 KB stack (its `App` and the main loop live on the stack), and the decoder needs about
+3.5 KB more. Frame 0 overran into static RAM and frame 1 never finished. The fix moves the
+message store into the RAM below UserVectors (`RAM0` in memory.x), which Aura leaves unused.
+The first try used all 4 KB from 0x2000_0000 and hung at boot, at the Aura main screen, when
+the store was cleared. The bottom of that RAM evidently holds the live interrupt vector table.
+A second try from 0x2000_0100 hung the same way, so that RAM is in use and the store is back
+in Aura's RAM. At power-on the image prints `K6 VEC` with the first 20 words at 0x2000_0000.
+`build.sh` now lists the largest stack frames (`frames-*.txt`, from `tools/k6_frames.py`), to
+find the room in Aura's own RAM. `build.sh` reports RAM0's use, and warns when under 12 KB is left for the stack.
+
+**Timed reads on air (image 480d312).** The first full-length packets passed: 3 of 10 had
+64 bytes, 0 bit errors and a good CRC. Each time, the chip's own RX-done for the packet came
+after the timer had read it, and the firmware took it as a new packet, which put the next
+one out of step. The firmware now waits for that RX-done after a timed packet and drops it.
+It also ignores an RX-done that comes without a sync.
+
+**Second playback test (2026-11-04, image 72b6e3b).** 34 of 40 profile-S packets arrived, all
+with clean CRCs, and the radio stopped inside the decoder: after `first frame decoded`, before
+the four-frame line. The PC decodes the same 34 packets in 4 ms. The next image prints, for
+each of the first 6 frames, a `K6 STEP frame n pos=` line before it and `done ... us= stack_free=`
+after it, plus the stack pointer, the stack floor and the least free stack at playback start.
+Key 0 adds a SysTick watchdog around each decode. It relies on the bootloader forwarding
+SysTick through UserVectors[0], as it forwards USART1 through [1], which isn't confirmed yet
+(the stock firmware uses that slot). So it is off by default. When it's on, a frame that
+takes over a second prints the interrupted pc and lr and reboots. A stop with no `K6 HANG`
+line points to a fault, because a HardFault outranks SysTick.
+Key 9 turns auto-play off, so receive tests can run without it.

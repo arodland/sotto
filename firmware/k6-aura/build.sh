@@ -38,9 +38,10 @@ fit() {
     $1 == ".vector_table" || $1 == ".text" || $1 == ".rodata" || $1 == ".gnu.sgstubs" { flash += $2 }
     $1 == ".data" { flash += $2; ram += $2 }
     $1 == ".bss" || $1 == ".uninit" { ram += $2 }
-    END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 17720 (%d left for the stack)\n",
-            flash, 122880 - flash, ram, 17720 - ram
-          if (17720 - ram < 6144) print "warning: under 6 KB of stack left (the decoder alone needs 3.5 KB)"
+    $1 == ".ram0" { ram0 += $2 }
+    END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 17720 (%d left for the stack); RAM0 %d of 4096\n",
+            flash, 122880 - flash, ram, 17720 - ram, ram0
+          if (17720 - ram < 12288) print "warning: under 12 KB of stack left (on the radio Aura had used 8.3 KB of it when playback started; the decoder needs 3.5 KB more)"
           if (flash > 122880) { print "DOES NOT FIT in the 120 KB application flash"; exit 1 } }'
 }
 # where the flash goes: demangled symbols grouped by Rust module path (C symbols by name)
@@ -56,6 +57,22 @@ breakdown() {
     END { for (g in sum) printf "%8d  %s\n", sum[g], g; printf "%8d  TOTAL (symbols with sizes)\n", total }' \
     | sort -rn | head -45
 }
+
+# The build ID every pager image reports (serial `K6 BOOT build=` at power-on and in each
+# `K6 CFG`; its commit on the VOICE MSG screen): sotto's commit, -dirty if tracked files are
+# changed, and the UTC build time. CI passes the PR head as SOTTO_SHA; SOTTO_BUILD overrides all.
+if [ -z "$SOTTO_BUILD" ]; then
+  if [ -n "$SOTTO_SHA" ]; then
+    SHA=$(printf %.7s "$SOTTO_SHA")
+  else
+    SHA=$(git -C "$ROOT" rev-parse --short=7 HEAD 2>/dev/null || echo nogit)
+    [ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no 2>/dev/null)" ] && SHA="$SHA-dirty"
+  fi
+  SOTTO_BUILD="$SHA-$(date -u +%Y%m%dT%H%MZ)"
+fi
+export SOTTO_BUILD
+echo "$SOTTO_BUILD" > "$OUT/build-id.txt"
+echo "build ID $SOTTO_BUILD"
 
 # Baseline: stock Aura at the same commit, for comparison (AURA_BASELINE=0 skips it)
 if [ "${AURA_BASELINE:-1}" = 1 ]; then
@@ -93,6 +110,12 @@ variant() {
     (cd "$WORK" && cargo objcopy --release "$@" -- -O binary "$OUT/$name.bin")
   fi
   ls -l "$OUT/$name.bin"
+  (cd "$OUT" && sha256sum "$name.bin" | tee "$name.bin.sha256")
+  # stack frames, largest first (the K6's stack ran out at playback)
+  if command -v llvm-objdump >/dev/null 2>&1; then
+    llvm-objdump -d -C --no-show-raw-insn "$ELF" | python3 "$ROOT/tools/k6_frames.py" 40 > "$OUT/frames-$name.txt" &&
+      { echo "== stack frames, $title"; cat "$OUT/frames-$name.txt"; python3 "$ROOT/tools/k6_frames.py" --sizes "$ELF" | tee -a "$OUT/frames-$name.txt"; }
+  fi
 }
 
 # Full Aura with VOICE MSG in its launcher: 58 KB too big at edf3b98, so this is a report only
