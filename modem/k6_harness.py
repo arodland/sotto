@@ -181,8 +181,8 @@ def describe(d, a):
 
 
 def timing(d):
-    """gap= (ms from the radio's last re-arm to this packet: about 75 back to back on the
-    default 60 ms re-arm, about 560 more per packet missed), stray= (when the last timed
+    """gap= (ms from the radio's last re-arm to this packet: about 90 back to back on the
+    default 40 ms re-arm, about 560 more per packet missed), stray= (when the last timed
     packet's own RX-done came, ms after its last word; -1 none) and rearm= (the re-arm delay
     before this packet, ms after the last one's end; key 8)."""
     t = ""

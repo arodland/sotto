@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..c3c1b39
+index 0000000..4cc61c7
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1503 @@
+@@ -0,0 +1,1519 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -367,7 +367,12 @@ index 0000000..c3c1b39
 +/// (67 ticks a byte at 1200 baud) is the last packet's, not this one's
 +const STRAY_DONE_TICKS_PER_BYTE: usize = 40;
 +/// key 8's re-arm delays after a timed packet's end, ms; after them, a sweep
-+const REARM_STEPS: [u8; 7] = [60, 80, 100, 120, 0, 20, 40];
++const REARM_STEPS: [u8; 7] = [40, 50, 30, 60, 20, 0, 80];
++/// After the earliest re-arm, wait this long more for the chip's RX-done (100 us ticks)
++const REARM_WAIT_TICKS: u16 = 100;
++/// An RX-done this soon (ms) after a timed packet's last word, coming after our re-arm, is
++/// that packet's and is dropped without another re-arm
++const STRAY_IGNORE_MS: u16 = 300;
 +const REARM_SWEEP_STEPS: u8 = 13; // 0, 10, ... 120 ms
 +/// 100 us ticks a byte takes at 1200 baud (66.7)
 +const TICKS_PER_BYTE: usize = 67;
@@ -469,7 +474,7 @@ index 0000000..c3c1b39
 +
 +impl PagerState {
 +    /// The re-arm delay after this timed packet (ms after its payload's end): key 8's step,
-+    /// or the sweep's next. 60 ms is about halfway into the next packet's 107 ms preamble.
++    /// or the sweep's next. 40 ms measured best (2026-11-04).
 +    fn rearm_delay_ms(&mut self) -> u8 {
 +        match REARM_STEPS.get(self.rearm_mode as usize) {
 +            Some(&ms) => ms,
@@ -826,7 +831,13 @@ index 0000000..c3c1b39
 +    if app.pager.timed_read && app.pager.len_mode != 2 && flags & (IRQ_RX_SYNC | IRQ_RX_FULL) == 0 {
 +        // an RX-done with no sync: the end of a packet already finished on the timer
 +        if let Some(t) = app.pager.t_timed_done.take() {
-+            app.pager.stray_ms = (uptime::now().wrapping_sub(t) / 10) as i16;
++            let ms = uptime::now().wrapping_sub(t) / 10;
++            app.pager.stray_ms = ms as i16;
++            if ms < STRAY_IGNORE_MS {
++                // the last packet's own RX-done, after our re-arm: re-arming again now would
++                // land on the next packet's preamble or sync (key 8 sweep, 2026-11-04)
++                return;
++            }
 +        }
 +        rearm_rx(app, syst);
 +        return;
@@ -939,14 +950,14 @@ index 0000000..c3c1b39
 +            }
 +        }
 +        if got / 2 >= words {
-+            // all words read on the timer: log it as a pseudo event 0, then re-arm at a fixed
-+            // time, REARM_AFTER_END_TICKS after the payload's end. Re-arming at once (image
-+            // f413547) let the chip false-sync about 50 ms into the next packet's 0x55
-+            // preamble, out of step (4-5/16 ok). Waiting for the chip's own RX-done (314a306)
-+            // was right when it came 50-100 ms later, but it comes 85-260 ms later, and the
-+            // 150 ms timeout then ran past the next sync (about 133 ms after the end, back to
-+            // back) and lost that packet (46/64). An RX-done that still comes is dropped:
-+            // here, at the top of this function, or inside the next packet (STRAY_DONE).
++            // all words read on the timer: log it as a pseudo event 0, then re-arm once the
++            // chip's own RX-done is in and at least REARM ms (key 8, 40 by default) after the
++            // payload's end, or at REARM + 10 ms without it. Measured on air (2026-11-04,
++            // key 8 sweep over VE9QRP): re-arming before that RX-done (f413547; 0-30 ms)
++            // makes it come late, 110-175 ms after, and any re-arm then lands on the next
++            // packet's preamble and false-syncs; 60 ms or later leaves too little preamble for
++            // the chip's bit clock, and the packet syncs but slips (314a306 waited for the
++            // RX-done, up to a 150 ms timeout that ran past the next sync). 40 ms: 3/3.
 +            let k = app.pager.ev_n as usize;
 +            if k < app.pager.ev.len() {
 +                app.pager.ev[k] = (0, last.wrapping_sub(t0), (got / 2 - words_before) as u8);
@@ -954,15 +965,20 @@ index 0000000..c3c1b39
 +            }
 +            let delay_ms = app.pager.rearm_delay_ms();
 +            app.pager.rearm_last = delay_ms as i16;
-+            let rearm_at = (len * tpb) as u16 + delay_ms as u16 * 10;
-+            app.pager.t_timed_done = Some(uptime::now());
++            let end = (len * tpb) as u16;
++            let rearm_min = end + delay_ms as u16 * 10;
++            let rearm_max = rearm_min + REARM_WAIT_TICKS;
++            let t_done = uptime::now();
++            app.pager.t_timed_done = Some(t_done);
++            let mut done = false;
 +            loop {
-+                if take_irq(app, syst) & IRQ_RX_DONE != 0 {
-+                    if let Some(t) = app.pager.t_timed_done.take() {
-+                        app.pager.stray_ms = (uptime::now().wrapping_sub(t) / 10) as i16;
-+                    }
++                if take_irq(app, syst) & IRQ_RX_DONE != 0 && !done {
++                    done = true;
++                    app.pager.t_timed_done = None;
++                    app.pager.stray_ms = (uptime::now().wrapping_sub(t_done) / 10) as i16;
 +                }
-+                if uptime::now().wrapping_sub(t_sync) >= rearm_at {
++                let since = uptime::now().wrapping_sub(t_sync);
++                if (done && since >= rearm_min) || since >= rearm_max {
 +                    break;
 +                }
 +                delay::us(syst, 500);
