@@ -20,8 +20,14 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
   (48 bytes), 8 reserved bytes, CRC-16/CCITT-FALSE. PN9 whitening over all 64 bytes.
 - **Interleave:** 8 packets per group. A lost packet costs 8 isolated 20 ms frames 160 ms
   apart, which sotto's concealment bridges.
-- **Profile S** is the 16-byte fallback (`--payload S`), only if the FD6818 won't take 64-byte
-  frames.
+- **Profile XL** (`--payload XL`, K6 key 2): 128-byte payload, the same header, 20 frames, no
+  reserved bytes; groups of 8 packets carry 160 frames.
+- **Stream framing** (`--stream`, K6 key 7 stream mode): after the lead-in, packets go back to
+  back with only the sync word between them. The K6 finds the sync in software.
+- **F at 2400 baud** (`--phy F --baud 2400`, K6 keys 1 and 5): 1200/2400 Hz tones, MSK. Not yet
+  tried on air.
+- **Profile S** (`--payload S`, 16 bytes) is still made here, but the K6 firmware no longer
+  takes it.
 - **Timing:** 150 ms of 0x55 after keying (`--lead-ms`; it was 400, but a long run of 0x55
   made the K6 false-sync on the first packet), carrier and 0x55 kept up between packets, 2
   bytes of 0x55 before unkeying.
@@ -31,6 +37,8 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
 | 1200 baud, profile L | 560 ms | 160 ms | 54 s |
 | 2400 baud, profile L | 280 ms | 160 ms | 27 s |
 | 1200 baud, profile S | 240 ms | 40 ms | 90 s |
+| 1200 baud, XL, stream | 880 ms | 400 ms | 35 s |
+| 2400 baud, XL, stream | 440 ms | 400 ms | 18 s |
 
 ## Two ways to put the bits on air
 

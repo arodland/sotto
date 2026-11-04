@@ -20,7 +20,8 @@ PC: c/sotto_enc (v3.7)  ->  k6fsk packets  ->  IC-7100 FSK  ~~~>  K6 FD6818 FSK 
 - **`c/k6/sotto_pager.c`** handles the packets and playback. It de-whitens with PN9, checks the
   magic and CRC-16, and puts frames in their place per the spec's interleave (packet k of group g
   carries frames g*64 + 8s + k). It keeps a good bit per frame and per packet, so repeats fill
-  holes. A new msg_id drops the old message. It also handles profile S, the 16-byte fallback.
+  holes. A new msg_id drops the old message. It also takes profile XL (128 bytes, 20 frames per
+  packet, frames g*160 + 8s + k); profile S was removed on 2026-11-04.
   Playback decodes frame by frame and conceals missing frames. There is no heap: the store is in
   the caller's buffer, and the decoder's one `calloc` is a static 864-byte block.
 - **`tools/k6_build.sh`** builds `libsotto_k6.a` for thumbv6m with clang, plus a bench ELF. The
@@ -176,7 +177,12 @@ What it took, in order:
   the limit is the NRZ waveform itself. Next: look at its eye (the IC-7100 recording the K6's
   own D test transmit), then try transmit pre-compensation or other FD6818 D-mode filter and
   gain settings.
-- The first packet of each burst is still usually lost during lock-in. A longer lead-in may fix it.
+- The first packet of each burst: fixed on 814206c (150 ms lead-in and the main loop checking
+  the chip every 0.5 ms, 4 of 4).
+- The faster options (packet spec section 12; firmware README "Faster link") are untested on
+  air: FFSK 1200/2400 at 2400 baud (does the chip's FFSK receiver follow REG_72?), profile XL,
+  and the continuous stream mode (does the FD6818 keep streaming past REG_5D's length, and does
+  it stream in noise?).
 - The artifacts Jeff heard on the first run were mostly concealment (29% of frames missing).
   Listening at 1.6% loss is still to do.
 ## Files
@@ -190,6 +196,6 @@ What it took, in order:
   (`tests/test_k6_harness.py`; usage in the firmware README).
 - `c/k6/bench_k6.py`: the M0 cycle bench.
 - `c/k6/k6fsk_ref.py`: a copy of the spec's reference packer.
-- `tests/test_k6_pager.py`: spec test vector, loss, repeats, new message, truncation, profile S,
+- `tests/test_k6_pager.py`: spec test vector, loss, repeats, new message, truncation, profile XL,
   automatic gain and PWM values.
 - `firmware/k6-aura/`: the Aura patch, build script, and flashing guide.

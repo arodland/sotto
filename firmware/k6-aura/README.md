@@ -94,19 +94,19 @@ MENU again; EXIT leaves the app.)
 | MENU | play the message (again) |
 | EXIT | stop playback / leave |
 | UP / DOWN | volume, 3 dB steps on top of the automatic level (-9 to +12 dB) |
-| 1 | PHY: D (direct 2-FSK, the default) or F (FFSK 1200/1800 Hz) |
-| 2 | frames: L (64-byte packets, the default) or S (16-byte fallback) |
+| 1 | PHY: D (direct 2-FSK, the default) or F (FFSK 1200/1800 Hz; 1200/2400 Hz at 2400 baud) |
+| 2 | frames: L (64-byte packets, 8 frames, the default) or XL (128 bytes, 20 frames; screen `X`). Profile S is gone |
 | 3 | the RF chip's RX invert bit (REG_59<10>), by hand only |
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
 | 6 | raw view: the last packet's first 16 bytes in hex, its sync and length, and its bit errors against the test message (below) |
-| 5 | 1200 / 2400 baud (profile D) |
-| 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, or 0x00FF = stream mode (sync found in software; screen `SYNC W`) |
+| 5 | 1200 / 2400 baud, D or F (F at 2400: REG_58 0x73E9, FFSK 1200/2400 Hz; untested on air) |
+| 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, then two stream modes, 0xFF00 and 0xFFE0 (chip armed once, sync found in software at any bit offset, packets back to back; screen `stream`, `SYNC W`, `RS` = re-arms) |
 | 8 | Re-arm delay after each packet: 40, 50, 30, 60, 20, 0, 80 ms after its end, then a per-packet sweep (`CFG rearm=`; -1 = sweep). FIFO reads are always on a timer now |
 | 9 | auto-play on/off (on by default; MENU still plays) |
 | 0 | decode watchdog on/off (off by default; `CFG wd=`): reports `K6 HANG pc=` if a frame takes over 1 s |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
-| PTT | calibration transmit: test packet 0, twice in D and then twice in F, on the VFO's TX frequency and power |
+| PTT | calibration transmit: test packet 0, twice in D and then twice in F, at key 5's baud rate, on the VFO's TX frequency and power |
 
 The screen:
 
@@ -295,6 +295,29 @@ or RX-done interrupt. One 64-byte packet came through that way with 0 bit errors
 That length setting is now a stream mode: the firmware reads 4 words per interrupt, finds the
 sync word in software (byte aligned, up to 2 wrong bits, inverted too), and keeps the next 64
 (or 16) bytes. The sync letter shows `W`, or `w` if the sync came inverted.
+
+**Faster link (2026-11-04, after 6661d40/fb0a69e).** Three options, combinable, none tried on
+air yet (packet spec section 12):
+
+- **F at 2400 baud** (keys 1 and 5): FFSK 1200/2400 Hz, MSK at 2400 baud. It halves the air
+  time if the chip's FFSK receiver follows the baud register. The calibration transmit now
+  uses key 5's rate, so a PTT press with F/2400 set, recorded on the IC-7100, shows what the
+  chip really sends.
+- **Profile XL** (key 2): 128-byte packets with 20 frames, 120 of 128 bytes speech (L: 48 of
+  64). Timed reads and the re-arm rule work for it as for L.
+- **Stream mode for whole messages** (key 7 pressed twice, or three times for REG_5D 0xFFE0):
+  the chip is armed once, and the firmware searches every bit for the sync word, takes the
+  payload and searches again, so the sender (`modem.k6 --stream`) puts only a sync word between
+  packets: no per-packet preamble and no re-arm. While a signal is on (a run of preamble, a
+  sync or a good packet in the last 1.5 packets) poll stays in a 0.5 ms loop, since the
+  screen redraw would let the FIFO overflow at 2400 baud; in noise it returns after one look.
+  An RX-done or 300 ms without a FIFO interrupt while a signal is on re-arms the chip and
+  counts in `restarts=` (screen `RS`); idle, it re-arms after 1 s without one. The old
+  per-packet stream reading (byte-aligned search, re-arm after each packet) is gone.
+
+For a 12 s message: F 1200 L 45 s today; F 1200 XL stream 28 s; F 2400 L 23 s; F 2400 XL stream
+14 s. Profile S (16 bytes) is removed from the firmware and the C library; the PC softmodem
+still makes it.
 
 **Playback hang found (2026-11-04, image 480d312): the stack ran out.** When playback started,
 the stack pointer was only 236 bytes above the end of static RAM. Aura had used 8.3 KB of the
