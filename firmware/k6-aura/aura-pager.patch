@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..d7fbc47
+index 0000000..ea72220
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,755 @@
+@@ -0,0 +1,758 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -375,7 +375,9 @@ index 0000000..d7fbc47
 +            short_frames: false,
 +            baud_2400: false,
 +            invert: false,
-+            swap: false,
++            // The FD6818's FIFO words go low byte first on air (Jeff's first test burst,
++            // 2026-11-04: all four packets bit-exact once swapped), so RX swaps by default
++            swap: true,
 +            emphasis: true,
 +            vol: VOL_0DB,
 +            last_sync: b'-',
@@ -547,7 +549,7 @@ index 0000000..d7fbc47
 +        let w = fd.reg_read(syst, REG_FIFO);
 +        let w = if swap { w.swap_bytes() } else { w };
 +        if *got + 2 <= buf.len() {
-+            buf[*got] = (w >> 8) as u8; // high byte first on air (spec section 9)
++            buf[*got] = (w >> 8) as u8; // after the swap: the first byte on air
 +            buf[*got + 1] = w as u8;
 +        }
 +        *got += 2;
@@ -918,7 +920,8 @@ index 0000000..d7fbc47
 +    unsafe { ffi::sp_test_packet(bytes.as_mut_ptr()) };
 +    let mut words = [0u16; 32];
 +    for (i, w) in words.iter_mut().enumerate() {
-+        *w = (bytes[2 * i] as u16) << 8 | bytes[2 * i + 1] as u16;
++        // low byte first: the chip sends each FIFO word's low byte first
++        *w = bytes[2 * i] as u16 | (bytes[2 * i + 1] as u16) << 8;
 +    }
 +
 +    let (rx_hz, tx_hz, power) = {

@@ -107,7 +107,7 @@ The screen:
 
 ```
 VOICE MSG  439.50000     frequency
-D L 1200 i- s- e+ +0     PHY, frames, baud, invert, FIFO byte swap, emphasis, volume dB
+D L 1200 i- s+ e+ +0     PHY, frames, baud, invert, FIFO byte swap, emphasis, volume dB
 ID 42  640/640  80/80    message id, frames received/stored, packets received/total
 SYNC P CRC ok A7 TO 0    last sync polarity, CRC, magic byte (A7 = right), FIFO timeouts
 DEC 11.8/17.2ms 2930     after a playback: decode ms per 20 ms frame, mean/worst; free RAM bytes
@@ -122,14 +122,18 @@ bytes per frame. Raise it if the free-RAM figure leaves room.
 1. **K6 transmits, IC-7100 records.** In VOICE MSG, press PTT. The radio keys up for about 3 s and
    sends test packet 0 twice in profile D and twice in profile F. Record the IC-7100's receive
    audio; the softmodem decodes it to settle polarity, bit order, FIFO byte order and deviation.
+   Jeff's first burst (2026-11-04) decoded with no bit errors in D and F. It showed that the FD6818
+   sends each 16-bit FIFO word low byte first. The firmware now packs TX that way and swaps on RX
+   by default (`s+`), so both directions are in spec byte order on air.
    `TX not allowed here` means Aura's band lock refused that frequency or the VFO isn't FM.
 2. **IC-7100 transmits test packets, K6 receives.** Watch the SYNC line.
    - `SYNC -` that never changes: no sync found. Check the level and deviation, or press 1 for
      profile F.
    - `SYNC N`: the polarity is inverted. The radio switches to inverted RX by itself, so the next
      packet should show `SYNC P` and `i+`.
-   - `CRC ok A7`: the packet arrived intact. `s+` means the chip's FIFO turned out to be low byte
-     first; the radio found that from the magic byte and now swaps the bytes.
+   - `CRC ok A7`: the packet arrived intact. `s+` is the measured default (FIFO low byte first). If
+     the receive FIFO turns out to differ, the radio finds that from the magic byte on the first
+     good packet and shows `s-`.
    - `CRC BAD`: bit errors, or a byte order it couldn't detect. A rising `TO` count means the
      chip's FIFO interrupts didn't arrive as expected. Try 2 for the 16-byte frames.
 3. **A test message, then a real sotto clip.** The PC encodes with `c/sotto_enc` (v3.7 frames), and
