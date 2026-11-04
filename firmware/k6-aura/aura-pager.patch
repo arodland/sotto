@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..fb70f0f
+index 0000000..1dcd5cf
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1859 @@
+@@ -0,0 +1,1856 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -359,23 +359,20 @@ index 0000000..fb70f0f
 +/// Untested on air: the register list has the tone pair, not whether its demodulator follows
 +/// REG_72 to 2400 baud.
 +const CFG_F_2400: u16 = 0x73E9;
-+/// Key 0 (2400 baud only): receive variants, (REG_58 for F, bits ORed into REG_2B). On air
-+/// (f190a46, b0ff399) the K6 sent F/2400 right with CFG_F_2400 (the PC decoded it; 1200/2400
-+/// Hz tones) but never synced on it in receive, with REG_58 as is, bits 7:6 = 00, RX BW 001,
-+/// RX mode 111, RX gain 00 or RX mode 000 (0x73E9 0x7329 0x73E3 0x7FE9 0x70E9 0x63E9). Next
-+/// guess: the FSK demodulator sits behind the AF receive filters, and de-emphasis (-6 dB at
-+/// 2400 against 1200) or the 3 kHz low-pass spoils a 2400-baud signal. REG_2B (BK4819 notes):
-+/// <10> RX 300 Hz HPF off, <9> RX 3 kHz LPF off, <8> RX de-emphasis off. D at 2400 keeps
-+/// CFG_D_2400 and takes only the REG_2B bits, and so do D and F at 1200 (Jeff: does D/1200,
-+/// which slipped over USB, do better without de-emphasis? does F/1200 notice at all?).
-+const RX2400_VARIANTS: [(u16, u16); 7] = [
++/// Key 0: receive variants, (REG_58 for F at 2400, bits ORed into REG_2B at any PHY and baud).
++/// REG_2B (BK4819 notes): <10> RX 300 Hz HPF off, <9> RX 3 kHz LPF off, <8> RX de-emphasis
++/// off; it reads 0xC000 on this K6. On air (b0ff399, b2ecda4) F/2400 never synced with REG_58
++/// 0x73E9 0x7329 0x73E3 0x7FE9 0x70E9 0x63E9 nor with REG_2B +0100 +0300 +0700, D/2400 neither.
++/// The filters do sit in front of the FSK demodulator: D/1200 test message (58f1255) 4/16 as
++/// is, 4 with de-emphasis off, 0 with the LPF off too, 6 with all three off. So the HPF alone
++/// (+0400) and HPF + de-emphasis (+0500), with the LPF kept, are the last two.
++const RX2400_VARIANTS: [(u16, u16); 6] = [
 +    (CFG_F_2400, 0),
 +    (CFG_F_2400, 0x0100),
 +    (CFG_F_2400, 0x0300),
 +    (CFG_F_2400, 0x0700),
-+    (0x7FE9, 0x0300),
-+    (0x63E9, 0x0300),
-+    (0x7329, 0x0300),
++    (CFG_F_2400, 0x0400),
++    (CFG_F_2400, 0x0500),
 +];
 +const REG_AF_FILT: u8 = 0x2B;
 +const BAUD_1200: u16 = 0x3065;
