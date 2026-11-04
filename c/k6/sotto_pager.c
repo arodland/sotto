@@ -260,21 +260,53 @@ int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int e
   return 1;
 }
 
-void sp_test_packet(uint8_t out[SP_PAYLOAD_L]) {
+/* packet seq of the spec's 70-frame test message (section 10: frame f is f as 16 bits little
+   endian, then 11 22 33 44; msg_id 0x42, or 5 in profile S), whitened, len bytes (L or S) */
+static void test_packet(uint8_t *out, int len, int seq) {
   uint8_t p[SP_PAYLOAD_L];
-  int s, i;
+  int slots = len == SP_PAYLOAD_L ? FPP_L : 2, hdr = len == SP_PAYLOAD_L ? 6 : 2, s, i;
   unsigned c;
   if (!pn9[0]) pn9_init();
   memset(p, 0, sizeof p);
-  p[0] = SP_MAGIC, p[1] = 0x42, p[5] = 70;          /* seq 0, total 70 frames */
-  for (s = 0; s < FPP_L; s++) {                      /* packet 0: frames 0, 8, ..., 56 */
-    int f = s * GROUP;
-    uint8_t *q = p + 6 + 6 * s;
-    q[0] = (uint8_t)f, q[1] = (uint8_t)(f >> 8), q[2] = 0x11, q[3] = 0x22, q[4] = 0x33, q[5] = 0x44;
+  if (len == SP_PAYLOAD_L)
+    p[0] = SP_MAGIC, p[1] = 0x42, p[2] = (uint8_t)(seq >> 8), p[3] = (uint8_t)seq, p[5] = 70;
+  else                                               /* 70 frames = 5 groups; the last is seq 32..39 */
+    p[0] = (uint8_t)(5 << 4 | (seq / GROUP == 4) << 3 | (seq >> 8 & 7)), p[1] = (uint8_t)seq;
+  for (s = 0; s < slots; s++) {
+    int f = seq / GROUP * slots * GROUP + s * GROUP + seq % GROUP;
+    uint8_t *q = p + hdr + 6 * s;
+    if (f < 70) q[0] = (uint8_t)f, q[1] = (uint8_t)(f >> 8), q[2] = 0x11, q[3] = 0x22, q[4] = 0x33, q[5] = 0x44;
   }
-  c = crc16(p, 62);
-  p[62] = (uint8_t)(c >> 8), p[63] = (uint8_t)c;
-  for (i = 0; i < SP_PAYLOAD_L; i++) out[i] = p[i] ^ pn9[i];
+  c = crc16(p, len - 2);
+  p[len - 2] = (uint8_t)(c >> 8), p[len - 1] = (uint8_t)c;
+  for (i = 0; i < len; i++) out[i] = p[i] ^ pn9[i];
+}
+
+void sp_test_packet(uint8_t out[SP_PAYLOAD_L]) { test_packet(out, SP_PAYLOAD_L, 0); }
+
+static int ones(unsigned v) {
+  static const uint8_t n4[16] = {0, 1, 1, 2, 1, 2, 2, 3, 1, 2, 2, 3, 2, 3, 3, 4};
+  return n4[v & 15] + n4[v >> 4 & 15];
+}
+
+int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e) {
+  uint8_t t[SP_PAYLOAD_L], best[SP_PAYLOAD_L];
+  int npk = len == SP_PAYLOAD_L ? 16 : 40, seq, how, i, n;
+  memset(e, 0, sizeof *e);
+  e->errors = -1;
+  if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_S) return -1;
+  for (seq = 0; seq < npk; seq++) {
+    test_packet(t, len, seq);
+    for (how = 0; how < 4; how++) {                  /* bit 0: bytes swapped, bit 1: inverted */
+      unsigned x = how & 2 ? 0xFF : 0;
+      for (i = n = 0; i < len; i++) n += ones(payload[i ^ (how & 1)] ^ t[i] ^ x);
+      if (e->errors < 0 || n < e->errors)
+        e->errors = (int16_t)n, e->seq = (int16_t)seq, e->swap = how & 1, e->invert = how >> 1, memcpy(best, t, len);
+    }
+  }
+  for (i = 0; i < len; i++)
+    e->block[i * 8 / len] += (uint8_t)ones(payload[i ^ e->swap] ^ best[i] ^ (e->invert ? 0xFF : 0));
+  return e->errors;
 }
 
 unsigned sp_static_bytes(void) {

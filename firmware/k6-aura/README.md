@@ -98,7 +98,7 @@ MENU again; EXIT leaves the app.)
 | 2 | frames: L (64-byte packets, the default) or S (16-byte fallback) |
 | 3 | the RF chip's RX invert bit (REG_59<10>), by hand only |
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
-| 6 | raw view: the last packet's first 16 bytes in hex, its sync and length |
+| 6 | raw view: the last packet's first 16 bytes in hex, its sync and length, and its bit errors against the test message (below) |
 | 5 | 1200 / 2400 baud (profile D) |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
@@ -141,9 +141,27 @@ bytes per frame. Raise it if the free-RAM figure leaves room.
      default). The chip's own invert bit (`i`) only changes with key 3.
    - `CRC ok A7`: the packet arrived intact.
    - `CRC BAD`: none of the four ways passed, so there are bit errors or a framing problem.
-     Press 6 for the raw view and compare its 16 bytes with the start of the transmitted packet
-     (whitened, as on air). A rising `TO` count means the chip's FIFO interrupts didn't arrive as
-     expected. Try 2 for the 16-byte frames.
+     Press 6 for the raw view. A rising `TO` count means the chip's FIFO interrupts didn't
+     arrive as expected. Try 2 for the 16-byte frames.
+   - **Bit errors.** While test packets come in (`python -m modem.k6 test`, either profile), the
+     raw view counts each packet's bit errors against the spec's test message:
+
+     ```
+     R0 58A31D9AEDC33324     first 16 bytes as read (after the s swap, before x)
+     R8 FB58E17D78974628
+     SYNC N A7 64 av3.5      sync, magic byte, bytes read, mean errors per packet
+     BE   3 s+x+ 00010359    last packet: errors, the reading that fits, errors per eighth
+     ```
+
+     `BE` is the bit-error count of the last packet (of 512 in L, 128 in S), against whichever
+     of the test message's packets and whichever of the four readings fits it best. `s` and
+     `x` show that reading, which is how the radio should be set. The eight characters count
+     the errors in each eighth of the packet: 0-9, then a-z for 10-35, then `+`. Random data
+     reads about 32 per eighth in L (`w`). `av` is the mean over all packets since the last
+     link-key change or `*`, so it compares transmit speeds or levels. Errors that grow
+     towards the end of the packet point at a baud-rate mismatch, and a step to about half
+     at one place points at a lost or extra bit. A real message (not the test message) reads
+     about half its bits wrong here, as it should.
 3. **A test message, then a real sotto clip.** The PC encodes with `c/sotto_enc` (v3.7 frames), and
    the softmodem sends them (`python -m modem.k6 tx`, see `docs/k6-pager.md`). After it plays, note the DEC line. The
    emulator predicts about 11-13 ms mean and 15-18 ms worst per 20 ms frame. Note the free RAM too:

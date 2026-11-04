@@ -6,7 +6,8 @@
  *   results=<sp_packet codes> total= stored= got= packets= of= complete= bad=
  * -b sets the store size (default 6144 bytes). -p writes the PWM compare values the radio would
  * send to TIM1 instead (uint16, top 2000, automatic gain, pre-emphasis on), via sp_play_pwm. pager_host -t prints the
- * calibration test packet (sp_test_packet) in hex.
+ * calibration test packet (sp_test_packet) in hex. pager_host -e [-s] PACKETS.bin prints, for each packet,
+ * sp_test_errors: errors seq swap invert and the eight block counts.
  * SPDX-License-Identifier: MIT */
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,7 +15,7 @@
 #include "sotto_pager.h"
 
 int main(int argc, char **argv) {
-  int len = SP_PAYLOAD_L, n, r, c, pwm = 0;
+  int len = SP_PAYLOAD_L, n, r, c, pwm = 0, ber = 0;
   unsigned bytes = 6144;
   static uint32_t mem[65536];
   uint8_t pkt[SP_PAYLOAD_L];
@@ -28,10 +29,23 @@ int main(int argc, char **argv) {
     return 0;
   }
   while (argc > 1 && argv[1][0] == '-' && argv[1][1]) {
-    if (!strcmp(argv[1], "-s")) len = SP_PAYLOAD_S, argv++, argc--;
+    if (!strcmp(argv[1], "-e")) ber = 1, argv++, argc--;
+    else if (!strcmp(argv[1], "-s")) len = SP_PAYLOAD_S, argv++, argc--;
     else if (!strcmp(argv[1], "-p")) pwm = 1, argv++, argc--;
     else if (!strcmp(argv[1], "-b") && argc > 2) bytes = (unsigned)atoi(argv[2]), argv += 2, argc -= 2;
     else break;
+  }
+  if (ber && argc == 2) {                             /* bit errors against the test message */
+    sp_biterr_t e;
+    if (!(in = fopen(argv[1], "rb"))) { perror("pager_host"); return 1; }
+    while (fread(pkt, 1, (size_t)len, in) == (size_t)len) {
+      int i;
+      sp_test_errors(pkt, len, &e);
+      printf("%d %d %d %d", e.errors, e.seq, e.swap, e.invert);
+      for (i = 0; i < 8; i++) printf(" %d", e.block[i]);
+      printf("\n");
+    }
+    return 0;
   }
   if (argc != 3 || bytes > sizeof mem) {
     fprintf(stderr, "usage: %s [-s] [-p] [-b BYTES] PACKETS.bin OUT.raw\n", argv[0]);

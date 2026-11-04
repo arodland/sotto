@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..de89b84
+index 0000000..48e818a
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,811 @@
+@@ -0,0 +1,847 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -266,10 +266,22 @@ index 0000000..de89b84
 +        bad_packets: 0,
 +        complete: 0,
 +    };
++    /// sp_test_errors' result (sotto_pager.h)
++    #[repr(C)]
++    #[derive(Clone, Copy)]
++    pub struct SpBiterr {
++        pub errors: i16,
++        pub seq: i16,
++        pub swap: u8,
++        pub invert: u8,
++        pub block: [u8; 8],
++    }
++    pub const NO_BITERR: SpBiterr = SpBiterr { errors: -1, seq: 0, swap: 0, invert: 0, block: [0; 8] };
 +    extern "C" {
 +        pub fn sp_init(mem: *mut u8, bytes: u32) -> i32;
 +        pub fn sp_packet(payload: *const u8, len: i32) -> i32;
 +        pub fn sp_check(payload: *const u8, len: i32) -> i32;
++        pub fn sp_test_errors(payload: *const u8, len: i32, e: *mut SpBiterr) -> i32;
 +        pub fn sp_last_packet() -> *const u8;
 +        pub fn sp_status(st: *mut SpStatus);
 +        pub fn sp_play_start();
@@ -279,7 +291,7 @@ index 0000000..de89b84
 +        pub fn sp_test_packet(out: *mut u8);
 +    }
 +}
-+pub use ffi::SpStatus;
++pub use ffi::{SpBiterr, SpStatus};
 +
 +const SP_BAD_MAGIC: i32 = -2;
 +const SP_BAD_CRC: i32 = -1;
@@ -350,6 +362,12 @@ index 0000000..de89b84
 +    pub raw_len: u8,
 +    /// key 6: the screen shows `raw`
 +    pub raw_view: bool,
++    /// the last whole packet's bit errors against the spec's test message (its closest
++    /// packet and reading); `swap` and `invert` here are the s and x that reading means
++    pub ber: SpBiterr,
++    /// sum and count of `ber.errors` since the last link change or `*`, for the mean
++    pub ber_sum: u32,
++    pub ber_n: u16,
 +    pub emphasis: bool,
 +    pub vol: u8,
 +    /// b'-' none yet, b'P' SyncPositive, b'N' SyncNegative (then RX invert is set)
@@ -389,6 +407,9 @@ index 0000000..de89b84
 +            raw: [0; 16],
 +            raw_len: 0,
 +            raw_view: false,
++            ber: ffi::NO_BITERR,
++            ber_sum: 0,
++            ber_n: 0,
 +            // The FD6818's FIFO words go low byte first on air (Jeff's first test burst,
 +            // 2026-11-04: all four packets bit-exact once swapped), so RX swaps by default
 +            swap: true,
@@ -669,6 +690,15 @@ index 0000000..de89b84
 +        return;
 +    }
 +
++    // bit errors against the test message (calibration packets), before any guessing
++    let mut e = ffi::NO_BITERR;
++    if unsafe { ffi::sp_test_errors(buf.as_ptr(), len as i32, &mut e) } >= 0 {
++        e.swap = (app.pager.swap ^ (e.swap != 0)) as u8;
++        app.pager.ber = e;
++        app.pager.ber_sum = app.pager.ber_sum.saturating_add(e.errors as u32);
++        app.pager.ber_n = app.pager.ber_n.saturating_add(1);
++    }
++
 +    if app.pager.soft_inv {
 +        for b in buf[..len].iter_mut() {
 +            *b = !*b;
@@ -773,12 +803,18 @@ index 0000000..de89b84
 +                unsafe { ffi::sp_init(addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) } as u16;
 +            p.played_id = -1;
 +            p.last_result = i8::MIN;
++            p.ber = ffi::NO_BITERR;
++            p.ber_sum = 0;
++            p.ber_n = 0;
 +            refresh_status(app);
 +        }
 +        _ => {}
 +    }
 +    if rearm && app.pager.chip_ok {
 +        app.pager.last_sync = b'-';
++        app.pager.ber = ffi::NO_BITERR;
++        app.pager.ber_sum = 0;
++        app.pager.ber_n = 0;
 +        arm(app, syst);
 +    }
 +}
@@ -1322,10 +1358,10 @@ index cdfa0f7..6ca5a70 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..bcd0b3a
+index 0000000..fbce4d0
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,160 @@
+@@ -0,0 +1,200 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
@@ -1337,6 +1373,16 @@ index 0000000..bcd0b3a
 +//! SYNC P CRC ok A7 TO 0
 +//! ok 81 bad 2 FREE 3120
 +//! MENU play   PTT test
++//! ```
++//!
++//! Key 6, the raw view (the last packet as read, and its bit errors against the spec's
++//! test message):
++//!
++//! ```text
++//! R0 58A31D9AEDC33324
++//! R8 FB58E17D78974628
++//! SYNC N A7 64 av3.5
++//! BE   3 s+x+ 00010359
 +//! ```
 +//!
 +//! `#` types a frequency (kHz, like Aura's VFO entry); the top line shows it:
@@ -1420,10 +1466,40 @@ index 0000000..bcd0b3a
 +            }
 +            line(lcd, y, b.as_str());
 +        }
++        // the sync, magic byte and length, and the mean bit errors per packet against the
++        // spec's test message since the last link change (calibration packets only)
 +        let mut b: TextBuf<24> = TextBuf::new();
-+        write!(b, "SYNC {} {:02X} len {}", p.last_sync as char, p.last_magic, p.raw_len).ok();
++        write!(b, "SYNC {} {:02X} {}", p.last_sync as char, p.last_magic, p.raw_len).ok();
++        if p.ber_n > 0 {
++            let m = p.ber_sum * 10 / p.ber_n as u32;
++            write!(b, " av{}.{}", m / 10, m % 10).ok();
++        }
 +        line(lcd, 49, b.as_str());
-+        line(lcd, 60, "RAW  6 back");
++        // the last packet's bit errors, the s and x of the closest reading, and the errors
++        // in each eighth of the packet: 0-9, a-z for 10-35, + above
++        let mut b: TextBuf<24> = TextBuf::new();
++        let e = &p.ber;
++        if e.errors < 0 {
++            write!(b, "BE -").ok();
++        } else {
++            write!(
++                b,
++                "BE{:>4} s{}x{} ",
++                e.errors,
++                if e.swap != 0 { '+' } else { '-' },
++                if e.invert != 0 { '+' } else { '-' }
++            )
++            .ok();
++            for &n in e.block.iter() {
++                let c = match n {
++                    0..=9 => (b'0' + n) as char,
++                    10..=35 => (b'a' + n - 10) as char,
++                    _ => '+',
++                };
++                write!(b, "{}", c).ok();
++            }
++        }
++        line(lcd, 60, b.as_str());
 +        return;
 +    }
 +

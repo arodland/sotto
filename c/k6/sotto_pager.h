@@ -107,6 +107,20 @@ int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int e
    whitened, for the calibration transmit key. */
 void sp_test_packet(uint8_t out[SP_PAYLOAD_L]);
 
+/* Bit errors of a received packet (as sp_packet would take it) against the spec's 70-frame
+   test message, for the first on-air tests: the closest of the message's packets (16 in L,
+   40 in S; the calibration key and `modem.k6 test` send packet 0), read as given, with each
+   16-bit word's two bytes swapped, with every bit inverted, and both. Errors rising towards
+   the end of the packet (block) point at a baud-rate mismatch; a burst at one place, at a
+   lost or extra bit. Returns errors, or -1 for a wrong len. About 1 ms on the K6. */
+typedef struct {
+  int16_t errors;                /* bit errors against the closest reading (of 512, or 128 in S) */
+  int16_t seq;                   /* which test packet that was */
+  uint8_t swap, invert;          /* 1 if that reading swapped the bytes / inverted the bits */
+  uint8_t block[8];              /* errors in each eighth of the packet (8 bytes in L, 2 in S) */
+} sp_biterr_t;
+int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e);
+
 /* Bytes of static RAM this library uses (decoder state, cos/sin table and the rest). */
 unsigned sp_static_bytes(void);
 
