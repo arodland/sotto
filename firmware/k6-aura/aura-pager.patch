@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..4cc61c7
+index 0000000..3e3108a
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1519 @@
+@@ -0,0 +1,1538 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -373,6 +373,8 @@ index 0000000..4cc61c7
 +/// An RX-done this soon (ms) after a timed packet's last word, coming after our re-arm, is
 +/// that packet's and is dropped without another re-arm
 +const STRAY_IGNORE_MS: u16 = 300;
++/// After a re-arm, how long poll waits in a tight loop for the next packet (100 us ticks)
++const NEXT_SYNC_WAIT_TICKS: u16 = 2500;
 +const REARM_SWEEP_STEPS: u8 = 13; // 0, 10, ... 120 ms
 +/// 100 us ticks a byte takes at 1200 baud (66.7)
 +const TICKS_PER_BYTE: usize = 67;
@@ -808,10 +810,27 @@ index 0000000..4cc61c7
 +        .saturating_add(now.wrapping_sub(app.pager.last_tick) as u32);
 +    app.pager.last_tick = now;
 +
-+    let flags = take_irq(app, syst);
-+    if flags & (IRQ_RX_SYNC | IRQ_RX_FULL | IRQ_RX_DONE) != 0 {
++    let mut flags = take_irq(app, syst);
++    while flags & (IRQ_RX_SYNC | IRQ_RX_FULL | IRQ_RX_DONE) != 0 {
 +        receive_packet(app, syst, flags);
++        if !app.pager.timed_read || app.pager.len_mode == 2 {
++            break;
++        }
++        // Back to back, the next packet's sync comes about 90 ms after the re-arm. Wait for
++        // it here, every 0.5 ms, not in the main loop: with the screen redraw in between,
++        // the main loop noticed it 30-50 ms late, the timed reads started late and the
++        // packet slipped (5e60d8f: 7-10/16). The screen catches up after the burst.
++        flags = 0;
++        while uptime::now().wrapping_sub(app.pager.t_rearm) < NEXT_SYNC_WAIT_TICKS {
++            flags = take_irq(app, syst);
++            if flags != 0 {
++                break;
++            }
++            delay::us(syst, 500);
++        }
 +    }
++    // the burst's time isn't idle time (auto-play waits GAP_TICKS after the last packet)
++    app.pager.last_tick = uptime::now();
 +
 +    let st = &app.pager.status;
 +    if st.have != 0
