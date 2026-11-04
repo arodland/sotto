@@ -197,10 +197,10 @@ index 5f006e4..c4d567f 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..c991683
+index 0000000..215cf6a
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1409 @@
+@@ -0,0 +1,1429 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -415,6 +415,15 @@ index 0000000..c991683
 +    /// this packet's interrupts: (flags, 100 us ticks since the first, words read)
 +    ev: [(u16, u16, u8); 12],
 +    ev_n: u8,
++    /// uptime at the last re-arm, for `gap=` (ms from re-arm to the next packet's first
++    /// interrupt: back to back, about 145 ms; about 700 more for each packet missed)
++    t_rearm: u16,
++    /// uptime when the last packet finished on the timer, while its own RX-done is still
++    /// to come; `stray=` reports how long after that it came (ms), or -1 for not before
++    /// the next packet
++    t_timed_done: Option<u16>,
++    stray_ms: i16,
++    gap_ms: u16,
 +    pub emphasis: bool,
 +    pub vol: u8,
 +    /// b'-' none yet, b'P' SyncPositive, b'N' SyncNegative (then RX invert is set)
@@ -465,6 +474,10 @@ index 0000000..c991683
 +            watchdog: false,
 +            ev: [(0, 0, 0); 12],
 +            ev_n: 0,
++            t_rearm: 0,
++            t_timed_done: None,
++            stray_ms: -1,
++            gap_ms: 0,
 +            // The FD6818's FIFO words go low byte first on air (Jeff's first test burst,
 +            // 2026-11-04: all four packets bit-exact once swapped), so RX swaps by default
 +            swap: true,
@@ -611,6 +624,7 @@ index 0000000..c991683
 +    fd.reg_write(syst, REG_FSK_CTRL, ctrl | CTRL_RX_EN);
 +    fd.reg_write(syst, REG_IRQ_FLAGS, 0);
 +    fd.reg_write(syst, REG_IRQ_EN, IRQ_RX_DONE | IRQ_RX_FULL | IRQ_RX_SYNC);
++    app.pager.t_rearm = uptime::now();
 +}
 +
 +fn arm(app: &mut App, syst: &mut SYST) {
@@ -773,8 +787,16 @@ index 0000000..c991683
 +fn receive_packet(app: &mut App, syst: &mut SYST, mut flags: u16) {
 +    if app.pager.timed_read && app.pager.len_mode != 2 && flags & (IRQ_RX_SYNC | IRQ_RX_FULL) == 0 {
 +        // an RX-done with no sync: the end of a packet already finished on the timer
++        if let Some(t) = app.pager.t_timed_done.take() {
++            app.pager.stray_ms = (uptime::now().wrapping_sub(t) / 10) as i16;
++        }
 +        rearm_rx(app, syst);
 +        return;
++    }
++    let t_first = uptime::now();
++    app.pager.gap_ms = t_first.wrapping_sub(app.pager.t_rearm) / 10;
++    if app.pager.t_timed_done.take().is_some() {
++        app.pager.stray_ms = -1;
 +    }
 +    let len = app.pager.payload_len();
 +    let words = len / 2;
@@ -860,21 +882,18 @@ index 0000000..c991683
 +            }
 +        }
 +        if got / 2 >= words {
-+            // all words read on the timer: log it as a pseudo event 0, then let the chip's own
-+            // RX-done for this packet come (about 50 ms later on air) and drop it, or it would
-+            // start a "packet" of its own and put the next one out of step
++            // all words read on the timer: log it as a pseudo event 0 and re-arm at once. The
++            // packet's tail and the next one's preamble are still on air, and back to back the
++            // next sync comes about 145 ms later. Waiting here for the chip's own RX-done
++            // (50-100 ms, or a 150 ms timeout when it never came) cost about one packet in
++            // four (2026-11-04, VE9QRP: 46/64). That RX-done, if it still comes, is dropped
++            // at the top of this function (no sync with it), and `stray=` says when it came.
 +            let k = app.pager.ev_n as usize;
 +            if k < app.pager.ev.len() {
 +                app.pager.ev[k] = (0, last.wrapping_sub(t0), (got / 2 - words_before) as u8);
 +                app.pager.ev_n += 1;
 +            }
-+            let start = uptime::now();
-+            loop {
-+                if take_irq(app, syst) & IRQ_RX_DONE != 0 || uptime::now().wrapping_sub(start) > 1500 {
-+                    break;
-+                }
-+                delay::us(syst, 500);
-+            }
++            app.pager.t_timed_done = Some(uptime::now());
 +            break;
 +        }
 +        if flags == 0 {
@@ -1450,6 +1469,7 @@ index 0000000..c991683
 +        // interrupt flags in hex : ms since the packet's first interrupt : words read
 +        write!(s, "{}{:x}:{}:{}", if i > 0 { "," } else { "" }, f, t / 10, n).ok();
 +    }
++    write!(s, " gap={} stray={}", p.gap_ms, p.stray_ms).ok();
 +    write!(s, " good={} bad={} to={} raw=", st.good_packets, st.bad_packets, p.timeouts).ok();
 +    for b in read {
 +        write!(s, "{:02x}", b).ok();

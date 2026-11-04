@@ -167,7 +167,7 @@ def describe(d, a):
     crc = "short" if res == "short" else ("ok " if isinstance(res, int) and res >= 0 else "BAD")
     s = f"#{d.get('n', '?'):<4} sync {d.get('sync', '?')}  {crc}  got {d.get('got', '?')}"
     if a is None:
-        return s + (f"  [{events(d['ev'])}]" if d.get("ev") else "")
+        return s + (f"  [{events(d['ev'])}]" if d.get("ev") else "") + timing(d)
     s += (f"  BE {a['errors']:3d}/{a['bits']}  s{'+' if a['swap'] else '-'}x{'+' if a['inv'] else '-'}"
           f"  pkt {a['seq']:2d}  {error_map(a['per_byte'])}")
     if a["tail_shift"]:
@@ -177,7 +177,19 @@ def describe(d, a):
         s += f"  (radio said {fw})"
     if d.get("ev"):
         s += f"  [{events(d['ev'])}]"
-    return s
+    return s + timing(d)
+
+
+def timing(d):
+    """gap= (ms from the radio's last re-arm to this packet: about 145 back to back, ~700
+    more per packet missed) and stray= (when the last timed packet's own RX-done came, ms
+    after it finished; -1 none)."""
+    t = ""
+    if isinstance(d.get("gap"), int):
+        t += f"  gap {d['gap']}"
+    if isinstance(d.get("stray"), int) and d["stray"] >= 0:
+        t += f"  stray {d['stray']}"
+    return t
 
 
 class Stats:

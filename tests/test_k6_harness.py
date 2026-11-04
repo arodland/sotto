@@ -223,3 +223,12 @@ def test_sweep_refuses_other_settings():
     with pytest.raises(h.WrongBuild):
         h.sweep(a, fake, lambda x, b, out: n.append(1), lambda s: None)
     assert not n
+
+
+def test_gap_and_stray_shown():
+    from modem.k6_harness import describe, parse_line
+    d = parse_line("K6 PKT n=3 got=64 sync=N res=short ev=2:0:0,0:413:6 gap=146 stray=52 good=1 bad=0 to=0 raw=00")
+    s = describe(d, None)
+    assert "gap 146" in s and "stray 52" in s
+    d = parse_line("K6 PKT n=4 got=64 sync=N res=short ev=2:0:0 gap=850 stray=-1 good=1 bad=0 to=0 raw=00")
+    assert "stray" not in describe(d, None)

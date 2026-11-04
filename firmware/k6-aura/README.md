@@ -248,6 +248,14 @@ the FIFO. The fix is to read the FIFO on a timer from the sync interrupt, one wo
 default; key 8 switches back to the interrupt reads for comparison. With timed reads, a
 packet's `ev` ends in `T@ms+n` when the timer read its last word.
 
+**Back-to-back packets (2026-11-04).** On 314a306 only 46 of VE9QRP's 64 packets were
+caught, and each one that arrived had 0 bit errors. After a timed packet the firmware waited up
+to 150 ms for the chip's own RX-done before re-arming, but the next packet's sync is only about
+145 ms after the last word. It now re-arms at once and drops that RX-done when it comes. Each
+`K6 PKT` line has `gap=`, ms from the last re-arm to this packet (about 145 back to back, about
+700 more per packet missed), and `stray=`, how long after the timed finish the chip's RX-done
+came (-1 for not before the next packet).
+
 With REG_5D at 0x00FF (key 7 pressed twice), the chip instead streamed everything it
 demodulated, preamble and sync word included, with a FIFO interrupt every 4 words and no sync
 or RX-done interrupt. One 64-byte packet came through that way with 0 bit errors over 60 bytes.
