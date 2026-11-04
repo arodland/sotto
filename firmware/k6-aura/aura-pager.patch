@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..dc32405
+index 0000000..53b452d
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1779 @@
+@@ -0,0 +1,1785 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -983,6 +983,8 @@ index 0000000..dc32405
 +fn poll_stream(app: &mut App, syst: &mut SYST) {
 +    let len = app.pager.payload_len();
 +    let live = ((len + 8) * app.pager.tpb() * 3 / 2) as u16;
++    let t_in = uptime::now();
++    let good_in = app.pager.status.good_packets;
 +    let mut n: u32 = 0;
 +    loop {
 +        let flags = take_irq(app, syst);
@@ -1002,7 +1004,11 @@ index 0000000..dc32405
 +            rearm_rx(app, syst);
 +        }
 +        n += 1;
-+        if !on || n > 200_000 {
++        // Only good packets keep it here for long: preamble-like bits or false syncs in noise
++        // held it for good on e2411fe (keys dead while idle). Without a good packet it goes
++        // back to the main loop after 1.5 packets' time, and comes back on the next pass.
++        let no_good = app.pager.status.good_packets == good_in;
++        if !on || (no_good && now.wrapping_sub(t_in) > live) || n > 200_000 {
 +            break;
 +        }
 +        delay::us(syst, 500);
