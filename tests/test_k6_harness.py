@@ -232,3 +232,12 @@ def test_gap_and_stray_shown():
     assert "gap 146" in s and "stray 52" in s and "rearm 60" in s
     d = parse_line("K6 PKT n=4 got=64 sync=N res=short ev=2:0:0 gap=850 stray=-1 good=1 bad=0 to=0 raw=00")
     assert "stray" not in describe(d, None)
+
+
+def test_ok_packet_without_raw():
+    from modem.k6_harness import Stats, handle
+    st, out = Stats(), []
+    d = handle(0.0, "K6 PKT n=1 got=64 sync=N res=1 magic=a7 rswap=1 soft=0 swap=1 be=0 bseq=3 bswap=1 binv=0 "
+               "blk=0,0,0,0,0,0,0,0 ev=2:0:0 gap=80 stray=-1 rearm=40 good=1 bad=0 to=0", st, out.append)
+    assert d["kind"] == "PKT" and st.ok == 1 and st.be == [0]
+    assert "ok" in out[-1]

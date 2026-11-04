@@ -221,6 +221,9 @@ class Stats:
             self.be.append(a["errors"])
             self.blocks.append(a["blocks"])
             self.slips[a["tail_shift"]] = self.slips.get(a["tail_shift"], 0) + 1
+        elif isinstance(d.get("be"), int) and d["be"] >= 0 and len(d.get("blk") or []) == 8:
+            self.be.append(d["be"])
+            self.blocks.append(d["blk"])
 
     def summary(self):
         if not self.pk:
@@ -331,7 +334,9 @@ def handle(t, line, stats, out, log=None, cfg=None, seen=None):
             out(f"   {line}")
         return None
     if d["kind"] == "PKT":
-        a = analyse(d["raw"], d.get("rswap", 1)) if d.get("res") != "short" else None
+        # packets that pass CRC come without raw= since 2026-11-04 (a shorter line between
+        # back-to-back packets); their bit errors are the firmware's be=/blk=
+        a = analyse(d.get("raw", b""), d.get("rswap", 1)) if d.get("res") != "short" else None
         stats.add(d, a)
         out(describe(d, a))
     else:
