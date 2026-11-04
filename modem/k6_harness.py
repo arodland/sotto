@@ -141,7 +141,9 @@ IRQ_NAMES = ((0x0002, "S"), (0x1000, "F"), (0x2000, "D"))     # sync, FIFO almos
 
 def events(ev):
     """The firmware's ev field ('flags:ms:words,...') -> 'S@0 F@27+4 D@108+28': which
-    interrupts came when in the packet (ms after the first), and how many FIFO words each read."""
+    interrupts came when in the packet (ms after the first), and how many FIFO words each read.
+    With timed FIFO reads (key 8), the words read on the timer count toward the next event, and
+    a last pseudo event T marks the packet completed on the timer."""
     out = []
     for item in str(ev).split(","):
         try:
@@ -149,7 +151,7 @@ def events(ev):
             f, ms, n = int(f, 16), int(ms), int(n)
         except ValueError:
             continue
-        name = "".join(c for bit, c in IRQ_NAMES if f & bit) or f"{f:x}"
+        name = "".join(c for bit, c in IRQ_NAMES if f & bit) or ("T" if f == 0 else f"{f:x}")  # T: timed reads
         out.append(f"{name}@{ms}" + (f"+{n}" if n else ""))
     return " ".join(out)
 

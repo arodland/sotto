@@ -45,6 +45,7 @@ def test_parse_line():
 def test_events():
     assert h.events("2:0:0,1000:27:4,1000:53:4,2000:107:24") == "S@0 F@27+4 F@53+4 D@107+24"
     assert h.events("3002:0:8,") == "SFD@0+8" and h.events("") == ""
+    assert h.events("2:0:0,1000:300:22,0:330:10") == "S@0 F@300+22 T@330+10"
     d = h.parse_line(pkt_line(PK0, extra="ev=2:0:0,2000:107:32 "))
     assert "[S@0 D@107+32]" in h.describe(d, h.analyse(d["raw"], 1))
 

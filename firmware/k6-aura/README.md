@@ -101,7 +101,7 @@ MENU again; EXIT leaves the app.)
 | 6 | raw view: the last packet's first 16 bytes in hex, its sync and length, and its bit errors against the test message (below) |
 | 5 | 1200 / 2400 baud (profile D) |
 | 7 | bring-up: how the packet length goes into REG_5D (bytes - 1, words - 1, or the longest), serial report only |
-| 8 | bring-up: keep reading after an early RX-done until the whole packet came, serial report only |
+| 8 | FIFO reads on a timer (on by default; `CFG timed=`) or at the chip's FIFO interrupt (off) |
 | 9 | auto-play on/off (on by default; MENU still plays) |
 | 0 | decode watchdog on/off (off by default; `CFG wd=`): reports `K6 HANG pc=` if a frame takes over 1 s |
 | * | clear the message |
@@ -236,6 +236,17 @@ A CPU fault should print `K6 FAULT pc=... lr=...` and reboot. That only works if
 bootloader's HardFault handler forwards to ours, though: this MCU has no VTOR, and the
 exception vectors belong to the bootloader. Either way, the last `K6 STEP` line says how far
 playback got.
+
+**Why 64-byte packets failed (2026-11-04, image 72b6e3b).** The `ev` timing showed the chip
+receives the whole 64-byte packet: RX-done comes about 460-510 ms after the sync, as for 64
+bytes. Its 0x1000 interrupt, which the firmware took as "FIFO almost full", comes about 14
+bytes before the end of the packet as REG_5D sets it (F at about 50 bytes for 0x3F00, 18 for
+0x1F00, 3 for a 16-byte packet), not when 4 words are waiting. By then the 8-word FIFO had
+overflowed and kept only the first 16 bytes. Profile S worked because its whole packet fits in
+the FIFO. The fix is to read the FIFO on a timer from the sync interrupt, one word per 13.3 ms
+(16 bits at 1200 baud) with one word of lead, and read the rest at RX-done. That's now the
+default; key 8 switches back to the interrupt reads for comparison. With timed reads, a
+packet's `ev` ends in `T@ms+n` when the timer read its last word.
 
 **Second playback test (2026-11-04, image 72b6e3b).** 34 of 40 profile-S packets arrived, all
 with clean CRCs, and the radio stopped inside the decoder: after `first frame decoded`, before
