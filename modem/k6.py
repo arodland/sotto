@@ -114,6 +114,10 @@ def _tx_opts(p):
     p.add_argument("--max-gain", type=float, default=30.0, help="compensation gain cap, dB (default 30)")
     p.add_argument("--lead-ms", type=float, default=150.0, help="0x55 lead-in after keying (default 150; 400 made the K6 false-sync on the first packet)")
     p.add_argument("--rate", type=int, default=48000, help="audio sample rate (default 48000)")
+    p.add_argument("--repeat-first", action=argparse.BooleanOptionalAction, default=True,
+                   help="tx/send: send the first packet again at the end (default on). The K6 loses "
+                        "the first packet of a burst more often than any other (2026-11-04: XL 31/32 "
+                        "twice, seq 0 both times); the copy costs one packet of air time")
     p.add_argument("--cw-id", metavar="CALL", help="append a Morse ID (FCC 97.119) after the data")
     p.add_argument("--cw-wpm", type=int, default=20)
 
@@ -122,7 +126,10 @@ def _payloads(a, frames):
     prof = pager.PROFILES[a.payload]
     mid = a.msg_id if a.msg_id is not None else msg_id_for(frames)
     pk = prof.pack(frames, mid)
-    return pk * a.passes, mid
+    pk = pk * a.passes
+    if getattr(a, "repeat_first", False) and len(pk) > 1:
+        pk = pk + pk[:1]
+    return pk, mid
 
 
 def _test_payloads(a):
