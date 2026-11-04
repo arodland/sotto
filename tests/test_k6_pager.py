@@ -143,3 +143,47 @@ def test_auto_gain_and_pwm_conversion():
     y = (33 * xp[2:] - 21 * xp[1:-1] + 4 * xp[:-2]) >> 4
     t = np.clip((y * want_gain) >> 8, -32767, 32767)
     assert np.array_equal(pwm, np.clip(1000 + ((t * 1000) >> 15), 0, 2000))
+
+
+def run_errors(packets, profile_s=False):
+    with tempfile.TemporaryDirectory() as d:
+        with open(f"{d}/p.bin", "wb") as f:
+            f.write(b"".join(packets))
+        out = subprocess.run([HOST, "-e"] + (["-s"] if profile_s else []) + [f"{d}/p.bin"],
+                             check=True, capture_output=True, text=True).stdout
+        return [[int(x) for x in ln.split()] for ln in out.splitlines()]
+
+
+@pytest.mark.parametrize("prof", ["L", "S"])
+def test_bit_errors_against_test_message(prof):
+    """sp_test_errors finds the test packet, the byte order and the polarity, and puts each
+    flipped bit in its eighth of the packet"""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    fr = b"".join(bytes([f & 0xFF, f >> 8, 0x11, 0x22, 0x33, 0x44]) for f in range(70))
+    pk = pager.PROFILES[prof].pack(fr, 0x42 if prof == "L" else 5)
+    assert len(pk) == (16 if prof == "L" else 40)
+    n = len(pk[0])
+
+    def flip(p, bits):
+        p = bytearray(p)
+        for b in bits:
+            p[b // 8] ^= 0x80 >> (b % 8)
+        return bytes(p)
+
+    def swap(p):
+        return bytes(p[i ^ 1] for i in range(len(p)))
+
+    def inv(p):
+        return bytes(255 - x for x in p)
+
+    seq = len(pk) - 3
+    bits = [3, 8 * n - 1, 8 * n - 9]          # one in the first eighth, two in the last
+    got = run_errors([pk[0], flip(pk[seq], bits), swap(flip(pk[1], bits)), inv(pk[2]), inv(swap(pk[5]))],
+                     prof == "S")
+    blocks = [1, 0, 0, 0, 0, 0, 0, 2]
+    assert got[0] == [0, 0, 0, 0] + [0] * 8
+    assert got[1] == [3, seq, 0, 0] + blocks
+    assert got[2] == [3, 1, 1, 0] + blocks        # counted where the bits sit once swapped back
+    assert got[3] == [0, 2, 0, 1] + [0] * 8
+    assert got[4] == [0, 5, 1, 1] + [0] * 8
