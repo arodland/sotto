@@ -114,7 +114,7 @@ variant() {
   # stack frames, largest first (the K6's stack ran out at playback)
   if command -v llvm-objdump >/dev/null 2>&1; then
     llvm-objdump -d -C --no-show-raw-insn "$ELF" | python3 "$ROOT/tools/k6_frames.py" 40 > "$OUT/frames-$name.txt" &&
-      { echo "== stack frames, $title"; cat "$OUT/frames-$name.txt"; }
+      { echo "== stack frames, $title"; cat "$OUT/frames-$name.txt"; python3 "$ROOT/tools/k6_frames.py" --sizes "$ELF" | tee -a "$OUT/frames-$name.txt"; }
   fi
 }
 

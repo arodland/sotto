@@ -187,3 +187,11 @@ def test_bit_errors_against_test_message(prof):
     assert got[2] == [3, 1, 1, 0] + blocks        # counted where the bits sit once swapped back
     assert got[3] == [0, 2, 0, 1] + [0] * 8
     assert got[4] == [0, 5, 1, 1] + [0] * 8
+
+
+def test_cs512_const_table_matches():
+    """c/fixed/fx_cs512.inc (FX_CS512_CONST, the K6 build) is fx_cos512 packed as fx_cs512() does it."""
+    import subprocess
+    import sys as _sys
+    r = subprocess.run([_sys.executable, os.path.join(ROOT, "tools", "gen_cs512.py"), "--check"])
+    assert r.returncode == 0, "regenerate with python3 tools/gen_cs512.py"

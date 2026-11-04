@@ -6,7 +6,7 @@
 # format's magic 0xA7 means v3.7 frames.  SPDX-License-Identifier: MIT
 CC ?= cc
 CFLAGS ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
-K6FLAGS = -std=c99 -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DFX_NARROW_MUL -DFX_CHECK -I..
+K6FLAGS = -std=c99 -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DFX_NARROW_MUL -DFX_CHECK -I.. -DFX_CS512_CONST
 DECFLAGS = -Dcalloc=sp_calloc -Dfree=sp_free
 OBJS = host/sotto_pager.o host/sotto_fx_dec.o host/fx_math.o host/fx_tables.o
 

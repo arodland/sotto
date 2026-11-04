@@ -300,6 +300,15 @@ void fx_oa_block(const int16_t *bin, const int16_t *re, const int16_t *im, int n
 #endif
 
 #if defined(FX_ARM_DSP) || defined(FX_OA_PACKED)
+#ifdef FX_CS512_CONST
+/* the same table as constants, in flash: 2 KB less RAM (the K6, whose stack ran short) */
+const uint32_t *fx_cs512(void) {
+  static const uint32_t cs[512] = {
+#include "fx_cs512.inc"
+  };
+  return cs;
+}
+#else
 const uint32_t *fx_cs512(void) {
   static uint32_t cs[512];
   static int ready;
@@ -310,6 +319,7 @@ const uint32_t *fx_cs512(void) {
   }
   return cs;
 }
+#endif
 
 #endif
 
