@@ -62,9 +62,16 @@ int main(int argc, char **argv) {
     printf("%d,", r);
   }
   sp_status(&st);
-  printf(" total=%u stored=%u got=%u packets=%u of=%u complete=%d good=%u bad=%u id=%u auto_gain=%d\n", st.total,
+  printf(" total=%u stored=%u got=%u packets=%u of=%u complete=%d good=%u bad=%u id=%u auto_gain=%d ", st.total,
          st.stored, st.frames_got, st.packets_got, st.packets_total, st.complete, st.good_packets, st.bad_packets,
          st.msg_id, sp_auto_gain_q8());
+  {
+    uint16_t miss[8];
+    int i, nm = sp_missing(miss, 8);
+    printf("missing=%d", nm);
+    for (i = 0; i < nm && i < 8; i++) printf("%c%u", i ? ',' : ':', miss[i]);
+    printf("\n");
+  }
   sp_play_start();
   if (pwm) {
     uint16_t v[SP_FRAME_SAMPLES];

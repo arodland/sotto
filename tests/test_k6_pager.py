@@ -65,6 +65,7 @@ def test_spec_vector_lost_packet_3():
     st, _ = run_host(pl[:3] + pl[4:])
     assert st["total"] == "70" and st["packets"] == "15" and st["of"] == "16"
     assert st["got"] == str(70 - 8) and st["complete"] == "0"
+    assert st["missing"] == "1:3"
 
 
 @pytest.mark.parametrize("lost", [[], [3], [0, 9, 10, 17], list(range(8, 16))])
@@ -80,6 +81,7 @@ def test_playback_equals_m0_decoder(lost):
     assert np.all(pcm[:160] == 0)
     assert np.array_equal(pcm[160:], want)
     assert st["results"][0] == 2 and (st["complete"] == "1") == (not lost)
+    assert st["missing"] == (f"{len(lost)}:" + ",".join(map(str, lost[:8])) if lost else "0")
 
 
 def test_second_pass_fills_holes():

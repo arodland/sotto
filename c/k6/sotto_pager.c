@@ -166,6 +166,16 @@ const uint8_t *sp_last_packet(void) { return last_pkt; }
 
 void sp_status(sp_status_t *st) { *st = S.st; }
 
+int sp_missing(uint16_t *out, int max) {
+  int n = 0;
+  for (unsigned q = 0; q < S.st.packets_total && q < (unsigned)S.max_frames / 2u; q++)
+    if (!bit(S.seen, q)) {
+      if (n < max) out[n] = (uint16_t)q;
+      n++;
+    }
+  return n;
+}
+
 /* ---- playback ---------------------------------------------------------------------------- */
 void sp_play_start(void) {
   if (dec) sotto_dec_destroy(dec);

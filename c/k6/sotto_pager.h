@@ -78,6 +78,9 @@ typedef struct {
   int16_t complete;              /* every stored frame arrived */
 } sp_status_t;
 void sp_status(sp_status_t *st);
+/* The seqs (packets of one pass) not received yet, up to max of them into out; returns how many
+   are missing in all (0 while the total is unknown). */
+int sp_missing(uint16_t *out, int max);
 
 /* Playback. sp_play_start resets the decoder and starts at frame 0 (it can be called again
    to replay). sp_play_frame decodes the next 20 ms into pcm (160 samples, 8 kHz) and returns
