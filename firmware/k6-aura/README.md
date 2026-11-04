@@ -298,8 +298,8 @@ That length setting is now a stream mode: the firmware reads 4 words per interru
 sync word in software (byte aligned, up to 2 wrong bits, inverted too), and keeps the next 64
 (or 16) bytes. The sync letter shows `W`, or `w` if the sync came inverted.
 
-**Faster link (2026-11-04, after 6661d40/fb0a69e).** Three options, combinable, none tried on
-air yet (packet spec section 12):
+**Faster link (2026-11-04, after 6661d40/fb0a69e).** Three options (packet spec section 12);
+only XL works on air so far, see below:
 
 - **F at 2400 baud** (keys 1 and 5): FFSK 1200/2400 Hz, MSK at 2400 baud. It halves the air
   time if the chip's FFSK receiver follows the baud register. The calibration transmit now
@@ -325,13 +325,25 @@ position since the arm, `pre` how many bit positions looked like preamble, `head
 bytes after the arm. The same image showed packet mode losing the packet after a failed one
 (11 of 16): the burst loop left on the first failure; it now leaves after two in a row.
 
-F/2400 on f190a46: the K6 transmits it right (the PC decoded its CAL burst, 1200/2400 Hz tones,
-280 ms per packet) but never synced on the PC's F/2400 in receive, at levels 0.3-0.7. Key 0
-now steps REG_58 through receive variants to find a setting that does.
+F/2400: the K6 transmits it right (the PC decoded its CAL burst, 1200/2400 Hz tones, 280 ms per
+packet, preamble and sync bit-identical to ours) but never synced on the PC's F/2400 in receive
+(f190a46, b0ff399, b2ecda4): not at levels 0.1-0.7, with two tilts, with a 1 s lead-in and
+128-byte preambles, with REG_58 0x73E9, 0x7329, 0x73E3, 0x7FE9, 0x70E9 or 0x63E9, nor with the
+AF receive filters off (REG_2B +0x0100/+0x0300/+0x0700). D/2400 neither. Parked.
 
-For a 12 s message: F 1200 L 45 s today; F 1200 XL stream 28 s; F 2400 L 23 s; F 2400 XL stream
-14 s. Profile S (16 bytes) is removed from the firmware and the C library; the PC softmodem
-still makes it.
+**What works: XL at F/1200 (b0ff399, b2ecda4).** The 8-packet XL test message 8/8, 0 bit
+errors, once the softmodem gives every packet after the first 24 bytes of preamble (16 before
+the first: a longer run of 0x55 before the first sync made the chip false-lock; 16 after a
+128-byte packet left the re-arm in the next preamble when the chip's late RX-done came, about
+144 ms after the timed end). A 12 s clip (female_libri198): 580/600 frames in 33.4 s, twice
+with seq 0 the lost packet; with `modem.k6`'s new default of sending the first packet again at
+the end, **600/600 in 34.5 s** (L: 45.0 s). Packet mode F/1200 L: 16/16 twice once the
+softmodem added 50 ms of preamble before the second packet (seq 1 had always been lost: the
+K6 re-armed late after the first, which its main loop notices during a screen redraw).
+
+For a 12 s message: F 1200 L 45 s; **F 1200 XL 34.5 s (tested)**; F 1200 XL stream 28 s and
+F 2400 L 23 s (not working yet). Profile S (16 bytes) is removed from the firmware and the C
+library; the PC softmodem still makes it.
 
 **Playback hang found (2026-11-04, image 480d312): the stack ran out.** When playback started,
 the stack pointer was only 236 bytes above the end of static RAM. Aura had used 8.3 KB of the
