@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..48ea369
+index 0000000..9f6d308
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,1833 @@
+@@ -0,0 +1,1844 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -397,6 +397,11 @@ index 0000000..48ea369
 +const REARM_STEPS: [u8; 7] = [40, 50, 30, 60, 20, 0, 80];
 +/// After the earliest re-arm, wait this long more for the chip's RX-done (100 us ticks)
 +const REARM_WAIT_TICKS: u16 = 100;
++/// A K6 CFG line this often while idle (100 us ticks; 10 s), so the state is on the serial
++/// log without a key press (Jeff, 2026-11-04)
++const CFG_EVERY_TICKS: u32 = 100_000;
++/// ... but only this long after the last good packet (2 s), not inside a burst
++const CFG_QUIET_TICKS: u32 = 20_000;
 +/// An RX-done this soon (ms) after a timed packet's last word, coming after our re-arm, is
 +/// that packet's and is dropped without another re-arm
 +const STRAY_IGNORE_MS: u16 = 300;
@@ -547,6 +552,8 @@ index 0000000..48ea369
 +    /// played this message (auto-play only once per message)
 +    played_id: i16,
 +    idle_ticks: u32,
++    /// 100 us ticks since the last K6 CFG line (one goes out every CFG_EVERY_TICKS when idle)
++    cfg_ticks: u32,
 +    last_tick: u16,
 +    /// decoder time per 20 ms frame in the last playback, 100 us units
 +    pub dec_max: u16,
@@ -648,6 +655,7 @@ index 0000000..48ea369
 +            cal_result: 0,
 +            played_id: -1,
 +            idle_ticks: 0,
++            cfg_ticks: 0,
 +            last_tick: 0,
 +            dec_max: 0,
 +            dec_mean_x10: 0,
@@ -1064,11 +1072,13 @@ index 0000000..48ea369
 +        return;
 +    }
 +    let now = uptime::now();
-+    app.pager.idle_ticks = app
-+        .pager
-+        .idle_ticks
-+        .saturating_add(now.wrapping_sub(app.pager.last_tick) as u32);
++    let dt = now.wrapping_sub(app.pager.last_tick) as u32;
++    app.pager.idle_ticks = app.pager.idle_ticks.saturating_add(dt);
++    app.pager.cfg_ticks = app.pager.cfg_ticks.saturating_add(dt);
 +    app.pager.last_tick = now;
++    if app.pager.cfg_ticks >= CFG_EVERY_TICKS && app.pager.idle_ticks >= CFG_QUIET_TICKS {
++        report_cfg(app, "tick");
++    }
 +
 +    let mut flags = if app.pager.stream() {
 +        poll_stream(app, syst);
@@ -1805,7 +1815,8 @@ index 0000000..48ea369
 +
 +/// The link settings, after `enter`, a key or a new frequency.
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
-+fn report_cfg(app: &App, why: &str) {
++fn report_cfg(app: &mut App, why: &str) {
++    app.pager.cfg_ticks = 0;
 +    let p = &app.pager;
 +    let baud = if p.baud_2400 { 2400 } else { 1200 };
 +    report_line(format_args!(

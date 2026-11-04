@@ -217,7 +217,9 @@ in percent, and baud and tones shift together, as a sound-card clock error would
 the K6's reports and ends with a table of packets seen, CRC passes, mean bit errors and errors
 per eighth of the packet. The K6's PHY, frames and baud are still set with its keys. `sweep`
 refuses to transmit if the K6's last `CFG` line doesn't match (`--anyway` sends regardless). Press any setting key twice to make the K6
-send a `CFG` line. `--dry-run` listens without keying.
+send a `CFG` line (every key sends one; **4** is the harmless one, it only toggles playback
+pre-emphasis). From build 500c043 on, the K6 also sends one every 10 s while idle (`why=tick`, not
+within 2 s of a good packet). `--dry-run` listens without keying.
 
 **64-byte receive, first on-air result (2026-11-04).** With FFSK from the IC-7100, the first
 16 bytes of every 64-byte packet arrived with no bit errors at every speed (-1 to +1 %) and
