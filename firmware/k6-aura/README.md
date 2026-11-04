@@ -171,6 +171,18 @@ drops them all, and `--action regs` only prints the registers. On air (2026-11-0
 didn't sync on replays of its own F/2400 or D/2400 bursts, which decode on the PC, so the 2400
 fault is in the receive setup.
 
+**What the register sweep found (0438507, 2026-11-04 evening).** Baseline at F/1200: `2b=c000
+58=3fe3 59=10f8 5c=5625 5d=3f00 72=3065`. The only setting that syncs at 2400 baud is REG_58
+**3fe1** (the 1200/1800 tone mode with bits 3:1 = 000; 1200 uses 001) with 1200/1800 tones
+(`--tones 1200,1800`): every burst syncs, but no packet passed its CRC. Against the packet sent,
+the data is right but the chip's bit clock wanders a bit either way every 100 to 150 bits
+(sending 0.5 to 1.5% slower or faster moves the drift, doesn't stop it), and some packets lose
+a whole FIFO word at about bit 128 (the first timed read is late at 2400). Deaf at 2400: 3fe3,
+3fe5, 3fe7, 3fed, 3fef (3feb 1 sync in 5); D mode 00e9, 00eb, 00ed. Deaf even at 1200: 73e9,
+73e1, 33e1, 63e1, 3fe9, D 00e3, 00e5, 00e7, 00ef. 7fe1 keeps F/1200 but hears no 1200/2400
+tones at either baud. So the 1200/2400 tone mode never synced. Write 58 at 1200 first, then
+`--set baud=2400`, so the firmware paces its reads for 2400.
+
 ## First tests (spec section 8)
 
 1. **K6 transmits, IC-7100 records.** In VOICE MSG, press PTT. The radio keys up for about 3 s and
