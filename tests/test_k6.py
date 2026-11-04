@@ -160,3 +160,13 @@ def test_cli(tmp_path):
         [TEST_FRAMES[f * 6:f * 6 + 6] for f in range(0, 64, 8)]
     assert cli(["send", sot, "--dry-run", "--ptt", "none"]) == 0
     assert cli(["cal", wav]) == 0
+
+
+def test_byte_swapped_words_are_accepted():
+    """The K6's own test burst arrives with each FIFO word byte-swapped (first on-air test,
+    2026-11-04); rx accepts it and says so."""
+    pk = pager.L.pack(TEST_FRAMES, 0x42)
+    a = pager.Assembler()
+    assert a.push(pager.swap_words(pk[0])) is not None
+    assert a.swapped == 1 and a.bad == 0
+    assert pager.swap_words(b"\x01\x02\x03\x04") == b"\x02\x01\x04\x03"

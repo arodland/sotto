@@ -177,7 +177,7 @@ can't be undone all the way down to DC.
 | Assumption | Settled by |
 |---|---|
 | Bit 1 = +deviation (D) or 1200 Hz (F) | Calibration step 2 (`rx` reports inverted packets) |
-| FIFO words go high byte first | Step 2 (the magic byte after de-whitening) |
+| FIFO words go high byte first | **Settled 2026-11-04: the chip sends each word low byte first.** The K6's first test burst (recorded on the IC-7100's USB audio) decoded bit-perfect in D and F once words were swapped; `rx` now accepts swapped packets and says so |
 | The chip accepts 64-byte frames | Step 4; fall back to `--payload S` |
 | ±2.5 kHz deviation suits the K6's receiver | Steps 2-3 (match the K6's own transmitter) |
 | The IC-7100's DATA2 9600 input is flat to ~20 Hz | `cal` / `fit` |

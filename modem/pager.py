@@ -128,6 +128,12 @@ S = Profile("S", 16, 2)
 PROFILES = {"L": L, "S": S}
 
 
+def swap_words(p):
+    """Swap the two bytes of every 16-bit word."""
+    p = bytes(p)
+    return bytes(p[i ^ 1] for i in range(len(p) & ~1)) + p[len(p) & ~1:]
+
+
 class Assembler:
     """Collects payloads (any pass, any order) into messages: frames + per-frame good flags.
 
@@ -135,13 +141,19 @@ class Assembler:
     message, as on the radio; `messages` keeps them all here for testing."""
 
     def __init__(self, profile=L):
-        self.profile, self.bad, self.messages = profile, 0, {}
+        self.profile, self.bad, self.swapped, self.messages = profile, 0, 0, {}
 
     def push(self, payload):
+        """-> the unpacked packet, or None. A payload whose 16-bit words arrive byte-swapped
+        (an FD6818 transmitting its FIFO low byte first, as the K6's own test burst does) is
+        accepted too and counted in `swapped`."""
         q = self.profile.unpack(payload)
         if q is None:
-            self.bad += 1
-            return None
+            q = self.profile.unpack(swap_words(payload))
+            if q is None:
+                self.bad += 1
+                return None
+            self.swapped += 1
         m = self.messages.setdefault(q["msg_id"], {"total": None, "last_seq": None, "pk": {}})
         if q["total"] is not None:
             m["total"] = q["total"]

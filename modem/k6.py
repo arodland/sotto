@@ -209,7 +209,9 @@ def main(argv=None):
         good = sum(g for _, g, _, _ in times)
         invs = sum(1 for _, g, i, _ in times if g and i)
         log(f"{len(times)} packets found, {good} good, {asm.bad} bad CRC"
-            + (f"; {invs} good ones arrived inverted (add --invert on tx, or REG_59 bit 10)" if invs else ""))
+            + (f"; {invs} good ones arrived inverted (add --invert on tx, or REG_59 bit 10)" if invs else "")
+            + (f"; {asm.swapped} good ones had byte-swapped 16-bit words (sender packs its FIFO "
+               f"high byte first; the chip sends the low byte first)" if asm.swapped else ""))
         if a.verbose:
             for ts, g, i, amp in times:
                 log(f"  {ts:8.3f} s  {'ok ' if g else 'bad'}  amplitude {amp:.4g}"
