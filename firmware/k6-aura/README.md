@@ -166,3 +166,42 @@ bytes per frame. Raise it if the free-RAM figure leaves room.
    the softmodem sends them (`python -m modem.k6 tx`, see `docs/k6-pager.md`). After it plays, note the DEC line. The
    emulator predicts about 11-13 ms mean and 15-18 ms worst per 20 ms frame. Note the free RAM too:
    it should stay well above zero.
+
+## Serial test harness
+
+The pager image reports each event on the programming cable as one line of text: every
+packet with its raw bytes, each setting change, each playback, and each calibration transmit.
+The format is 115200 8N1, radio to PC only. The radio never reads the cable, because the
+cable's other wire is the K6's PTT line. So leave the cable plugged in during tests, and don't
+send anything to that port.
+
+`python -m modem.k6_harness` on the PC reads it. In the examples below, the K6 cable is
+`/dev/ttyUSB2` and the IC-7100's CI-V port is `/dev/ttyUSB0`.
+
+```
+python -m modem.k6_harness listen --k6 /dev/ttyUSB2 --log k6.txt
+python -m modem.k6_harness sweep --k6 /dev/ttyUSB2 --port /dev/ttyUSB0 --phy F --player paplay \
+    --speeds=-1,-0.5,0,0.5,1 --repeat 10 --log k6.txt
+python -m modem.k6_harness listen --file k6.txt     # score a saved log again
+```
+
+`listen` prints one line per packet:
+
+```
+#3    sync N  BAD  got 64  BE 111/512  s+x-  pkt  0  .....................................2534443446634624...  slip -1
+```
+
+- **The CRC result.**
+- **`BE`:** the bit errors against the closest packet of the spec's test message.
+- **The reading that fits:** `s` is the byte swap, `x` is the inversion.
+- **The error map:** one character per byte, `.` when the byte is right, otherwise its number
+  of wrong bits.
+- **`slip`:** a slip of -1 means the K6 lost a bit at the point where the errors start, and +1
+  means it gained one.
+
+`sweep` keys the IC-7100 for each speed offset and level, and sends the test packets. Speed is
+in percent, and baud and tones shift together, as a sound-card clock error would. It collects
+the K6's reports and ends with a table of packets seen, CRC passes, mean bit errors and errors
+per eighth of the packet. The K6's PHY, frames and baud are still set with its keys. `sweep`
+warns if the K6's last `CFG` line doesn't match. Press any setting key twice to make the K6
+send a `CFG` line. `--dry-run` listens without keying.
