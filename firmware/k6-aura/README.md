@@ -128,8 +128,12 @@ bytes per frame. Raise it if the free-RAM figure leaves room.
    by default (`s+`), so both directions are in spec byte order on air.
    `TX not allowed here` means Aura's band lock refused that frequency or the VFO isn't FM.
 2. **IC-7100 transmits test packets, K6 receives.** Watch the SYNC line.
-   - `SYNC -` that never changes: no sync found. Check the level and deviation, or press 1 for
-     profile F.
+   - `SYNC -` that never changes, with no `bad` count either: no sync found. Check the level and
+     deviation, or press 1 for profile F. Lower-case `p`/`n` mean the sync interrupt didn't fire
+     but the chip's polarity flags were set when the packet ended.
+   - Jeff's first IC-7100 → K6 test in F (2026-11-04, old build) gave magic byte `58`, which is
+     `A7` with every bit inverted. The FD6818's FFSK receive seems to map the two tones the opposite
+     way from its FFSK transmit. This build finds that by itself and shows `x+`.
    - `SYNC N`: the chip found the sync with inverted polarity. Until the first good packet, the
      radio tries each packet four ways: as read, bytes swapped, bits inverted, and both. The
      check is the magic byte, or the CRC for profile S. It keeps whichever works: `x+` means
