@@ -255,7 +255,8 @@ int sp_auto_gain_q8(void) {
 }
 
 int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int emphasis) {
-  static int16_t pcm[SP_FRAME_SAMPLES];
+  int16_t *pcm = (int16_t *)out;   /* decoded in place: the conversion reads each sample before
+                                      writing it (320 bytes less RAM on the K6) */
   if (!sp_play_frame(pcm)) return 0;
   sp_pcm_to_pwm(pcm, out, SP_FRAME_SAMPLES, top, gain_q8, emphasis);
   return 1;

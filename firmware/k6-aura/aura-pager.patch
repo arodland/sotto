@@ -1796,7 +1796,7 @@ index 0000000..eb97a85
 +    }
 +}
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..d04a856 100644
+index 9d2b0c0..d67b90b 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -14,7 +14,7 @@ mod ui;
@@ -1808,10 +1808,28 @@ index 9d2b0c0..d04a856 100644
  
  use app::satellite;
  use device::display::{Backlight, Display};
-@@ -30,6 +30,17 @@ use hal_shim::{ClosurePin, SystDelay};
+@@ -30,6 +30,35 @@ use hal_shim::{ClosurePin, SystDelay};
  
  const DEFAULT_FREQ_HZ: u32 = 439_500_000;
  
++static mut APP_SLOT: core::mem::MaybeUninit<app::App> = core::mem::MaybeUninit::uninit();
++
++#[inline(never)]
++#[allow(clippy::too_many_arguments)]
++fn place_app(
++    slot: &'static mut core::mem::MaybeUninit<app::App>,
++    radio: Radio,
++    chip_id: u16,
++    keypad: Keypad,
++    storage: Storage,
++    flashlight: Flashlight,
++    fm_radio: FmRadio<'static>,
++    cfg: ChannelConfig,
++    syst: &mut cortex_m::peripheral::SYST,
++) -> &'static mut app::App {
++    slot.write(app::App::new(radio, chip_id, keypad, storage, flashlight, fm_radio, cfg, syst))
++}
++
 +/// The boot logo's 1 KB buffer exists only during this call, instead of in main's stack frame
 +/// for good (main never returns, and the pager's decoder needs that stack).
 +#[inline(never)]
@@ -1826,7 +1844,7 @@ index 9d2b0c0..d04a856 100644
  #[entry]
  fn main() -> ! {
      let _dp = unsafe { Peripherals::steal() };
-@@ -79,6 +90,15 @@ fn main() -> ! {
+@@ -79,6 +108,15 @@ fn main() -> ! {
      uart::install_bootloader_trampoline();
      unsafe { cortex_m::peripheral::NVIC::unmask(kd32f328_pac::Interrupt::USART1) };
      writeln!(dbg, "bfk6-fw boot, sysclk={}Hz", clock::SYSCLK_HZ).ok();
@@ -1842,7 +1860,20 @@ index 9d2b0c0..d04a856 100644
  
      let mut cp = cortex_m::Peripherals::take().unwrap();
      unsafe { cp.NVIC.set_priority(kd32f328_pac::Interrupt::USART1, 0) };
-@@ -265,8 +285,7 @@ fn main() -> ! {
+@@ -234,7 +272,11 @@ fn main() -> ! {
+     }
+ 
+     // app class
+-    let mut app = app::App::new(
++    // The App (2.7 KB) lives in a static, built by a function of its own: in main's frame it
++    // sat there for good, with the temporary it was built in, and the pager's decoder ran out
++    // of stack on the radio.
++    let mut app: &'static mut app::App = place_app(
++        unsafe { &mut *core::ptr::addr_of_mut!(APP_SLOT) },
+         radio,
+         chip_id,
+         keypad,
+@@ -265,8 +307,7 @@ fn main() -> ! {
              display.flush();
          }
          3 => {
@@ -1852,7 +1883,7 @@ index 9d2b0c0..d04a856 100644
              display.flush();
          }
          _ => {}
-@@ -301,6 +320,37 @@ fn main() -> ! {
+@@ -301,6 +342,37 @@ fn main() -> ! {
      )
      .ok();
  
@@ -1890,7 +1921,7 @@ index 9d2b0c0..d04a856 100644
      // scheduler + main loop
      let mut scheduler = scheduler::Scheduler::new();
      let mut applied_contrast: u8 = u8::MAX;
-@@ -329,6 +379,18 @@ fn main() -> ! {
+@@ -329,6 +401,18 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -1909,7 +1940,7 @@ index 9d2b0c0..d04a856 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +463,8 @@ fn main() -> ! {
+@@ -401,6 +485,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -1918,7 +1949,7 @@ index 9d2b0c0..d04a856 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +529,13 @@ fn main() -> ! {
+@@ -465,9 +551,13 @@ fn main() -> ! {
              }
          }
  

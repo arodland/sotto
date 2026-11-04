@@ -11,8 +11,8 @@ through the IC-7100 with the K6's answers collected automatically.
 The K6 must run the pager image with the serial report (firmware/k6-aura, VOICE MSG). It sends
 one text line per event at 115200 8N1 and never reads the cable, because the cable's other
 wire is the K6's PTT line. This harness only reads that port; it never writes to it. Set the
-K6's PHY, frames and baud with its keys to match the sweep; the harness checks the K6's
-`K6 CFG` line and warns about a mismatch.
+K6's PHY, frames and baud with its keys to match the sweep; `sweep` checks the K6's last
+`K6 CFG` line and transmits nothing if they differ (--anyway sends regardless).
 
 Every image reports its build, the sotto commit it was built from plus the UTC build time, at
 power-on and at the end of each CFG line; `listen` and `sweep` print it, every --log line
@@ -361,15 +361,17 @@ def speed_shift(x, rate, speed_pct):
     return fsk.resample(x, int(round(rate * (1 + speed_pct / 100.0))), rate)
 
 
-def check_cfg(cfg, a, out):
+def check_cfg(cfg, a, out, strict=False):
     if not cfg:
         out("note: no K6 CFG line seen yet; press a key on the K6 (e.g. 4 twice) to make it report")
         return
     want = {"phy": a.phy, "frames": a.payload, "baud": a.baud}
     bad = {k: (cfg.get(k), v) for k, v in want.items() if str(cfg.get(k)) != str(v)}
     if bad:
-        out("warning: the K6 is set differently: " +
-            ", ".join(f"{k} K6 {have} vs sweep {v}" for k, (have, v) in bad.items()))
+        msg = "the K6 is set differently: " + ", ".join(f"{k} K6 {have} vs sweep {v}" for k, (have, v) in bad.items())
+        if strict:
+            raise WrongBuild(msg + ": not transmitting (--anyway sends regardless)")
+        out("warning: " + msg)
 
 
 class WrongBuild(Exception):
@@ -409,7 +411,7 @@ def sweep(a, src, send, out=print, log=None):
         handle(t, line, Stats(), out, log, cfg, seen)
     if want:
         wait_build(src, seen, want, cfg, out, log, getattr(a, "build_wait", 60.0))
-    check_cfg(cfg, a, out)
+    check_cfg(cfg, a, out, strict=bool(cfg) and not getattr(a, "anyway", True))
     for lev in levels:
         for sp in speeds:
             b = copy.copy(a)
@@ -475,6 +477,8 @@ def main(argv=None):
     sw.add_argument("--expect-build", metavar="SHA",
                     help="transmit only once the K6 reports a build starting with this (its sotto commit)")
     sw.add_argument("--build-wait", type=float, default=60.0, help="how long to wait for that report, s")
+    sw.add_argument("--anyway", action="store_true",
+                    help="transmit even when the K6's CFG line shows other PHY/frames/baud settings")
     a = ap.parse_args(argv)
     if a.cmd == "sweep" and a.k6 == a.port:
         ap.error("--k6 (the K6 cable) and --port (the IC-7100) must be different ports")

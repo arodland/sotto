@@ -207,3 +207,19 @@ def test_sweep_expect_build():
             with pytest.raises(h.WrongBuild):
                 h.sweep(a, fake, send, lambda s: None)
         assert len(n) == sends
+
+
+def test_sweep_refuses_other_settings():
+    from modem import k6
+    import argparse
+    ap = argparse.ArgumentParser()
+    k6._tx_opts(ap)
+    a = ap.parse_args(["--phy", "F"])
+    a.speeds, a.levels, a.repeat, a.message, a.settle, a.gap = "0", None, 1, False, 0.01, 0.0
+    a.anyway = False
+    fake = FakeK6()
+    fake.q = [(0.0, fake.q[0][1].replace("phy=F", "phy=D"))]
+    n = []
+    with pytest.raises(h.WrongBuild):
+        h.sweep(a, fake, lambda x, b, out: n.append(1), lambda s: None)
+    assert not n
