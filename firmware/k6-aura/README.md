@@ -103,7 +103,7 @@ MENU again; EXIT leaves the app.)
 | 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, then two stream modes, 0xFF00 and 0xFFE0 (chip armed once, sync found in software at any bit offset, packets back to back; screen `stream`, `SYNC W`, `RS` = re-arms) |
 | 8 | Re-arm delay after each packet: 40, 50, 30, 60, 20, 0, 80 ms after its end, then a per-packet sweep (`CFG rearm=`; -1 = sweep). FIFO reads are always on a timer now |
 | 9 | auto-play on/off (on by default; MENU still plays) |
-| 0 | decode watchdog on/off (off by default; `CFG wd=`): reports `K6 HANG pc=` if a frame takes over 1 s |
+| 0 | F at 2400 only: the next REG_58 receive variant (`CFG f2400= reg58=`): 0x73E9, 0x7329 (bits 7:6 = 00), 0x73E3 (RX BW 001), 0x7FE9 (RX mode 111), 0x70E9 (RX gain 00), 0x63E9 (RX mode 000). It was the decode watchdog, which stays off |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
 | PTT | calibration transmit: test packet 0, twice in D and then twice in F, at key 5's baud rate, on the VFO's TX frequency and power |
@@ -322,6 +322,10 @@ syncirq= mind= pre= collect= head= n=`: D = the chip's RX-done, S = a stall with
 position since the arm, `pre` how many bit positions looked like preamble, `head` the first 8
 bytes after the arm. The same image showed packet mode losing the packet after a failed one
 (11 of 16): the burst loop left on the first failure; it now leaves after two in a row.
+
+F/2400 on f190a46: the K6 transmits it right (the PC decoded its CAL burst, 1200/2400 Hz tones,
+280 ms per packet) but never synced on the PC's F/2400 in receive, at levels 0.3-0.7. Key 0
+now steps REG_58 through receive variants to find a setting that does.
 
 For a 12 s message: F 1200 L 45 s today; F 1200 XL stream 28 s; F 2400 L 23 s; F 2400 XL stream
 14 s. Profile S (16 bytes) is removed from the firmware and the C library; the PC softmodem
