@@ -18,7 +18,14 @@ modules".
    then calls the entry function with a table of services. The store is set up for messages
    again afterwards, so any message held before the module is gone.
 
-The hello module is 366 bytes of code, 4 XL packets, 3.1 s on air at F/1800.
+The hello module is about 360 bytes of code (366 with clang 18 here, 358 in CI), 4 XL packets,
+3.1 s on air at F/1800 per copy; `modem.k6 mod` sends every chunk twice by default.
+
+**On air, 2026-11-05** (image f6b0d2a keyed with `keyimage`, F/1800 XL, level 0.3): the first
+send lost chunk 0 (bad CRC, the burst's first packet) and chunk 1; `--only 0,1 --copies 2`
+filled them in, and the K6 reported `run ... at 0x20001bfc`, `say hello world from RAM at
+0x20001bfd` (the Thumb bit is set), `sum of squares 0x9f31fc58 in 0x000e ticks`, `ret=107
+(0x6b) in 11.8 ms`. A sotto 1200 message afterwards played with a matching `pcm=` checksum.
 
 ## Packet and image format
 

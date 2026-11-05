@@ -253,7 +253,9 @@ def main(argv=None):
     m.add_argument("--xfer", type=int, help="transfer id 0-255 (default: from the serial)")
     m.add_argument("--only", help="send just these chunks, e.g. 0,3 (the ones a K6 MOD line says are missing); "
                                   "keep --serial and --xfer the same as the first send")
-    m.add_argument("--copies", type=int, default=1, help="send every chunk this many times")
+    m.add_argument("--copies", type=int, default=2,
+                   help="send every chunk this many times (default 2: on air 2026-11-05 a burst's first "
+                        "packet and one more were lost at level 0.3; repeats cost nothing on the K6)")
     mk = sub.add_parser("modkey", help="make a random module key file (32 hex digits, mode 600)")
     mk.add_argument("path")
     ki = sub.add_parser("keyimage", help="write a module key into a K6 image built without one (e.g. CI's)")
