@@ -184,7 +184,16 @@ edge, though: with N or more words still waiting after a read it doesn't come ag
 fired twice a packet), and reading an empty FIFO repeats its last word. So the interrupt reads
 now drop an RX-done that comes with no sync or too soon after one (a stale one had read 32
 words of repeats over the next packet's start), read at most N words at RX-done, and take one
-word by time after N+1 word times without an interrupt (pseudo event `1@ms+1` in `ev`). Field meanings are from the FD6818
+word by time after N+1 word times without an interrupt (pseudo event `1@ms+1` in `ev`).
+
+**Interrupt order.** The UV-K5 BK4819 drivers write REG_02 = 0 first and then read REG_02:
+the write latches the pending causes for the read. This firmware has always read first. If the
+chip latches as those drivers assume, every cause it saw was the previous interrupt's, one event
+late. That fits the stale RX-done at the start of each burst, the sync seen about two words late,
+and the almost-full interrupt that stops coming once the FIFO is no longer emptied after the
+sync (25d4a58, 5e=0202: one interrupt per packet, the rest by time). So the interrupt reads
+(any `5e` write) now clear first and then read; the timed reads keep the old order, which their
+lead words are tuned to. If clear-first hears nothing, the 60 s revert brings the old order back. Field meanings are from the FD6818
 programming guide. The K6 refuses anything else. It holds up to 4 writes, applies them after
 its own setup on every re-arm, and prints `K6 REGS seq=… 43=… 44=… 73=… 7e=… 96=… 9b=… 5e=… 2b=… 58=… 59=… 5c=… 5d=… 72=…
 poke=N` as read back from the chip (43 from the image after 647a60e). Like a PHY

@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..980e44d
+index 0000000..ad2a283
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2200 @@
+@@ -0,0 +1,2212 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -1019,10 +1019,22 @@ index 0000000..980e44d
 +}
 +
 +/// Pending interrupt causes, cleared, or 0.
++///
++/// The UV-K5 BK4819 drivers (and the FD6818 guide) write REG_02 first and then read it: the
++/// write latches the pending causes for the read. Read first, as here since the start, the
++/// causes may be the previous interrupt's, one event late, which fits the stale RX-done at the
++/// start of every burst and a sync seen about two words late (on air, 2026-11-05). The timed
++/// reads are tuned to that lateness (their lead words), so the new order goes with the
++/// interrupt reads only, and a revert brings the old one back.
 +fn take_irq(app: &mut App, syst: &mut SYST) -> u16 {
++    let clear_first = !app.pager.timed();
 +    let fd = &mut app.radio.fd6818;
 +    if fd.reg_read(syst, REG_STATUS) & 1 == 0 {
 +        return 0;
++    }
++    if clear_first {
++        fd.reg_write(syst, REG_IRQ_FLAGS, 0);
++        return fd.reg_read(syst, REG_IRQ_FLAGS);
 +    }
 +    let flags = fd.reg_read(syst, REG_IRQ_FLAGS);
 +    fd.reg_write(syst, REG_IRQ_FLAGS, 0);
