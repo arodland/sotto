@@ -148,15 +148,17 @@ new settings. A key press wins over all of it. Control packets change nothing el
 frequency, and nothing that transmits. Anyone on the channel could send one, but it only
 changes this receiver's settings, and only until the next key press or power cycle.
 
-**`idlekeep=1` (experiment, not yet on air).** While idle, the chip gives an RX-done with no sync
-every 40 to 53 ms in the lead-in's 0x55, and the K6 re-armed on each one. So the last re-arm
-always came 40 to 53 ms before the first packet's sync (`gap=`), too little preamble to lock, and
-the first packet of a burst failed about half the time (839924e, 2026-11-04). With `idlekeep=1`
-the K6 leaves the chip hunting instead, as it already does for the late RX-done inside a burst.
-It is off at power-on. Turn it on with a control packet, and if the radio goes deaf the 60 s
-revert turns it off again. The CFG line shows `idlekeep=` and `idlerd=`, the count of idle no-sync
-RX-dones since the last CFG line. The softmodem's `--prime` (a throwaway first packet, on by
-default) works around the same loss without it.
+**`idlekeep` (on at power-on from the build after 0438507).** While idle, the chip gives an
+RX-done with no sync every 40 to 53 ms in the lead-in's 0x55, and the K6 used to re-arm on each
+one. So the last re-arm always came 40 to 53 ms before the first packet's sync (`gap=`), too
+little preamble to lock, and the first packet of a burst failed about half the time (839924e,
+2026-11-04). With `idlekeep=1` the K6 leaves the chip hunting instead, as it already does for
+the late RX-done inside a burst. On air (0438507, 2026-11-04, no throwaway packet, 20 bursts
+each): first packet good 20/20 and 60/60 packets with idlekeep=1, against 7/20 and 46/60 with 0;
+VE9QRP as L 500/500 frames. `ctl --set idlekeep=0` turns it off (it reverts after 60 s without a
+good packet). The CFG line shows `idlekeep=` and `idlerd=`, the count of idle no-sync RX-dones since
+the last CFG line. The softmodem's `--prime` (a throwaway first packet, on by default) is the
+workaround for images before this one; it costs one packet and is harmless after it.
 
 **Register writes (`--reg`, experiment, not yet on air).** For settings the register list
 doesn't settle, such as 2400 baud receive, a control packet can write one FD6818 register:
@@ -168,6 +170,18 @@ change, the writes are undone after 60 s without a good packet, and by a key pre
 drops them all, and `--action regs` only prints the registers. On air (2026-11-04) the K6
 didn't sync on replays of its own F/2400 or D/2400 bursts, which decode on the PC, so the 2400
 fault is in the receive setup.
+
+**What the register sweep found (0438507, 2026-11-04 evening).** Baseline at F/1200: `2b=c000
+58=3fe3 59=10f8 5c=5625 5d=3f00 72=3065`. The only setting that syncs at 2400 baud is REG_58
+**3fe1** (the 1200/1800 tone mode with bits 3:1 = 000; 1200 uses 001) with 1200/1800 tones
+(`--tones 1200,1800`): every burst syncs, but no packet passed its CRC. Against the packet sent,
+the data is right but the chip's bit clock wanders a bit either way every 100 to 150 bits
+(sending 0.5 to 1.5% slower or faster moves the drift, doesn't stop it), and some packets lose
+a whole FIFO word at about bit 128 (the first timed read is late at 2400). Deaf at 2400: 3fe3,
+3fe5, 3fe7, 3fed, 3fef (3feb 1 sync in 5); D mode 00e9, 00eb, 00ed. Deaf even at 1200: 73e9,
+73e1, 33e1, 63e1, 3fe9, D 00e3, 00e5, 00e7, 00ef. 7fe1 keeps F/1200 but hears no 1200/2400
+tones at either baud. So the 1200/2400 tone mode never synced. Write 58 at 1200 first, then
+`--set baud=2400`, so the firmware paces its reads for 2400.
 
 ## First tests (spec section 8)
 

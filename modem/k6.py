@@ -86,7 +86,7 @@ def build_audio(payloads, a, fs):
                     later_preamble_bytes=None if a.stream else later)
     bits = air.burst_bits(payloads, a.baud)
     x = fsk.modulate(bits, a.phy, a.baud, fs, a.level, a.invert, comp=load_comp(a.comp),
-                     max_gain_db=a.max_gain)
+                     max_gain_db=a.max_gain, tones=getattr(a, "tones", None))
     if a.cw_id:
         x = np.concatenate([x, cw(a.cw_id, fs, a.cw_wpm, level=min(a.level, 0.4))])
     return x
@@ -131,6 +131,9 @@ def _tx_opts(p):
                         "the first sync (gap=42-53), and the first packet failed in 10/20 bursts; "
                         "with the copy first, the first real packet was good in 20/20 and VE9QRP "
                         "L arrived 500/500 (2026-11-04). Costs one packet, as --repeat-first did")
+    p.add_argument("--tones", type=lambda v: tuple(float(t) for t in v.split(",")), metavar="MARK,SPACE",
+                   help="F only: these tones (Hz, bit 1 then bit 0) instead of the usual pair for --baud, "
+                        "e.g. 1200,2400 at 1200 baud, to test the K6's tone pair and baud rate apart")
     p.add_argument("--first-preamble", type=int, metavar="BYTES",
                    help="0x55 bytes before the first packet only (default 16, as every packet). "
                         "For tests: the K6 re-arms about 50 ms before the first sync (gap=42-53 "
