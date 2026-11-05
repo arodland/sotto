@@ -427,6 +427,8 @@ def wait_build(src, seen, want, cfg, out, log=None, timeout=60.0):
 def sweep(a, src, send, out=print, log=None):
     """For each (speed, level): send the test packets, collect the K6's reports, score them."""
     from . import k6
+    if a.baud is None:
+        a.baud = k6.default_baud(a.phy)
     speeds = [float(s) for s in a.speeds.split(",")]
     levels = [float(s) for s in a.levels.split(",")] if a.levels else [a.level]
     cfg = {}
@@ -506,6 +508,8 @@ def main(argv=None):
     sw.add_argument("--anyway", action="store_true",
                     help="transmit even when the K6's CFG line shows other PHY/frames/baud settings")
     a = ap.parse_args(argv)
+    if getattr(a, "baud", 0) is None:
+        a.baud = k6.default_baud(a.phy)
     if a.cmd == "sweep" and a.k6 == a.port:
         ap.error("--k6 (the K6 cable) and --port (the IC-7100) must be different ports")
 

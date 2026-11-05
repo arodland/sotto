@@ -3,6 +3,7 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
 
   python -m modem.k6 tx msg.sot tx.wav                 audio for the radio (profile D, 1200 baud)
   python -m modem.k6 tx msg.sot tx.wav --phy F         FFSK tones, for a voice / USB audio input
+                                                       (1800 baud, the K6's F default since 2026-11-05)
   python -m modem.k6 tx msg.sot tx.wav --phy F --baud 2400 --payload XL --stream
                                                        fastest: FFSK 1200/2400 Hz, 128-byte packets,
                                                        no preamble between them (K6 keys 5, 2, 7)
@@ -105,6 +106,11 @@ def _read(path, iq=None):
     return x[:, 0], fs
 
 
+def default_baud(phy):
+    """The K6's boot rate for a PHY: F 1800 (images after b1f0492), D 1200"""
+    return 1800 if phy == "F" else 1200
+
+
 def _tx_opts(p):
     p.add_argument("--phy", choices="DF", default="D",
                    help="D: direct NRZ 2-FSK (flat input, IC-7100 DATA2 in 9600 bps mode); "
@@ -112,8 +118,10 @@ def _tx_opts(p):
     p.add_argument("--payload", choices=("L", "XL", "S"), default="L",
                    help="L: 64-byte packets, 8 frames; XL: 128-byte, 20 frames (K6 key 2); "
                         "S: 16-byte (the K6 no longer takes it)")
-    p.add_argument("--baud", type=float, default=1200,
-                   help="bit rate (1200 or 2400 match the K6 settings; others for tests with REG_72 written, e.g. 1800 = 72=4898)")
+    p.add_argument("--baud", type=float, default=None,
+                   help="bit rate (default: the K6's default for --phy, F 1800 and D 1200; 2400 with "
+                        "K6 key 5; others for tests with REG_72 written, e.g. 2000 = 72=50a9, "
+                        "F/1200 = 72=3065)")
     p.add_argument("--stream", action="store_true",
                    help="packets back to back with only the sync word between them, no per-packet "
                         "preamble (for the K6's stream mode, key 7; about 20%% less air time)")
@@ -199,7 +207,8 @@ def main(argv=None):
     k.add_argument("output")
     _tx_opts(k)
     k.add_argument("--set", nargs="*", default=[], metavar="KEY=VALUE",
-                   help="phy=F|D frames=L|XL baud=1200|2400 auto=0|1 emph=0|1 var=N vol=0..7; "
+                   help="phy=F|D frames=L|XL baud=1200|2400 (1200: the PHY's default rate, F 1800 "
+                        "on images after b1f0492) auto=0|1 emph=0|1 var=N vol=0..7; "
                         "none: a confirmation only (a good packet that keeps a change)")
     k.add_argument("--action", choices=tuple(pager.CTL_ACTIONS), default="none",
                    help="play: play the stored message; clear: drop it; report: a CFG line")
@@ -223,7 +232,7 @@ def main(argv=None):
     r.add_argument("--phy", choices="DF", default="D")
     r.add_argument("--payload", choices=("L", "XL", "S"), default="L")
     r.add_argument("--stream", action="store_true", help="the packets were sent with --stream")
-    r.add_argument("--baud", type=float, default=1200)
+    r.add_argument("--baud", type=float, default=None, help="default: F 1800, D 1200, as tx")
     r.add_argument("--invert", action="store_true")
     r.add_argument("--tones", type=lambda v: tuple(float(t) for t in v.split(",")), metavar="MARK,SPACE",
                    help="F only: the tones sent (Hz, bit 1 then bit 0), as tx --tones, e.g. 1200,1800 at --baud 2400")
@@ -244,6 +253,9 @@ def main(argv=None):
     f.add_argument("--level", type=float, default=0.5, help="the level the cal signal was made with")
 
     a = ap.parse_args(argv)
+    baud_given = getattr(a, "baud", None) is not None
+    if hasattr(a, "baud") and not baud_given:
+        a.baud = default_baud(a.phy)
     log = lambda *m: print(*m, file=sys.stderr)   # noqa: E731
 
     if a.cmd in ("tx", "send"):
@@ -280,6 +292,8 @@ def main(argv=None):
             if parts:      # 1 s of carrier: the K6 applies a change after its burst ends
                 parts.append(np.zeros(a.rate))
             a.phy = phy
+            if not baud_given:
+                a.baud = default_baud(phy)
             parts.append(build_audio([pk] * a.copies, a, a.rate))
         x = np.concatenate(parts)
         if cw_id:

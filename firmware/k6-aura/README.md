@@ -237,6 +237,13 @@ the REG_72 value in force, so `--reg 72=4898` runs it at 1800. On air (2026-11-0
 F with 1200/1800 tones, `2b=8000 5e=0203 58=3f01`, `modem.k6 --baud 1800`), 1800 got 12 of 12
 packets and 2000 got 10 of 12, every decoded packet with 0 bit errors; 2400 slips a bit.
 
+**F runs at 1800 by default (images after 0dad5c6).** F boots with that recipe: REG_58 3f01,
+REG_72 4898, interrupt reads with REG_5E 0203, DC cancellation off. That makes control packets
+and messages 1.5 times faster. `modem.k6` follows it: `--baud` defaults to 1800 for `--phy F` and
+1200 for D. A control packet with `baud=1200` means "the PHY's own rate", so F/1800. Key 1
+(D/1200) or `--reg 72=3065` (F/1200 with the old 3fe3 recipe, for 60 s) gets 1200 back, and key 5
+or `baud=2400` still gives 2400. The revert lands on F/1800.
+
 ## First tests (spec section 8)
 
 1. **K6 transmits, IC-7100 records.** In VOICE MSG, press PTT. The radio keys up for about 3 s and

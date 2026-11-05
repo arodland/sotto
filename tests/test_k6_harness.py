@@ -120,7 +120,7 @@ class FakeK6:
     """Answers each send with PKT lines, like the K6 would (here: errors grow with the offset)."""
 
     def __init__(self):
-        self.q = [(0.0, "K6 CFG why=key1 chip=4819 freq=439500000 phy=F frames=L baud=1200 inv=0 soft=0 swap=1 emph=1 vol=0")]
+        self.q = [(0.0, "K6 CFG why=key1 chip=4819 freq=439500000 phy=F frames=L baud=1800 inv=0 soft=0 swap=1 emph=1 vol=0")]
         self.n = 0
 
     def send(self, x, b, out):
@@ -163,7 +163,7 @@ def test_speed_shift():
     assert h.speed_shift(x, 48000, 0) is x
 
 
-CFG_B = ("K6 CFG why=key1 chip=4819 freq=439500000 phy=F frames=L baud=1200 inv=0 soft=0 swap=1 emph=1 vol=0 "
+CFG_B = ("K6 CFG why=key1 chip=4819 freq=439500000 phy=F frames=L baud=1800 inv=0 soft=0 swap=1 emph=1 vol=0 "
          "len5d=3f00 keep=0 auto=1 build=1234567-20261104T0610Z")
 
 
