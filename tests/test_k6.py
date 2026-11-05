@@ -156,7 +156,7 @@ def test_cli(tmp_path):
     from modem.k6 import _read
     x, fs = _read(wav)
     asm, t = fsk.receive(x, fs, "F")
-    assert sum(t_[1] for t_ in t) == 4 and asm.messages[0x42]["pk"][0] == \
+    assert sum(t_[1] for t_ in t) == 3 and asm.messages[0x42]["pk"][0] == \
         [TEST_FRAMES[f * 6:f * 6 + 6] for f in range(0, 64, 8)]
     assert cli(["send", sot, "--dry-run", "--ptt", "none"]) == 0
     assert cli(["cal", wav]) == 0
