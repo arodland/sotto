@@ -231,7 +231,7 @@ only, and it is for finding how the bootloader enters UPDATE mode, so that a lat
 action can reboot into it without the side keys. The image is Baofeng's code: keep it on your
 own machine, never commit or share it.
 
-**Flashing without the side keys (action 7, images after b902205).** The dump showed that after
+**Flashing without the side keys (action 7, images from db796ee).** The dump showed that after
 every reset the stock bootloader listens on the cable for about 200 ms. One handshake frame
 (`AA 42 00 00 00` + CRC-16/XMODEM + `EF`) gets an answer and keeps it in UPDATE mode, as the
 side keys do. There is no RAM flag, and the app check is only a valid stack pointer at
