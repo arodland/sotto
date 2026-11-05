@@ -218,6 +218,12 @@ a whole FIFO word at about bit 128 (the first timed read is late at 2400). Deaf 
 tones at either baud. So the 1200/2400 tone mode never synced. Write 58 at 1200 first, then
 `--set baud=2400`, so the firmware paces its reads for 2400.
 
+**DC cancellation off by default.** REG_2B bit 14 is the AF DC canceller after the FM
+demodulator. The firmware clears it for every PHY and baud. With it on, direct FSK at 1200
+passed 7 of 28 packets, and the last 16 bytes of each failure were corrupt. With it off it
+passed 31 of 31 (`2b=8000`, `8400`, `0400`, and `8000` with interrupt reads). FFSK at 1200 stayed
+clean (15 of 15). `--reg 2b=c000` turns it back on for 60 s.
+
 ## First tests (spec section 8)
 
 1. **K6 transmits, IC-7100 records.** In VOICE MSG, press PTT. The radio keys up for about 3 s and
