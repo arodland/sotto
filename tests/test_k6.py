@@ -266,3 +266,14 @@ def test_default_baud_follows_phy(tmp_path):
     out = tmp_path / "c.wav"
     assert cli(["ctl", str(out), "--phy", "D", "--also", "F", "--set", "phy=F"]) == 0
     assert out.stat().st_size > 0
+
+
+def test_later_preamble_option_shortens_burst(tmp_path):
+    """--later-preamble 8 makes an XL test burst shorter than the default 24."""
+    import soundfile as sf
+    lens = []
+    for extra in ([], ["--later-preamble", "8"]):
+        out = tmp_path / f"t{len(extra)}.wav"
+        assert cli(["test", str(out), "--repeat", "4", "--phy", "F", "--payload", "XL"] + extra) == 0
+        lens.append(sf.info(str(out)).frames)
+    assert lens[1] < lens[0]
