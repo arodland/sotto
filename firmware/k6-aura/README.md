@@ -176,7 +176,15 @@ timed FIFO reads to interrupt reads:** on each FIFO-almost-full interrupt it rea
 threshold's worth of words, taken from bits 2:0 when they aren't 0, else from bits 9:3 (which
 field the chip uses is the open question; the image's own 0x0204 has 4 and 64). The `ev` field
 of each PKT line shows when those interrupts came. The revert, a key press or `--reg 0=0`
-brings the timed reads back. Field meanings are from the FD6818
+brings the timed reads back.
+
+On air (2026-11-05, e0754fd) the RX threshold is bits 2:0, in words: with `5e=0202` the
+interrupt came every 26-27 ms at 1200 baud (two words) and the words were right. It is an
+edge, though: with N or more words still waiting after a read it doesn't come again (5e=0201
+fired twice a packet), and reading an empty FIFO repeats its last word. So the interrupt reads
+now drop an RX-done that comes with no sync or too soon after one (a stale one had read 32
+words of repeats over the next packet's start), read at most N words at RX-done, and take one
+word by time after N+1 word times without an interrupt (pseudo event `1@ms+1` in `ev`). Field meanings are from the FD6818
 programming guide. The K6 refuses anything else. It holds up to 4 writes, applies them after
 its own setup on every re-arm, and prints `K6 REGS seq=… 43=… 44=… 73=… 7e=… 96=… 9b=… 5e=… 2b=… 58=… 59=… 5c=… 5d=… 72=…
 poke=N` as read back from the chip (43 from the image after 647a60e). Like a PHY
