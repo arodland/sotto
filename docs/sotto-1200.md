@@ -139,11 +139,12 @@ Blind A/B, original in every pair (`tools/listening/render_ab18.py`, key
 |---|---:|---:|---:|
 | against Codec 2 1200, clean (4) | 3 | 1 (777_m) | 0 |
 | against v3.7 at 2400, clean (3) | 0 | 3 | 0 |
-| against v3.7, 1 XL packet in 8 lost (2) | 0 | 1 (p047_f) | 1 (2428_m) |
+| against v3.7, 1 XL packet in 8 lost (2) | 0 | 2 | 0 |
 | null pair | | correct | |
 
-At half the rate, sotto 1200 ties v3.7 on clean speech and beats Codec 2 1200. With packet
-loss it lost one pair of two to v3.7.
+Pair 6 (2428_m, with loss) was first marked for v3.7; on a more critical listen Jeff heard
+no difference. At half the rate, sotto 1200 ties v3.7, clean and with packet loss, and beats
+Codec 2 1200.
 
 ## Open
 
