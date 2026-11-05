@@ -153,8 +153,10 @@ CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, 
 CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 5}
 # registers action "reg" may write (the K6 refuses others): AF filters, FSK mode, FSK control
 # (low byte only), CRC/scrambler, baud, (images after 647a60e) the RX bandwidth REG_43, and
-# (newer images) demod gain REG_44, AFC REG_73 and the RX DC filter REG_7E
-CTL_REGS = (0x2B, 0x43, 0x44, 0x58, 0x59, 0x5C, 0x72, 0x73, 0x7E)
+# (newer images) demod gain REG_44, AFC REG_73 and the RX DC filter REG_7E, then the
+# discriminator gain REG_96, RX filter bypasses REG_9B and FIFO thresholds REG_5E (a 5E write
+# also switches the K6 to interrupt-driven FIFO reads)
+CTL_REGS = (0x2B, 0x43, 0x44, 0x58, 0x59, 0x5C, 0x5E, 0x72, 0x73, 0x7E, 0x96, 0x9B)
 
 
 def control_record(seq, settings=None, action="none"):

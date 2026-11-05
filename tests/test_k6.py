@@ -77,15 +77,15 @@ def test_profile_s_trailing_padding():
 
 
 def _loop(phy, baud, profile=pager.L, channel=None, comp=None, fs_out=fsk.FS, invert=False,
-          noise=0.03, frames=VOICE):
+          noise=0.03, frames=VOICE, tones=None):
     pk = profile.pack(frames, 77)
     bits = pager.Air().burst_bits(pk, baud)
-    x = fsk.modulate(bits, phy, baud, invert=invert, comp=comp)
+    x = fsk.modulate(bits, phy, baud, invert=invert, comp=comp, tones=tones)
     y = channel.apply(x) if channel else x
     y = np.concatenate([np.zeros(3000), y, np.zeros(3000)])
     y = y / np.std(y) + RNG.normal(0, noise, len(y))
     y = fsk.resample(y, fsk.FS, fs_out)
-    asm, t = fsk.receive(y, fs_out, phy, baud, profile)
+    asm, t = fsk.receive(y, fs_out, phy, baud, profile, tones=tones)
     ok = sum(t_[1] for t_ in t)
     return ok, len(pk), asm, t
 
@@ -96,6 +96,12 @@ def test_loopback(phy, baud):
     assert ok == n
     fr, good = asm.frames(77)
     assert fr == VOICE and good.all()
+
+
+def test_loopback_other_tones():
+    """F at 2400 baud with the 1200/1800 pair (the only one the K6 syncs on at 2400)."""
+    ok, n, _, _ = _loop("F", 2400, tones=(1200.0, 1800.0))
+    assert ok == n
 
 
 def test_loopback_profile_s():

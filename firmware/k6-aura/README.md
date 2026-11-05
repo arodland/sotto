@@ -103,7 +103,7 @@ MENU again; EXIT leaves the app.)
 | 7 | how the packet length goes into REG_5D: bytes - 1 or words - 1. (Images up to 647a60e also had two stream modes, 0xFF00 and 0xFFE0; they never received on air and were compiled out to make room for REG_43 in the control-packet registers.) |
 | 8 | Re-arm delay after each packet: 40, 50, 30, 60, 20, 0, 80 ms after its end, then a per-packet sweep (`CFG rearm=`; -1 = sweep). FIFO reads are always on a timer now |
 | 9 | auto-play on/off (on by default; MENU still plays) |
-| 0 | The next receive variant (`CFG f2400= reg58= reg2b=`): REG_2B (AF receive filters) as is (0xC000), +0x0100 RX de-emphasis off, +0x0300 and the 3 kHz LPF, +0x0700 and the 300 Hz HPF, +0x0400 HPF only, +0x0500 HPF and de-emphasis. REG_58 stays 0x73E9 at F/2400. The REG_2B bits apply to D and F at any baud. On air: F/2400 never synced (REG_58 0x73E9, 0x7329, 0x73E3, 0x7FE9, 0x70E9, 0x63E9; REG_2B up to +0x0700), nor D/2400; D/1200 test message 4/16 as is, 4 with +0100, 0 with +0300, 6 with +0700 (58f1255). It was the decode watchdog, which stays off |
+| 0 | The next receive variant (`CFG f2400= reg58= reg2b=`), 11 of them, var=0 to 10: (REG_58 at F/2400, bits ORed into REG_2B) = (3fe1, 0), (3fe9, 0), (3fe9, +0100), (3fe9, +0700), (3ce9, 0), (3de9, 0), (3ee9, 0), (73e9, 0), (3fe1, +0100), (3f09, 0), (3f01, 0). REG_58 per the UV-K5 firmware notes: bits 12:10 RX tone mode (7 = 1200/1800, 4 = 1200/2400, 0 = direct), 9:8 RX gain, 3:1 RX bandwidth (0 = FSK 1.2K, 1 = FFSK 1200/1800, 4 = FSK 2.4K and FFSK 1200/2400). REG_2B: +0100 RX de-emphasis off, +0200 the 3 kHz LPF off, +0400 the 300 Hz HPF off. The REG_58 value applies only at F/2400, so the variants with the 2.4K bandwidth (3fe9 etc., deaf at 1200) can be tried by sending `--set baud=2400 var=N` in one control packet: the revert then lands back at 1200. The REG_2B bits apply to D and F at any baud. Until this image variant 0 was 73e9, which never synced, nor did its relatives (7329, 73e3, 7fe9, 70e9, 63e9) or D/2400; 3fe1 syncs at 2400 with 1200/1800 tones but the bit clock slips |
 | * | clear the message |
 | # | type a frequency (kHz, six digits; MENU sets it early, EXIT deletes) |
 | PTT | calibration transmit: test packet 0, twice in D and then twice in F, at key 5's baud rate, on the VFO's TX frequency and power |
@@ -167,10 +167,18 @@ wide/narrow setting Aura saved for the VFO; written back on every arm, from the 
 647a60e), `58` (FSK mode), `59` (low byte only: preamble and sync lengths), `5c` (CRC and
 scrambler), `72` (baud), and from the image with AFC writes `44` (gain after the FM demodulator,
 bits 12:11), `73` (AFC: bits 13:11 range from 2.2 kHz down to 188 Hz, doubled in wide; bit 4
-turns AFC off) and `7e` (bit 6 bypasses the RX DC filter). Like 43, those three are read once
-and written back on every arm, so a revert undoes them. Field meanings are from the FD6818
+turns AFC off) and `7e` (bit 6 bypasses the RX DC filter). From the image after that, also `96`
+(receive discriminator gain, bits 13:8), `9b` (the FD6818 guide's RX filter bypasses: 9 HPF, 8
+LPF1, 7 LPF2, 6 de-emphasis; the guide is for chip ID 0x6818, ours reads 0x4819, so 96 and 9b
+may do nothing here) and `5e` (FIFO thresholds). Like 43, 44 to 9b are read once and written
+back on every arm, so a revert undoes them. **A write to 5e also switches the receiver from
+timed FIFO reads to interrupt reads:** on each FIFO-almost-full interrupt it reads the RX
+threshold's worth of words, taken from bits 2:0 when they aren't 0, else from bits 9:3 (which
+field the chip uses is the open question; the image's own 0x0204 has 4 and 64). The `ev` field
+of each PKT line shows when those interrupts came. The revert, a key press or `--reg 0=0`
+brings the timed reads back. Field meanings are from the FD6818
 programming guide. The K6 refuses anything else. It holds up to 4 writes, applies them after
-its own setup on every re-arm, and prints `K6 REGS seq=… 43=… 44=… 73=… 7e=… 2b=… 58=… 59=… 5c=… 5d=… 72=…
+its own setup on every re-arm, and prints `K6 REGS seq=… 43=… 44=… 73=… 7e=… 96=… 9b=… 5e=… 2b=… 58=… 59=… 5c=… 5d=… 72=…
 poke=N` as read back from the chip (43 from the image after 647a60e). Like a PHY
 change, the writes are undone after 60 s without a good packet, and by a key press. `--reg 0=0`
 drops them all, and `--action regs` only prints the registers. On air (2026-11-04) the K6
