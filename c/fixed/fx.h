@@ -57,6 +57,16 @@ void fx_prof(int id, int start);
 #define FX_PROF(id, start) ((void)0)
 #endif
 
+/* optional yield points in the decoder (the K6 pager: the radio checks its RF chip's FIFO from
+   here while a frame decodes, about every 0.2 ms of work; c/k6/sotto_pager.h sp_set_yield).
+   Calls only, nothing computed differs: the output is bit-exact either way */
+#ifdef FX_YIELD_HOOK
+extern void (*volatile fx_yield)(void);
+#define FX_YIELD() do { if (fx_yield) fx_yield(); } while (0)
+#else
+#define FX_YIELD() ((void)0)
+#endif
+
 /* Cortex-M0 (FX_NARROW_MUL, on by default for ARMv6-M; -DFX_NARROW_MUL tests it on x86):
    no 32 x 32 -> 64-bit multiply, so any product formed in fx_acc is a library call
    (__aeabi_lmul, ~35 cycles). FX_P16(a, b), a 16 x 16-bit product added to an fx_acc, is

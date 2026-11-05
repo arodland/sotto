@@ -16,6 +16,11 @@
 #else
 #define SP_DEC_MAX SP_DEC_CORE
 #endif
+#ifdef FX_YIELD_HOOK
+void (*volatile fx_yield)(void);
+void sp_set_yield(void (*f)(void)) { fx_yield = f; }
+void sp_yield_probe(void) {}         /* a do-nothing yield, for c/k6/bench_k6.py's gap count */
+#endif
 static uint32_t dec_mem[SP_DEC_MAX / 4];
 static unsigned dec_used, dec_blocks;
 void *sp_calloc(size_t n, size_t size);
@@ -81,6 +86,19 @@ static int play_skip;               /* halves still to drop: the decoder's delay
 static struct sotto_dec *dec;
 #endif
 static int play_pos, play_end;
+/* stream mode (sp_set_stream): the store is a ring of whole interleave groups, played while
+   later groups arrive */
+#ifdef SP_LR
+#define STREAM_DEFAULT 1
+#else
+#define STREAM_DEFAULT 0
+#endif
+static int stream_on = STREAM_DEFAULT;
+static int ring;                    /* frames in the ring while a message streams, else 0 */
+static int fpg_now;                 /* frames per interleave group of the message */
+static int hi_group, hi_count;      /* the newest group seen, and how many of its packets */
+static int avail;                   /* frames below this are final: playable */
+static int ended, overruns, playing;
 static uint32_t pcm_hash, pcm_n;    /* FNV-1a of the samples played since sp_play_start */
 
 static void hash_pcm(const int16_t *pcm) {
@@ -122,6 +140,8 @@ int sp_init(void *mem, unsigned bytes) {
 
 static void clear_message(uint8_t msg_id, uint8_t profile) {
   uint16_t gp = S.st.good_packets, bp = S.st.bad_packets;
+  ring = fpg_now = hi_count = avail = ended = overruns = playing = 0;
+  hi_group = -1;
   memset(S.good, 0, (unsigned)S.max_frames / 8u);
   memset(S.seen, 0, (unsigned)S.max_frames / 16u);
   memset(&S.st, 0, sizeof S.st);
@@ -129,20 +149,37 @@ static void clear_message(uint8_t msg_id, uint8_t profile) {
   S.st.have = 1, S.st.msg_id = msg_id, S.st.profile = profile;
 }
 
+static int pos_of(long f) { return ring ? (int)(f % ring) : (int)f; }
+
 static void put_frame(int f, const uint8_t *src) {
-  if (f >= S.st.stored || bit(S.good, f)) return;
-  memcpy(S.frames + 6 * f, src, 6);
-  set_bit(S.good, f);
+  int r = pos_of(f);
+  if (f >= S.st.stored || bit(S.good, r)) return;
+  memcpy(S.frames + 6 * r, src, 6);
+  set_bit(S.good, r);
   S.st.frames_got++;
 }
 
+/* stream mode: the frames playback may take, once group g's packets are all in or a later
+   group's have started (packets come in seq order), or the sender has stopped (ended) */
+static void update_avail(void) {
+  long a = (long)hi_group * fpg_now + (hi_count >= GROUP ? fpg_now : 0);
+  if (ended || S.st.complete) a = S.st.total == 0xFFFF ? (long)(hi_group + 1) * fpg_now : S.st.stored;
+  if (a > S.st.stored) a = S.st.stored;
+  if (a > avail) avail = (int)a;
+}
+
 static int finish_packet(int seq, int was_new, unsigned before) {
-  if (seq < S.max_frames / 2 && !bit(S.seen, seq)) set_bit(S.seen, seq), S.st.packets_got++;
+  if (seq < S.max_frames / 2 && !bit(S.seen, seq)) {
+    set_bit(S.seen, seq), S.st.packets_got++;
+    if (ring && seq / GROUP == hi_group) hi_count++;
+  }
   if (S.st.stored && S.st.frames_got == S.st.stored) {
     int done = !S.st.complete;
     S.st.complete = 1;
+    if (ring) update_avail();
     if (done && !was_new) return SP_COMPLETE;
   }
+  if (ring) update_avail();
   if (was_new) return SP_NEW;
   return S.st.frames_got != before ? SP_ADDED : SP_DUP;
 }
@@ -156,7 +193,22 @@ static int packet(const uint8_t *p, int fpp, uint8_t profile) {
     S.st.total = (uint16_t)total;
     S.st.stored = (uint16_t)(total < S.max_frames ? total : S.max_frames);
     S.st.packets_total = (uint16_t)((total + fpg - 1) / fpg * GROUP);
+    fpg_now = fpg;
+    if (stream_on && S.max_frames >= fpg)   /* the whole message, through a ring of groups */
+      ring = S.max_frames / fpg * fpg, S.st.stored = (uint16_t)total;
     was_new = 1;
+  }
+  if (ring) {
+    int g = seq / GROUP, k, groups = ring / fpg;
+    if (g <= hi_group - groups) return SP_DUP;   /* its place in the ring went to a later group */
+    if (g > hi_group) {
+      for (k = hi_group + 1 > g - groups + 1 ? hi_group + 1 : g - groups + 1; k <= g; k++) {
+        /* group k reuses group k - groups's place: an overrun if that wasn't played yet */
+        if (playing && (long)(k - groups + 1) * fpg > play_pos) overruns++;
+        memset(S.good + pos_of((long)k * fpg) / 8, 0, (unsigned)fpg / 8u);
+      }
+      hi_group = g, hi_count = 0;
+    }
   }
   before = S.st.frames_got;
   for (s = 0; s < fpp; s++) {
@@ -254,6 +306,7 @@ void sp_play_start(void) {
 #endif
   play_pos = 0;
   play_end = S.st.have && MSG_PLAYS ? S.st.stored : -1;   /* -1: the other codec's message */
+  playing = 1;
   emph1 = emph2 = 0;
   pcm_hash = 2166136261u, pcm_n = 0;
 }
@@ -262,10 +315,12 @@ void sp_play_start(void) {
 /* sotto 1200: each 6-byte slot is 40 ms, played as two 20 ms halves (no 320-sample buffer);
    the decoder runs SOTTO_LR_DEC_DELAY slots behind, and its flush plays the last ones */
 static int lr_half(int16_t pcm[SP_FRAME_SAMPLES]) {
-  int half = play_half;
-  if (play_pos < play_end)
-    sotto_lr_decode_half(dec, S.frames + 6 * play_pos, bit(S.good, play_pos), half, pcm);
-  else if (!sotto_lr_dec_flush_half(dec, half, pcm))
+  int half = play_half, r;
+  if (play_pos < play_end) {
+    if (ring && play_pos >= avail) return SP_PLAY_WAIT;
+    r = pos_of(play_pos);
+    sotto_lr_decode_half(dec, S.frames + 6 * r, bit(S.good, r), half, pcm);
+  } else if (!sotto_lr_dec_flush_half(dec, half, pcm))
     return 0;
   play_half = !half;
   if (half) play_pos++;
@@ -275,7 +330,8 @@ static int lr_half(int16_t pcm[SP_FRAME_SAMPLES]) {
 int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
   if (!dec || play_end < 0) return 0;
   for (;;) {
-    if (!lr_half(pcm)) return 0;
+    int r = lr_half(pcm);
+    if (r != 1) return r;
     if (!play_skip) return hash_pcm(pcm), 1;
     play_skip--;                  /* the first 80 ms out are the delay's silence */
   }
@@ -284,7 +340,9 @@ int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
 int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
   if (!dec || play_end < 0) return 0;
   if (play_pos < play_end) {
-    sotto_decode(dec, S.frames + 6 * play_pos, bit(S.good, play_pos), pcm);
+    int r = pos_of(play_pos);
+    if (ring && play_pos >= avail) return SP_PLAY_WAIT;
+    sotto_decode(dec, S.frames + 6 * r, bit(S.good, r), pcm);
     play_pos++;
     hash_pcm(pcm);
     return 1;
@@ -298,6 +356,17 @@ int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
   return 0;
 }
 #endif
+
+void sp_set_stream(int on) { stream_on = on != 0; }
+int sp_stream(void) { return stream_on; }
+int sp_stream_ready(void) { return ring && S.st.have && MSG_PLAYS && avail > 0; }
+void sp_stream_end(void) {
+  if (ring) ended = 1, update_avail();
+}
+int sp_stream_info(int *overrun_count) {
+  if (overrun_count) *overrun_count = overruns;
+  return ring;
+}
 
 int sp_play_pos(void) { return play_end < 0 ? 0 : play_pos < play_end ? play_pos : play_end; }
 
@@ -326,7 +395,7 @@ static const uint16_t auto_gain[32] = {
 
 int sp_auto_gain_q8(void) {
   int f, top = -1;
-  for (f = 0; f < S.st.stored; f++)
+  for (f = 0; f < (ring && ring < S.st.stored ? ring : S.st.stored); f++)
     if (bit(S.good, f)) {
       const uint8_t *q = S.frames + 6 * f;
       int e = ((q[1] << 8 | q[2]) >> 10) & 31;      /* bits 9..13: voicing 2 | Wo 7 | energy 5 */
@@ -338,7 +407,10 @@ int sp_auto_gain_q8(void) {
 int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int emphasis) {
   int16_t *pcm = (int16_t *)out;   /* decoded in place: the conversion reads each sample before
                                       writing it (320 bytes less RAM on the K6) */
-  if (!sp_play_frame(pcm)) return 0;
+  int r = sp_play_frame(pcm), i;
+  if (r == SP_PLAY_WAIT)
+    for (i = 0; i < SP_FRAME_SAMPLES; i++) out[i] = (uint16_t)(top / 2);
+  if (r != 1) return r;
   sp_pcm_to_pwm(pcm, out, SP_FRAME_SAMPLES, top, gain_q8, emphasis);
   return 1;
 }
@@ -393,7 +465,7 @@ int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e) {
 }
 
 unsigned sp_static_bytes(void) {
-  return (unsigned)(sizeof dec_mem + sizeof pn9 + sizeof last_pkt + sizeof S + sizeof dec + 4 * sizeof(int)
+  return (unsigned)(sizeof dec_mem + sizeof pn9 + sizeof last_pkt + sizeof S + sizeof dec + 14 * sizeof(int)
                     + 2 * sizeof(int32_t) + 2 * SP_FRAME_SAMPLES
 #ifdef FX_OA_PACKED
                     + 2048u                       /* fx_cs512's table (fx_math.c) */

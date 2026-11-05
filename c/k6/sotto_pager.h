@@ -106,6 +106,34 @@ int sp_play_pos(void);           /* frames played so far */
    bit-exact with the radio) can check the playback without anyone listening. */
 uint32_t sp_pcm_hash(unsigned *samples);
 
+/* Stream mode (on by default in the sotto 1200 build, off in v3.7's, whose packets are slower
+   on air than real time): a message's frames go through the store as a ring of whole
+   interleave groups (4 XL groups, 25.6 s of sotto 1200, in the K6's 4 KB), so a message can
+   be any length and play while the rest arrives. sp_stream_ready says when the first group
+   is final: all 8 of its packets are in, or a later group's have started (packets come in seq
+   order), or sp_stream_end was called (the sender stopped: the radio heard nothing for a
+   while). Then sp_play_start and sp_play_frame as usual, interleaved with sp_packet; a frame
+   whose group isn't final yet makes sp_play_frame return SP_PLAY_WAIT (sp_play_pwm: silence)
+   without decoding, so the decoded samples and pcm hash match a store-then-play of the same
+   packets. A group that arrives while the group whose place it takes is still unplayed counts
+   an overrun (the sender ran too far ahead; the newer frames win). A total of 0xFFFF is an
+   open-ended stream: sp_stream_end stops playback after the last group heard. sp_set_stream
+   applies from the next new message; sp_stream_info returns the ring size in frames (0 when
+   the message doesn't stream). Replaying (sp_play_start again) a message longer than the
+   ring plays the overwritten groups wrong. */
+#define SP_PLAY_WAIT 2
+/* Builds with -DFX_YIELD_HOOK (the K6's): f is called from inside each decode, after at most
+   about 0.2 ms of work between calls (c/k6/bench_k6.py --yield-gap measures it), so the radio
+   can empty its RF chip's 8-word FIFO while a frame decodes; 0 for none. f must not touch the
+   store or call this library. */
+void sp_set_yield(void (*f)(void));
+void sp_yield_probe(void);
+void sp_set_stream(int on);
+int sp_stream(void);
+int sp_stream_ready(void);
+void sp_stream_end(void);
+int sp_stream_info(int *overruns);
+
 /* PCM to PWM compare values for the K6's TIM1 CH4 path (PA11 -> two RC poles -> speaker
    amplifier), in place of the stock voice prompts' (s + 2048) >> 1. out[i] is in
    0..top with top / 2 for silence (top = TIM1 ARR, 2000 for the stock 48 kHz carrier).

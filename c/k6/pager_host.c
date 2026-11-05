@@ -4,7 +4,12 @@
  * simply absent. Writes the played message as 8 kHz 16-bit raw (the decoder's first 20 ms of
  * delay included, as on the radio) and prints one line of status:
  *   results=<sp_packet codes> total= stored= got= packets= of= complete= bad=
- * -b sets the store size (default 6144 bytes). -p writes the PWM compare values the radio would
+ * -b sets the store size (default 6144 bytes). -S turns stream mode off (store then play; the
+ * sotto 1200 build streams by default). -s HALVES simulates live streaming: playback starts as
+ * soon as sp_stream_ready says so and plays HALVES x 20 ms after each packet (32 is real time
+ * for XL at 1800 baud: 640 ms on air per packet), and the line gains ring= waits= (frames
+ * not in yet when their turn came) and overruns=; only decoded frames are written, so the
+ * output matches a store-then-play of the same packets. -p writes the PWM compare values the radio would
  * send to TIM1 instead (uint16, top 2000, automatic gain, pre-emphasis on), via sp_play_pwm. pager_host -t prints the
  * calibration test packet (sp_test_packet) in hex. pager_host -e [-x] PACKETS.bin prints, for each packet,
  * sp_test_errors: errors seq swap invert and the eight block counts.
@@ -15,7 +20,7 @@
 #include "sotto_pager.h"
 
 int main(int argc, char **argv) {
-  int len = SP_PAYLOAD_L, n, r, c, pwm = 0, ber = 0;
+  int len = SP_PAYLOAD_L, n, r, c, pwm = 0, ber = 0, halves = 0, playing = 0, waits = 0, ov = 0, ringf;
   unsigned bytes = 6144;
   static uint32_t mem[65536];
   uint8_t pkt[SP_PAYLOAD_MAX];
@@ -32,6 +37,8 @@ int main(int argc, char **argv) {
     if (!strcmp(argv[1], "-e")) ber = 1, argv++, argc--;
     else if (!strcmp(argv[1], "-x")) len = SP_PAYLOAD_XL, argv++, argc--;
     else if (!strcmp(argv[1], "-p")) pwm = 1, argv++, argc--;
+    else if (!strcmp(argv[1], "-S")) sp_set_stream(0), argv++, argc--;
+    else if (!strcmp(argv[1], "-s") && argc > 2) halves = atoi(argv[2]), argv += 2, argc -= 2;
     else if (!strcmp(argv[1], "-b") && argc > 2) bytes = (unsigned)atoi(argv[2]), argv += 2, argc -= 2;
     else break;
   }
@@ -71,7 +78,15 @@ int main(int argc, char **argv) {
     r = sp_packet(pkt, len);
     if (c != (r >= 0)) { fprintf(stderr, "sp_check %d disagrees with sp_packet %d\n", c, r); return 2; }
     printf("%d,", r);
+    if (halves && !playing && sp_stream_ready()) sp_play_start(), playing = 1;
+    for (c = 0; playing == 1 && c < halves; c++) {
+      int q = sp_play_frame(pcm);
+      if (q == SP_PLAY_WAIT) waits++;
+      else if (q) fwrite(pcm, sizeof pcm[0], SP_FRAME_SAMPLES, out);
+      else playing = 2;
+    }
   }
+  sp_stream_end();                  /* the sender stopped */
   sp_status(&st);
   printf(" total=%u stored=%u got=%u packets=%u of=%u complete=%d good=%u bad=%u id=%u auto_gain=%d ", st.total,
          st.stored, st.frames_got, st.packets_got, st.packets_total, st.complete, st.good_packets, st.bad_packets,
@@ -83,8 +98,17 @@ int main(int argc, char **argv) {
     for (i = 0; i < nm && i < 8; i++) printf("%c%u", i ? ',' : ':', miss[i]);
     printf("\n");
   }
-  sp_play_start();
-  if (pwm) {
+  if (halves) {
+    if (!playing) sp_play_start();
+    while (playing != 2) {
+      int q = sp_play_frame(pcm);
+      if (q == SP_PLAY_WAIT) { fprintf(stderr, "pager_host: wait after the end\n"); return 3; }
+      if (q) fwrite(pcm, sizeof pcm[0], SP_FRAME_SAMPLES, out);
+      else playing = 2;
+    }
+    ringf = sp_stream_info(&ov);
+    printf("ring=%d waits=%d overruns=%d\n", ringf, waits, ov);
+  } else if (sp_play_start(), pwm) {
     uint16_t v[SP_FRAME_SAMPLES];
     int g = sp_auto_gain_q8();
     while (sp_play_pwm(v, 2000, g, 1)) fwrite(v, sizeof v[0], SP_FRAME_SAMPLES, out);
