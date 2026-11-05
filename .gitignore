@@ -22,6 +22,7 @@ c/k6/host/
 c/k6/pager_host
 c/k6/host-lr/
 c/k6/pager_host_lr
+c/k6/km_host
 c/k6/build-lr/
 firmware/k6-aura/out/
 firmware/k6-aura/lib/

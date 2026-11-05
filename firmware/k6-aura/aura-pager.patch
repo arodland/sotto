@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..663ae07
+index 0000000..5e8a64b
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2318 @@
+@@ -0,0 +1,2405 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -321,9 +321,50 @@ index 0000000..663ae07
 +        pub fn sp_auto_gain_q8() -> i32;
 +        pub fn sp_test_packet(out: *mut u8);
 +        pub fn sp_control(payload: *const u8, len: i32, rec: *mut u8) -> i32;
++        pub fn km_packet(payload: *const u8, len: i32, arena: *mut u8, bytes: u32) -> i32;
++        pub fn km_run(arena: *mut u8, api: *const K6Api) -> i32;
++        pub fn km_reset();
++        pub fn km_status() -> *const KmStatus;
++    }
++    /// c/k6/k6_mod.h: what a RAM module can call (append-only, ABI 1)
++    #[repr(C)]
++    pub struct K6Api {
++        pub abi: u16,
++        pub level: u16,
++        pub say: unsafe extern "C" fn(*const u8),
++        pub ticks: unsafe extern "C" fn() -> u32,
++    }
++    #[repr(C)]
++    pub struct KmStatus {
++        pub xfer: u8,
++        pub have: u8,
++        pub count: u8,
++        pub active: u8,
++        pub last: i8,
++        pub chunk: u8,
++        pub code_len: u16,
++        pub serial: u32,
 +    }
 +}
 +pub use ffi::{SpBiterr, SpStatus};
++
++const KM_READY: i32 = 3;
++
++/// The table a RAM module gets (c/k6/k6_mod.h). It reports over the serial line only.
++static MOD_API: ffi::K6Api = ffi::K6Api { abi: 1, level: 1, say: mod_say, ticks: mod_ticks };
++
++unsafe extern "C" fn mod_say(s: *const u8) {
++    let mut n = 0;
++    while n < 60 && unsafe { *s.add(n) } != 0 {
++        n += 1;
++    }
++    let t = core::str::from_utf8(unsafe { core::slice::from_raw_parts(s, n) }).unwrap_or("(not text)");
++    report_line(format_args!("K6 MOD say {}", t));
++}
++
++unsafe extern "C" fn mod_ticks() -> u32 {
++    uptime::now() as u32
++}
 +
 +const SP_BAD_MAGIC: i32 = -2;
 +const SP_BAD_CRC: i32 = -1;
@@ -1611,6 +1652,22 @@ index 0000000..663ae07
 +        return;
 +    }
 +
++    // a RAM module packet (magic 0xAB, c/k6/k6_mod.h)? Not while a message plays: the module
++    // lands in the message store
++    if !app.pager.play_pending {
++        let r = unsafe { ffi::km_packet(buf.as_ptr(), len as i32, addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) };
++        if r != 0 {
++            module_packet(app, r);
++            return;
++        }
++        // a good voice packet partway through a module: messages win, the module is dropped
++        if unsafe { (*ffi::km_status()).active } != 0 && unsafe { ffi::sp_check(buf.as_ptr(), len as i32) } != 0 {
++            unsafe { ffi::km_reset() };
++            report_line(format_args!("K6 MOD dropped: a voice packet came first"));
++            clear_store(app);
++        }
++    }
++
 +    // bit errors against the test message (calibration packets), before any guessing
 +    let mut e = ffi::NO_BITERR;
 +    if unsafe { ffi::sp_test_errors(buf.as_ptr(), len as i32, &mut e) } >= 0 {
@@ -1679,6 +1736,36 @@ index 0000000..663ae07
 +    }
 +    if r == SP_COMPLETE && app.pager.auto_play && app.pager.played_id != app.pager.status.msg_id as i16 {
 +        app.pager.play_pending = true;
++    }
++}
++
++/// A module packet: report it, and run the module once its last chunk checks. A module
++/// transfer empties the message store, which is set up again when the transfer is over.
++#[inline(never)] // its locals only while it runs, not in main's frame for good
++fn module_packet(app: &mut App, r: i32) {
++    let st = unsafe { &*ffi::km_status() };
++    report_line(format_args!(
++        "K6 MOD r={} xfer={} chunk={} have={}/{}",
++        r, st.xfer, st.chunk, st.have, st.count
++    ));
++    if r != -1 {
++        // its CRC checked: the link works in these settings
++        app.pager.idle_ticks = 0;
++        app.pager.last_ok = true;
++        app.pager.ctl_prev = None;
++    }
++    if r == KM_READY {
++        let at = addr_of_mut!(STORE) as usize + 16;
++        report_line(format_args!("K6 MOD run serial={} code={} B at {:#010x}", st.serial, st.code_len, at));
++        let t0 = uptime::now();
++        let ret = unsafe { ffi::km_run(addr_of_mut!(STORE) as *mut u8, &MOD_API) };
++        let dt = uptime::now().wrapping_sub(t0);
++        report_line(format_args!("K6 MOD ret={} ({:#x}) in {}.{} ms", ret, ret, dt / 10, dt % 10));
++    }
++    if r == KM_READY || r <= -3 {
++        clear_store(app); // the transfer is over, run or refused
++    } else {
++        refresh_status(app); // the store is empty while the chunks arrive
 +    }
 +}
 +

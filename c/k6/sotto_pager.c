@@ -199,6 +199,13 @@ int sp_control(const uint8_t *payload, int len, uint8_t rec[6]) {
 
 const uint8_t *sp_last_packet(void) { return last_pkt; }
 
+const uint8_t *sp_pn9(void) {
+  if (!pn9[0]) pn9_init();
+  return pn9;
+}
+
+unsigned sp_crc16(const uint8_t *p, int n) { return crc16(p, n); }
+
 void sp_status(sp_status_t *st) { *st = S.st; }
 
 int sp_missing(uint16_t *out, int max) {

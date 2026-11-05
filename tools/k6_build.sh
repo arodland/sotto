@@ -8,6 +8,10 @@
 # Usage: sh tools/k6_build.sh [extra clang options]
 #        K6_CODEC=1200 sh tools/k6_build.sh   the sotto 1200 build (-DSP_LR, plays magic 0xA9
 #            messages, 40 ms per slot; c/fixed/sotto_fx_lr.c at -Os) into c/k6/build-lr
+#        K6_MOD_KEY_FILE=~/.config/sotto/k6-mod.key sh tools/k6_build.sh   the RAM module loader
+#            (c/k6/k6_mod.c) accepts modules signed with that key (`python -m modem.k6 modkey`
+#            makes one). Without it the loader is built but refuses every module, which is
+#            what CI builds. A keyed library or image holds the key: keep it on your machine.
 #        K6_RAMFUNC=1 sh tools/k6_build.sh   puts fx_oa_block (0.8 KB, the decoder's hottest
 #            loop) in a .data section, which cortex-m-rt copies to RAM at boot: ~5 MHz less,
 #            0.8 KB more RAM. Off by default for the first bring-up.
@@ -32,6 +36,14 @@ CFLAGS="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -no
   -ffreestanding -fno-builtin-calloc -fno-builtin-free -Wall -Wno-unused-function
   -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DFX_CS512_CONST $LR -I$ROOT/c -O2 $*"
 mkdir -p "$OUT"
+KM=
+if [ -n "${K6_MOD_KEY_FILE:-}" ]; then
+  KM=$(python3 -c 'import sys; k = bytes.fromhex(open(sys.argv[1]).read().strip()); assert len(k) == 16, "want 32 hex digits"; print(",".join(str(b) for b in k))' "$K6_MOD_KEY_FILE")
+  echo "module loader: key from $K6_MOD_KEY_FILE"
+else
+  echo "module loader: no K6_MOD_KEY_FILE, so it refuses every module"
+fi
+$CC $CFLAGS -Os ${KM:+-DKM_KEY=$KM} -c "$ROOT/c/k6/k6_mod.c" -o "$OUT/k6_mod.o"
 # per packet, not per sample (the PWM conversion is 160 samples in 20 ms): -Os, about 2 KB less
 $CC $CFLAGS ${K6_PAGER_OPT:--Os} -c "$ROOT/c/k6/sotto_pager.c" -o "$OUT/sotto_pager.o"
 $CC $CFLAGS -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_dec.c" -o "$OUT/sotto_fx_dec.o"
@@ -40,7 +52,7 @@ $CC $CFLAGS -c "$ROOT/c/fixed/fx_tables.c" -o "$OUT/fx_tables.o"
 if [ "${K6_RAMFUNC:-0}" = 1 ]; then
   $OBJCOPY --rename-section .text.fx_oa_block=.data.ramfunc.fx_oa_block,alloc,load,contents,code "$OUT/fx_math.o"
 fi
-LIBOBJS="$OUT/sotto_pager.o $OUT/sotto_fx_dec.o $OUT/fx_math.o $OUT/fx_tables.o"
+LIBOBJS="$OUT/sotto_pager.o $OUT/k6_mod.o $OUT/sotto_fx_dec.o $OUT/fx_math.o $OUT/fx_tables.o"
 if [ -n "$LR" ]; then     # not hot (field unpacking and shape sums once per 40 ms): -Os
   $CC $CFLAGS -Os -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_lr.c" -o "$OUT/sotto_fx_lr.o"
   LIBOBJS="$LIBOBJS $OUT/sotto_fx_lr.o"
