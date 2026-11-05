@@ -137,6 +137,10 @@ def _tx_opts(p):
     p.add_argument("--codec", choices=tuple(pager.CODECS), default="2400",
                    help="what the .sot holds: 2400 = sotto v3.7 (default), 1200 = sotto 1200 "
                         "(sotto_enc -1200; magic 0xA9, L or XL)")
+    p.add_argument("--depth", type=int, choices=pager.DEPTHS, default=pager.GROUP,
+                   help="packets per interleave group (default 8): a streaming K6 starts playing once "
+                        "a group is in, so 4 starts about twice as soon; a lost packet's frames are "
+                        "then 4 slots apart instead of 8 (L and XL; images from 2026-11-05 on)")
     p.add_argument("--level", type=float, default=0.5, help="peak audio, 0..1 (default 0.5)")
     p.add_argument("--invert", action="store_true", help="flip the bit polarity")
     p.add_argument("--comp", help="pre-compensate: a fit JSON, 'voice' (generic model) or 'preemph'")
@@ -168,7 +172,7 @@ def _tx_opts(p):
 
 
 def _profile(a):
-    return pager.profile(a.payload, getattr(a, "codec", "2400"))
+    return pager.profile(a.payload, getattr(a, "codec", "2400"), getattr(a, "depth", pager.GROUP))
 
 
 def _payloads(a, frames):

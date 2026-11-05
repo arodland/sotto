@@ -8,7 +8,7 @@
  * sotto 1200 build streams by default). -s HALVES simulates live streaming: playback starts as
  * soon as sp_stream_ready says so and plays HALVES x 20 ms after each packet (32 is real time
  * for XL at 1800 baud: 640 ms on air per packet), and the line gains ring= waits= (frames
- * not in yet when their turn came) and overruns=; only decoded frames are written, so the
+ * not in yet when their turn came), overruns= and start= (packets in when playback began); only decoded frames are written, so the
  * output matches a store-then-play of the same packets. -p writes the PWM compare values the radio would
  * send to TIM1 instead (uint16, top 2000, automatic gain, pre-emphasis on), via sp_play_pwm. pager_host -t prints the
  * calibration test packet (sp_test_packet) in hex. pager_host -e [-x] PACKETS.bin prints, for each packet,
@@ -20,7 +20,7 @@
 #include "sotto_pager.h"
 
 int main(int argc, char **argv) {
-  int len = SP_PAYLOAD_L, n, r, c, pwm = 0, ber = 0, halves = 0, playing = 0, waits = 0, ov = 0, ringf;
+  int len = SP_PAYLOAD_L, n, r, c, pwm = 0, ber = 0, halves = 0, playing = 0, waits = 0, ov = 0, ringf, npk = 0, start = 0;
   unsigned bytes = 6144;
   static uint32_t mem[65536];
   uint8_t pkt[SP_PAYLOAD_MAX];
@@ -78,7 +78,8 @@ int main(int argc, char **argv) {
     r = sp_packet(pkt, len);
     if (c != (r >= 0)) { fprintf(stderr, "sp_check %d disagrees with sp_packet %d\n", c, r); return 2; }
     printf("%d,", r);
-    if (halves && !playing && sp_stream_ready()) sp_play_start(), playing = 1;
+    npk++;
+    if (halves && !playing && sp_stream_ready()) sp_play_start(), playing = 1, start = npk;
     for (c = 0; playing == 1 && c < halves; c++) {
       int q = sp_play_frame(pcm);
       if (q == SP_PLAY_WAIT) waits++;
@@ -99,7 +100,7 @@ int main(int argc, char **argv) {
     printf("\n");
   }
   if (halves) {
-    if (!playing) sp_play_start();
+    if (!playing) sp_play_start(), start = npk;
     while (playing != 2) {
       int q = sp_play_frame(pcm);
       if (q == SP_PLAY_WAIT) { fprintf(stderr, "pager_host: wait after the end\n"); return 3; }
@@ -107,7 +108,7 @@ int main(int argc, char **argv) {
       else playing = 2;
     }
     ringf = sp_stream_info(&ov);
-    printf("ring=%d waits=%d overruns=%d\n", ringf, waits, ov);
+    printf("ring=%d waits=%d overruns=%d start=%d\n", ringf, waits, ov, start);
   } else if (sp_play_start(), pwm) {
     uint16_t v[SP_FRAME_SAMPLES];
     int g = sp_auto_gain_q8();

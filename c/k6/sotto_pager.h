@@ -12,8 +12,10 @@
  * total frames (2), 8 frames of 6 bytes, 8 reserved, CRC-16/CCITT-FALSE (2); packet k of a
  * group g of 8 carries frames g*64 + s*8 + k, s = 0..7. Profile XL: the same 6-byte header,
  * 20 frames, no reserved bytes, CRC (128 bytes); packet k of group g carries frames
- * g*160 + s*8 + k, s = 0..19. (Profile S, 16 bytes, is no longer taken: the radio reads
- * 64-byte packets fine.)
+ * g*160 + s*8 + k, s = 0..19. The top 2 bits of seq give the interleave depth D (0: 8, 1: 4,
+ * 2: 2, 3: 1 packets per group; seq is the low 14 bits), and with it packet k of group g carries
+ * frames g*F*D + s*D + k (F frames per packet). (Profile S, 16 bytes, is no longer taken: the
+ * radio reads 64-byte packets fine.)
  *
  * No heap, no floating point, no 64-bit division: everything lives in the caller's buffer
  * (sp_init) and in this library's static decoder state (about 0.9 KB plus a 2 KB cos/sin
@@ -110,7 +112,7 @@ uint32_t sp_pcm_hash(unsigned *samples);
    on air than real time): a message's frames go through the store as a ring of whole
    interleave groups (4 XL groups, 25.6 s of sotto 1200, in the K6's 4 KB), so a message can
    be any length and play while the rest arrives. sp_stream_ready says when the first group
-   is final: all 8 of its packets are in, or a later group's have started (packets come in seq
+   is final: all D of its packets are in (D = 8 unless the header says 4, 2 or 1), or a later group's have started (packets come in seq
    order), or sp_stream_end was called (the sender stopped: the radio heard nothing for a
    while). Then sp_play_start and sp_play_frame as usual, interleaved with sp_packet; a frame
    whose group isn't final yet makes sp_play_frame return SP_PLAY_WAIT (sp_play_pwm: silence)

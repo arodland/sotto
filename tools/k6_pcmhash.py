@@ -33,10 +33,10 @@ from modem.k6 import msg_id_for  # noqa: E402
 K6 = os.path.join(ROOT, "c", "k6")
 
 
-def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store=200000):
+def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store=200000, depth=8):
     """(hash as 8 hex digits, samples, the host's status dict) for frames with the packets in
     missing left out."""
-    prof = pager.profile(payload, codec)
+    prof = pager.profile(payload, codec, depth)
     mid = msg_id if msg_id is not None else msg_id_for(frames)
     pk = [p for i, p in enumerate(prof.pack(frames, mid)) if i not in set(missing)]
     host = os.path.join(K6, "pager_host_lr" if codec == "1200" else "pager_host")
@@ -67,6 +67,7 @@ def main(argv=None):
     ap.add_argument("sot", help="the .sot that was sent")
     ap.add_argument("--codec", choices=("2400", "1200"), default="2400")
     ap.add_argument("--payload", choices=("L", "XL"), default="XL")
+    ap.add_argument("--depth", type=int, choices=pager.DEPTHS, default=8, help="as given to modem.k6")
     ap.add_argument("--msg-id", type=int, help="as given to modem.k6 (default: from the frames, as it does)")
     ap.add_argument("--missing", default="", help="packet seqs the K6 reported missing, e.g. 3,17")
     ap.add_argument("--check", metavar="LINE", help="the K6 PLAY line to compare with")
@@ -81,7 +82,7 @@ def main(argv=None):
         missing = seqs
         if "pcm" not in kv:
             sys.exit("no pcm= in that PLAY line (firmware before the checksum)")
-    h, n, st = reference(frames, a.codec, a.payload, missing, a.msg_id)
+    h, n, st = reference(frames, a.codec, a.payload, missing, a.msg_id, depth=a.depth)
     print(f"pcm={h} samples={n} total={st['total']} got={st['got']} missing={','.join(map(str, missing)) or '-'}")
     if kv is not None:
         ok = kv["pcm"] == h and int(kv["samples"]) == n

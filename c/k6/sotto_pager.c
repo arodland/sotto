@@ -41,7 +41,7 @@ void sp_free(void *p) {
 /* ---- packet format v1 ------------------------------------------------------------------- */
 #define FPP_L 8                   /* frames per packet, profile L */
 #define FPP_XL 20                 /* profile XL: 6 + 20 x 6 + 2 = 128 bytes, nothing reserved */
-#define GROUP 8                   /* packets per interleave group (both profiles) */
+#define GROUP 8                   /* packets per interleave group: the default, and the test message's */
 #define HDR 6                     /* magic, msg_id, seq (2), total (2) */
 #define TEST_FRAMES 70            /* the spec's test message (section 10) */
 
@@ -96,6 +96,7 @@ static int play_pos, play_end;
 static int stream_on = STREAM_DEFAULT;
 static int ring;                    /* frames in the ring while a message streams, else 0 */
 static int fpg_now;                 /* frames per interleave group of the message */
+static int gp_now = GROUP;          /* packets per interleave group of the message: 8, 4, 2 or 1 */
 static int hi_group, hi_count;      /* the newest group seen, and how many of its packets */
 static int avail;                   /* frames below this are final: playable */
 static int ended, overruns, playing;
@@ -162,7 +163,7 @@ static void put_frame(int f, const uint8_t *src) {
 /* stream mode: the frames playback may take, once group g's packets are all in or a later
    group's have started (packets come in seq order), or the sender has stopped (ended) */
 static void update_avail(void) {
-  long a = (long)hi_group * fpg_now + (hi_count >= GROUP ? fpg_now : 0);
+  long a = (long)hi_group * fpg_now + (hi_count >= gp_now ? fpg_now : 0);
   if (ended || S.st.complete) a = S.st.total == 0xFFFF ? (long)(hi_group + 1) * fpg_now : S.st.stored;
   if (a > S.st.stored) a = S.st.stored;
   if (a > avail) avail = (int)a;
@@ -171,7 +172,7 @@ static void update_avail(void) {
 static int finish_packet(int seq, int was_new, unsigned before) {
   if (seq < S.max_frames / 2 && !bit(S.seen, seq)) {
     set_bit(S.seen, seq), S.st.packets_got++;
-    if (ring && seq / GROUP == hi_group) hi_count++;
+    if (ring && seq / gp_now == hi_group) hi_count++;
   }
   if (S.st.stored && S.st.frames_got == S.st.stored) {
     int done = !S.st.complete;
@@ -186,33 +187,38 @@ static int finish_packet(int seq, int was_new, unsigned before) {
 
 /* profile L or XL (fpp frames per packet), checked and de-whitened */
 static int packet(const uint8_t *p, int fpp, uint8_t profile) {
-  int seq = p[2] << 8 | p[3], total = p[4] << 8 | p[5], s, was_new = 0, fpg = fpp * GROUP;
+  /* seq's top 2 bits: the interleave depth, 8 >> code packets per group (0: 8, as before) */
+  int dep = GROUP >> (p[2] >> 6), seq = (p[2] & 0x3F) << 8 | p[3], total = p[4] << 8 | p[5];
+  int s, was_new = 0, fpg = fpp * dep;
   unsigned before;
-  if (!S.st.have || S.st.profile != profile || p[1] != S.st.msg_id || total != S.st.total) {
+  if (!S.st.have || S.st.profile != profile || p[1] != S.st.msg_id || total != S.st.total || dep != gp_now) {
     clear_message(p[1], profile);
     S.st.total = (uint16_t)total;
     S.st.stored = (uint16_t)(total < S.max_frames ? total : S.max_frames);
-    S.st.packets_total = (uint16_t)((total + fpg - 1) / fpg * GROUP);
-    fpg_now = fpg;
+    S.st.packets_total = (uint16_t)((total + fpg - 1) / fpg * dep);
+    fpg_now = fpg, gp_now = dep;
     if (stream_on && S.max_frames >= fpg)   /* the whole message, through a ring of groups */
       ring = S.max_frames / fpg * fpg, S.st.stored = (uint16_t)total;
     was_new = 1;
   }
   if (ring) {
-    int g = seq / GROUP, k, groups = ring / fpg;
+    int g = seq / dep, k, i, groups = ring / fpg;
     if (g <= hi_group - groups) return SP_DUP;   /* its place in the ring went to a later group */
     if (g > hi_group) {
       for (k = hi_group + 1 > g - groups + 1 ? hi_group + 1 : g - groups + 1; k <= g; k++) {
         /* group k reuses group k - groups's place: an overrun if that wasn't played yet */
         if (playing && (long)(k - groups + 1) * fpg > play_pos) overruns++;
-        memset(S.good + pos_of((long)k * fpg) / 8, 0, (unsigned)fpg / 8u);
+        for (i = 0; i < fpg; i++) {           /* XL at depth 1 has 20-frame groups: by bit */
+          int b = pos_of((long)k * fpg + i);
+          S.good[b >> 3] &= (uint8_t)~(1u << (b & 7));
+        }
       }
       hi_group = g, hi_count = 0;
     }
   }
   before = S.st.frames_got;
   for (s = 0; s < fpp; s++) {
-    long f = (long)(seq / GROUP) * fpg + s * GROUP + seq % GROUP;
+    long f = (long)(seq / dep) * fpg + s * dep + seq % dep;
     if (f < S.st.stored) put_frame((int)f, p + HDR + 6 * s);
   }
   return finish_packet(seq, was_new, before);

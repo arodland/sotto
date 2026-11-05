@@ -406,3 +406,85 @@ def test_store_mode_still_available():
                              capture_output=True, text=True).stdout.split()
     st = dict(kv.split("=", 1) for kv in out)
     assert int(st["stored"]) == 656 and int(st["total"]) == 1200
+
+
+@pytest.mark.parametrize("name,depth", [("L", 4), ("XL", 4), ("XL", 2), ("XL", 1), ("L", 1)])
+def test_interleave_depth_in_the_header(name, depth):
+    """seq's top 2 bits carry the interleave depth (0 = 8, as before); packet k of group g holds
+    frames g*F*D + s*D + k, and the Assembler takes the depth from each message's packets."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    prof = pager.profile(name, "1200", depth)
+    fr = b"".join(frames_of(203, seed=2))
+    pk = prof.pack(fr, msg_id=5)
+    assert len(pk) == prof.n_packets(203) == -(-203 // (prof.slots * depth)) * depth
+    q = prof.unpack(pk[depth + 1])
+    assert q["seq"] == depth + 1 and q["depth"] == depth
+    g, k = divmod(depth + 1, depth)
+    assert prof.packet_frames(depth + 1)[:2] == [g * prof.slots * depth + k, g * prof.slots * depth + k + depth]
+    assert pager.profile(name, "1200").unpack(pk[0])["depth"] == depth   # any receiver profile reads it
+    asm = pager.Assembler(pager.profile(name, "1200"))
+    for i, p in enumerate(pk):
+        if i != 2:
+            asm.push(p)
+    got, good = asm.frames(5)
+    lost = [f for f in prof.packet_frames(2) if f < 203]
+    assert [i for i in range(203) if not good[i]] == lost
+    assert all(got[6 * f:6 * f + 6] == fr[6 * f:6 * f + 6] for f in range(203) if good[f])
+    assert pager.profile(name, "1200", 8).pack(fr, 5) == pager.profile(name, "1200").pack(fr, 5)
+    with pytest.raises(ValueError):
+        pager.profile(name, "1200", 3)
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+@pytest.mark.parametrize("name,depth,lost", [("XL", 4, [3]), ("XL", 2, [1]), ("XL", 1, [2]), ("L", 4, [5]),
+                                             ("L", 1, [])])
+def test_depth_plays_what_the_m0_decoder_plays(name, depth, lost):
+    """At depth 4, 2 or 1 the pager stores each packet's frames where the header says, and plays
+    them (and a lost packet's concealment) bit-exactly as sotto_dec_fx_m0 -1200."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    prof = pager.profile(name, "1200", depth)
+    fr = frames_of(150, seed=8)
+    pk = [p for i, p in enumerate(prof.pack(b"".join(fr), msg_id=9)) if i not in lost]
+    st, pcm = _run(HOST_LR, pk, xl=name == "XL", store=200000)
+    good = [1] * len(fr)
+    for q in lost:
+        for f in prof.packet_frames(q):
+            if f < len(fr):
+                good[f] = 0
+    assert int(st["got"]) == sum(good) and int(st["of"]) == len(prof.pack(b"".join(fr)))
+    assert st["missing"] == (f"{len(lost)}:" + ",".join(map(str, lost)) if lost else "0")
+    assert np.array_equal(pcm, _dec_lr(fr, good))
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+@pytest.mark.parametrize("depth,lost", [(4, []), (4, [3, 17, 40]), (2, [5]), (1, [9])])
+def test_lr_stream_at_smaller_depth(depth, lost):
+    """Streaming at depth D: playback starts after D packets instead of 8, the ring still holds
+    640 frames, and the samples match a store-then-play of the same packets."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    prof = pager.profile("XL", "1200", depth)
+    fr = b"".join(frames_of(1200, seed=5))
+    pk = [p for i, p in enumerate(prof.pack(fr, msg_id=12)) if i not in lost]
+    st, pcm = _stream(HOST_LR, pk, 32)
+    ref_st, ref = _run(HOST_LR, pk, xl=True, store=200000)
+    assert int(st["ring"]) == 640 and int(st["overruns"]) == 0
+    assert np.array_equal(pcm, ref) and st["pcm"] == ref_st["pcm"]
+    # the first group is final once its D packets are in, or (one of them lost) once the next
+    # group's first arrives: D packets read either way
+    assert int(st["start"]) == depth
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+def test_pcmhash_takes_the_depth():
+    sys.path.insert(0, ROOT)
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import k6_pcmhash
+    from modem import pager
+    fr = b"".join(frames_of(300, seed=4))
+    pk = pager.profile("XL", "1200", 4).pack(fr, msg_id=k6_pcmhash.msg_id_for(fr))
+    st, _ = _stream(HOST_LR, [p for i, p in enumerate(pk) if i != 6], 32)
+    assert k6_pcmhash.reference(fr, "1200", "XL", [6], depth=4)[0] == st["pcm"]
+    assert k6_pcmhash.reference(fr, "1200", "XL", [6])[0] != st["pcm"]

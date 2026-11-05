@@ -10,7 +10,8 @@ Profile L (primary), 64-byte payload, before whitening:
     0       magic: 0xA7 (format 1, sotto v3.7 8 kHz frames, 20 ms each) or 0xA9 (sotto 1200
             superframes, 40 ms each; docs/sotto-1200.md)
     1       msg_id
-    2-3     seq, packet number, big-endian
+    2-3     big-endian: bits 15-14 the interleave depth (0: 8 packets per group, 1: 4, 2: 2,
+            3: 1; receivers before 2026-11-05 know only 0), bits 13-0 seq, the packet number
     4-5     total frames in the message, big-endian
     6-53    8 sotto frames, slot 0 first
     54-61   reserved, zero
@@ -24,9 +25,11 @@ Profile S (the first fallback, 16 bytes; the K6 firmware no longer takes it): ms
 last-group flag | seq bits 10-8, seq bits 7-0, 2 sotto frames, CRC of bytes 0-13.
 
 All are then XORed with PN9 whitening (x^9 + x^5 + 1, seed 0x1FF: FF E1 1D 9A ...), which
-restarts at every packet. Interleave: groups of 8 packets. In profile L packet k of group g
-carries frames g*64 + s*8 + k (s = 0..7), in XL g*160 + s*8 + k (s = 0..19), in profile S frames g*16 + s*8 + k (s = 0, 1), so a
-lost packet only costs isolated 20 ms frames 160 ms apart.
+restarts at every packet. Interleave: groups of D packets (D = 8 unless the header says 4, 2
+or 1; profile S is always 8). Packet k of group g carries frames g*F*D + s*D + k (s = 0..F-1,
+F = 8 frames per packet in L, 20 in XL, 2 in S), so a lost packet only costs isolated frames D
+slots apart. A smaller D lets a streaming receiver start sooner (a group is in after D packets)
+but spaces a lost packet's frames closer together (D = 1: a lost packet is one 20-frame gap).
 
 On air (Air): 0x55 x 16, sync 07 6B 3E 36, payload, MSB first. The chip CRC and scrambler
 are off; all checking is ours. Stream framing (Air(preamble_bytes=0)): the lead-in, then each
@@ -43,7 +46,8 @@ MAGIC = 0xA7                    # sotto v3.7, 20 ms per frame
 MAGIC_1200 = 0xA9               # sotto 1200, 40 ms per frame (0xA8 is the control packet)
 CODECS = {"2400": (MAGIC, 0.020), "1200": (MAGIC_1200, 0.040)}     # magic, seconds per frame
 FRAME_BYTES = 6
-GROUP = 8                       # packets per interleave group
+GROUP = 8                       # packets per interleave group, unless the header says otherwise
+DEPTHS = (8, 4, 2, 1)           # by the depth code in seq's top 2 bits
 SYNC = bytes([0x07, 0x6B, 0x3E, 0x36])
 PREAMBLE_BYTE = 0x55
 
@@ -88,6 +92,7 @@ class Profile:
     payload: int          # bytes per packet
     slots: int            # sotto frames per packet
     magic: int = MAGIC    # byte 0 (L and XL): which codec the frames are
+    depth: int = GROUP    # packets per interleave group: 8, 4, 2 or 1 (L and XL)
 
     @property
     def frame_s(self):
@@ -96,14 +101,14 @@ class Profile:
 
     @property
     def group_frames(self):
-        return self.slots * GROUP
+        return self.slots * self.depth
 
     def packet_frames(self, seq):
-        g, k = divmod(seq, GROUP)
-        return [g * self.group_frames + s * GROUP + k for s in range(self.slots)]
+        g, k = divmod(seq, self.depth)
+        return [g * self.group_frames + s * self.depth + k for s in range(self.slots)]
 
     def n_packets(self, total):
-        return -(-total // self.group_frames) * GROUP
+        return -(-total // self.group_frames) * self.depth
 
     def pack(self, frames, msg_id=0):
         """frames: bytes (6 per frame) -> list of whitened payloads in transmit order."""
@@ -112,13 +117,18 @@ class Profile:
         if self.name != "S" and total > 0xFFFF:
             raise ValueError(f"message too long for profile {self.name} (65535 frames)")
         npk = self.n_packets(total)
+        if self.depth not in DEPTHS or (self.name == "S" and self.depth != GROUP):
+            raise ValueError(f"interleave depth {self.depth}: L and XL take 8, 4, 2 or 1, S only 8")
+        if self.name != "S" and npk > 0x4000:
+            raise ValueError("message too long: seq has 14 bits")
         if self.name == "S" and npk > 2048:
             raise ValueError("message too long for profile S (2048 packets)")
         out = []
         for seq in range(npk):
             body = b"".join(fr[f] if f < total else bytes(6) for f in self.packet_frames(seq))
             if self.name != "S":
-                p = bytes([self.magic, msg_id & 0xFF]) + seq.to_bytes(2, "big") + total.to_bytes(2, "big")
+                hs = DEPTHS.index(self.depth) << 14 | seq
+                p = bytes([self.magic, msg_id & 0xFF]) + hs.to_bytes(2, "big") + total.to_bytes(2, "big")
                 p += body
                 p += bytes(self.payload - 2 - len(p))         # L: 8 reserved bytes
             else:
@@ -135,10 +145,10 @@ class Profile:
         if self.name != "S":
             if p[0] != self.magic:
                 return None
-            return dict(msg_id=p[1], seq=int.from_bytes(p[2:4], "big"),
-                        total=int.from_bytes(p[4:6], "big"), last=None,
+            return dict(msg_id=p[1], seq=int.from_bytes(p[2:4], "big") & 0x3FFF,
+                        depth=DEPTHS[p[2] >> 6], total=int.from_bytes(p[4:6], "big"), last=None,
                         frames=[p[6 + 6 * s:12 + 6 * s] for s in range(self.slots)])
-        return dict(msg_id=p[0] >> 4, seq=(p[0] & 7) << 8 | p[1], total=None,
+        return dict(msg_id=p[0] >> 4, seq=(p[0] & 7) << 8 | p[1], depth=GROUP, total=None,
                     last=(p[0] >> 3) & 1, frames=[p[2:8], p[8:14]])
 
 
@@ -148,13 +158,16 @@ S = Profile("S", 16, 2)
 PROFILES = {"L": L, "XL": XL, "S": S}
 
 
-def profile(name, codec="2400"):
+def profile(name, codec="2400", depth=GROUP):
     """The packet profile for a codec: "2400" (sotto v3.7) or "1200" (sotto 1200, magic 0xA9;
-    L and XL only, since profile S has no magic byte)."""
+    L and XL only, since profile S has no magic byte), with `depth` packets per interleave group
+    (8, 4, 2 or 1; S only 8)."""
     magic = CODECS[codec][0]
     if name == "S" and magic != MAGIC:
         raise ValueError("profile S carries sotto v3.7 frames only (it has no magic byte)")
-    return replace(PROFILES[name], magic=magic)
+    if depth not in DEPTHS or (name == "S" and depth != GROUP):
+        raise ValueError(f"interleave depth {depth}: L and XL take 8, 4, 2 or 1, S only 8")
+    return replace(PROFILES[name], magic=magic, depth=depth)
 
 
 # ---- control packets (spec section 13) ----------------------------------------------------
@@ -274,7 +287,8 @@ class Assembler:
                 self.bad += 1
                 return None
             self.swapped += 1
-        m = self.messages.setdefault(q["msg_id"], {"total": None, "last_seq": None, "pk": {}})
+        m = self.messages.setdefault(q["msg_id"], {"total": None, "last_seq": None, "pk": {},
+                                                   "depth": q["depth"]})
         if q["total"] is not None:
             m["total"] = q["total"]
         if q["last"]:
@@ -290,8 +304,9 @@ class Assembler:
             top = max(m["pk"]) if m["last_seq"] is None else m["last_seq"] | (GROUP - 1)
             total = (top // GROUP + 1) * self.profile.group_frames
         fr, good = [bytes(6)] * total, np.zeros(total, np.uint8)
+        prof = replace(self.profile, depth=m.get("depth", GROUP))
         for seq, body in m["pk"].items():
-            for s, f in enumerate(self.profile.packet_frames(seq)):
+            for s, f in enumerate(prof.packet_frames(seq)):
                 if f < total:
                     fr[f], good[f] = body[s], 1
         if m["total"] is None and m["last_seq"] is not None:

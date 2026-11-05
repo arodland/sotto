@@ -19,7 +19,10 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
 - **Payload (profile L):** magic 0xA7, msg_id, packet number, total frames, 8 sotto frames
   (48 bytes), 8 reserved bytes, CRC-16/CCITT-FALSE. PN9 whitening over all 64 bytes.
 - **Interleave:** 8 packets per group. A lost packet costs 8 isolated 20 ms frames 160 ms
-  apart, which sotto's concealment bridges.
+  apart, which sotto's concealment bridges. `--depth 4` (or 2, 1) sends smaller groups: the
+  top 2 bits of the packet number say which (0 = 8, 1 = 4, 2 = 2, 3 = 1), so the receiver
+  adapts per message. A streaming K6 starts once a group is in, so depth 4 starts about twice
+  as soon; a lost packet's frames are then 4 slots apart. Images before 2026-11-05 know only 8.
 - **Profile XL** (`--payload XL`, K6 key 2): 128-byte payload, the same header, 20 frames, no
   reserved bytes; groups of 8 packets carry 160 frames. In packet mode the preamble is 16 bytes
   before the first packet and 24 before the rest: after a 128-byte packet the K6's chip reports
