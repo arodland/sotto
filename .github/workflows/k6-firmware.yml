@@ -5,10 +5,10 @@ on:
   push:
     branches: [main]
     paths: ["c/k6/**", "c/fixed/**", "c/sotto.h", "c/sotto_lr_dec.inc", "c/sotto_lr_tables.h", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
-            "tests/test_k6_harness.py", "modem/k6_harness.py", ".github/workflows/k6-firmware.yml"]
+            "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "modem/k6mod.py", ".github/workflows/k6-firmware.yml"]
   pull_request:
     paths: ["c/k6/**", "c/fixed/**", "c/sotto.h", "c/sotto_lr_dec.inc", "c/sotto_lr_tables.h", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
-            "tests/test_k6_harness.py", "modem/k6_harness.py", ".github/workflows/k6-firmware.yml"]
+            "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "modem/k6mod.py", ".github/workflows/k6-firmware.yml"]
 
 jobs:
   host-tests:
