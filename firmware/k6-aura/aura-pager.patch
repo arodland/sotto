@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..117147d
+index 0000000..7805f81
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2171 @@
+@@ -0,0 +1,2174 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -375,7 +375,8 @@ index 0000000..117147d
 +/// slips; 0x73E9 and its relatives never synced, and 0x3FE9 (the 2.4K bandwidth with 1200/1800
 +/// tones) deafens the chip at 1200, so it could only be tried as a variant, which applies at
 +/// 2400 alone: send `--set baud=2400 var=N` in one control packet, and the revert lands at 1200.
-+const RX2400_VARIANTS: [(u16, u16); 9] = [
++/// 3f09 and 3f01 clear bits 7:6 as the UV-K5 MCFW messenger does (3f03 for AFSK 1200).
++const RX2400_VARIANTS: [(u16, u16); 11] = [
 +    (0x3FE1, 0),
 +    (0x3FE9, 0),
 +    (0x3FE9, 0x0100),
@@ -385,6 +386,8 @@ index 0000000..117147d
 +    (0x3EE9, 0),
 +    (CFG_F_2400, 0),
 +    (0x3FE1, 0x0100),
++    (0x3F09, 0),
++    (0x3F01, 0),
 +];
 +const REG_AF_FILT: u8 = 0x2B;
 +/// RF/AF receive bandwidth (Aura's wide/narrow, as saved for the VFO; the pager never sets it).
