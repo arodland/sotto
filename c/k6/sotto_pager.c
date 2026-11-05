@@ -81,6 +81,23 @@ static int play_skip;               /* halves still to drop: the decoder's delay
 static struct sotto_dec *dec;
 #endif
 static int play_pos, play_end;
+static uint32_t pcm_hash, pcm_n;    /* FNV-1a of the samples played since sp_play_start */
+
+static void hash_pcm(const int16_t *pcm) {
+  uint32_t h = pcm_hash;
+  int i;
+  for (i = 0; i < SP_FRAME_SAMPLES; i++) {
+    unsigned v = (uint16_t)pcm[i];
+    h = (h ^ (v & 0xFF)) * 16777619u;
+    h = (h ^ (v >> 8)) * 16777619u;
+  }
+  pcm_hash = h, pcm_n += SP_FRAME_SAMPLES;
+}
+
+uint32_t sp_pcm_hash(unsigned *samples) {
+  if (samples) *samples = pcm_n;
+  return pcm_hash;
+}
 static int32_t emph1, emph2;
 
 static int bit(const uint8_t *m, int i) { return (m[i >> 3] >> (i & 7)) & 1; }
@@ -231,6 +248,7 @@ void sp_play_start(void) {
   play_pos = 0;
   play_end = S.st.have && MSG_PLAYS ? S.st.stored : -1;   /* -1: the other codec's message */
   emph1 = emph2 = 0;
+  pcm_hash = 2166136261u, pcm_n = 0;
 }
 
 #ifdef SP_LR
@@ -251,7 +269,7 @@ int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
   if (!dec || play_end < 0) return 0;
   for (;;) {
     if (!lr_half(pcm)) return 0;
-    if (!play_skip) return 1;
+    if (!play_skip) return hash_pcm(pcm), 1;
     play_skip--;                  /* the first 80 ms out are the delay's silence */
   }
 }
@@ -261,11 +279,13 @@ int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
   if (play_pos < play_end) {
     sotto_decode(dec, S.frames + 6 * play_pos, bit(S.good, play_pos), pcm);
     play_pos++;
+    hash_pcm(pcm);
     return 1;
   }
   if (play_pos == play_end) {     /* the decoder's last 20 ms */
     sotto_dec_flush(dec, pcm);
     play_pos++;
+    hash_pcm(pcm);
     return 1;
   }
   return 0;

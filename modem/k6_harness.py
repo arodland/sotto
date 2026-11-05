@@ -30,7 +30,8 @@ The firmware's lines (one per event):
   K6 PKT n=12 got=64 sync=N res=-1 magic=a7 rswap=1 soft=0 swap=1 be=3 bseq=0 bswap=1 binv=0
          blk=0,0,0,1,0,0,0,2 ev=2:0:0,1000:27:4,... good=0 bad=12 to=0 raw=58a31d...
          (one line on the wire; ev: each interrupt's flags in hex, ms, FIFO words read)
-  K6 PLAY id=42 total=70 stored=70 got=70 packets=16/16 played=71 dec_mean_us=11800 ... missing=0
+  K6 PLAY id=42 total=70 stored=70 got=70 packets=16/16 played=71 dec_mean_us=11800 ... pcm=1f2e3d4c
+         ... samples=11360 missing=0  (pcm: FNV-1a of the decoded samples, see tools/k6_pcmhash.py)
                       (missing=2:3,17 = seqs 3 and 17 never arrived; the first 8 are listed)
   K6 CAL sent tx=439500000
 
@@ -85,7 +86,7 @@ def parse_line(line):
                 d[k] = b""
         elif k == "blk":
             d[k] = [int(x) for x in v.split(",") if x]
-        elif k in ("magic", "chip", "build"):
+        elif k in ("magic", "chip", "build", "pcm"):
             d[k] = v
         else:
             try:

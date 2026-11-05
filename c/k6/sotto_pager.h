@@ -100,6 +100,11 @@ int sp_missing(uint16_t *out, int max);
 void sp_play_start(void);
 int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]);
 int sp_play_pos(void);           /* frames played so far */
+/* FNV-1a (32-bit, offset 2166136261, prime 16777619) over the int16 samples played since
+   sp_play_start, low byte first, before the PWM conversion; samples counts them. The serial
+   PLAY report prints it, so a PC decoding the same frames and good flags (c/k6/pager_host,
+   bit-exact with the radio) can check the playback without anyone listening. */
+uint32_t sp_pcm_hash(unsigned *samples);
 
 /* PCM to PWM compare values for the K6's TIM1 CH4 path (PA11 -> two RC poles -> speaker
    amplifier), in place of the stock voice prompts' (s + 2048) >> 1. out[i] is in

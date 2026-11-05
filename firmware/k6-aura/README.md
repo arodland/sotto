@@ -340,6 +340,20 @@ fourth line, after `ok n bad n`. CI names the artifact `aura-pager-<commit>` and
 K6 reports that build, and the sweep stops if the K6 reboots into another one. Images from
 before this change report no build at all.
 
+**Checking a playback without listening.** Each `K6 PLAY` line carries `pcm=` and `samples=`:
+an FNV-1a checksum of the samples the K6 decoded and played, taken before the PWM conversion,
+and how many there were. `tools/k6_pcmhash.py` rebuilds the same number on the PC. It packs the
+.sot as `modem.k6 tx` does, leaves out the packets in the line's `missing=` list, and plays the
+rest through `c/k6/pager_host_lr` (or `pager_host` for v3.7). Those are the radio's decoder C,
+built for the PC and bit-exact with it. Build them with `make -C c/k6`.
+
+```
+python3 tools/k6_pcmhash.py msg.sot --codec 1200 --payload XL --check "$(grep 'K6 PLAY' k6.txt | tail -1)"
+```
+
+`MATCH` means the radio played exactly the samples it should have. What is left for ears is
+how the codec sounds. Images from before this change print no `pcm=`.
+
 `listen` prints one line per packet:
 
 ```
