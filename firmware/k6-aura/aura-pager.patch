@@ -207,10 +207,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..40de041
+index 0000000..d4759b7
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2620 @@
+@@ -0,0 +1,2649 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -1140,6 +1140,7 @@ index 0000000..40de041
 +    fd.reg_write(syst, REG_IRQ_FLAGS, 0);
 +    fd.reg_write(syst, REG_IRQ_EN, IRQ_RX_DONE | IRQ_RX_FULL | IRQ_RX_SYNC);
 +    soft_clear();
++    unsafe { Y_GUARD = (app.pager.irq_words() * app.pager.tpb()) as u16 }; // half of N words
 +    let p = &mut app.pager;
 +    p.t_rearm = uptime::now();
 +    p.st_last_irq = p.t_rearm;
@@ -1191,7 +1192,7 @@ index 0000000..40de041
 +    if fd.reg_read(syst, REG_STATUS) & 1 != 0 {
 +        if clear_first {
 +            fd.reg_write(syst, REG_IRQ_FLAGS, 0);
-+            flags = fd.reg_read(syst, REG_IRQ_FLAGS);
++            flags = full_check(fd.reg_read(syst, REG_IRQ_FLAGS));
 +        } else {
 +            flags = fd.reg_read(syst, REG_IRQ_FLAGS);
 +            fd.reg_write(syst, REG_IRQ_FLAGS, 0);
@@ -1240,7 +1241,35 @@ index 0000000..40de041
 +        Y_SOFT_N = 0;
 +        Y_SOFT_R = 0;
 +        Y_PENDING = 0;
++        Y_FULL_ON = false;
 +    }
++}
++
++// A second FIFO-almost-full interrupt sometimes comes 1-2 ms after a real one (on air,
++// 2026-11-05, f548d3e: 3 copies of the FIFO's last word read into the packet, which failed its
++// CRC, and its true last 3 words left for the next packet, one word off). The next N words take
++// N word times to come, so an almost-full within half of that of the last one is dropped; a
++// real one dropped by mistake is caught by the stalled-interrupt read by time.
++static mut Y_FULL_T: u16 = 0;
++static mut Y_FULL_ON: bool = false;
++static mut Y_GUARD: u16 = 0;
++static mut Y_SPUR: u16 = 0;
++
++/// Interrupt flags off the chip, without a spurious almost-full
++fn full_check(flags: u16) -> u16 {
++    if flags & IRQ_RX_FULL == 0 {
++        return flags;
++    }
++    let now = uptime::now();
++    unsafe {
++        if Y_FULL_ON && now.wrapping_sub(Y_FULL_T) < Y_GUARD {
++            Y_SPUR = Y_SPUR.wrapping_add(1);
++            return flags & !IRQ_RX_FULL;
++        }
++        Y_FULL_T = now;
++        Y_FULL_ON = true;
++    }
++    flags
 +}
 +
 +/// n words off the chip's FIFO into the soft FIFO (raw, before the byte swap)
@@ -1269,7 +1298,7 @@ index 0000000..40de041
 +        return;
 +    }
 +    fd.reg_write(syst, REG_IRQ_FLAGS, 0); // the order of take_irq's interrupt reads
-+    let flags = fd.reg_read(syst, REG_IRQ_FLAGS);
++    let flags = full_check(fd.reg_read(syst, REG_IRQ_FLAGS));
 +    Y_SERVICED = Y_SERVICED.wrapping_add(1);
 +    Y_PENDING |= flags & !IRQ_RX_FULL;
 +    if flags & IRQ_RX_FULL != 0 {
@@ -2714,7 +2743,7 @@ index 0000000..40de041
 +    if p.stream() {
 +        write!(s, " restarts={}", p.st_restarts).ok();
 +    }
-+    write!(s, " good={} bad={} to={}", st.good_packets, st.bad_packets, p.timeouts).ok();
++    write!(s, " good={} bad={} to={} spur={}", st.good_packets, st.bad_packets, p.timeouts, unsafe { Y_SPUR }).ok();
 +    // the bytes only for a packet that failed (about 130 characters, 11 ms at 115200): this line
 +    // goes out between back-to-back packets, and at 2400 baud that quiet stretch is ~45 ms. At
 +    // 2400 baud only the first 64 bytes (an XL packet's 256 hex digits alone take 22 ms)

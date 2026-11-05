@@ -197,6 +197,13 @@ RX-done, and after N+1 word times without an interrupt take the words due since 
 (pseudo event `1@ms+n` in `ev`; one word at a time fell behind). They stay in the burst loop
 between packets like the timed reads. When `ev` is full its last entry shows the latest event.
 
+A second almost-full interrupt sometimes comes 1-2 ms after a real one (f548d3e on air, about
+one packet in 25). Its read of an empty FIFO put 3 copies of the last word into the packet,
+which failed its CRC, and left that packet's true last 3 words for the next one, which then
+started a word late and failed too: losses came in pairs, both packets otherwise bit-perfect.
+An almost-full that comes within half of N word times of the last one is now dropped; the PKT
+line's `spur=` counts them.
+
 **Interrupt order.** The UV-K5 BK4819 drivers write REG_02 = 0 first and then read REG_02:
 the write latches the pending causes for the read. This firmware has always read first. If the
 chip latches as those drivers assume, every cause it saw was the previous interrupt's, one event
