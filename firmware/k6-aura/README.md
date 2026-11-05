@@ -224,6 +224,12 @@ passed 7 of 28 packets, and the last 16 bytes of each failure were corrupt. With
 passed 31 of 31 (`2b=8000`, `8400`, `0400`, and `8000` with interrupt reads). FFSK at 1200 stayed
 clean (15 of 15). `--reg 2b=c000` turns it back on for 60 s.
 
+**Other bit rates.** REG_72 sets the chip's bit rate (rate x 10.3244: 0x3065 = 1200,
+0x4898 = 1800, 0x50A9 = 2000, 0x60CA = 2400), and the firmware paces its reads and waits from
+the REG_72 value in force, so `--reg 72=4898` runs it at 1800. On air (2026-11-05, e904cb0,
+F with 1200/1800 tones, `2b=8000 5e=0203 58=3f01`, `modem.k6 --baud 1800`), 1800 got 12 of 12
+packets and 2000 got 10 of 12, every decoded packet with 0 bit errors; 2400 slips a bit.
+
 ## First tests (spec section 8)
 
 1. **K6 transmits, IC-7100 records.** In VOICE MSG, press PTT. The radio keys up for about 3 s and

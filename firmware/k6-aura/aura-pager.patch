@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..160b7d4
+index 0000000..c43b3f6
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2227 @@
+@@ -0,0 +1,2241 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -842,13 +842,27 @@ index 0000000..160b7d4
 +        }
 +    }
 +
-+    /// 100 us ticks per byte on air
-+    fn tpb(&self) -> usize {
-+        if self.baud_2400 {
-+            TICKS_PER_BYTE / 2
-+        } else {
-+            TICKS_PER_BYTE
++    /// The REG_72 bit rate in force: a control-packet write wins over the 1200/2400 setting.
++    /// The rate is REG_72 / 10.3244; 1800 (0x4898) and 2000 (0x50A9) were written on air
++    /// (2026-11-05: F/1800 12/12, F/2000 10/12, every decoded packet 0 bit errors)
++    fn reg72(&self) -> u16 {
++        let mut v = if self.baud_2400 { BAUD_2400 } else { BAUD_1200 };
++        for &(r, x) in &self.poke[..self.poke_n as usize] {
++            if r == REG_BAUD && x != 0 {
++                v = x;
++            }
 +        }
++        v
++    }
++
++    /// The bit rate on air, from REG_72
++    fn baud(&self) -> u16 {
++        ((self.reg72() as u32 * 1200 + BAUD_1200 as u32 / 2) / BAUD_1200 as u32) as u16
++    }
++
++    /// 100 us ticks per byte on air, at the REG_72 rate, so every paced wait follows it
++    fn tpb(&self) -> usize {
++        (TICKS_PER_BYTE as u32 * BAUD_1200 as u32 / self.reg72() as u32) as usize
 +    }
 +}
 +
@@ -1376,7 +1390,7 @@ index 0000000..160b7d4
 +    let timed = app.pager.timed();
 +    let irq_n = app.pager.irq_words();
 +    // timed reads: a 16-bit word every 13.3 ms at 1200 baud (3 words per 400 ticks), 6.7 at 2400
-+    let words_div: usize = if app.pager.baud_2400 { 200 } else { 400 };
++    let words_div: usize = 6 * app.pager.tpb();
 +    // the sync is noticed 22-33 ms late: 2 words at 1200 but 4-5 at 2400, where one word of
 +    // lead left the FIFO full and a word was lost at about bit 128 (0438507, 2026-11-04)
 +    let lead = if app.pager.baud_2400 { TIMED_LEAD_WORDS_2400 } else { TIMED_LEAD_WORDS };
@@ -2186,7 +2200,7 @@ index 0000000..160b7d4
 +    app.pager.cfg_ticks = 0;
 +    let p = &app.pager;
 +    let idle_rd = p.idle_rd;
-+    let baud = if p.baud_2400 { 2400 } else { 1200 };
++    let baud = p.baud();
 +    report_line(format_args!(
 +        "K6 CFG why={} chip={:04x} freq={} phy={} frames={} baud={} stream={} f2400={} reg58={:04x} reg2b={:04x} inv={} soft={} swap={} emph={} vol={} len5d={:04x} keep={} idlekeep={} idlerd={} timed={} rearm={} auto={} wd={} draw={} build={}",
 +        why,
@@ -2258,7 +2272,7 @@ index 0000000..160b7d4
 +    // 2400 baud only the first 64 bytes (an XL packet's 256 hex digits alone take 22 ms)
 +    if !matches!(res, Some(r) if r >= 0) {
 +        s.write_str(" raw=").ok();
-+        let n = if p.baud_2400 { read.len().min(64) } else { read.len() };
++        let n = if p.baud() > 1200 { read.len().min(64) } else { read.len() };
 +        for b in &read[..n] {
 +            write!(s, "{:02x}", b).ok();
 +        }
