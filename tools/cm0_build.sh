@@ -3,6 +3,7 @@
 # UV-K6 / Quansheng UV-K5 class) with clang and lld, bare metal, for the cycle bench in
 # c/fixed/cm0/run.py: c/fixed/cm0/build/bench.elf. Same as tools/cm4_build.sh, with
 # c/fixed/cm0/rt.c for the division, 64-bit and CLZ helpers ARMv6-M lacks.
+# LR=1 sh ... adds the sotto 1200 decoder (run.py --lr BITS).
 # Usage: sh tools/cm0_build.sh [extra clang options, e.g. -Os]
 #        CM0_OUT=dir sh tools/cm0_build.sh ...
 # VARIANT=v3.6 / v3.8 as for the M4. Needs clang and ld.lld (tested with 18).
@@ -16,6 +17,11 @@ VFLAGS="-DSOTTO_V36"
 [ "${VARIANT:-v3.7}" = v3.6 ] || VFLAGS="$VFLAGS -DSOTTO_PITCH_THIRD"
 SRCS="fx_math fx_tables sotto_fx_enc sotto_fx_dec"
 SYMS=""
+# LR=1: also the sotto 1200 decoder (fixed/sotto_fx_lr.c), for run.py --lr
+if [ -n "$LR" ]; then
+  SRCS="$SRCS sotto_fx_lr"
+  SYMS="$SYMS -u sotto_lr_dec_create -u sotto_lr_decode -u sotto_lr_dec_flush"
+fi
 if [ "${VARIANT:-v3.7}" = v3.8 ]; then
   SRCS="$SRCS sotto_fx_hiss"
   VFLAGS="$VFLAGS -DSOTTO_V38 -DFX_PCT_MAX=3000"

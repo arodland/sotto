@@ -202,6 +202,7 @@ struct sotto_enc {
   float wo_e;
   double en_e;
   int idx_e[SOTTO_CB_MAX_STAGES], cls_e;
+  double c_e[NC];                  /* its shape target (DCT coefficients 1..K-1) */
   sotto_enc_frame_t cur;           /* the frame being built: per-half features for v3.8 */
   double peak;                     /* causal loudness reference (hiss_band._onsets) */
   sotto_enc_frame_t q[8];
@@ -510,6 +511,7 @@ static void decide(struct sotto_enc *e, long t, int k) {
       c[j - 1] = v;
     }
     msvq_search(c, e->idx_e);
+    memcpy(e->c_e, c, sizeof e->c_e);
     e->wo_e = wo;
     if (SOTTO_ENERGY_RK) {   /* energy of from_rate_k(m, rk), as SottoV36 codes it */
       float s2 = 0;
@@ -534,10 +536,14 @@ static void emit(struct sotto_enc *e, int cls) {
     unsigned char *out = fr->bits;
     int pos = 0;
     *fr = e->cur;
+    fr->p.code = code;
+    fr->p.wi = q_index(logf(e->wo_e), log(WO_MIN), log(WO_HI), 7);
+    fr->p.ei = q_index(e->en_e, E_LO, E_HI, 5);
+    memcpy(fr->p.c, e->c_e, sizeof fr->p.c);
     memset(out, 0, SOTTO_BYTES_PER_FRAME);
     put_bits(out, &pos, code, 2);
-    put_bits(out, &pos, q_index(logf(e->wo_e), log(WO_MIN), log(WO_HI), 7), 7);
-    put_bits(out, &pos, q_index(e->en_e, E_LO, E_HI, 5), 5);
+    put_bits(out, &pos, fr->p.wi, 7);
+    put_bits(out, &pos, fr->p.ei, 5);
     for (int s2 = 0; s2 < sotto_cb_stages; s2++) put_bits(out, &pos, e->idx_e[s2], sotto_cb_bits[s2]);
   }
 }
@@ -681,9 +687,22 @@ void sotto_dec_destroy(struct sotto_dec *d) {
   free(d);
 }
 
+/* the frame fields of a 48-bit frame: shape stages summed into DCT coefficients 1..K-1 */
+static void bits_to_params(const unsigned char *b, sotto_fparams_t *p) {
+  int pos = 0;
+  p->code = get_bits(b, &pos, 2);
+  p->wi = get_bits(b, &pos, 7);
+  p->ei = get_bits(b, &pos, 5);
+  for (int k = 0; k < NC; k++) p->c[k] = 0;
+  for (int s = 0; s < sotto_cb_stages; s++) {
+    const float *y = sotto_cb[s] + get_bits(b, &pos, sotto_cb_bits[s]) * NC;
+    for (int k = 0; k < NC; k++) p->c[k] += y[k];
+  }
+}
+
 /* SottoV0.decode for one frame, after SottoV34's bit replay */
-static void unpack(struct sotto_dec *d, const unsigned char *b, dframe_t *f) {
-  int pos = 0, code = get_bits(b, &pos, 2), wi = get_bits(b, &pos, 7), ei = get_bits(b, &pos, 5);
+static void params_to_frame(struct sotto_dec *d, const sotto_fparams_t *p, dframe_t *f) {
+  int code = p->code, wi = p->wi, ei = p->ei;
   if (code < 3) f->v[0] = f->v[1] = code;
   else if (d->prev_v == 0) f->v[0] = 0, f->v[1] = MIXED;
   else f->v[0] = MIXED, f->v[1] = 0;
@@ -691,10 +710,7 @@ static void unpack(struct sotto_dec *d, const unsigned char *b, dframe_t *f) {
   f->wo = exp(log(WO_MIN) + wi * (log(WO_HI) - log(WO_MIN)) / 127);
   f->en = ei == 0 ? -60.0 : E_LO + ei * (E_HI - E_LO) / 31;
   double c[K] = {0};
-  for (int s = 0; s < sotto_cb_stages; s++) {
-    const float *y = sotto_cb[s] + get_bits(b, &pos, sotto_cb_bits[s]) * NC;
-    for (int k = 0; k < NC; k++) c[k + 1] += y[k];
-  }
+  for (int k = 0; k < NC; k++) c[k + 1] = p->c[k];
   for (int n = 0; n < K; n++) {
     double v = 0;
     for (int k = 0; k < K; k++) v += c[k] * dct[k][n];
@@ -768,6 +784,22 @@ static float conceal_gain(int run, int half) {
   return (float)pow(10, -C_SLOPE * (x > 0 ? x : 0) / 20);
 }
 
+/* one 20 ms frame's fields in; frame n-1's 160 samples out. run = frames lost in a row
+   (0 for a good frame), for the concealment gains. */
+void sotto_dec_frame(struct sotto_dec *d, const sotto_fparams_t *p, int run,
+                     short speech[SOTTO_SAMPLES_PER_FRAME]) {
+  dframe_t f;
+  params_to_frame(d, p, &f);
+  for (int h = 0; h < 2; h++) {
+    f.g[h] = conceal_gain(run, h);
+    if (run >= C_MIX_AFTER && run <= C_MAX_LOST && f.v[h] == 1) f.v[h] = MIXED;
+  }
+  if (d->n == 0) memset(speech, 0, SOTTO_SAMPLES_PER_FRAME * sizeof(short));
+  else synth_pair(d, &d->prev, &f, speech);
+  d->prev = f;
+  d->n++;
+}
+
 void sotto_decode(struct sotto_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
                   short speech[SOTTO_SAMPLES_PER_FRAME]) {
   const unsigned char *b = in;
@@ -779,18 +811,11 @@ void sotto_decode(struct sotto_dec *d, const unsigned char in[SOTTO_BYTES_PER_FR
     d->run++;
     if (d->have_last) b = d->last;
   }
-  dframe_t f;
+  sotto_fparams_t p;
   memcpy(d->info.b2, b, SOTTO_BYTES_PER_FRAME);
   d->info.run = d->run;
-  unpack(d, b, &f);
-  for (int h = 0; h < 2; h++) {
-    f.g[h] = conceal_gain(d->run, h);
-    if (d->run >= C_MIX_AFTER && d->run <= C_MAX_LOST && f.v[h] == 1) f.v[h] = MIXED;
-  }
-  if (d->n == 0) memset(speech, 0, SOTTO_SAMPLES_PER_FRAME * sizeof(short));
-  else synth_pair(d, &d->prev, &f, speech);
-  d->prev = f;
-  d->n++;
+  bits_to_params(b, &p);
+  sotto_dec_frame(d, &p, d->run, speech);
 }
 
 void sotto_dec_flush(struct sotto_dec *d, short speech[SOTTO_SAMPLES_PER_FRAME]) {

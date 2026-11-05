@@ -121,6 +121,37 @@ SOTTO_API void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTT
                               short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
 SOTTO_API int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
 
+/* ---- sotto 1200: 48 bits per 40 ms (sotto_lr.c, sim/sotto_lr.py), every VARIANT ----------
+ * For links slower than 2400 bit/s, such as the UV-K6 pager at FFSK 1800 baud. The v3.7 core
+ * at 8 kHz; the same 6-byte frame size, but each frame (a "superframe") carries 40 ms, and the
+ * decoder needs only v3.7's tables. The first 14 bits are a v3.7 frame's voicing, pitch and
+ * energy fields (energy code at bits 9-13). Not interchangeable with 2400 bit/s frames.
+ *
+ * Encoder: feed 320 samples (40 ms) per call; superframes come out after the core's look-ahead
+ * plus 2 superframes (its shape search looks 80 ms further ahead). sotto_lr_encode_part feeds a
+ * last n80 x 80 samples before the flush; call sotto_lr_enc_flush until it returns 0.
+ * Decoder: one call per received superframe (good = 0 to conceal one that failed its CRC);
+ * each returns 320 samples SOTTO_LR_DEC_DELAY superframes behind (the first calls return
+ * silence), so that a lost superframe between two good ones can be rebuilt from both; call sotto_lr_dec_flush until it returns 0 for the last ones. */
+#define SOTTO_LR_SAMPLES_PER_FRAME 320
+#define SOTTO_LR_BITS_PER_FRAME 48
+#define SOTTO_LR_DEC_DELAY 2     /* superframes */
+
+struct sotto_lr_enc;
+struct sotto_lr_dec;
+SOTTO_API const char *sotto_lr_format(void);
+SOTTO_API struct sotto_lr_enc *sotto_lr_enc_create(void);
+SOTTO_API void sotto_lr_enc_destroy(struct sotto_lr_enc *e);
+SOTTO_API int sotto_lr_encode(struct sotto_lr_enc *e, const short speech[SOTTO_LR_SAMPLES_PER_FRAME],
+                              unsigned char out[SOTTO_BYTES_PER_FRAME]);
+SOTTO_API void sotto_lr_encode_part(struct sotto_lr_enc *e, const short *speech, int n80);
+SOTTO_API int sotto_lr_enc_flush(struct sotto_lr_enc *e, unsigned char out[SOTTO_BYTES_PER_FRAME]);
+SOTTO_API struct sotto_lr_dec *sotto_lr_dec_create(void);
+SOTTO_API void sotto_lr_dec_destroy(struct sotto_lr_dec *d);
+SOTTO_API void sotto_lr_decode(struct sotto_lr_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME],
+                               int good, short speech[SOTTO_LR_SAMPLES_PER_FRAME]);
+SOTTO_API int sotto_lr_dec_flush(struct sotto_lr_dec *d, short speech[SOTTO_LR_SAMPLES_PER_FRAME]);
+
 #ifdef __cplusplus
 }
 #endif
