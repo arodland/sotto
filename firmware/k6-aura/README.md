@@ -201,8 +201,16 @@ A second almost-full interrupt sometimes comes 1-2 ms after a real one (f548d3e 
 one packet in 25). Its read of an empty FIFO put 3 copies of the last word into the packet,
 which failed its CRC, and left that packet's true last 3 words for the next one, which then
 started a word late and failed too: losses came in pairs, both packets otherwise bit-perfect.
-An almost-full that comes within half of N word times of the last one is now dropped; the PKT
-line's `spur=` counts them.
+An almost-full that comes within half of N word times of the last one, or of a read by time, is
+now dropped; the PKT line's `spur=` counts them.
+
+With that fixed (89d0bf2), one packet in 72 still lost 1-2 words or gained one: the read by
+time assumed the FIFO was empty after the last read. When the sync was noticed late, or (at a
+stream's start) a decode held the CPU while a packet came in, words were left behind, the FIFO
+ran full and the almost-full edge stopped coming. The reads by time now take whatever is due
+since the sync (a decoder yield notes when it saw the sync, and each almost-full read that
+finds more words in than the clock says moves that start earlier), and the 30 ms before the
+speaker opens at a stream's start takes the FIFO's words too.
 
 **Interrupt order.** The UV-K5 BK4819 drivers write REG_02 = 0 first and then read REG_02:
 the write latches the pending causes for the read. This firmware has always read first. If the
