@@ -231,6 +231,18 @@ only, and it is for finding how the bootloader enters UPDATE mode, so that a lat
 action can reboot into it without the side keys. The image is Baofeng's code: keep it on your
 own machine, never commit or share it.
 
+**Flashing without the side keys (action 7, images after b902205).** The dump showed that after
+every reset the stock bootloader listens on the cable for about 200 ms. One handshake frame
+(`AA 42 00 00 00` + CRC-16/XMODEM + `EF`) gets an answer and keeps it in UPDATE mode, as the
+side keys do. There is no RAM flag, and the app check is only a valid stack pointer at
+0x0800_2000. `modem.k6 ctl --action reset` makes the K6 print `K6 RESET seq=N`, wait 30 ms and
+reset. `tools/k6_update.py IMAGE` waits for that line on the cable, sends the handshake every
+18 ms for 1.5 s, and on the answer runs Aura's `tools/flash.py`. It writes to the cable only
+after the reset line. With `--manual`, start with the K6 off and power it on (no keys).
+`--trigger "CMD"` runs the command that transmits the reset packet once the port is open.
+Without an answer, the window passes and the pager boots again, so a missed window costs
+nothing. Stop any serial listener first, because the tool needs the port.
+
 **Other bit rates.** REG_72 sets the chip's bit rate (rate x 10.3244: 0x3065 = 1200,
 0x4898 = 1800, 0x50A9 = 2000, 0x60CA = 2400), and the firmware paces its reads and waits from
 the REG_72 value in force, so `--reg 72=4898` runs it at 1800. On air (2026-11-05, e904cb0,

@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..77cbcc0
+index 0000000..663ae07
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2308 @@
+@@ -0,0 +1,2318 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -467,6 +467,11 @@ index 0000000..77cbcc0
 +/// action 6: print the stock bootloader (flash 0x0800_0000, 8 KB) as `K6 BOOT off=.. hex` lines,
 +/// read only, so the PC can work out how it enters UPDATE mode. Stays on the user's machine
 +const CTL_ACT_BOOT: u8 = 6;
++/// action 7: software reset (SYSRESETREQ). The stock bootloader listens on the cable for about
++/// 200 ms after every reset for a 0x42 frame and enters UPDATE on it, so a PC that sends that
++/// frame after the `K6 RESET` line (tools/k6_update.py) flashes without the side keys. No PC: the
++/// window passes and the pager boots again. The K6 waits 30 ms after the line, ignoring PTT
++const CTL_ACT_RESET: u8 = 7;
 +const BOOT_BASE: usize = 0x0800_0000;
 +const BOOT_LEN: usize = 0x2000;
 +/// the registers action 4 may write: AF filters, FSK mode, FSK control (low byte only: preamble
@@ -1795,6 +1800,11 @@ index 0000000..77cbcc0
 +    if action == CTL_ACT_BOOT {
 +        report_boot(seq);
 +        return;
++    }
++    if action == CTL_ACT_RESET {
++        report_line(format_args!("K6 RESET seq={}", seq));
++        delay::ms(syst, 30);
++        cortex_m::peripheral::SCB::sys_reset();
 +    }
 +    if action == CTL_ACT_REG || action == CTL_ACT_REGS {
 +        if action == CTL_ACT_REG {

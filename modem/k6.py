@@ -214,7 +214,8 @@ def main(argv=None):
                         "on images after b1f0492) auto=0|1 emph=0|1 var=N vol=0..7; "
                         "none: a confirmation only (a good packet that keeps a change)")
     k.add_argument("--action", choices=tuple(pager.CTL_ACTIONS), default="none",
-                   help="play: play the stored message; clear: drop it; report: a CFG line")
+                   help="play: play the stored message; clear: drop it; report: a CFG line; boot: print the bootloader; "
+                        "reset: reboot (tools/k6_update.py catches the UPDATE window)")
     k.add_argument("--reg", metavar="ADDR=VALUE",
                    help="write one FD6818 receive register, hex, e.g. 58=73e9 (allowed: 2b 43 44 58 59 5c 5e 72 73 7e 96 9b; 43 on images after 647a60e, 44 73 7e after 691c237, 5e 96 9b after that; 5e also switches to interrupt FIFO reads; "
                         "59 low byte only; 0=0 drops every write); the K6 prints K6 REGS and undoes "
