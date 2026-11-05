@@ -200,7 +200,7 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..c5203e4
+index 0000000..5944d66
 --- /dev/null
 +++ b/src/app/pager.rs
 @@ -0,0 +1,2303 @@
@@ -886,7 +886,7 @@ index 0000000..c5203e4
 +    }
 +
 +    /// The bit rate on air, from REG_72
-+    fn baud(&self) -> u16 {
++    pub fn baud(&self) -> u16 {
 +        ((self.reg72() as u32 * 1200 + BAUD_1200 as u32 / 2) / BAUD_1200 as u32) as u16
 +    }
 +
@@ -2914,7 +2914,7 @@ index cdfa0f7..6ca5a70 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..82fc020
+index 0000000..037b88e
 --- /dev/null
 +++ b/src/ui/pager.rs
 @@ -0,0 +1,204 @@
@@ -2924,7 +2924,7 @@ index 0000000..82fc020
 +//!
 +//! ```text
 +//! VOICE MSG   439.50000
-+//! D L 1200 i-x-s+ e+ +0     (PHY, frames, baud, chip invert, soft invert, byte swap, emphasis, dB)
++//! F L 1800 i-x-s+ e+ +0     (PHY, frames, baud, chip invert, soft invert, byte swap, emphasis, dB)
 +//! ID 42  640/640  80/80
 +//! SYNC P CRC ok A7 TO 0
 +//! ok 81 bad 2 FREE 3120
@@ -3001,7 +3001,7 @@ index 0000000..82fc020
 +        "{} {} {} i{}x{}s{} e{} {:+}",
 +        if p.phy_ffsk { 'F' } else { 'D' },
 +        if p.xl { 'X' } else { 'L' },
-+        if p.baud_2400 { 2400 } else { 1200 },
++        p.baud(), // the REG_72 rate in force (F 1800 by default)
 +        if p.invert { '+' } else { '-' },
 +        if p.soft_inv { '+' } else { '-' },
 +        if p.swap { '+' } else { '-' },
