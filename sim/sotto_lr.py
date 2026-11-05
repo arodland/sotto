@@ -58,6 +58,7 @@ class Sotto1200(vl.SottoV37):
     E_TAB, E_ZERO = E_STEP, E_ZERO
     BITS = 48
     JOINT = 1.0                   # weight of the neighbouring B frames in A's shape choice
+    INTERP = True                 # rebuild a lost superframe between two good ones from both
 
     def wa_index(self, wo):
         return self.wo_index(wo) >> (7 - self.WO_A_BITS)
@@ -239,9 +240,27 @@ class Sotto1200(vl.SottoV37):
         f["wa7"] = self.wa_to7(f["wa"])
         return f
 
+    def _b_frame(self, a, n, cb, dw, de, sb):
+        """A 20 ms frame halfway between frames a and n (code, wi, ei, c): B's rule, with B's
+        voicing cb, pitch and energy steps dw, de and stage-3 residual sb (None: none)."""
+        eb = self.e_b(a["ei"], n["ei"], de)
+        wint = self.wo_interp(a["wi"], a["code"] != 0, n["wi"], n["code"] != 0)
+        if wint is None:
+            wb = int(self.W_ABS[dw]) if cb else a["wi"]
+        elif cb == 0:
+            wb = wint
+        else:
+            wb = int(np.clip(wint + self.W_TAB[dw], 0, 127))
+        c = (4 * a["c"] + 4 * n["c"]) / 8 if sb is None else self.b_shape(a["c"], n["c"], sb)
+        return dict(code=cb, wi=wb, ei=eb, c=c)
+
     def frame_params(self, bits, good=None):
-        """Superframes -> per 20 ms frame (code, Wo index, energy code, shape in DCT 1..K-1),
-        with lost superframes replaced by the last good one (concealment fades them)."""
+        """Superframes -> per 20 ms frame (code, Wo index, energy code, shape in DCT 1..K-1).
+        A lost superframe between two good ones (INTERP; the K6 plays from store, so the next
+        one is known) is rebuilt from both by B's rule with no steps or residual: A halfway
+        between the neighbours' A frames with the earlier one's voicing, then B halfway
+        between that and the next A with its voicing. Other lost superframes repeat the last
+        good one (concealment fades them). Sets self.rebuilt."""
         ns = len(bits)
         good = np.ones(ns, bool) if good is None else np.asarray(good, bool)
         F, last = [], None
@@ -252,21 +271,23 @@ class Sotto1200(vl.SottoV37):
         sil = self.unpack(np.zeros(self.BITS, int))      # before the first good superframe
         sil.update(dw=self.W_ZERO, de=self.E_ZERO)
         F = [f if f is not None else sil for f in F]
+        A = [dict(code=f["ca"], wi=f["wa7"], ei=f["ea"], c=self.a_shape(f["si"])) for f in F]
+        self.rebuilt = np.zeros(ns, bool)
+        if self.INTERP:
+            for s in range(1, ns - 1):
+                if not good[s] and good[s - 1] and good[s + 1]:
+                    A[s] = self._b_frame(A[s - 1], A[s + 1], F[s - 1]["ca"], self.W_ZERO, self.E_ZERO, None)
+                    self.rebuilt[s] = True
+        avail = good | self.rebuilt
         out = []
         for s in range(ns):
-            a = F[s]
-            nxt = F[s + 1] if s + 1 < ns and good[s + 1] else a
-            cA, cN = self.a_shape(a["si"]), self.a_shape(nxt["si"])
-            out.append(dict(code=a["ca"], wi=a["wa7"], ei=a["ea"], c=cA))
-            eb = self.e_b(a["ea"], nxt["ea"], a["de"])
-            wint = self.wo_interp(a["wa7"], a["ca"] != 0, nxt["wa7"], nxt["ca"] != 0)
-            if wint is None:
-                wb = int(self.W_ABS[a["dw"]]) if a["cb"] else a["wa7"]
-            elif a["cb"] == 0:
-                wb = wint
+            a, f = A[s], F[s]
+            out.append(dict(a))
+            if self.rebuilt[s]:
+                out.append(self._b_frame(a, A[s + 1], F[s + 1]["ca"], self.W_ZERO, self.E_ZERO, None))
             else:
-                wb = int(np.clip(wint + self.W_TAB[a["dw"]], 0, 127))
-            out.append(dict(code=a["cb"], wi=wb, ei=eb, c=self.b_shape(cA, cN, a.get("sb", 0))))
+                nxt = A[s + 1] if s + 1 < ns and avail[s + 1] else a
+                out.append(self._b_frame(a, nxt, f["cb"], f["dw"], f["de"], f.get("sb", 0)))
         for q in out:
             c = np.zeros(vl.K)
             c[1:] = q.pop("c")
@@ -274,7 +295,10 @@ class Sotto1200(vl.SottoV37):
         return out
 
     def decode(self, bits, good=None):
-        return self._conceal(self._synth(self.frame_params(bits, good)), good)
+        fp = self.frame_params(bits, good)
+        if good is not None:
+            good = np.asarray(good, bool) | self.rebuilt
+        return self._conceal(self._synth(fp), good)
 
     def _synth(self, fp):
         """Per 20 ms frame parameters -> MODEL per 10 ms, as v3.7's decoder."""

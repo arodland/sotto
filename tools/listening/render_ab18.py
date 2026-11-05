@@ -3,7 +3,8 @@
   V: sotto v3.7 at 2400 bit/s, what the K6 plays today (same encoder and fixed-point decoder);
   C: Codec 2 1200, the open codec at the same rate.
 Two pairs lose one K6 XL packet in every 8 (12.5%): with the XL interleave that is every 8th
-slot, so v3.7 loses 20 ms every 160 ms and sotto 1200 loses 40 ms every 320 ms.
+slot, so v3.7 loses 20 ms every 160 ms and sotto 1200 loses 40 ms every 320 ms (which it
+rebuilds from the superframes either side).
 Clean held-out voices from /mnt/project-files/vocoder/samples-clean/.
 Usage: python tools/listening/render_ab18.py OUT_AUDIO_DIR   (from the repository root; build
 c/ with make VARIANT=v3.7 all fixed, and Codec 2 with tools/build_codec2.sh)"""

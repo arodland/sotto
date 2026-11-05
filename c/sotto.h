@@ -131,10 +131,11 @@ SOTTO_API int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLE
  * plus 2 superframes (its shape search looks 80 ms further ahead). sotto_lr_encode_part feeds a
  * last n80 x 80 samples before the flush; call sotto_lr_enc_flush until it returns 0.
  * Decoder: one call per received superframe (good = 0 to conceal one that failed its CRC);
- * each returns 320 samples one superframe behind (the first call returns silence), and
- * sotto_lr_dec_flush returns the last 40 ms. */
+ * each returns 320 samples SOTTO_LR_DEC_DELAY superframes behind (the first calls return
+ * silence), so that a lost superframe between two good ones can be rebuilt from both; call sotto_lr_dec_flush until it returns 0 for the last ones. */
 #define SOTTO_LR_SAMPLES_PER_FRAME 320
 #define SOTTO_LR_BITS_PER_FRAME 48
+#define SOTTO_LR_DEC_DELAY 2     /* superframes */
 
 struct sotto_lr_enc;
 struct sotto_lr_dec;
@@ -149,7 +150,7 @@ SOTTO_API struct sotto_lr_dec *sotto_lr_dec_create(void);
 SOTTO_API void sotto_lr_dec_destroy(struct sotto_lr_dec *d);
 SOTTO_API void sotto_lr_decode(struct sotto_lr_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME],
                                int good, short speech[SOTTO_LR_SAMPLES_PER_FRAME]);
-SOTTO_API void sotto_lr_dec_flush(struct sotto_lr_dec *d, short speech[SOTTO_LR_SAMPLES_PER_FRAME]);
+SOTTO_API int sotto_lr_dec_flush(struct sotto_lr_dec *d, short speech[SOTTO_LR_SAMPLES_PER_FRAME]);
 
 #ifdef __cplusplus
 }

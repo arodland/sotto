@@ -22,28 +22,20 @@ typedef struct {
   int16_t ca, wa, ea, sa[LR_NA], cb, dw, de, sb;
 } lr_fields_t;
 
-struct sotto_lr_dec {
-  struct sotto_dec *core;
-  lr_fields_t pend, last;    /* superframe n-1 (its B waits for A(n)); the last good one */
-  int16_t have_pend, have_good, run_b;
-};
-
-static int get_bits(const unsigned char *in, int *pos, int nb) {
-  int i, v = 0;
-  for (i = 0; i < nb; i++, (*pos)++) v = (v << 1) | ((in[*pos >> 3] >> (7 - (*pos & 7))) & 1);
-  return v;
-}
+/* field widths in transmission order: v3.7's voicing, pitch, energy; stages 1-2 (9 + 9);
+   B's voicing, pitch and energy steps; stage 3 (8) */
+static const unsigned char lr_width[9] = {2, 7, 5, 9, 9, 2, LR_WB_BITS, LR_EB_BITS, 8};
+typedef char lr_fields_are_9_int16[sizeof(lr_fields_t) == 9 * sizeof(int16_t) ? 1 : -1];
 
 static void unpack(const unsigned char *b, lr_fields_t *f) {
-  int i, pos = 0;
-  f->ca = (int16_t)get_bits(b, &pos, 2);
-  f->wa = (int16_t)get_bits(b, &pos, 7);
-  f->ea = (int16_t)get_bits(b, &pos, 5);
-  for (i = 0; i < LR_NA; i++) f->sa[i] = (int16_t)get_bits(b, &pos, fx_cb_bits[i]);
-  f->cb = (int16_t)get_bits(b, &pos, 2);
-  f->dw = (int16_t)get_bits(b, &pos, LR_WB_BITS);
-  f->de = (int16_t)get_bits(b, &pos, LR_EB_BITS);
-  f->sb = (int16_t)get_bits(b, &pos, fx_cb_bits[LR_BST]);
+  int16_t v[9];
+  int i, j, pos = 0;
+  for (i = 0; i < 9; i++) {
+    int x = 0;
+    for (j = 0; j < lr_width[i]; j++, pos++) x = (x << 1) | ((b[pos >> 3] >> (7 - (pos & 7))) & 1);
+    v[i] = (int16_t)x;
+  }
+  memcpy(f, v, sizeof v);
 }
 
 /* A's shape, DCT coefficients dB Q16 */
@@ -69,85 +61,17 @@ static int e_b(int ea, int en, int de) {
   return e < 0 ? 0 : e > 31 ? 31 : e;
 }
 
-static int wo_b(const lr_fields_t *a, const lr_fields_t *n) {
-  int wint = wo_interp(a->wa, a->ca != 0, n->wa, n->ca != 0);
-  if (wint < 0) return a->cb ? lr_w_abs[a->dw] : a->wa;
-  if (a->cb == 0) return wint;
-  int w = wint + lr_w_tab[a->dw];
-  return w < 0 ? 0 : w > 127 ? 127 : w;
-}
-
-static void push_a(struct sotto_lr_dec *d, const lr_fields_t *a, int run, short *out) {
-  fx_fparams_t p;
-  p.code = a->ca, p.wi = a->wa, p.ei = a->ea;
-  a_shape(a->sa, p.c);
-  sotto_dec_frame(d->core, &p, run, out);
-}
-
-static void push_b(struct sotto_lr_dec *d, const lr_fields_t *a, const lr_fields_t *n, int run, short *out) {
-  fx_fparams_t p;
-  int32_t cn[NC];
+/* B's shape: (cA + cN) / 2 + 1.5 y = (cA + cN + 3 y) / 2 (sb < 0: no residual y) */
+static void b_shape(const int32_t *ca, const int32_t *cn, int sb, int32_t *c) {
+  const int16_t *y = fx_cb[LR_BST] + sb * FX_CBW;
   int k;
-  const int16_t *y = fx_cb[LR_BST] + a->sb * FX_CBW;
-  a_shape(a->sa, p.c);
-  a_shape(n->sa, cn);
-  /* (cA + cN) / 2 + 1.5 y = (cA + cN + 3 y) / 2 */
-  for (k = 0; k < NC; k++) p.c[k] = fx_rshr((fx_acc)p.c[k] + cn[k] + 3 * (int32_t)FX_CB_VAL(y, k) * fx_cb_step[LR_BST], 1);
-  p.code = a->cb;
-  p.wi = (int16_t)wo_b(a, n);
-  p.ei = (int16_t)e_b(a->ea, n->ea, a->de);
-  sotto_dec_frame(d->core, &p, run, out);
+  for (k = 0; k < NC; k++)
+    c[k] = fx_rshr((fx_acc)ca[k] + cn[k] + (sb >= 0 ? 3 * (int32_t)FX_CB_VAL(y, k) * fx_cb_step[LR_BST] : 0), 1);
 }
 
 const char *sotto_lr_format(void) { return LR_FORMAT; }
 
-struct sotto_lr_dec *sotto_lr_dec_create(void) {
-  struct sotto_lr_dec *d = calloc(1, sizeof *d);
-  if (!d) return NULL;
-  d->core = sotto_dec_create();
-  if (!d->core) {
-    free(d);
-    return NULL;
-  }
-  return d;
-}
-
-void sotto_lr_dec_destroy(struct sotto_lr_dec *d) {
-  if (!d) return;
-  sotto_dec_destroy(d->core);
-  free(d);
-}
-
-
-void sotto_lr_decode(struct sotto_lr_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
-                     short speech[SOTTO_LR_SAMPLES_PER_FRAME]) {
-  lr_fields_t f;
-  int ra, rb;
-  if (good) {
-    unpack(in, &f);
-    d->last = f;
-    d->have_good = 1;
-    ra = rb = 0;
-  } else {
-    if (d->have_good) f = d->last;
-    else memset(&f, 0, sizeof f), f.dw = LR_W_ZERO, f.de = LR_E_ZERO;
-    ra = d->run_b + 1, rb = d->run_b + 2;
-  }
-  if (d->have_pend) push_b(d, &d->pend, good ? &f : &d->pend, d->run_b, speech);
-  else memset(speech, 0, SOTTO_SAMPLES_PER_FRAME * sizeof(short));
-  push_a(d, &f, ra, speech + SOTTO_SAMPLES_PER_FRAME);
-  d->pend = f;
-  d->have_pend = 1;
-  d->run_b = (int16_t)rb;
-}
-
-void sotto_lr_dec_flush(struct sotto_lr_dec *d, short speech[SOTTO_LR_SAMPLES_PER_FRAME]) {
-  if (!d->have_pend) {
-    memset(speech, 0, SOTTO_LR_SAMPLES_PER_FRAME * sizeof(short));
-    return;
-  }
-  push_b(d, &d->pend, &d->pend, d->run_b, speech);
-  sotto_dec_flush(d->core, speech + SOTTO_SAMPLES_PER_FRAME);
-  d->have_pend = 0;
-}
-
+#define lr_params_t fx_fparams_t
+#define lr_shape_a a_shape
+#define lr_shape_b b_shape
+#include "../sotto_lr_dec.inc"

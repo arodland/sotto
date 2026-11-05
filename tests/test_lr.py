@@ -43,6 +43,9 @@ def test_c_constants_match_python():
     assert num["NA"] == len(c.A_STAGES) and c.A_STAGES == tuple(range(len(c.A_STAGES)))
     assert (num["BST"], num["BG"]) == c.B_RES and num["JOINT"] == c.JOINT
     assert (num["WB_BITS"], num["EB_BITS"]) == (c.B_WO_BITS, c.B_E_BITS)
+    assert num["INTERP"] == c.INTERP
+    h = open(os.path.join(C, "sotto.h")).read()
+    assert int(re.search(r"#define SOTTO_LR_DEC_DELAY (\d+)", h)[1]) == c.INTERP + 1
     assert num["W_ZERO"] == c.W_ZERO and num["E_ZERO"] == c.E_ZERO and c.E_TAB[c.E_ZERO] == 0
 
 
@@ -86,10 +89,16 @@ def test_c_decoder_matches_python_with_losses():
     b = random_superframes(60)
     good = np.random.default_rng(2).random(60) > 0.2
     good[0] = True
-    yp = vl.synthesise(lr.Sotto1200().decode(b, good)) * 32768
+    good[19:45] = True                    # lone losses (rebuilt), runs of 2 and 3 (held)
+    good[[20, 25, 30, 31, 40, 41, 42]] = False
+    c = lr.Sotto1200()
+    yp = vl.synthesise(c.decode(b, good)) * 32768
+    assert c.rebuilt[[20, 25]].all() and not c.rebuilt[[30, 31, 40, 41, 42]].any()
     yc = c_decode(b, good, os.path.join(C, "sotto_dec"))
     assert len(yc) == len(yp) == 60 * 320
     assert snr(yp, yc) > 80
+    for n in (1, 2, 3, 4):                # short streams: the flush still returns every superframe
+        assert len(c_decode(b[:n], good[:n] | True, os.path.join(C, "sotto_dec"))) == n * 320
 
 
 @need_c

@@ -11,6 +11,9 @@
 #define LR_JOINT 1.0
 #define LR_W_ZERO 4           /* B's pitch code when B is unvoiced (step 0) */
 #define LR_E_ZERO 4           /* B's energy code with step 0 */
+#ifndef LR_INTERP
+#define LR_INTERP 1           /* rebuild a lost superframe between two good ones from both (0: hold) */
+#endif
 static const signed char lr_w_tab[8] = {-12, -5, -2, -1, 0, 2, 5, 12};    /* Sotto1200.W_TAB */
 static const unsigned char lr_w_abs[8] = {10, 23, 30, 36, 42, 53, 75, 103}; /* W_ABS: no voiced anchor */
 static const signed char lr_e_tab[8] = {-6, -3, -2, -1, 0, 1, 2, 4};      /* E_TAB */

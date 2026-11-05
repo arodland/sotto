@@ -33,12 +33,10 @@ int main(int argc, char **argv) {
       int good = 1, c;
       if (gf && (c = fgetc(gf)) != EOF) good = c != 0;
       sotto_lr_decode(d, b, good, y);
-      if (n++) fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME, out);
+      if (n++ >= SOTTO_LR_DEC_DELAY) fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME, out);
     }
-    if (n) {
-      sotto_lr_dec_flush(d, y);
-      fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME, out);
-    }
+    for (; sotto_lr_dec_flush(d, y); n++)
+      if (n >= SOTTO_LR_DEC_DELAY) fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME, out);
     sotto_lr_dec_destroy(d);
     return 0;
   }

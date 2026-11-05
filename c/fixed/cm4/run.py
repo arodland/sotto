@@ -196,8 +196,9 @@ def lr_decode(m4, a):
         dc.append(c)
         out_pcm.append(bytes(m4.mu.mem_read(IO + 0x2000, 640)))
     if a.pcm:                                           # as sotto_dec_fx -1200 writes it
-        m4.call('sotto_lr_dec_flush', dec, IO + 0x2000)
-        y = b''.join(out_pcm[1:]) + bytes(m4.mu.mem_read(IO + 0x2000, 640))
+        while m4.call('sotto_lr_dec_flush', dec, IO + 0x2000)[0]:
+            out_pcm.append(bytes(m4.mu.mem_read(IO + 0x2000, 640)))
+        y = b''.join(out_pcm[2:])                       # SOTTO_LR_DEC_DELAY
         open(a.pcm, 'wb').write(y)
     def mhz40(c):
         return round(c * 25 / 1e6, 2)

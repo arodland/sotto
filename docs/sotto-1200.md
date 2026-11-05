@@ -44,8 +44,21 @@ coded relative to the point halfway between this superframe's A and the next one
 - **The encoder chooses A's shape jointly.** It picks among A's 8 best codebook paths,
   counting the error of the B frames on both sides of A once each B has its best residual.
   This adds +0.06 PESQ. It makes the encoder look 2 superframes (80 ms) further ahead.
-- **Losses: a lost superframe is two lost 20 ms frames** under v3.5's concealment. It holds
-  40 ms, then fades 6 dB per 20 ms, and goes silent after 80 ms.
+- **Losses.** The K6 plays from store, so the decoder looks one superframe further ahead
+  (output is 2 superframes, 80 ms, behind). A lost superframe between two good ones is
+  rebuilt from both by B's own rule with no steps or residual: its A halfway between the
+  neighbouring A frames, its B halfway between that and the next A. A longer run of losses
+  is two lost 20 ms frames per superframe under v3.5's concealment: it holds 40 ms, fades
+  6 dB per 20 ms, and goes silent after 80 ms. XL packets interleave their slots 8 ways, so
+  one lost packet in 8 loses lone superframes, which this rebuilds:
+
+  | 16 voices, PESQ / ESTOI | hold and fade | rebuilt from both |
+  |---|---:|---:|
+  | 1 XL packet in 8 lost | 1.935 / 0.697 | **2.168 / 0.715** |
+  | 10% of superframes lost at random | 1.928 / 0.698 | **2.099 / 0.712** |
+
+  A linear rebuild of runs of up to 2 scores 2.182 and 2.17, but costs 930 bytes of K6
+  flash against this one's 157.
 
 ## How the bits were split
 
@@ -81,8 +94,9 @@ mean PESQ-NB / ESTOI and the whole-utterance tracker. Every row except the 49-bi
 - **Float C** (`c/sotto_lr.c`, `sotto_enc -1200`, `sotto_dec -1200`): on the 16 voices,
   4,493 superframes are 99.6% bit-exact with Python. The misses are v3.7's own pitch-tracker
   near-ties, which `tools/check_c_port.py` shows on v3.7 too. Given the same bits, the
-  decoders agree to ≥ 99.7 dB SNR, including with 10% superframe loss
-  (`docs/results/lr_c_port_check.json`, `tools/check_lr.py`).
+  decoders agree to ≥ 99.7 dB SNR, and ≥ 98.2 dB with 10% superframe loss
+  (`docs/results/lr_c_port_check.json`, `docs/results/lr_c_port_check_loss10.json`,
+  `tools/check_lr.py`).
 - **Fixed point** (`c/fixed/sotto_fx_lr.c`): decoder only. `sotto_lr_enc_create` returns NULL
   in the fixed build, because the K6 only receives. It sits on the v3.7 fixed-point decoder
   core, which now takes per-frame fields (`sotto_dec_frame`). v3.7 and v3.8 outputs are
@@ -93,12 +107,14 @@ mean PESQ-NB / ESTOI and the whole-utterance tracker. Every row except the 49-bi
   - decode is 55.0 MHz mean, 65.5 p99 and 66.9 worst, of 96 MHz. That is 11.5 ms mean and
     13.9 ms worst per 20 ms of output, the same class as v3.7.
   - Its output is bit-exact with x86.
-  - Code size of `sotto_fx_lr.o` on thumbv6m: 1,273 bytes at -Os, about 2.1 KB at -O2.
+  - Code size of `sotto_fx_lr.o` on thumbv6m: 1,424 bytes at -Os (1,276 with
+    `-DLR_INTERP=0`, which holds and fades every loss), about 3 KB at -O2.
   - The v3.7 core is now `sotto_dec_frame` plus a bit-unpacking wrapper (`sotto_decode`),
     and the shared part is inlined into both. With `--gc-sections`, an image keeps only the
     entry points it uses. A v3.7-only K6 image grows 88 bytes (-O2). A sotto-1200-only image
-    drops `sotto_decode` (680 bytes) and adds `sotto_fx_lr.o`, about 860 bytes more than
-    today's image. That fits the 988 bytes free, just.
+    drops `sotto_decode` (680 bytes) and adds `sotto_fx_lr.o` at -Os: on the K6 bench
+    link that is 777 bytes more than today's image (629 with `-DLR_INTERP=0`), before the
+    pager's 320-sample play path. The 988 bytes free leave about 210 for that.
 
 ## Use
 
@@ -110,8 +126,9 @@ python tools/check_lr.py CLIP.flac ... [--loss 0.1] [--dec c/fixed/sotto_dec_fx]
 ```
 
 API: `sotto_lr_enc_create` / `sotto_lr_encode` (320 samples in) / `sotto_lr_enc_flush`, and
-`sotto_lr_dec_create` / `sotto_lr_decode` (one 6-byte superframe in, 320 samples out, one
-superframe behind) / `sotto_lr_dec_flush`. See `c/sotto.h`.
+`sotto_lr_dec_create` / `sotto_lr_decode` (one 6-byte superframe in, 320 samples out,
+`SOTTO_LR_DEC_DELAY` = 2 superframes behind) / `sotto_lr_dec_flush` (call until it returns 0).
+See `c/sotto.h`.
 
 ## Open
 
@@ -119,7 +136,5 @@ superframe behind) / `sotto_lr_dec_flush`. See `c/sotto.h`.
   - the firmware needs magic 0xA9 and the 320-sample play path;
   - the softmodem needs `modem.k6 --codec 1200`.
   - Both wait for the K6 thread's PR #49.
-  - Flash is tight: 988 bytes free. A sotto-1200-only image needs about 860 of them, and a
+  - Flash is tight: 988 bytes free. A sotto-1200-only image needs about 780 of them, and a
     dual image doesn't fit.
-- Concealment: the K6 plays from store, so a lost superframe could be interpolated from both
-  of its neighbours instead of held and faded.

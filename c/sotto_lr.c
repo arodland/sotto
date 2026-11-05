@@ -87,19 +87,9 @@ static int e_b(int ea, int en, int de) {
   return e < 0 ? 0 : e > 31 ? 31 : e;
 }
 
-/* B's pitch index from its code and the anchors (Sotto1200.frame_params) */
-static int wo_b(const lr_fields_t *a, const lr_fields_t *n) {
-  int wint = wo_interp(a->wa, a->ca != 0, n->wa, n->ca != 0);
-  if (wint < 0) return a->cb ? lr_w_abs[a->dw] : a->wa;
-  if (a->cb == 0) return wint;
-  int w = wint + lr_w_tab[a->dw];
-  return w < 0 ? 0 : w > 127 ? 127 : w;
-}
-
-/* B's shape: halfway between the anchors plus the scaled residual codeword */
+/* B's shape: halfway between the anchors plus the scaled residual codeword (sb < 0: none) */
 static void b_shape(const double *ca, const double *cn, int sb, double *c) {
-  const float *y = sotto_cb[LR_BST] + sb * NC;
-  for (int k = 0; k < NC; k++) c[k] = (4 * ca[k] + 4 * cn[k]) / 8 + LR_BG * y[k];
+  for (int k = 0; k < NC; k++) c[k] = (4 * ca[k] + 4 * cn[k]) / 8 + (sb >= 0 ? LR_BG * sotto_cb[LR_BST][sb * NC + k] : 0);
 }
 
 const char *sotto_lr_format(void) { return LR_FORMAT; }
@@ -340,79 +330,7 @@ int sotto_lr_enc_flush(struct sotto_lr_enc *e, unsigned char out[SOTTO_BYTES_PER
 }
 
 /* ------------------------------------------------------------------ decoder */
-struct sotto_lr_dec {
-  struct sotto_dec *core;
-  lr_fields_t pend;          /* superframe n-1: its B waits for A(n) */
-  int have_pend, have_good, run_b;   /* run_b: concealment run of pend's B frame */
-  lr_fields_t last;          /* last good superframe */
-};
-
-struct sotto_lr_dec *sotto_lr_dec_create(void) {
-  struct sotto_lr_dec *d = calloc(1, sizeof *d);
-  if (!d) return NULL;
-  d->core = sotto_dec_create();
-  if (!d->core) {
-    free(d);
-    return NULL;
-  }
-  return d;
-}
-
-void sotto_lr_dec_destroy(struct sotto_lr_dec *d) {
-  if (!d) return;
-  sotto_dec_destroy(d->core);
-  free(d);
-}
-
-static void push_a(struct sotto_lr_dec *d, const lr_fields_t *a, int run, short *out) {
-  sotto_fparams_t p;
-  p.code = a->ca, p.wi = a->wa, p.ei = a->ea;
-  a_shape(a->sa, p.c);
-  sotto_dec_frame(d->core, &p, run, out);
-}
-
-static void push_b(struct sotto_lr_dec *d, const lr_fields_t *a, const lr_fields_t *n, int run, short *out) {
-  sotto_fparams_t p;
-  double ca[NC], cn[NC];
-  a_shape(a->sa, ca);
-  a_shape(n->sa, cn);
-  p.code = a->cb;
-  p.wi = wo_b(a, n);
-  p.ei = e_b(a->ea, n->ea, a->de);
-  b_shape(ca, cn, a->sb, p.c);
-  sotto_dec_frame(d->core, &p, run, out);
-}
-
-void sotto_lr_decode(struct sotto_lr_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
-                     short speech[SOTTO_LR_SAMPLES_PER_FRAME]) {
-  lr_fields_t f;
-  int ra, rb;                /* concealment runs (lost 20 ms frames in a row) of A(n), B(n) */
-  if (good) {
-    unpack(in, &f);
-    d->last = f;
-    d->have_good = 1;
-    ra = rb = 0;
-  } else {
-    if (d->have_good) f = d->last;
-    else memset(&f, 0, sizeof f), f.dw = LR_W_ZERO, f.de = LR_E_ZERO;
-    ra = d->run_b + 1, rb = d->run_b + 2;
-  }
-  if (d->have_pend)          /* B(n-1): its next anchor is A(n) if superframe n arrived */
-    push_b(d, &d->pend, good ? &f : &d->pend, d->run_b, speech);
-  else
-    memset(speech, 0, SOTTO_SAMPLES_PER_FRAME * sizeof(short));
-  push_a(d, &f, ra, speech + SOTTO_SAMPLES_PER_FRAME);
-  d->pend = f;
-  d->have_pend = 1;
-  d->run_b = rb;
-}
-
-void sotto_lr_dec_flush(struct sotto_lr_dec *d, short speech[SOTTO_LR_SAMPLES_PER_FRAME]) {
-  if (!d->have_pend) {
-    memset(speech, 0, SOTTO_LR_SAMPLES_PER_FRAME * sizeof(short));
-    return;
-  }
-  push_b(d, &d->pend, &d->pend, d->run_b, speech);
-  sotto_dec_flush(d->core, speech + SOTTO_SAMPLES_PER_FRAME);
-  d->have_pend = 0;
-}
+#define lr_params_t sotto_fparams_t
+#define lr_shape_a a_shape
+#define lr_shape_b b_shape
+#include "sotto_lr_dec.inc"
