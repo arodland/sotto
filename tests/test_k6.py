@@ -14,6 +14,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 from modem import cal, civ, fsk, pager                       # noqa: E402
+from modem import k6                                          # noqa: E402
 from modem.k6 import main as cli                              # noqa: E402
 
 TEST_FRAMES = b"".join(bytes([f & 0xFF, f >> 8, 0x11, 0x22, 0x33, 0x44]) for f in range(70))
@@ -169,7 +170,7 @@ def test_cli(tmp_path):
     assert cli(["test", wav, "--repeat", "3", "--phy", "F"]) == 0
     from modem.k6 import _read
     x, fs = _read(wav)
-    asm, t = fsk.receive(x, fs, "F")
+    asm, t = fsk.receive(x, fs, "F", 1800)
     assert sum(t_[1] for t_ in t) == 3 and asm.messages[0x42]["pk"][0] == \
         [TEST_FRAMES[f * 6:f * 6 + 6] for f in range(0, 64, 8)]
     assert cli(["send", sot, "--dry-run", "--ptt", "none"]) == 0
@@ -194,11 +195,11 @@ def test_prime_sends_a_throwaway_first_copy(tmp_path):
     for prime, n in ((["--no-prime"], 3), (["--prime"], 4)):
         assert cli(["test", wav, "--repeat", "3", "--phy", "F"] + prime) == 0
         x, fs = _read(wav)
-        asm, t = fsk.receive(x, fs, "F")
+        asm, t = fsk.receive(x, fs, "F", 1800)
         assert sum(t_[1] for t_ in t) == n
     assert cli(["test", wav, "--repeat", "3", "--phy", "F", "--no-prime", "--first-preamble", "32"]) == 0
     x, fs = _read(wav)
-    assert sum(t_[1] for t_ in fsk.receive(x, fs, "F")[1]) == 3
+    assert sum(t_[1] for t_ in fsk.receive(x, fs, "F", 1800)[1]) == 3
 
 
 def test_later_preamble():
@@ -218,7 +219,7 @@ def test_control_packet_on_air(tmp_path):
     from modem import fsk, k6, pager
     for payload in ("L", "XL"):
         out = tmp_path / f"ctl-{payload}.wav"
-        assert k6.main(["ctl", str(out), "--phy", "D", "--also", "F", "--payload", payload,
+        assert cli(["ctl", str(out), "--phy", "D", "--also", "F", "--payload", payload,
                         "--set", "phy=F", "frames=XL", "auto=1", "--action", "play",
                         "--seq", "17", "--copies", "2"]) == 0
         x, fs = sf.read(out)
@@ -226,7 +227,7 @@ def test_control_packet_on_air(tmp_path):
         y = fsk.resample(x, fs, fsk.FS)
         n = pager.PROFILES[payload].payload
         for phy in "DF":
-            got = fsk.Demodulator(phy, 1200, fsk.FS, n).demodulate(y)
+            got = fsk.Demodulator(phy, k6.default_baud(phy), fsk.FS, n).demodulate(y)
             recs = [pager.parse_control(p) for _, p, inv, _ in got if not inv]
             assert recs.count(want) >= 2, (payload, phy, recs)
     assert want == bytes([0xA8, 17, 0x0B, 0x0B, 0x00, 0x01])
@@ -247,3 +248,32 @@ def test_control_record_fields():
     assert pager.parse_control(pager.control_packet(9, length=64, reg=(0x58, 0x73E9)))[:6] == r[:6]
     with pytest.raises(ValueError):
         pager.control_reg_record(1, 0x30, 0)            # REG_30 (TX/RX enables): refused
+
+
+def test_boot_dump_parses_log():
+    data = bytes(range(256)) * 32
+    lines = [f"K6 BOOT off={o:04x} {data[o:o + 32].hex()}\r\n" for o in range(0, 0x2000, 32)]
+    log = "K6 CFG why=tick\r\n" + "".join(lines) + "K6 BOOT end seq=7\r\n"
+    assert pager.boot_dump(log) == data
+    with pytest.raises(ValueError):
+        pager.boot_dump("".join(lines[:-1]))
+    assert pager.control_record(7, None, "boot")[5] == 6
+
+
+def test_default_baud_follows_phy(tmp_path):
+    """F defaults to 1800 baud (the K6's F boot rate), D to 1200; ctl --also switches with it."""
+    assert k6.default_baud("F") == 1800 and k6.default_baud("D") == 1200
+    out = tmp_path / "c.wav"
+    assert cli(["ctl", str(out), "--phy", "D", "--also", "F", "--set", "phy=F"]) == 0
+    assert out.stat().st_size > 0
+
+
+def test_later_preamble_option_shortens_burst(tmp_path):
+    """--later-preamble 8 makes an XL test burst shorter than the default 24."""
+    import soundfile as sf
+    lens = []
+    for extra in ([], ["--later-preamble", "8"]):
+        out = tmp_path / f"t{len(extra)}.wav"
+        assert cli(["test", str(out), "--repeat", "4", "--phy", "F", "--payload", "XL"] + extra) == 0
+        lens.append(sf.info(str(out)).frames)
+    assert lens[1] < lens[0]

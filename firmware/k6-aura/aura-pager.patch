@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..c43b3f6
+index 0000000..663ae07
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2241 @@
+@@ -0,0 +1,2318 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -360,6 +360,10 @@ index 0000000..c43b3f6
 +const CFG_D_1200: u16 = 0x00E1; // direct 2-FSK, preamble 0x55
 +const CFG_D_2400: u16 = 0x00E9;
 +const CFG_F_1200: u16 = 0x3FE3; // FFSK 1200/1800
++/// FFSK 1200/1800 tones at 1800 baud, the F default since 2026-11-05: REG_58 as the UV-K5 MCFW
++/// messenger writes it (bits 7:6 clear). On air with interrupt reads (5e=0203) and DC
++/// cancellation off: 12/12, 23/24 and 12/12, every decoded packet 0 bit errors
++const CFG_F_1800: u16 = 0x3F01;
 +/// FFSK 1200/2400 (TX mode 011, RX mode 100, RX BW 100 = "FSK 2.4K and FFSK 1200/2400" in the
 +/// BK4819 register list; gains and preamble type as CFG_F_1200), run at 2400 baud: half a
 +/// cycle of 1200 Hz or a whole one of 2400 Hz per bit, MSK like 1200/1800 at 1200 baud.
@@ -412,11 +416,14 @@ index 0000000..c43b3f6
 +/// once, then written back from that copy on every configure, so a revert undoes a write.
 +const BASED: [u8; 6] = [REG_RX_BW, REG_DEMOD_GAIN, REG_AFC, REG_DC_FILT, REG_DISC_GAIN, REG_AF_BYPASS];
 +const BAUD_1200: u16 = 0x3065;
++const BAUD_1800: u16 = 0x4898;
 +const BAUD_2400: u16 = 0x60CA;
 +const GAIN_D: u16 = 0x00E0;
 +const GAIN_F: u16 = 0x00B4;
 +const CRC_OFF: u16 = 0x5625;
 +const FIFO_THR: u16 = 0x0204; // TX almost empty 64 words, RX almost full 4 words
++/// F/1800 default: interrupt reads, 3 words per FIFO-almost-full interrupt (as tested on air)
++const FIFO_THR_F1800: u16 = 0x0203;
 +
 +const TICKS_PER_S: u32 = 10_000; // uptime: 100 us
 +const GAP_TICKS: u32 = 3 * TICKS_PER_S; // play 3 s after the last packet
@@ -457,13 +464,23 @@ index 0000000..c43b3f6
 +/// register 0 drops every write); action 5: print the FSK registers (`K6 REGS`)
 +const CTL_ACT_REG: u8 = 4;
 +const CTL_ACT_REGS: u8 = 5;
++/// action 6: print the stock bootloader (flash 0x0800_0000, 8 KB) as `K6 BOOT off=.. hex` lines,
++/// read only, so the PC can work out how it enters UPDATE mode. Stays on the user's machine
++const CTL_ACT_BOOT: u8 = 6;
++/// action 7: software reset (SYSRESETREQ). The stock bootloader listens on the cable for about
++/// 200 ms after every reset for a 0x42 frame and enters UPDATE on it, so a PC that sends that
++/// frame after the `K6 RESET` line (tools/k6_update.py) flashes without the side keys. No PC: the
++/// window passes and the pager boots again. The K6 waits 30 ms after the line, ignoring PTT
++const CTL_ACT_RESET: u8 = 7;
++const BOOT_BASE: usize = 0x0800_0000;
++const BOOT_LEN: usize = 0x2000;
 +/// the registers action 4 may write: AF filters, FSK mode, FSK control (low byte only: preamble
 +/// and sync lengths; RX/TX enable stay ours), CRC/scrambler, baud. Nothing that transmits,
 +/// tunes or changes the payload length the timed read counts on
 +/// A write to REG_5E (FIFO thresholds) also switches the receiver from timed FIFO reads to
 +/// interrupt reads: on each FIFO-almost-full interrupt it takes as many words as the RX
 +/// threshold says are waiting (see `irq_words`). The revert or `--reg 0=0` brings the timed
-+/// reads back.
++/// reads back, except at F/1800, which reads by interrupt (0x0203) without a write.
 +const POKE_OK: [u8; 12] = [
 +    REG_AF_FILT, REG_FSK_CFG, REG_FSK_CTRL, REG_FSK_5C, REG_BAUD, REG_RX_BW, REG_DEMOD_GAIN,
 +    REG_AFC, REG_DC_FILT, REG_DISC_GAIN, REG_AF_BYPASS, REG_FIFO_THR,
@@ -826,27 +843,45 @@ index 0000000..c43b3f6
 +        v
 +    }
 +
-+    /// Timed FIFO reads (the default), unless a REG_5E write asks for interrupt reads
++    /// F at the default rate (1800 baud), not 2400
++    fn f1800(&self) -> bool {
++        self.phy_ffsk && !self.baud_2400
++    }
++
++    /// The REG_5E value in force: a control-packet write, else 0x0203 at F/1800 (interrupt
++    /// reads), else none (timed reads, REG_5E = FIFO_THR)
++    fn fifo_thr(&self) -> Option<u16> {
++        self.fifo_thr_poke().or(if self.f1800() { Some(FIFO_THR_F1800) } else { None })
++    }
++
++    /// Timed FIFO reads, unless REG_5E asks for interrupt reads (a write, or F/1800)
 +    fn timed(&self) -> bool {
-+        self.timed_read && self.fifo_thr_poke().is_none()
++        self.timed_read && self.fifo_thr().is_none()
 +    }
 +
 +    /// Words to take on each FIFO-almost-full interrupt. Which REG_5E field is the RX threshold
 +    /// is unsettled (our 0x0204 has 4 in <2:0> and 64 in <9:3>; UV-K5 firmware writes
 +    /// (64 << 3) | 1 as "the almost full threshold"), so: <2:0> when it isn't 0, else <9:3>
 +    fn irq_words(&self) -> usize {
-+        match self.fifo_thr_poke() {
++        match self.fifo_thr() {
 +            Some(v) if v & 7 != 0 => (v & 7) as usize,
 +            Some(v) => (((v >> 3) & 0x7F) as usize).max(1),
 +            None => 4,
 +        }
 +    }
 +
-+    /// The REG_72 bit rate in force: a control-packet write wins over the 1200/2400 setting.
++    /// The REG_72 bit rate in force: a control-packet write wins over the PHY/baud setting
++    /// (F 1800, D 1200, either at 2400 with key 5; `--reg 72=3065` gets F/1200 back).
 +    /// The rate is REG_72 / 10.3244; 1800 (0x4898) and 2000 (0x50A9) were written on air
 +    /// (2026-11-05: F/1800 12/12, F/2000 10/12, every decoded packet 0 bit errors)
 +    fn reg72(&self) -> u16 {
-+        let mut v = if self.baud_2400 { BAUD_2400 } else { BAUD_1200 };
++        let mut v = if self.baud_2400 {
++            BAUD_2400
++        } else if self.phy_ffsk {
++            BAUD_1800
++        } else {
++            BAUD_1200
++        };
 +        for &(r, x) in &self.poke[..self.poke_n as usize] {
 +            if r == REG_BAUD && x != 0 {
 +                v = x;
@@ -855,14 +890,33 @@ index 0000000..c43b3f6
 +        v
 +    }
 +
++    /// (REG_58, REG_72, TX gain) for the PHY and baud (before control-packet writes)
++    fn fsk_cfg(&self) -> (u16, u16, u16) {
++        if self.phy_ffsk && self.baud_2400 {
++            (self.rx2400().0, BAUD_2400, GAIN_F)
++        } else if self.phy_ffsk && self.reg72() == BAUD_1200 {
++            (CFG_F_1200, BAUD_1200, GAIN_F) // a 72=3065 write: the old F/1200 recipe
++        } else if self.phy_ffsk {
++            (CFG_F_1800, BAUD_1800, GAIN_F)
++        } else if self.baud_2400 {
++            (CFG_D_2400, BAUD_2400, GAIN_D)
++        } else {
++            (CFG_D_1200, BAUD_1200, GAIN_D)
++        }
++    }
++
 +    /// The bit rate on air, from REG_72
-+    fn baud(&self) -> u16 {
++    pub fn baud(&self) -> u16 {
 +        ((self.reg72() as u32 * 1200 + BAUD_1200 as u32 / 2) / BAUD_1200 as u32) as u16
 +    }
 +
-+    /// 100 us ticks per byte on air, at the REG_72 rate, so every paced wait follows it
++    /// 100 us ticks per byte on air at the REG_72 rate (66.67 at 1200), rounded up, so every
++    /// paced wait follows the rate and a read by time never takes a word that isn't in yet: at
++    /// 2400 the truncated 33 (real 33.3) made the stalled-interrupt read take a word early, the
++    /// empty FIFO repeated the last one, and the rest of the packet shifted (b1f0492, 9/9 garbled)
 +    fn tpb(&self) -> usize {
-+        (TICKS_PER_BYTE as u32 * BAUD_1200 as u32 / self.reg72() as u32) as usize
++        let r = 3 * self.reg72() as u32;
++        ((200 * BAUD_1200 as u32 + r - 1) / r) as usize
 +    }
 +}
 +
@@ -944,17 +998,10 @@ index 0000000..c43b3f6
 +
 +fn configure(app: &mut App, syst: &mut SYST) {
 +    let p = &app.pager;
-+    let (var58, var2b) = p.rx2400();
-+    let (cfg, baud, gain) = if p.phy_ffsk && p.baud_2400 {
-+        (var58, BAUD_2400, GAIN_F)
-+    } else if p.phy_ffsk {
-+        (CFG_F_1200, BAUD_1200, GAIN_F)
-+    } else if p.baud_2400 {
-+        (CFG_D_2400, BAUD_2400, GAIN_D)
-+    } else {
-+        (CFG_D_1200, BAUD_1200, GAIN_D)
-+    };
++    let var2b = p.rx2400().1;
++    let (cfg, baud, gain) = p.fsk_cfg();
 +    let len_field = p.len_field();
++    let fifo_thr = p.fifo_thr().unwrap_or(FIFO_THR);
 +    let filt_or = var2b;
 +    let known = app.pager.reg2b_base;
 +    let base = match known {
@@ -985,7 +1032,7 @@ index 0000000..c43b3f6
 +    fd.reg_write(syst, REG_SYNC23, 0x3E36);
 +    fd.reg_write(syst, REG_FSK_5C, CRC_OFF);
 +    fd.reg_write(syst, REG_FSK_LEN, len_field);
-+    fd.reg_write(syst, REG_FIFO_THR, FIFO_THR);
++    fd.reg_write(syst, REG_FIFO_THR, fifo_thr);
 +    fd.reg_write(syst, REG_TX_GAIN, gain);
 +    let p = &app.pager;
 +    for &(r, v) in &p.poke[..p.poke_n as usize] {
@@ -1472,7 +1519,9 @@ index 0000000..c43b3f6
 +                }
 +            }
 +            let since = now.wrapping_sub(t_read) as usize;
-+            if !timed && saw_sync && since > (irq_n + 1) * word_ticks {
++            // N + 2 word times: the interrupt is due after N, and polling it a little late must
++            // not lose the race to a read by time
++            if !timed && saw_sync && since > (irq_n + 2) * word_ticks {
 +                // the interrupt stalled: take the words that came in since the last read (the
 +                // FIFO was about empty then), which brings the level back under the threshold
 +                // so its edge comes again. One word at a time (876ba93) fell behind and
@@ -1748,6 +1797,15 @@ index 0000000..c43b3f6
 +        return;
 +    }
 +    app.pager.ctl_seq = seq as i16;
++    if action == CTL_ACT_BOOT {
++        report_boot(seq);
++        return;
++    }
++    if action == CTL_ACT_RESET {
++        report_line(format_args!("K6 RESET seq={}", seq));
++        delay::ms(syst, 30);
++        cortex_m::peripheral::SCB::sys_reset();
++    }
 +    if action == CTL_ACT_REG || action == CTL_ACT_REGS {
 +        if action == CTL_ACT_REG {
 +            control_poke(app, syst, mask, (val as u16) << 8 | vv as u16);
@@ -1838,6 +1896,25 @@ index 0000000..c43b3f6
 +        write!(s, " {:02x}={:04x}", a, v).ok();
 +    }
 +    report_line(format_args!(" poke={}", app.pager.poke_n));
++}
++
++/// Action 6: `K6 BOOT off=XXXX` + 32 bytes in hex per line, 256 lines (~20 KB, ~2 s at 115200),
++/// then `K6 BOOT end seq=N`
++#[inline(never)]
++fn report_boot(seq: u8) {
++    use core::fmt::Write as _;
++    let mut s = Serial;
++    let mut off = 0;
++    while off < BOOT_LEN {
++        write!(s, "K6 BOOT off={:04x} ", off).ok();
++        for i in 0..32 {
++            let b = unsafe { core::ptr::read_volatile((BOOT_BASE + off + i) as *const u8) };
++            write!(s, "{:02x}", b).ok();
++        }
++        s.write_str("\r\n").ok();
++        off += 32;
++    }
++    report_line(format_args!("K6 BOOT end seq={}", seq));
 +}
 +
 +// ---- frequency entry (#) ----
@@ -2211,7 +2288,7 @@ index 0000000..c43b3f6
 +        baud,
 +        p.stream() as u8,
 +        p.f2400_var,
-+        p.rx2400().0,
++        p.fsk_cfg().0, // REG_58 as written (a 58 write in force overrides it)
 +        p.reg2b_base.unwrap_or(0) | p.rx2400().1,
 +        p.invert as u8,
 +        p.soft_inv as u8,
@@ -2852,7 +2929,7 @@ index cdfa0f7..6ca5a70 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..82fc020
+index 0000000..037b88e
 --- /dev/null
 +++ b/src/ui/pager.rs
 @@ -0,0 +1,204 @@
@@ -2862,7 +2939,7 @@ index 0000000..82fc020
 +//!
 +//! ```text
 +//! VOICE MSG   439.50000
-+//! D L 1200 i-x-s+ e+ +0     (PHY, frames, baud, chip invert, soft invert, byte swap, emphasis, dB)
++//! F L 1800 i-x-s+ e+ +0     (PHY, frames, baud, chip invert, soft invert, byte swap, emphasis, dB)
 +//! ID 42  640/640  80/80
 +//! SYNC P CRC ok A7 TO 0
 +//! ok 81 bad 2 FREE 3120
@@ -2939,7 +3016,7 @@ index 0000000..82fc020
 +        "{} {} {} i{}x{}s{} e{} {:+}",
 +        if p.phy_ffsk { 'F' } else { 'D' },
 +        if p.xl { 'X' } else { 'L' },
-+        if p.baud_2400 { 2400 } else { 1200 },
++        p.baud(), // the REG_72 rate in force (F 1800 by default)
 +        if p.invert { '+' } else { '-' },
 +        if p.soft_inv { '+' } else { '-' },
 +        if p.swap { '+' } else { '-' },

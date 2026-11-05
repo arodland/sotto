@@ -224,11 +224,37 @@ passed 7 of 28 packets, and the last 16 bytes of each failure were corrupt. With
 passed 31 of 31 (`2b=8000`, `8400`, `0400`, and `8000` with interrupt reads). FFSK at 1200 stayed
 clean (15 of 15). `--reg 2b=c000` turns it back on for 60 s.
 
+**Bootloader dump (action 6).** `modem.k6 ctl --action boot` makes the K6 print its stock
+bootloader (flash 0x0800_0000, 8 KB) on the serial report as `K6 BOOT off=` lines, about 2 s;
+`python -m modem.k6 bootdump LOG out.bin` turns a log of them back into the image. It is read
+only, and it is for finding how the bootloader enters UPDATE mode, so that a later control
+action can reboot into it without the side keys. The image is Baofeng's code: keep it on your
+own machine, never commit or share it.
+
+**Flashing without the side keys (action 7, images from db796ee).** The dump showed that after
+every reset the stock bootloader listens on the cable for about 200 ms. One handshake frame
+(`AA 42 00 00 00` + CRC-16/XMODEM + `EF`) gets an answer and keeps it in UPDATE mode, as the
+side keys do. There is no RAM flag, and the app check is only a valid stack pointer at
+0x0800_2000. `modem.k6 ctl --action reset` makes the K6 print `K6 RESET seq=N`, wait 30 ms and
+reset. `tools/k6_update.py IMAGE` waits for that line on the cable, sends the handshake every
+18 ms for 1.5 s, and on the answer runs Aura's `tools/flash.py`. It writes to the cable only
+after the reset line. With `--manual`, start with the K6 off and power it on (no keys).
+`--trigger "CMD"` runs the command that transmits the reset packet once the port is open.
+Without an answer, the window passes and the pager boots again, so a missed window costs
+nothing. Stop any serial listener first, because the tool needs the port.
+
 **Other bit rates.** REG_72 sets the chip's bit rate (rate x 10.3244: 0x3065 = 1200,
 0x4898 = 1800, 0x50A9 = 2000, 0x60CA = 2400), and the firmware paces its reads and waits from
 the REG_72 value in force, so `--reg 72=4898` runs it at 1800. On air (2026-11-05, e904cb0,
 F with 1200/1800 tones, `2b=8000 5e=0203 58=3f01`, `modem.k6 --baud 1800`), 1800 got 12 of 12
 packets and 2000 got 10 of 12, every decoded packet with 0 bit errors; 2400 slips a bit.
+
+**F runs at 1800 by default (images after 0dad5c6).** F boots with that recipe: REG_58 3f01,
+REG_72 4898, interrupt reads with REG_5E 0203, DC cancellation off. That makes control packets
+and messages 1.5 times faster. `modem.k6` follows it: `--baud` defaults to 1800 for `--phy F` and
+1200 for D. A control packet with `baud=1200` means "the PHY's own rate", so F/1800. Key 1
+(D/1200) or `--reg 72=3065` (F/1200 with the old 3fe3 recipe, for 60 s) gets 1200 back, and key 5
+or `baud=2400` still gives 2400. The revert lands on F/1800.
 
 ## First tests (spec section 8)
 
