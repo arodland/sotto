@@ -5,9 +5,16 @@
 #define SOTTO_FX_INTERNAL_H
 #include "../sotto.h"
 #include "fx.h"
+#include "fx_tables.h"
 
 #define FX_NFB 7                      /* hiss_band.FB: 1250 .. 3800 Hz */
 #define FX_SNR_NONE INT32_MIN         /* snr of an unvoiced half (the float's NAN) */
+
+/* the fields of one 20 ms frame as the decoder core takes them (sotto 1200 builds them) */
+typedef struct {
+  int16_t code, wi, ei;               /* voicing code, 7-bit pitch index, 5-bit energy code */
+  int32_t c[FX_NC];                   /* shape: DCT coefficients 1..K-1, dB Q16 */
+} fx_fparams_t;
 
 /* one 20 ms frame out of the v3.7 encoder core, with what the v3.8 rules need per 10 ms half */
 typedef struct {
@@ -30,5 +37,6 @@ typedef struct {
 void sotto_enc_analyse_block(struct sotto_enc *e, const short x8[80]);
 void sotto_enc_flush_core(struct sotto_enc *e);
 int sotto_enc_pop_frame(struct sotto_enc *e, fx_enc_frame_t *f);
+void sotto_dec_frame(struct sotto_dec *d, const fx_fparams_t *p, int run, short speech[160]);
 const fx_dec_info_t *sotto_dec_info(const struct sotto_dec *d);
 #endif

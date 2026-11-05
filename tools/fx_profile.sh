@@ -8,11 +8,11 @@ set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
-cp "$ROOT"/c/sotto.h "$ROOT"/c/sotto_enc.c "$ROOT"/c/sotto_dec.c "$ROOT"/c/fixed/*.c "$ROOT"/c/fixed/*.h "$T"/
+cp "$ROOT"/c/sotto.h "$ROOT"/c/sotto_lr_tables.h "$ROOT"/c/sotto_enc.c "$ROOT"/c/sotto_dec.c "$ROOT"/c/fixed/*.c "$ROOT"/c/fixed/*.h "$T"/
 cd "$T"
-sed -i 's#"../sotto.h"#"sotto.h"#' sotto_fx_enc.c sotto_fx_dec.c
-cc -O0 --coverage -o enc sotto_enc.c sotto_fx_enc.c fx_math.c fx_tables.c
-cc -O0 --coverage -o dec sotto_dec.c sotto_fx_dec.c fx_math.c fx_tables.c
+sed -i 's#"../sotto\(_lr_tables\)*.h"#"sotto\1.h"#' sotto_fx_enc.c sotto_fx_dec.c sotto_fx_lr.c sotto_fx_lr_enc.c fx_internal.h
+cc -O0 --coverage -o enc sotto_enc.c sotto_fx_enc.c sotto_fx_lr_enc.c fx_math.c fx_tables.c
+cc -O0 --coverage -o dec sotto_dec.c sotto_fx_dec.c sotto_fx_lr.c fx_math.c fx_tables.c
 RAW="$ROOT/codec/codec2/raw/ve9qrp_10s.raw"
 SECONDS_IN=$(( $(wc -c < "$RAW") / 16000 ))
 ./enc "$RAW" out.bit

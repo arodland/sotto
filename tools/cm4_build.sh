@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build the fixed-point sotto (8 kHz v3.7, or 16 kHz v3.8) for a Cortex-M4 with clang and lld, bare metal, for
 # the cycle bench in c/fixed/cm4/run.py: c/fixed/cm4/build/bench.elf.
+# LR=1 sh ... adds the sotto 1200 decoder (run.py --lr BITS).
 # Usage: sh tools/cm4_build.sh [extra clang options, e.g. -Os or -DFX_SPLIT_MUL]
 #        CM4_OUT=dir sh tools/cm4_build.sh ...
 # Default -O2 (OpenRTX builds with -Os; pass -Os to see that), unaligned access on (as GCC
@@ -17,6 +18,11 @@ VFLAGS="-DSOTTO_V36"
 [ "${VARIANT:-v3.7}" = v3.6 ] || VFLAGS="$VFLAGS -DSOTTO_PITCH_THIRD"
 SRCS="fx_math fx_tables sotto_fx_enc sotto_fx_dec"
 SYMS=""
+# LR=1: also the sotto 1200 decoder (fixed/sotto_fx_lr.c), for run.py --lr
+if [ -n "$LR" ]; then
+  SRCS="$SRCS sotto_fx_lr"
+  SYMS="$SYMS -u sotto_lr_dec_create -u sotto_lr_decode -u sotto_lr_dec_flush"
+fi
 if [ "${VARIANT:-v3.7}" = v3.8 ]; then
   SRCS="$SRCS sotto_fx_hiss"
   VFLAGS="$VFLAGS -DSOTTO_V38 -DFX_PCT_MAX=3000"

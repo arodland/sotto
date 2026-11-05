@@ -66,14 +66,14 @@ all: libsotto.so libsotto.a sotto_enc sotto_dec
 FXFLAGS ?= -DFX_CHECK
 FX_OBJS = fixed/fx_math.o fixed/fx_tables.o
 ifeq ($(VARIANT),v3.8)
-FX_OBJS += fixed/sotto_fx_hiss.o fixed/sotto_fx_dec.o fixed/sotto_fx_enc.o
+FX_OBJS += fixed/sotto_fx_hiss.o fixed/sotto_fx_dec.o fixed/sotto_fx_enc.o fixed/sotto_fx_lr.o fixed/sotto_fx_lr_enc.o
 else
-FX_ENC_OBJS = fixed/sotto_fx_enc.o
-FX_DEC_OBJS = fixed/sotto_fx_dec.o
+FX_ENC_OBJS = fixed/sotto_fx_enc.o fixed/sotto_fx_lr_enc.o
+FX_DEC_OBJS = fixed/sotto_fx_dec.o fixed/sotto_fx_lr.o
 endif
 fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm \
 	fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0
-fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h
+fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h sotto_lr_tables.h
 	$(CC) $(CFLAGS) $(FXFLAGS) -c -o $@ $<
 fixed/sotto_dec_fx: sotto_dec.o $(FX_DEC_OBJS) $(FX_OBJS)
 	$(CC) -o $@ $^
@@ -118,14 +118,15 @@ check-tables:
 	rm -rf tables.chk; echo "generated tables match the generators"
 
 sotto.o: sotto.c sotto.h sotto_codebook.h sotto_internal.h
+sotto_lr.o: sotto_lr.c sotto.h sotto_codebook.h sotto_internal.h sotto_lr_tables.h
 sotto_hiss.o: sotto_hiss.c sotto.h sotto_internal.h sotto_hiss_tables.h
 sotto_hiss_tables.o: sotto_hiss_tables.c sotto_hiss_tables.h
 $(CB).o: $(CB).c sotto_codebook.h
 
-libsotto.a: sotto.o $(CB).o $(HISS_OBJS)
+libsotto.a: sotto.o sotto_lr.o $(CB).o $(HISS_OBJS)
 	$(AR) rcs $@ $^
 
-libsotto.so.$(VERSION): sotto.o $(CB).o $(HISS_OBJS)
+libsotto.so.$(VERSION): sotto.o sotto_lr.o $(CB).o $(HISS_OBJS)
 	$(CC) -shared -Wl,-soname,$(SONAME) -o $@ $^ $(C2LIBS)
 libsotto.so: libsotto.so.$(VERSION)
 	ln -sf $< $(SONAME)

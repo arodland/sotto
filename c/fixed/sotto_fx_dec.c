@@ -119,22 +119,31 @@ static void postfilter_rk(int32_t *v) {
   for (k = 0; k < K; k++) v[k] -= e1 - e0 + fx_pre[k];
 }
 
-static void unpack(struct sotto_dec *d, const unsigned char *b, dframe_t *f) {
-  int s, k, n;
-  int pos = 0, code = get_bits(b, &pos, 2), wi = get_bits(b, &pos, 7), ei = get_bits(b, &pos, 5);
+/* the frame fields of a 48-bit frame: shape stages summed into DCT coefficients (dB Q16) */
+static void bits_to_params(const unsigned char *b, fx_fparams_t *p) {
+  int s, k, pos = 0;
+  p->code = (int16_t)get_bits(b, &pos, 2);
+  p->wi = (int16_t)get_bits(b, &pos, 7);
+  p->ei = (int16_t)get_bits(b, &pos, 5);
+  for (k = 0; k < NC; k++) p->c[k] = 0;
+  for (s = 0; s < fx_cb_stages; s++) {
+    const int16_t *y = fx_cb[s] + get_bits(b, &pos, fx_cb_bits[s]) * FX_CBW;
+    for (k = 0; k < NC; k++) p->c[k] += (int32_t)FX_CB_VAL(y, k) * fx_cb_step[s];
+  }
+}
+
+static void unpack(struct sotto_dec *d, const fx_fparams_t *p, dframe_t *f) {
+  int k, n;
+  int code = p->code, ei = p->ei;
   if (code < 3) f->v[0] = f->v[1] = (int16_t)code;
   else if (d->prev_v == 0) f->v[0] = 0, f->v[1] = MIXED;
   else f->v[0] = MIXED, f->v[1] = 0;
   d->prev_v = f->v[1];
-  f->wo = fx_wo_tab[wi];
+  f->wo = fx_wo_tab[p->wi];
   /* 10 + ei * 70 / 31 dB */
   f->en = ei == 0 ? DB(-60) : DB(10) + (int32_t)((ei * (int32_t)17920 + 15) / 31);
-  int32_t c[K] = {0};                       /* DCT coefficients, dB Q16 */
-  for (s = 0; s < fx_cb_stages; s++) {
-    const int16_t *y = fx_cb[s] + get_bits(b, &pos, fx_cb_bits[s]) * FX_CBW;
-    for (k = 0; k < NC; k++) c[k + 1] += (int32_t)FX_CB_VAL(y, k) * fx_cb_step[s];
-  }
-  for (k = 1; k < K; k++) c[k] = fx_rshr(c[k], 8);          /* Q8 */
+  int32_t c[K] = {0};                       /* DCT coefficients, dB Q8 */
+  for (k = 1; k < K; k++) c[k] = fx_rshr(p->c[k - 1], 8);
   for (n = 0; n < K; n++) {
     fx_acc a = 0;
     for (k = 1; k < K; k++) a += (fx_acc)c[k] * fx_dct[k * K + n];
@@ -365,10 +374,26 @@ static int32_t conceal_gain(int run, int half) {
   return x2 > 0 ? -x2 * DB(C_SLOPE_DB) / 2 : 0;
 }
 
+/* inlined into both entry points, so a build that uses only one of them (the K6 pager's
+   v3.7 or sotto 1200 image, with --gc-sections) carries no call boundary */
+static inline __attribute__((always_inline)) void decode_frame(struct sotto_dec *d, const fx_fparams_t *p, int run,
+                                                               short speech[SOTTO_SAMPLES_PER_FRAME]) {
+  int h;
+  dframe_t f;
+  FX_PROF(10, 1);
+  unpack(d, p, &f);
+  FX_PROF(10, 0);
+  for (h = 0; h < 2; h++) f.g[h] = conceal_gain(run, h);
+  if (d->n == 0) memset(speech, 0, SOTTO_SAMPLES_PER_FRAME * sizeof(short));
+  else synth_pair(d, &d->prev, &f, speech);
+  d->prev = f;
+  d->n++;
+}
+
 void sotto_decode(struct sotto_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
                   short speech[SOTTO_SAMPLES_PER_FRAME]) {
-  int h;
   const unsigned char *b = in;
+  fx_fparams_t p;
   if (good) {
     memcpy(d->last, in, SOTTO_BYTES_PER_FRAME);
     d->have_last = 1;
@@ -377,17 +402,14 @@ void sotto_decode(struct sotto_dec *d, const unsigned char in[SOTTO_BYTES_PER_FR
     d->run++;
     if (d->have_last) b = d->last;
   }
-  dframe_t f;
   memcpy(d->info.b2, b, SOTTO_BYTES_PER_FRAME);
   d->info.run = d->run;
-  FX_PROF(10, 1);
-  unpack(d, b, &f);
-  FX_PROF(10, 0);
-  for (h = 0; h < 2; h++) f.g[h] = conceal_gain(d->run, h);
-  if (d->n == 0) memset(speech, 0, SOTTO_SAMPLES_PER_FRAME * sizeof(short));
-  else synth_pair(d, &d->prev, &f, speech);
-  d->prev = f;
-  d->n++;
+  bits_to_params(b, &p);
+  decode_frame(d, &p, d->run, speech);
+}
+
+void sotto_dec_frame(struct sotto_dec *d, const fx_fparams_t *p, int run, short speech[SOTTO_SAMPLES_PER_FRAME]) {
+  decode_frame(d, p, run, speech);
 }
 
 void sotto_dec_flush(struct sotto_dec *d, short speech[SOTTO_SAMPLES_PER_FRAME]) {
