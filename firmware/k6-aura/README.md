@@ -243,6 +243,14 @@ after the reset line. With `--manual`, start with the K6 off and power it on (no
 Without an answer, the window passes and the pager boots again, so a missed window costs
 nothing. Stop any serial listener first, because the tool needs the port.
 
+**sotto 1200 image (`out/aura-pager-lr.bin`).** build.sh also links the pager with the sotto
+1200 library (`K6_CODEC=1200 sh tools/k6_build.sh`, `-DSP_LR`): it plays magic 0xA9 messages
+(`modem.k6 send --codec 1200`), 40 ms per stored slot, so the 640-slot store holds 25.6 s and an
+XL packet carries 800 ms of speech (640 ms on air at F/1800 with 12-byte preambles, 0.8x real
+time). Both images take both kinds of packet (sync, CRC, bit-error tests); each plays only its own
+codec. M0 emulator, decode plus PWM per 20 ms: 53-61 MHz mean, 75-78 worst of 96 (three clips),
+the same as v3.7; image 119,236 B, 3.6 KB free (sotto_pager.c now at -Os, 0.1 MHz cost).
+
 **Other bit rates.** REG_72 sets the chip's bit rate (rate x 10.3244: 0x3065 = 1200,
 0x4898 = 1800, 0x50A9 = 2000, 0x60CA = 2400), and the firmware paces its reads and waits from
 the REG_72 value in force, so `--reg 72=4898` runs it at 1800. On air (2026-11-05, e904cb0,

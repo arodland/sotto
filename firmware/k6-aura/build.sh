@@ -124,3 +124,11 @@ if [ "${FULL:-1}" = 1 ]; then
   variant aura-pager "Aura + pager (all of Aura)" || echo "(all of Aura + pager doesn't fit: report only)"
 fi
 variant aura-pager-only "pager-only image (Aura drivers + VOICE MSG)" --features pager-only
+
+# The sotto 1200 image (LR=0 skips it): the same pager-only build linked with the sotto 1200
+# library (plays magic 0xA9 messages; c/k6/sotto_pager.h, SP_LR)
+if [ "${LR:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
+  K6_CODEC=1200 sh "$ROOT/tools/k6_build.sh"
+  cp "$ROOT/c/k6/build-lr/libsotto_k6.a" "$WORK/lib/libsotto_k6.a"
+  variant aura-pager-lr "pager-only image, sotto 1200" --features pager-only
+fi
