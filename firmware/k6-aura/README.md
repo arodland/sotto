@@ -100,7 +100,7 @@ MENU again; EXIT leaves the app.)
 | 4 | pre-emphasis on/off (undoes the PWM filter's -10 dB at 3 kHz) |
 | 6 | raw view: the last packet's first 16 bytes in hex, its sync and length, and its bit errors against the test message (below) |
 | 5 | 1200 / 2400 baud, D or F (F at 2400: REG_58 0x73E9, FFSK 1200/2400 Hz; untested on air) |
-| 7 | how the packet length goes into REG_5D: bytes - 1, words - 1, then two stream modes, 0xFF00 and 0xFFE0 (chip armed once, sync found in software at any bit offset, packets back to back; screen `stream`, `SYNC W`, `RS` = re-arms) |
+| 7 | how the packet length goes into REG_5D: bytes - 1 or words - 1. (Images up to 647a60e also had two stream modes, 0xFF00 and 0xFFE0; they never received on air and were compiled out to make room for REG_43 in the control-packet registers.) |
 | 8 | Re-arm delay after each packet: 40, 50, 30, 60, 20, 0, 80 ms after its end, then a per-packet sweep (`CFG rearm=`; -1 = sweep). FIFO reads are always on a timer now |
 | 9 | auto-play on/off (on by default; MENU still plays) |
 | 0 | The next receive variant (`CFG f2400= reg58= reg2b=`): REG_2B (AF receive filters) as is (0xC000), +0x0100 RX de-emphasis off, +0x0300 and the 3 kHz LPF, +0x0700 and the 300 Hz HPF, +0x0400 HPF only, +0x0500 HPF and de-emphasis. REG_58 stays 0x73E9 at F/2400. The REG_2B bits apply to D and F at any baud. On air: F/2400 never synced (REG_58 0x73E9, 0x7329, 0x73E3, 0x7FE9, 0x70E9, 0x63E9; REG_2B up to +0x0700), nor D/2400; D/1200 test message 4/16 as is, 4 with +0100, 0 with +0300, 6 with +0700 (58f1255). It was the decode watchdog, which stays off |
@@ -162,10 +162,12 @@ workaround for images before this one; it costs one packet and is harmless after
 
 **Register writes (`--reg`, experiment, not yet on air).** For settings the register list
 doesn't settle, such as 2400 baud receive, a control packet can write one FD6818 register:
-`ctl reg.wav --phy F --reg 58=73e9`. Allowed: `2b` (AF filters), `58` (FSK mode), `59` (low byte
-only: preamble and sync lengths), `5c` (CRC and scrambler), `72` (baud). The K6 refuses anything
-else. It holds up to 4 writes, applies them after its own setup on every re-arm, and prints
-`K6 REGS seq=… 2b=… 58=… 59=… 5c=… 5d=… 72=… poke=N` as read back from the chip. Like a PHY
+`ctl reg.wav --phy F --reg 58=73e9`. Allowed: `2b` (AF filters), `43` (RX bandwidth, the
+wide/narrow setting Aura saved for the VFO; written back on every arm, from the image after
+647a60e), `58` (FSK mode), `59` (low byte only: preamble and sync lengths), `5c` (CRC and
+scrambler), `72` (baud). The K6 refuses anything else. It holds up to 4 writes, applies them after
+its own setup on every re-arm, and prints `K6 REGS seq=… 43=… 2b=… 58=… 59=… 5c=… 5d=… 72=…
+poke=N` as read back from the chip (43 from the image after 647a60e). Like a PHY
 change, the writes are undone after 60 s without a good packet, and by a key press. `--reg 0=0`
 drops them all, and `--action regs` only prints the registers. On air (2026-11-04) the K6
 didn't sync on replays of its own F/2400 or D/2400 bursts, which decode on the PC, so the 2400

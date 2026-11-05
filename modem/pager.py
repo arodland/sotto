@@ -152,8 +152,8 @@ CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, 
             "idlekeep": 128}
 CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 5}
 # registers action "reg" may write (the K6 refuses others): AF filters, FSK mode, FSK control
-# (low byte only), CRC/scrambler, baud
-CTL_REGS = (0x2B, 0x58, 0x59, 0x5C, 0x72)
+# (low byte only), CRC/scrambler, baud, and (images after 647a60e) the RX bandwidth REG_43
+CTL_REGS = (0x2B, 0x43, 0x58, 0x59, 0x5C, 0x72)
 
 
 def control_record(seq, settings=None, action="none"):
