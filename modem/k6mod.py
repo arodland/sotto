@@ -130,3 +130,17 @@ def parse(payload):
     if d[0] != MAGIC or pager.crc16_ccitt(d[:-2]) != struct.unpack(">H", d[-2:])[0]:
         return None
     return d[1], d[2], d[3], d[4:-2]
+
+
+PLACEHOLDER = b"sotto-K6MOD-key!"     # k6_mod.c's key in an image built without K6_MOD_KEY_FILE
+
+
+def key_image(data, key):
+    """A K6 image (.bin bytes) built without a key, with the key written over the placeholder."""
+    if len(key) != 16:
+        raise ValueError("want a 16-byte key")
+    n = data.count(PLACEHOLDER)
+    if n != 1:
+        raise ValueError(f"the key placeholder is in the image {n} times, want once "
+                         "(an image built with K6_MOD_KEY_FILE, or without the module loader?)")
+    return data.replace(PLACEHOLDER, bytes(key))

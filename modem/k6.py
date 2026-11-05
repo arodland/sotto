@@ -244,7 +244,8 @@ def main(argv=None):
 
     m = sub.add_parser("mod", help="a RAM module (C source) as 0xAB packets: the K6 runs it once")
     m.add_argument("output")
-    m.add_argument("source", help="module C source, e.g. c/k6/mod/hello.c (entry: int k6_main(const k6_api_t *))")
+    m.add_argument("source", help="module C source, e.g. c/k6/mod/hello.c (entry: int k6_main(const k6_api_t *)), "
+                                  "or its built code (.bin, k6_main first, as the firmware CI artifact's mod-hello.bin)")
     _tx_opts(m)
     m.add_argument("--key-file", required=True, help="the 16-byte key the K6 image was built with (modkey)")
     m.add_argument("--serial", type=int, help="must be newer than the last module the K6 ran this boot "
@@ -255,6 +256,10 @@ def main(argv=None):
     m.add_argument("--copies", type=int, default=1, help="send every chunk this many times")
     mk = sub.add_parser("modkey", help="make a random module key file (32 hex digits, mode 600)")
     mk.add_argument("path")
+    ki = sub.add_parser("keyimage", help="write a module key into a K6 image built without one (e.g. CI's)")
+    ki.add_argument("input", help="aura-pager-*.bin")
+    ki.add_argument("output")
+    ki.add_argument("--key-file", required=True)
 
     b = sub.add_parser("bootdump", help="K6 BOOT lines in a serial log (after ctl --action boot) -> "
                                         "8 KB bootloader image; Baofeng's code, keep it on your machine")
@@ -347,9 +352,20 @@ def main(argv=None):
         log(f"wrote {a.path}; build the K6 image with K6_MOD_KEY_FILE={a.path}")
         return 0
 
+    if a.cmd == "keyimage":
+        from . import k6mod
+        data = k6mod.key_image(open(a.input, "rb").read(), k6mod.read_key(a.key_file))
+        with open(a.output, "wb") as f:
+            f.write(data)
+        log(f"wrote {a.output}: {len(data)} bytes with the key in place; keep it on this machine")
+        return 0
+
     if a.cmd == "mod":
         from . import k6mod
-        code, entry = k6mod.build(a.source)
+        if a.source.endswith(".bin"):
+            code, entry = open(a.source, "rb").read(), 0     # module.ld puts k6_main first
+        else:
+            code, entry = k6mod.build(a.source)
         serial = a.serial if a.serial is not None else int(time.time())
         img = k6mod.image(code, entry, serial, k6mod.read_key(a.key_file))
         pk = k6mod.packets(img, a.xfer if a.xfer is not None else serial & 0xFF,

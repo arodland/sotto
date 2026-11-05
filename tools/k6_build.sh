@@ -10,8 +10,8 @@
 #            messages, 40 ms per slot; c/fixed/sotto_fx_lr.c at -Os) into c/k6/build-lr
 #        K6_MOD_KEY_FILE=~/.config/sotto/k6-mod.key sh tools/k6_build.sh   the RAM module loader
 #            (c/k6/k6_mod.c) accepts modules signed with that key (`python -m modem.k6 modkey`
-#            makes one). Without it the loader is built but refuses every module, which is
-#            what CI builds. A keyed library or image holds the key: keep it on your machine.
+#            makes one). Without it the loader holds a placeholder and refuses every module
+#            (CI's build) until `python -m modem.k6 keyimage` writes a key into the .bin. A keyed library or image holds the key: keep it on your machine.
 #        K6_RAMFUNC=1 sh tools/k6_build.sh   puts fx_oa_block (0.8 KB, the decoder's hottest
 #            loop) in a .data section, which cortex-m-rt copies to RAM at boot: ~5 MHz less,
 #            0.8 KB more RAM. Off by default for the first bring-up.

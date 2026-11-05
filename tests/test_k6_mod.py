@@ -111,13 +111,13 @@ def test_not_position_independent_is_refused():
 
 # ---- the loader and the hello module on an emulated Cortex-M0 ----
 
-def _loader_elf(d):
+def _loader_elf(d, keyed=True):
     res = subprocess.run(["clang", "-print-resource-dir"], capture_output=True, text=True, check=True).stdout.strip()
     fl = ["--target=thumbv6m-none-eabi", "-mcpu=cortex-m0", "-mthumb", "-mfloat-abi=soft", "-Os", "-nostdinc",
           "-isystem", os.path.join(ROOT, "c", "fixed", "cm4", "inc"), "-isystem", os.path.join(res, "include"),
           "-ffunction-sections", "-fdata-sections", "-std=c99", "-ffreestanding", "-fno-builtin",
           "-DSOTTO_V36", "-DSOTTO_PITCH_THIRD", "-DFX_CS512_CONST", "-I" + os.path.join(ROOT, "c"),
-          "-DKM_KEY=" + ",".join(str(b) for b in KEY)]
+          *(["-DKM_KEY=" + ",".join(str(b) for b in KEY)] if keyed else [])]
     objs = []
     for src in ("c/k6/k6_mod.c", "c/k6/sotto_pager.c", "c/fixed/cm0/rt.c", "c/fixed/cm4/shim.c"):
         o = os.path.join(d, os.path.basename(src) + ".o")
@@ -132,8 +132,16 @@ def _loader_elf(d):
     return elf
 
 
+def test_key_image():
+    img = b"\0" * 100 + k6mod.PLACEHOLDER + b"\1" * 50
+    assert k6mod.key_image(img, KEY) == b"\0" * 100 + KEY + b"\1" * 50
+    with pytest.raises(ValueError):
+        k6mod.key_image(img + k6mod.PLACEHOLDER, KEY)
+
+
 @need_clang
-def test_hello_runs_from_ram_on_m0():
+@pytest.mark.parametrize("how", ["built-with-key", "keyimage", "no-key"])
+def test_hello_runs_from_ram_on_m0(how):
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
     sys.path.insert(0, os.path.join(ROOT, "c", "fixed", "cm4"))
@@ -142,8 +150,10 @@ def test_hello_runs_from_ram_on_m0():
     code, entry = k6mod.build(HELLO)
     pk = k6mod.packets(k6mod.image(code, entry, 7, KEY), 1, 128)
     with tempfile.TemporaryDirectory() as d:
-        elf = _loader_elf(d)
+        elf = _loader_elf(d, keyed=how == "built-with-key")
         sym, img = cm4.symbols(elf), cm4.flash_image(elf)
+    if how == "keyimage":           # CI's unkeyed image, keyed afterwards (modem.k6 keyimage)
+        img = k6mod.key_image(img, KEY)
     mu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_THUMB | unicorn.UC_MODE_MCLASS)
     mu.ctl_set_cpu_model(A.UC_CPU_ARM_CORTEX_M0)
     flash, ram = 0x08000000, 0x20000000
@@ -177,6 +187,9 @@ def test_hello_runs_from_ram_on_m0():
         mu.mem_write(pkt, p)
         r = call("km_packet", pkt, len(p), arena, 4096)
         rs.append(r - (1 << 32) if r & 0x80000000 else r)
+    if how == "no-key":
+        assert rs == [1] * (len(pk) - 1) + [-5] and call("km_run", arena, api) == (-100) & 0xFFFFFFFF
+        return
     assert rs == [1] * (len(pk) - 1) + [3]
     assert call("km_run", arena, api) == 0x6B
     sq = sum(i * i for i in range(1, 10001)) & 0xFFFFFFFF

@@ -127,7 +127,8 @@ bytes per frame. Raise it if the free-RAM figure leaves room.
 The pager also runs small native modules sent over the air as `0xAB` packets: signed with your
 key, held in the message store, run once from RAM, results on the serial report as `K6 MOD`
 lines. Nothing is written to flash. Build the image with `K6_MOD_KEY_FILE` pointing at your key
-(`python -m modem.k6 modkey`); without it the image refuses every module, as CI's does. Format,
+(`python -m modem.k6 modkey`), or key a CI image with `python -m modem.k6 keyimage`; an unkeyed image
+refuses every module. Format,
 security notes and the hello-world walk-through: [`docs/k6-modules.md`](../../docs/k6-modules.md).
 
 ## Control packets over the air (spec section 13)
@@ -347,6 +348,20 @@ fourth line, after `ok n bad n`. CI names the artifact `aura-pager-<commit>` and
 `--log` line carries it. With `sweep --expect-build <commit>`, nothing is transmitted until the
 K6 reports that build, and the sweep stops if the K6 reboots into another one. Images from
 before this change report no build at all.
+
+**Checking a playback without listening.** Each `K6 PLAY` line carries `pcm=` and `samples=`:
+an FNV-1a checksum of the samples the K6 decoded and played, taken before the PWM conversion,
+and how many there were. `tools/k6_pcmhash.py` rebuilds the same number on the PC. It packs the
+.sot as `modem.k6 tx` does, leaves out the packets in the line's `missing=` list, and plays the
+rest through `c/k6/pager_host_lr` (or `pager_host` for v3.7). Those are the radio's decoder C,
+built for the PC and bit-exact with it. Build them with `make -C c/k6`.
+
+```
+python3 tools/k6_pcmhash.py msg.sot --codec 1200 --payload XL --check "$(grep 'K6 PLAY' k6.txt | tail -1)"
+```
+
+`MATCH` means the radio played exactly the samples it should have. What is left for ears is
+how the codec sounds. Images from before this change print no `pcm=`.
 
 `listen` prints one line per packet:
 

@@ -54,8 +54,9 @@ counter (16 bits). The table only grows: a later level appends services and keep
 - **Signed.** A module runs only if its SipHash tag checks under the key the image was built
   with. SipHash-2-4 is a keyed MAC; forging a tag means guessing 64 bits, one transmission
   per guess.
-- **No key, no modules.** An image built without `K6_MOD_KEY_FILE` (CI's) refuses every
-  module (`r=-5`). A keyed image holds the key: don't publish it, or the key file.
+- **No key, no modules.** An image built without `K6_MOD_KEY_FILE` (CI's) holds a placeholder
+  and refuses every module (`r=-5`) until `modem.k6 keyimage` writes your key over it. A keyed
+  image holds the key: don't publish it, or the key file.
 - **Replays.** The K6 refuses a serial that isn't newer than the last module it ran since
   power-on (`r=-6`). After a reboot a recorded transmission of an old module of yours would
   run again; that's the gap a boot nonce would close later.
@@ -76,6 +77,15 @@ K6_MOD_KEY_FILE=~/.config/sotto/k6-mod.key sh firmware/k6-aura/build.sh
 python -m modem.k6 mod hello.wav c/k6/mod/hello.c --key-file ~/.config/sotto/k6-mod.key \
     --phy F --payload XL
 # key the IC-7100 and play hello.wav as for any other packet WAV
+```
+
+Without a toolchain, use the CI artifact of the *K6 pager firmware* job instead. Its images
+carry a 16-byte placeholder where the key goes, and `mod-hello.bin` is the module's built code:
+
+```sh
+python -m modem.k6 keyimage aura-pager-lr.bin keyed-lr.bin --key-file ~/.config/sotto/k6-mod.key
+# flash keyed-lr.bin
+python -m modem.k6 mod hello.wav mod-hello.bin --key-file ~/.config/sotto/k6-mod.key --phy F --payload XL
 ```
 
 The K6's serial report then shows, for a good run:

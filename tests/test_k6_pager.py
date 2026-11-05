@@ -310,3 +310,36 @@ def test_each_build_plays_only_its_codec():
         st, pcm = _run(host, pager.profile("L", codec).pack(fr, msg_id=4))
         assert int(st["total"]) == 16 and int(st["got"]) == 16, (host, codec)
         assert (len(pcm) > 0) == plays, (host, codec, len(pcm))
+
+
+def _fnv(pcm):
+    h = 2166136261
+    for b in np.asarray(pcm, "<i2").tobytes():
+        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+    return f"{h:08x}"
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+@pytest.mark.parametrize("host,codec,name,lost", [(HOST, "2400", "XL", []), (HOST_LR, "1200", "XL", []),
+                                                  (HOST_LR, "1200", "XL", [3]), (HOST_LR, "1200", "L", [1])])
+def test_pcm_hash_is_fnv_of_the_samples_played(host, codec, name, lost):
+    """pcm= (what the radio's PLAY line prints) is FNV-1a over exactly the samples played, and
+    tools/k6_pcmhash.py rebuilds it from the .sot and the missing list, MATCH or MISMATCH."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import k6_pcmhash
+    fr = b"".join(frames_of(70, seed=11))
+    pk = pager.profile(name, codec).pack(fr, msg_id=k6_pcmhash.msg_id_for(fr))
+    st, pcm = _run(host, [p for i, p in enumerate(pk) if i not in lost], xl=name == "XL")
+    assert st["pcm"] == _fnv(pcm) and int(st["samples"]) == len(pcm) > 0
+    h, n, _ = k6_pcmhash.reference(fr, codec, name, lost)
+    assert (h, n) == (st["pcm"], len(pcm))
+    with tempfile.TemporaryDirectory() as d:
+        with open(f"{d}/m.sot", "wb") as f:
+            f.write(fr)
+        miss = f"{len(lost)}" + (":" + ",".join(map(str, lost)) if lost else "")
+        line = f"K6 PLAY id=00 total=70 aborted=0 pcm={h} samples={n} missing={miss}"
+        args = [f"{d}/m.sot", "--codec", codec, "--payload", name, "--check"]
+        assert k6_pcmhash.main(args + [line]) == 0
+        assert k6_pcmhash.main(args + [line.replace(f"pcm={h}", "pcm=00000000")]) == 1

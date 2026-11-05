@@ -4,8 +4,19 @@
 #include "sotto_pager.h"
 #include <stddef.h>
 
-#ifdef KM_KEY                   /* -DKM_KEY=0x12,0x34,... (16 bytes), from tools/k6_build.sh */
-static const uint8_t key[16] = {KM_KEY};
+/* The key: -DKM_KEY=0x12,0x34,... (16 bytes, tools/k6_build.sh), or else a placeholder that
+   `python -m modem.k6 keyimage` overwrites in a built .bin (so a CI image can be keyed without
+   a toolchain). While the placeholder is there, every module is refused. Read through a
+   volatile pointer so the compiler can't fold it into the code, where keyimage couldn't
+   find it. */
+#define KM_PLACEHOLDER 's', 'o', 't', 't', 'o', '-', 'K', '6', 'M', 'O', 'D', '-', 'k', 'e', 'y', '!'
+#define X(c) (uint8_t)((c) ^ 0xFF)  /* stored inverted, so the placeholder is in the image once */
+static const uint8_t placeholder_inv[16] = {X('s'), X('o'), X('t'), X('t'), X('o'), X('-'), X('K'), X('6'),
+                                            X('M'), X('O'), X('D'), X('-'), X('k'), X('e'), X('y'), X('!')};
+#ifdef KM_KEY
+static const uint8_t key_store[16] = {KM_KEY};
+#else
+__attribute__((used)) static const uint8_t key_store[16] = {KM_PLACEHOLDER};
 #endif
 
 static km_status_t K;
@@ -52,17 +63,19 @@ static int check(const uint8_t *a, unsigned have_bytes, unsigned dl) {
   if (a[0] != 'K' || a[1] != '6' || a[2] != 'M' || a[3] != KM_ABI || a[12] > KM_LEVEL ||
       total > have_bytes || total + dl <= have_bytes || entry >= code || (entry & 1))
     return KM_BAD_HDR;
-#ifdef KM_KEY
-  if (km_siphash(key, a, KM_HDR + code) != le64(a + KM_HDR + code)) return KM_BAD_TAG;
+  {
+    const volatile uint8_t *kp = key_store;
+    uint8_t key[16];
+    int i, same = 1;
+    for (i = 0; i < 16; i++) key[i] = kp[i], same &= key[i] == (uint8_t)~placeholder_inv[i];
+    if (same) return KM_NO_KEY;
+    if (km_siphash(key, a, KM_HDR + code) != le64(a + KM_HDR + code)) return KM_BAD_TAG;
+  }
   if (serial <= K.serial) return KM_OLD;
   K.serial = serial;
   K.code_len = (uint16_t)code;
   ready = 1;
   return KM_READY;
-#else
-  (void)serial;
-  return KM_NO_KEY;
-#endif
 }
 
 int km_packet(const uint8_t *payload, int len, void *arena, unsigned arena_bytes) {
