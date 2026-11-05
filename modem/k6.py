@@ -201,7 +201,7 @@ def main(argv=None):
     k.add_argument("--action", choices=tuple(pager.CTL_ACTIONS), default="none",
                    help="play: play the stored message; clear: drop it; report: a CFG line")
     k.add_argument("--reg", metavar="ADDR=VALUE",
-                   help="write one FD6818 receive register, hex, e.g. 58=73e9 (allowed: 2b 58 59 5c 72; "
+                   help="write one FD6818 receive register, hex, e.g. 58=73e9 (allowed: 2b 43 58 59 5c 72, 43 on images after 647a60e; "
                         "59 low byte only; 0=0 drops every write); the K6 prints K6 REGS and undoes "
                         "the writes after 60 s without a good packet. --action regs only prints them")
     k.add_argument("--seq", type=int, help="0-255; the K6 applies one seq once (default: from the clock)")
