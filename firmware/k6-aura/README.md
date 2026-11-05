@@ -122,6 +122,15 @@ MENU play  PTT test
 A message holds up to 640 frames (12.8 s). `STORE_BYTES` in `src/app/pager.rs` sets that, at 6.2
 bytes per frame. Raise it if the free-RAM figure leaves room.
 
+## RAM modules over the air
+
+The pager also runs small native modules sent over the air as `0xAB` packets: signed with your
+key, held in the message store, run once from RAM, results on the serial report as `K6 MOD`
+lines. Nothing is written to flash. Build the image with `K6_MOD_KEY_FILE` pointing at your key
+(`python -m modem.k6 modkey`), or key a CI image with `python -m modem.k6 keyimage`; an unkeyed image
+refuses every module. Format,
+security notes and the hello-world walk-through: [`docs/k6-modules.md`](../../docs/k6-modules.md).
+
 ## Control packets over the air (spec section 13)
 
 The PC can change the receive settings without a key press: `python -m modem.k6 ctl` makes a

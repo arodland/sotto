@@ -160,6 +160,11 @@ enum { SP_CTL_NONE = 0, SP_CTL_PLAY = 1, SP_CTL_CLEAR = 2, SP_CTL_REPORT = 3,  /
        SP_CTL_REGS = 5 };   /* print the FSK registers */
 int sp_control(const uint8_t *payload, int len, uint8_t rec[6]);
 
+/* The PN9 whitening bytes (SP_PAYLOAD_MAX of them) and the packets' CRC-16/CCITT-FALSE, for
+   the module loader (k6_mod.c), which shares the voice packets' framing. */
+const uint8_t *sp_pn9(void);
+unsigned sp_crc16(const uint8_t *p, int n);
+
 /* Bytes of static RAM this library uses (decoder state, cos/sin table and the rest). */
 unsigned sp_static_bytes(void);
 

@@ -16,6 +16,8 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
   python -m modem.k6 fit rec.wav ic7100.json           measure the path from a flat receiver
   python -m modem.k6 tx msg.sot tx.wav --comp ic7100.json   ... and pre-compensate it
   python -m modem.k6 send msg.sot --port /dev/ttyUSB0  key the IC-7100 over CI-V and play
+  python -m modem.k6 mod hello.wav c/k6/mod/hello.c --key-file KEY --phy F --payload XL
+                                                       a RAM module the K6 runs once (modem/k6mod.py)
   python -m modem.k6 ctl ctl.wav --phy D --set phy=F frames=XL --also F
                                                        a control packet (spec 13): change the K6's
                                                        receive settings over the air, sent in D
@@ -240,6 +242,27 @@ def main(argv=None):
     k.add_argument("--also", choices="DF", help="send the same packets again in this PHY after --phy "
                                                  "(when the K6's PHY isn't known)")
 
+    m = sub.add_parser("mod", help="a RAM module (C source) as 0xAB packets: the K6 runs it once")
+    m.add_argument("output")
+    m.add_argument("source", help="module C source, e.g. c/k6/mod/hello.c (entry: int k6_main(const k6_api_t *)), "
+                                  "or its built code (.bin, k6_main first, as the firmware CI artifact's mod-hello.bin)")
+    _tx_opts(m)
+    m.add_argument("--key-file", required=True, help="the 16-byte key the K6 image was built with (modkey)")
+    m.add_argument("--serial", type=int, help="must be newer than the last module the K6 ran this boot "
+                                              "(default: the clock, in seconds)")
+    m.add_argument("--xfer", type=int, help="transfer id 0-255 (default: from the serial)")
+    m.add_argument("--only", help="send just these chunks, e.g. 0,3 (the ones a K6 MOD line says are missing); "
+                                  "keep --serial and --xfer the same as the first send")
+    m.add_argument("--copies", type=int, default=2,
+                   help="send every chunk this many times (default 2: on air 2026-11-05 a burst's first "
+                        "packet and one more were lost at level 0.3; repeats cost nothing on the K6)")
+    mk = sub.add_parser("modkey", help="make a random module key file (32 hex digits, mode 600)")
+    mk.add_argument("path")
+    ki = sub.add_parser("keyimage", help="write a module key into a K6 image built without one (e.g. CI's)")
+    ki.add_argument("input", help="aura-pager-*.bin")
+    ki.add_argument("output")
+    ki.add_argument("--key-file", required=True)
+
     b = sub.add_parser("bootdump", help="K6 BOOT lines in a serial log (after ctl --action boot) -> "
                                         "8 KB bootloader image; Baofeng's code, keep it on your machine")
     b.add_argument("log")
@@ -323,6 +346,40 @@ def main(argv=None):
         rec = pager.control_reg_record(seq, *reg) if reg else pager.control_record(seq, settings, a.action)
         log(f"control seq {seq} record {rec.hex()}: "
             f"{(len(parts) + 1) // 2 * a.copies} packets, {len(x) / a.rate:.1f} s on air")
+        return 0
+
+    if a.cmd == "modkey":
+        from . import k6mod
+        k6mod.new_key(a.path)
+        log(f"wrote {a.path}; build the K6 image with K6_MOD_KEY_FILE={a.path}")
+        return 0
+
+    if a.cmd == "keyimage":
+        from . import k6mod
+        data = k6mod.key_image(open(a.input, "rb").read(), k6mod.read_key(a.key_file))
+        with open(a.output, "wb") as f:
+            f.write(data)
+        log(f"wrote {a.output}: {len(data)} bytes with the key in place; keep it on this machine")
+        return 0
+
+    if a.cmd == "mod":
+        from . import k6mod
+        if a.source.endswith(".bin"):
+            code, entry = open(a.source, "rb").read(), 0     # module.ld puts k6_main first
+        else:
+            code, entry = k6mod.build(a.source)
+        serial = a.serial if a.serial is not None else int(time.time())
+        img = k6mod.image(code, entry, serial, k6mod.read_key(a.key_file))
+        pk = k6mod.packets(img, a.xfer if a.xfer is not None else serial & 0xFF,
+                           pager.PROFILES[a.payload].payload)
+        n = len(pk)
+        if a.only:
+            pk = [pk[int(i)] for i in a.only.split(",")]
+        x = build_audio(pk * a.copies, a, a.rate)
+        _write(a.output, x, a.rate)
+        log(f"module {a.source}: {len(code)} B code, entry +{entry}, serial {serial}, "
+            f"{len(img)} B image in {n} {a.payload} chunks; {len(pk) * a.copies} packets, "
+            f"{len(x) / a.rate:.1f} s on air")
         return 0
 
     if a.cmd == "bootdump":

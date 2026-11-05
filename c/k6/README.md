@@ -19,5 +19,9 @@ c/k6/pager_host -t                              # the calibration test packet, h
 - `k6fsk_ref.py` is a copy of the packet spec's reference packer (`k6-fsk-packet-spec.md`, project
   files `ht-survey/k6fsk/`). The tests use it to make packets.
 - `pager_host.c` is the host harness, and `bench_k6.py` is the emulator bench.
+- `k6_mod.h/.c` is the RAM module loader: signed native modules sent as `0xAB` packets land in
+  the message store and run once ([`docs/k6-modules.md`](../../docs/k6-modules.md)). `mod/hello.c`
+  is the first module, `mod/module.ld` their linker script, and `km_host.c` the loader on this
+  machine for `tests/test_k6_mod.py` (`make -C c/k6 km_host`, test key 00..0f).
 
 SPDX-License-Identifier: MIT

@@ -132,3 +132,18 @@ if [ "${LR:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
   cp "$ROOT/c/k6/build-lr/libsotto_k6.a" "$WORK/lib/libsotto_k6.a"
   variant aura-pager-lr "pager-only image, sotto 1200" --features pager-only
 fi
+
+# The hello-world RAM module's code (docs/k6-modules.md), built as modem/k6mod.py builds it, for
+# `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...` on a machine without clang.
+# Linked at two addresses: the same bytes, or it isn't position-independent.
+MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
+  -fno-builtin -nostdlib -ffunction-sections -fdata-sections -Wall -Werror -I$ROOT/c/k6"
+clang $MODF -c "$ROOT/c/k6/mod/hello.c" -o "$HERE/build/hello.o"
+for base in 0 4096; do
+  ld.lld -T "$ROOT/c/k6/mod/module.ld" --defsym MODULE_BASE=$base --gc-sections --no-undefined \
+    "$HERE/build/hello.o" -o "$HERE/build/hello-$base.elf"
+  llvm-objcopy -O binary --only-section=.text "$HERE/build/hello-$base.elf" "$HERE/build/hello-$base.bin"
+done
+cmp "$HERE/build/hello-0.bin" "$HERE/build/hello-4096.bin"
+cp "$HERE/build/hello-0.bin" "$OUT/mod-hello.bin"
+ls -l "$OUT/mod-hello.bin"
