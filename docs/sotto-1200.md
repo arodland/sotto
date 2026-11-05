@@ -1,7 +1,7 @@
 # sotto 1200: 48 bits per 40 ms for the UV-K6 pager
 
 *2026-11-05. Python reference `sim/sotto_lr.py` (`Sotto1200`), float C `c/sotto_lr.c`,
-fixed-point decoder `c/fixed/sotto_fx_lr.c`. Listening round 18 is pending.*
+fixed-point decoder `c/fixed/sotto_fx_lr.c`. Listening round 18: see below.*
 
 ## Why
 
@@ -129,6 +129,21 @@ API: `sotto_lr_enc_create` / `sotto_lr_encode` (320 samples in) / `sotto_lr_enc_
 `sotto_lr_dec_create` / `sotto_lr_decode` (one 6-byte superframe in, 320 samples out,
 `SOTTO_LR_DEC_DELAY` = 2 superframes behind) / `sotto_lr_dec_flush` (call until it returns 0).
 See `c/sotto.h`.
+
+## Listening round 18
+
+Blind A/B, original in every pair (`tools/listening/render_ab18.py`, key
+`/mnt/project-files/vocoder/listening/ab-18-key.json`), Jeff, 2026-11-05:
+
+| Pairs | sotto 1200 wins | ties | other wins |
+|---|---:|---:|---:|
+| against Codec 2 1200, clean (4) | 3 | 1 (777_m) | 0 |
+| against v3.7 at 2400, clean (3) | 0 | 3 | 0 |
+| against v3.7, 1 XL packet in 8 lost (2) | 0 | 1 (p047_f) | 1 (2428_m) |
+| null pair | | correct | |
+
+At half the rate, sotto 1200 ties v3.7 on clean speech and beats Codec 2 1200. With packet
+loss it lost one pair of two to v3.7.
 
 ## Open
 
