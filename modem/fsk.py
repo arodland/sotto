@@ -160,9 +160,13 @@ def bits_of(data):
     return np.unpackbits(np.frombuffer(bytes(data), np.uint8))
 
 
-def tone_freq(x, fs=FS, baud=1200):
+def tone_freq(x, fs=FS, baud=1200, tones=None):
     """Profile F audio -> instantaneous tone frequency (Hz), smoothed over about a bit."""
-    b = signal.firwin(int(fs / 300) | 1, [700, ffsk_tones(baud)[1] + 800], pass_zero=False, fs=fs)
+    t = tones or ffsk_tones(baud)
+    # the passband widens with the baud rate: 1200/1800 tones at 2400 baud through the
+    # 1200-baud band (700 Hz to 2.6 kHz) gave 1.5% bit errors with no noise at all
+    lo, hi = max(200.0, min(t) - 0.4 * baud), max(t) + 0.6 * baud
+    b = signal.firwin(int(fs / 300) | 1, [lo, hi], pass_zero=False, fs=fs)
     a = signal.hilbert(signal.filtfilt(b, [1.0], x))
     d = np.angle(a[1:] * np.conj(a[:-1])) * fs / (2 * np.pi)
     return np.concatenate([d[:1], d])
@@ -176,11 +180,12 @@ class Demodulator:
     profile L and 16 for profile S."""
 
     def __init__(self, profile="D", baud=1200, fs=FS, payload=64, threshold=0.7, air_sync=None,
-                 stream=False):
+                 stream=False, tones=None):
         from .pager import PREAMBLE_BYTE, SYNC
         self.profile, self.baud, self.fs, self.thr, self.payload = profile, baud, fs, threshold, payload
         self.sps = fs / baud
-        self.mark, self.space = ffsk_tones(baud)
+        self.mark, self.space = tones or ffsk_tones(baud)
+        self.tones = tones
         self.lp = signal.firwin(2 * int(round(self.sps)) + 1, 0.75 * baud, fs=fs)
         # stream framing: no preamble byte before each sync, only the last payload's end
         ref_bits = bits_of((b"" if stream else bytes([PREAMBLE_BYTE])) + (air_sync or SYNC))
@@ -193,7 +198,7 @@ class Demodulator:
         """-> NRZ-like signal, positive = bit 1 (before any inversion)."""
         x = np.asarray(x, float)
         if self.profile == "F":
-            x = (0.5 * (self.mark + self.space) - tone_freq(x, self.fs, self.baud)) / (0.5 * (self.space - self.mark))
+            x = (0.5 * (self.mark + self.space) - tone_freq(x, self.fs, self.baud, self.tones)) / (0.5 * (self.space - self.mark))
         return signal.filtfilt(self.lp, [1.0], x)
 
     def correlate(self, y):
@@ -249,7 +254,8 @@ class Demodulator:
         return out
 
 
-def receive(x, fs, profile="D", baud=1200, payload_profile=None, invert=False, stream=False):
+def receive(x, fs, profile="D", baud=1200, payload_profile=None, invert=False, stream=False,
+            tones=None):
     """Audio at any rate -> (Assembler with the messages, list of (start time s, CRC ok,
     inverted, amplitude)). The amplitude is half the eye opening measured on the preamble
     and sync, in input units (Hz for IQ input); for profile F it is relative to the tone
@@ -257,7 +263,7 @@ def receive(x, fs, profile="D", baud=1200, payload_profile=None, invert=False, s
     amplitudes match."""
     from .pager import L, Assembler
     pp = payload_profile or L
-    d = Demodulator(profile, baud, FS, pp.payload, stream=stream)
+    d = Demodulator(profile, baud, FS, pp.payload, stream=stream, tones=tones)
     y = resample(x, fs, FS)
     a = Assembler(pp)
     times = []

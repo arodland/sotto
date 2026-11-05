@@ -217,6 +217,8 @@ def main(argv=None):
     r.add_argument("--stream", action="store_true", help="the packets were sent with --stream")
     r.add_argument("--baud", type=int, choices=(1200, 2400), default=1200)
     r.add_argument("--invert", action="store_true")
+    r.add_argument("--tones", type=lambda v: tuple(float(t) for t in v.split(",")), metavar="MARK,SPACE",
+                   help="F only: the tones sent (Hz, bit 1 then bit 0), as tx --tones, e.g. 1200,1800 at --baud 2400")
     r.add_argument("--iq", type=int, metavar="RATE", help="input is complex64 IQ at RATE samples/s")
     r.add_argument("--good", help="write per-frame good flags (uint8) for c/sotto_dec")
     r.add_argument("--msg-id", type=int, help="which message to write (default: the most complete)")
@@ -283,7 +285,7 @@ def main(argv=None):
     if a.cmd == "rx":
         x, fs = _read(a.input, a.iq)
         prof = pager.PROFILES[a.payload]
-        asm, times = fsk.receive(x, fs, a.phy, a.baud, prof, a.invert, a.stream)
+        asm, times = fsk.receive(x, fs, a.phy, a.baud, prof, a.invert, a.stream, a.tones)
         good = sum(g for _, g, _, _ in times)
         invs = sum(1 for _, g, i, _ in times if g and i)
         log(f"{len(times)} packets found, {good} good, {asm.bad} bad CRC"
