@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..0513929
+index 0000000..93c3668
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2269 @@
+@@ -0,0 +1,2275 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -865,9 +865,13 @@ index 0000000..0513929
 +        ((self.reg72() as u32 * 1200 + BAUD_1200 as u32 / 2) / BAUD_1200 as u32) as u16
 +    }
 +
-+    /// 100 us ticks per byte on air, at the REG_72 rate, so every paced wait follows it
++    /// 100 us ticks per byte on air at the REG_72 rate (66.67 at 1200), rounded up, so every
++    /// paced wait follows the rate and a read by time never takes a word that isn't in yet: at
++    /// 2400 the truncated 33 (real 33.3) made the stalled-interrupt read take a word early, the
++    /// empty FIFO repeated the last one, and the rest of the packet shifted (b1f0492, 9/9 garbled)
 +    fn tpb(&self) -> usize {
-+        (TICKS_PER_BYTE as u32 * BAUD_1200 as u32 / self.reg72() as u32) as usize
++        let r = 3 * self.reg72() as u32;
++        ((200 * BAUD_1200 as u32 + r - 1) / r) as usize
 +    }
 +}
 +
@@ -1477,7 +1481,9 @@ index 0000000..0513929
 +                }
 +            }
 +            let since = now.wrapping_sub(t_read) as usize;
-+            if !timed && saw_sync && since > (irq_n + 1) * word_ticks {
++            // N + 2 word times: the interrupt is due after N, and polling it a little late must
++            // not lose the race to a read by time
++            if !timed && saw_sync && since > (irq_n + 2) * word_ticks {
 +                // the interrupt stalled: take the words that came in since the last read (the
 +                // FIFO was about empty then), which brings the level back under the threshold
 +                // so its edge comes again. One word at a time (876ba93) fell behind and
