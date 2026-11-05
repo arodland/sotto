@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..6156529
+index 0000000..18f631e
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2116 @@
+@@ -0,0 +1,2128 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -385,6 +385,15 @@ index 0000000..6156529
 +/// RF/AF receive bandwidth (Aura's wide/narrow, as saved for the VFO; the pager never sets it).
 +/// Writable by control packet to try other filter settings at 2400 baud
 +const REG_RX_BW: u8 = 0x43;
++/// Gain after the FM demodulator, <12:11> (programming guide)
++const REG_DEMOD_GAIN: u8 = 0x44;
++/// AFC: <13:11> range 2.2 kHz down to 188 Hz (x2 wide), <4> 1 = AFC off
++const REG_AFC: u8 = 0x73;
++/// <6> RX DC filter bypass, among TX bits
++const REG_DC_FILT: u8 = 0x7E;
++/// Receive registers the pager doesn't set itself but control packets may write: each is read
++/// once, then written back from that copy on every configure, so a revert undoes a write.
++const BASED: [u8; 4] = [REG_RX_BW, REG_DEMOD_GAIN, REG_AFC, REG_DC_FILT];
 +const BAUD_1200: u16 = 0x3065;
 +const BAUD_2400: u16 = 0x60CA;
 +const GAIN_D: u16 = 0x00E0;
@@ -432,7 +441,8 @@ index 0000000..6156529
 +/// the registers action 4 may write: AF filters, FSK mode, FSK control (low byte only: preamble
 +/// and sync lengths; RX/TX enable stay ours), CRC/scrambler, baud. Nothing that transmits,
 +/// tunes or changes the payload length the timed read counts on
-+const POKE_OK: [u8; 6] = [REG_AF_FILT, REG_FSK_CFG, REG_FSK_CTRL, REG_FSK_5C, REG_BAUD, REG_RX_BW];
++const POKE_OK: [u8; 9] =
++    [REG_AF_FILT, REG_FSK_CFG, REG_FSK_CTRL, REG_FSK_5C, REG_BAUD, REG_RX_BW, REG_DEMOD_GAIN, REG_AFC, REG_DC_FILT];
 +const POKE_MAX: usize = 4;
 +/// An RX-done this soon (ms) after a timed packet's last word, coming after our re-arm, is
 +/// that packet's and is dropped without another re-arm
@@ -474,7 +484,7 @@ index 0000000..6156529
 +    pub reg2b_base: Option<u16>,
 +    /// REG_43 as Aura set it for the VFO (read once, written back on every arm, so a
 +    /// control-packet write to it is undone by a revert)
-+    reg43_base: Option<u16>,
++    based: [Option<u16>; 4],
 +    /// the chip's RX invert bit (REG_59<10>), key 3 only
 +    pub invert: bool,
 +    /// payload bits inverted in software (found from the magic byte / CRC)
@@ -647,7 +657,7 @@ index 0000000..6156529
 +            baud_2400: false,
 +            f2400_var: 0,
 +            reg2b_base: None,
-+            reg43_base: None,
++            based: [None; 4],
 +            invert: false,
 +            soft_inv: false,
 +            raw: [0; 16],
@@ -879,16 +889,18 @@ index 0000000..6156529
 +            b
 +        }
 +    };
-+    let bw = match app.pager.reg43_base {
-+        Some(b) => b,
-+        None => {
-+            let b = app.radio.fd6818.reg_read(syst, REG_RX_BW);
-+            app.pager.reg43_base = Some(b);
-+            b
-+        }
-+    };
++    for (i, &r) in BASED.iter().enumerate() {
++        let v = match app.pager.based[i] {
++            Some(b) => b,
++            None => {
++                let b = app.radio.fd6818.reg_read(syst, r);
++                app.pager.based[i] = Some(b);
++                b
++            }
++        };
++        app.radio.fd6818.reg_write(syst, r, v);
++    }
 +    let fd = &mut app.radio.fd6818;
-+    fd.reg_write(syst, REG_RX_BW, bw);
 +    fd.reg_write(syst, REG_AF_FILT, base | filt_or);
 +    fd.reg_write(syst, REG_IRQ_EN, 0);
 +    fd.reg_write(syst, REG_FSK_CFG, cfg);
@@ -1702,13 +1714,13 @@ index 0000000..6156529
 +    settings_changed(app, syst);
 +}
 +
-+/// `K6 REGS seq=N 2b=.. 58=.. 59=.. 5c=.. 5d=.. 72=.. poke=N`: the FSK registers as read.
++/// `K6 REGS seq=N 43=.. 44=.. 73=.. 7e=.. 2b=.. 58=.. 59=.. 5c=.. 5d=.. 72=.. poke=N`: the FSK registers as read.
 +#[inline(never)]
 +fn report_regs(app: &mut App, syst: &mut SYST, seq: u8) {
 +    use core::fmt::Write as _;
 +    let mut s = Serial;
 +    write!(s, "K6 REGS seq={}", seq).ok();
-+    for a in [REG_RX_BW, REG_AF_FILT, REG_FSK_CFG, REG_FSK_CTRL, REG_FSK_5C, REG_FSK_LEN, REG_BAUD] {
++    for a in [REG_RX_BW, REG_DEMOD_GAIN, REG_AFC, REG_DC_FILT, REG_AF_FILT, REG_FSK_CFG, REG_FSK_CTRL, REG_FSK_5C, REG_FSK_LEN, REG_BAUD] {
 +        let v = app.radio.fd6818.reg_read(syst, a);
 +        write!(s, " {:02x}={:04x}", a, v).ok();
 +    }

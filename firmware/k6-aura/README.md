@@ -165,8 +165,12 @@ doesn't settle, such as 2400 baud receive, a control packet can write one FD6818
 `ctl reg.wav --phy F --reg 58=73e9`. Allowed: `2b` (AF filters), `43` (RX bandwidth, the
 wide/narrow setting Aura saved for the VFO; written back on every arm, from the image after
 647a60e), `58` (FSK mode), `59` (low byte only: preamble and sync lengths), `5c` (CRC and
-scrambler), `72` (baud). The K6 refuses anything else. It holds up to 4 writes, applies them after
-its own setup on every re-arm, and prints `K6 REGS seq=… 43=… 2b=… 58=… 59=… 5c=… 5d=… 72=…
+scrambler), `72` (baud), and from the image with AFC writes `44` (gain after the FM demodulator,
+bits 12:11), `73` (AFC: bits 13:11 range from 2.2 kHz down to 188 Hz, doubled in wide; bit 4
+turns AFC off) and `7e` (bit 6 bypasses the RX DC filter). Like 43, those three are read once
+and written back on every arm, so a revert undoes them. Field meanings are from the FD6818
+programming guide. The K6 refuses anything else. It holds up to 4 writes, applies them after
+its own setup on every re-arm, and prints `K6 REGS seq=… 43=… 44=… 73=… 7e=… 2b=… 58=… 59=… 5c=… 5d=… 72=…
 poke=N` as read back from the chip (43 from the image after 647a60e). Like a PHY
 change, the writes are undone after 60 s without a good packet, and by a key press. `--reg 0=0`
 drops them all, and `--action regs` only prints the registers. On air (2026-11-04) the K6
