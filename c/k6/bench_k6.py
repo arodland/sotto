@@ -64,6 +64,9 @@ def main():
     ap.add_argument('--pcm')
     ap.add_argument('--json')
     ap.add_argument('--codec', choices=('2400', '1200'), default='2400')
+    ap.add_argument('--yield-gap', action='store_true',
+                    help='with the decoder yield hook set to sp_yield_probe (builds with FX_YIELD_HOOK): '
+                         'the longest stretch of work between yields, in us at 96 MHz')
     a = ap.parse_args()
     cm0.WS = a.ws
     m = cm0.M0(a.elf)
@@ -86,9 +89,23 @@ def main():
         assert r >= 0, r
         pc.append(c)
     m.call('sp_play_start')
-    fc, out = [], b''
+    fc, out, gaps = [], b'', []
+    if a.yield_gap:
+        from unicorn import UC_HOOK_CODE
+        probe = m.sym['sp_yield_probe'] & ~1
+        last = [0]
+
+        def on_yield(uc, addr, size, ud):
+            gaps.append(m.cyc - last[0])
+            last[0] = m.cyc
+        m.mu.hook_add(UC_HOOK_CODE, on_yield, begin=probe, end=probe + 1)
+        m.call('sp_set_yield', m.sym['sp_yield_probe'] | 1)
     while True:
+        if a.yield_gap:
+            last[0] = 0                           # call() counts cycles from 0
         r, c = m.call('sp_play_pwm', pwm, 2000, a.gain, 1)
+        if a.yield_gap:
+            gaps.append(m.cyc - last[0])          # the last yield to the end of the call
         if not r:
             break
         fc.append(c)
@@ -103,6 +120,10 @@ def main():
         'stack_bytes': m.stack_used(), 'flash_bytes': len(m.img),
         'static_ram_bytes': m.call('sp_static_bytes')[0],
     }
+    if a.yield_gap:
+        gaps.sort()
+        res['yield_gap_us'] = {'max': round(gaps[-1] / 96, 1), 'p99': round(gaps[len(gaps) * 99 // 100] / 96, 1),
+                               'yields': len(gaps)}
     js = json.dumps(res, indent=1)
     print(js)
     if a.json:

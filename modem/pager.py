@@ -172,7 +172,10 @@ CTL_MAGIC = 0xA8
 CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, "vol": 64,
             "idlekeep": 128}
 CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 5, "boot": 6,
-               "reset": 7}
+               "reset": 7, "stream-on": 8, "stream-off": 9}
+# "stream-on" / "stream-off" (images with streaming): sotto 1200 messages play while their later
+# interleave groups arrive (the sotto 1200 image's default), or store then play as before; from
+# the next new message, RAM only
 # "reset" (images from db796ee): the K6 prints `K6 RESET seq=N` and reboots; tools/k6_update.py
 # catches the bootloader's ~200 ms UPDATE window after it, to flash without the side keys
 # "boot" (images after b1f0492): the K6 prints its stock bootloader (8 KB) as `K6 BOOT off=` lines,

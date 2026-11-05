@@ -281,6 +281,7 @@ void fx_oa_block(const int16_t *bin, const int16_t *re, const int16_t *im, int n
   for (i = 0; i < ns; i++) a[i] = 0;
   for (j = 0; j < nb; j++) {
     unsigned step = (unsigned)bin[j] & 511u, x = ((unsigned)bin[j] * (unsigned)n0) & 511u;
+    if ((j & 7) == 7) FX_YIELD();
     int32_t r = re[j], m = im[j];
 #ifdef FX_OA_PACKED
     const uint32_t *cs = fx_cs512();

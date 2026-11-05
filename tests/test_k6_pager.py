@@ -343,3 +343,66 @@ def test_pcm_hash_is_fnv_of_the_samples_played(host, codec, name, lost):
         args = [f"{d}/m.sot", "--codec", codec, "--payload", name, "--check"]
         assert k6_pcmhash.main(args + [line]) == 0
         assert k6_pcmhash.main(args + [line.replace(f"pcm={h}", "pcm=00000000")]) == 1
+
+
+def _stream(host, packets, halves, xl=True, store=4096):
+    """pager_host -s: playback interleaved with arrival, HALVES x 20 ms per packet"""
+    with tempfile.TemporaryDirectory() as d:
+        with open(f"{d}/p.bin", "wb") as f:
+            f.write(b"".join(packets))
+        args = [host, "-s", str(halves)] + (["-x"] if xl else []) + ["-b", str(store), f"{d}/p.bin", f"{d}/o.raw"]
+        out = subprocess.run(args, check=True, capture_output=True, text=True).stdout.split()
+        return dict(kv.split("=", 1) for kv in out), np.fromfile(f"{d}/o.raw", "<i2")
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+@pytest.mark.parametrize("name,n,lost,halves", [("XL", 1200, [], 32), ("XL", 1200, [3, 17, 40], 32),
+                                                ("XL", 1200, [], 60), ("L", 700, [5, 70], 18),
+                                                ("XL", 70, [3], 32)])
+def test_lr_stream_plays_what_store_then_play_plays(name, n, lost, halves):
+    """sotto 1200 streams by default: a message much longer than the K6's 4 KB store (1200
+    slots = 48 s, 7.5 XL groups) plays through the ring while it arrives, and every decoded
+    sample matches a store-then-play (-S) of the same packets in a store that holds it all,
+    lost packets included. Played faster than it arrives (60 halves per packet) it waits for
+    the next group instead of decoding frames that haven't come."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    prof = pager.profile(name, "1200")
+    fr = b"".join(frames_of(n, seed=5))
+    pk = [p for i, p in enumerate(prof.pack(fr, msg_id=12)) if i not in lost]
+    st, pcm = _stream(HOST_LR, pk, halves, xl=name == "XL")
+    ref_st, ref = _run(HOST_LR, pk, xl=name == "XL", store=200000)   # -S isn't needed: it fits
+    assert int(st["ring"]) == (640 if name == "XL" else 640) and int(st["overruns"]) == 0
+    assert int(st["total"]) == n and len(pcm) == n * 320
+    assert np.array_equal(pcm, ref) and st["pcm"] == ref_st["pcm"]
+    if halves > 40:
+        assert int(st["waits"]) > 0
+    elif halves == 32 and name == "XL" and n > 160:
+        assert int(st["waits"]) == 0
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+def test_lr_stream_overrun_when_the_sender_runs_far_ahead():
+    """Played 4x slower than it arrives, the ring's later groups take the place of unplayed
+    ones: counted as overruns (the audio differs then; the radio plays the newest)."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    fr = b"".join(frames_of(1200, seed=5))
+    st, _ = _stream(HOST_LR, pager.profile("XL", "1200").pack(fr, msg_id=12), 8)
+    assert int(st["overruns"]) > 0
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+def test_store_mode_still_available():
+    """-S: store then play, as before stream mode (a message longer than the store is cut)."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    fr = b"".join(frames_of(1200, seed=5))
+    pk = pager.profile("XL", "1200").pack(fr, msg_id=12)
+    with tempfile.TemporaryDirectory() as d:
+        with open(f"{d}/p.bin", "wb") as f:
+            f.write(b"".join(pk))
+        out = subprocess.run([HOST_LR, "-S", "-x", "-b", "4096", f"{d}/p.bin", f"{d}/o.raw"], check=True,
+                             capture_output=True, text=True).stdout.split()
+    st = dict(kv.split("=", 1) for kv in out)
+    assert int(st["stored"]) == 656 and int(st["total"]) == 1200

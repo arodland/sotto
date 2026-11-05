@@ -260,6 +260,42 @@ time). Both images take both kinds of packet (sync, CRC, bit-error tests); each 
 codec. M0 emulator, decode plus PWM per 20 ms: 53-61 MHz mean, 75-78 worst of 96 (three clips),
 the same as v3.7; image 119,236 B, 3.6 KB free (sotto_pager.c now at -Os, 0.1 MHz cost).
 
+**Streaming (sotto 1200 image, on by default).** A sotto 1200 message starts playing as soon as
+its first interleave group is in (8 XL packets, 6.4 s of speech, 5.1 s on air), and the radio
+keeps receiving while it plays. The 4 KB store works as a ring of 4 groups (25.6 s), so a
+message can be longer than the store. How it fits on the M0:
+
+- **Receiving while decoding.** A 20 ms frame takes 14-21 ms to decode. The RF chip's FIFO
+  holds 8 words, 71 ms at 1800 baud, with its interrupt at 3. So the decoder calls back about
+  every 0.3-1 ms of work (`sp_set_yield`; M0 emulator `bench_k6.py --yield-gap`: longest gap
+  1.1 ms). Every 2 ms that callback takes the chip's interrupt and moves the words into a
+  16-word soft FIFO. The receive code then reads them from there as if from the chip.
+- **The audio ring.** The 80 ms PWM ring is refilled wherever the receive code used to wait:
+  the wait for the next sync, the wait for FIFO words (not in a packet's last 3 words, so the
+  re-arm isn't late), and the main loop. The screen isn't redrawn while a message streams.
+- **Waiting for packets.** A frame whose group isn't in yet plays as silence without being
+  decoded (`waits=`), so the samples, and the `pcm=` checksum, match a store-then-play of the
+  same packets. `tools/k6_pcmhash.py` checks that the same way as before.
+- **Sending ahead.** A sender far ahead of playback overwrites unplayed groups (`overruns=`). A
+  pre-recorded clip sent at full speed at F/1800 (0.8x real time) stays within the ring for
+  about 70 s of speech. A live sender, paced by the speaker, never gets ahead.
+- **When the sender stops.** After 2 s with no good packet, the rest of the message plays
+  with the lost frames concealed. A short message whose first group lost a packet starts then.
+- **Keys.** While a message streams, Up and Down set the volume and MENU stops it.
+
+The PLAY line adds `stream= waits= late= overruns= yields=`. `late` counts refills more than
+70 ms apart, where the ring probably ran dry (a click, not a wrong sample). `yields` counts the
+callbacks that found the chip's interrupt pending.
+
+Control actions 8 and 9 (`modem.k6 ctl --action stream-on` / `stream-off`) switch streaming on
+or off from the next new message (RAM only, no revert). Off, the radio stores and then plays,
+with the radio not listening during playback, as before. The CFG line's `splay=` shows the
+setting. To fit the image, the boot log no longer prints the calibration blocks, and the unused
+decode watchdog is gone. The blocking playback shares the streaming code. Image 121,392 B,
+1.5 KB free. Static RAM is 10,440 B, leaving 7,280 B for the stack. The decoder's deepest frame
+is 640 B smaller, so the stack has more room than before. The overlap-add now runs 80 samples
+at a time, bit-exact.
+
 **Other bit rates.** REG_72 sets the chip's bit rate (rate x 10.3244: 0x3065 = 1200,
 0x4898 = 1800, 0x50A9 = 2000, 0x60CA = 2400), and the firmware paces its reads and waits from
 the REG_72 value in force, so `--reg 72=4898` runs it at 1800. On air (2026-11-05, e904cb0,

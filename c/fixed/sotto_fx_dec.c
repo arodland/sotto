@@ -191,6 +191,7 @@ static void min_phase(const int32_t *A, int L, uint32_t wo, uint32_t *ph) {
     for (n = 1; n <= 32; n++) {
       const int16_t *row = fx_mp_cos + (n - 1) * 63;
       fx_acc sums[4], eh, el, oh, ol, a;
+      if ((n & 7) == 0) FX_YIELD();
       fx_mp_sums(gh, gl, row, 31, 32, sums);   /* the even j, then the odd j */
       eh = sums[0], el = sums[1], oh = sums[2], ol = sums[3];
       a = (fx_acc)(G[0] + ((n & 1) ? -G[64] : G[64])) * 32768 + FX_JOIN(eh + oh, el + ol) * 2;
@@ -218,6 +219,7 @@ static void min_phase(const int32_t *A, int L, uint32_t wo, uint32_t *ph) {
       const int16_t *row = fx_mp_sin + (i - 1) * 63;
       fx_acc sums[4], eh, el, oh, ol;
       int r;
+      if ((i & 7) == 0) FX_YIELD();
       fx_mp_sums(ch, cl, row, 31, 32, sums);   /* the even n, then the odd n */
       eh = sums[0], el = sums[1], oh = sums[2], ol = sums[3];
       for (r = 0; r < 2; r++) {
@@ -247,11 +249,14 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
   int h, i, j;
   int32_t A[MAXL + 1] = {0};                 /* harmonic levels, dB Q8 */
   uint32_t phi[MAXL + 1], ph[NBIN];
+  FX_YIELD();
   if (!v && (V38 || wo < WO_MIN)) wo = WO_MIN;   /* v3.8: unvoiced noise harmonics 50 Hz apart */
   int L = (int)(0x80000000u / wo);          /* 8 (500 Hz) .. 80 */
   if (L > MAXL) L = MAXL;
-  for (h = 1; h <= L; h++)
+  for (h = 1; h <= L; h++) {
     A[h] = env_at(rk, (int32_t)(((fx_uacc)h * wo * 125) >> 22));   /* h f0, Hz Q4 */
+    if ((h & 15) == 0) FX_YIELD();
+  }
   int32_t gain = en - fx_db_power_sum(A + 1, L) + g;
   if (V38 && !v && rk_tilt(rk) < 0) gain += UV_GAIN;   /* a real fricative */
   for (h = 1; h <= L; h++) A[h] += gain;
@@ -274,9 +279,11 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
     vc = (int)(0x20000000u / wo) + 1;        /* 1 kHz / f0 + 1 */
     if (vc < 2) vc = 2;
   }
+  FX_YIELD();
   FX_PROF(11, 1);
   min_phase(A, L, wo, ph);
   FX_PROF(11, 0);
+  FX_YIELD();
   d->ex_phase += wo * NSAMP;
   for (h = 1; h <= L; h++) {
     uint32_t b = ((uint32_t)h * wo + ((uint32_t)1 << 24)) >> 25;
@@ -319,8 +326,9 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
   d->sn[NSAMP - 1] = 0;
   fx_acc a2[2] = {0, 0};
 #ifdef FX_NARROW_MUL
-  fx_acc ab[2 * NSAMP];                       /* every sum at once, harmonic by harmonic */
-  fx_oa_block(bin, re, im, nb, 512 - NSAMP + 1, 2 * NSAMP, ab);
+  /* the sums harmonic by harmonic, NSAMP samples at a time (sample i is at n = 433 + i mod
+     512): half the stack of all 160 at once (the K6's ran short), the same sums */
+  fx_acc ab[NSAMP];
 #endif
   for (i = 0; i < 2 * NSAMP; i++) {
     int n = i < NSAMP - 1 ? 512 - NSAMP + 1 + i : i - (NSAMP - 1);
@@ -330,7 +338,11 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
        each segment has an odd count, so its last pair's second sum goes unused */
 #if defined(FX_NARROW_MUL)
     (void)k, (void)n, (void)a2;
-    a = ab[i];
+    if (i % NSAMP == 0) {
+      FX_YIELD();
+      fx_oa_block(bin, re, im, nb, (512 - NSAMP + 1 + i) & 511, NSAMP, ab);
+    }
+    a = ab[i % NSAMP];
 #elif defined(FX_ARM_DSP)
     if (!(k & 1)) a2[0] = fx_oa_pair_ri(bin, ri, nb, n, &a2[1]);
     a = a2[k & 1];

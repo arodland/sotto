@@ -33,7 +33,7 @@ from modem.k6 import msg_id_for  # noqa: E402
 K6 = os.path.join(ROOT, "c", "k6")
 
 
-def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store=6144):
+def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store=200000):
     """(hash as 8 hex digits, samples, the host's status dict) for frames with the packets in
     missing left out."""
     prof = pager.profile(payload, codec)
@@ -45,7 +45,9 @@ def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store
     with tempfile.TemporaryDirectory() as d:
         with open(f"{d}/p.bin", "wb") as f:
             f.write(b"".join(pk))
-        args = [host] + (["-x"] if payload == "XL" else []) + ["-b", str(store), f"{d}/p.bin", f"{d}/o.raw"]
+        # store then play, in a store big enough for the whole message: a streaming radio decodes
+        # the same frames with the same good flags (tests/test_k6_pager.py checks it)
+        args = [host, "-S"] + (["-x"] if payload == "XL" else []) + ["-b", str(store), f"{d}/p.bin", f"{d}/o.raw"]
         out = subprocess.run(args, check=True, capture_output=True, text=True).stdout.split()
     st = dict(kv.split("=", 1) for kv in out if "=" in kv)
     return st["pcm"], int(st["samples"]), st
