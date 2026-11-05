@@ -247,3 +247,13 @@ def test_control_record_fields():
     assert pager.parse_control(pager.control_packet(9, length=64, reg=(0x58, 0x73E9)))[:6] == r[:6]
     with pytest.raises(ValueError):
         pager.control_reg_record(1, 0x30, 0)            # REG_30 (TX/RX enables): refused
+
+
+def test_boot_dump_parses_log():
+    data = bytes(range(256)) * 32
+    lines = [f"K6 BOOT off={o:04x} {data[o:o + 32].hex()}\r\n" for o in range(0, 0x2000, 32)]
+    log = "K6 CFG why=tick\r\n" + "".join(lines) + "K6 BOOT end seq=7\r\n"
+    assert pager.boot_dump(log) == data
+    with pytest.raises(ValueError):
+        pager.boot_dump("".join(lines[:-1]))
+    assert pager.control_record(7, None, "boot")[5] == 6

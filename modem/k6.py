@@ -212,6 +212,11 @@ def main(argv=None):
     k.add_argument("--also", choices="DF", help="send the same packets again in this PHY after --phy "
                                                  "(when the K6's PHY isn't known)")
 
+    b = sub.add_parser("bootdump", help="K6 BOOT lines in a serial log (after ctl --action boot) -> "
+                                        "8 KB bootloader image; Baofeng's code, keep it on your machine")
+    b.add_argument("log")
+    b.add_argument("output")
+
     r = sub.add_parser("rx", help="recording -> .sot")
     r.add_argument("input")
     r.add_argument("output", nargs="?")
@@ -283,6 +288,15 @@ def main(argv=None):
         rec = pager.control_reg_record(seq, *reg) if reg else pager.control_record(seq, settings, a.action)
         log(f"control seq {seq} record {rec.hex()}: "
             f"{(len(parts) + 1) // 2 * a.copies} packets, {len(x) / a.rate:.1f} s on air")
+        return 0
+
+    if a.cmd == "bootdump":
+        with open(a.log, errors="replace") as f:
+            data = pager.boot_dump(f.read())
+        with open(a.output, "wb") as f:
+            f.write(data)
+        print(f"{a.output}: {len(data)} bytes; reset vector {int.from_bytes(data[4:8], 'little'):#010x}, "
+              f"stack {int.from_bytes(data[0:4], 'little'):#010x}")
         return 0
 
     if a.cmd == "rx":

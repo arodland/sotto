@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..c43b3f6
+index 0000000..0513929
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2241 @@
+@@ -0,0 +1,2269 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -457,6 +457,11 @@ index 0000000..c43b3f6
 +/// register 0 drops every write); action 5: print the FSK registers (`K6 REGS`)
 +const CTL_ACT_REG: u8 = 4;
 +const CTL_ACT_REGS: u8 = 5;
++/// action 6: print the stock bootloader (flash 0x0800_0000, 8 KB) as `K6 BOOT off=.. hex` lines,
++/// read only, so the PC can work out how it enters UPDATE mode. Stays on the user's machine
++const CTL_ACT_BOOT: u8 = 6;
++const BOOT_BASE: usize = 0x0800_0000;
++const BOOT_LEN: usize = 0x2000;
 +/// the registers action 4 may write: AF filters, FSK mode, FSK control (low byte only: preamble
 +/// and sync lengths; RX/TX enable stay ours), CRC/scrambler, baud. Nothing that transmits,
 +/// tunes or changes the payload length the timed read counts on
@@ -1748,6 +1753,10 @@ index 0000000..c43b3f6
 +        return;
 +    }
 +    app.pager.ctl_seq = seq as i16;
++    if action == CTL_ACT_BOOT {
++        report_boot(seq);
++        return;
++    }
 +    if action == CTL_ACT_REG || action == CTL_ACT_REGS {
 +        if action == CTL_ACT_REG {
 +            control_poke(app, syst, mask, (val as u16) << 8 | vv as u16);
@@ -1838,6 +1847,25 @@ index 0000000..c43b3f6
 +        write!(s, " {:02x}={:04x}", a, v).ok();
 +    }
 +    report_line(format_args!(" poke={}", app.pager.poke_n));
++}
++
++/// Action 6: `K6 BOOT off=XXXX` + 32 bytes in hex per line, 256 lines (~20 KB, ~2 s at 115200),
++/// then `K6 BOOT end seq=N`
++#[inline(never)]
++fn report_boot(seq: u8) {
++    use core::fmt::Write as _;
++    let mut s = Serial;
++    let mut off = 0;
++    while off < BOOT_LEN {
++        write!(s, "K6 BOOT off={:04x} ", off).ok();
++        for i in 0..32 {
++            let b = unsafe { core::ptr::read_volatile((BOOT_BASE + off + i) as *const u8) };
++            write!(s, "{:02x}", b).ok();
++        }
++        s.write_str("\r\n").ok();
++        off += 32;
++    }
++    report_line(format_args!("K6 BOOT end seq={}", seq));
 +}
 +
 +// ---- frequency entry (#) ----

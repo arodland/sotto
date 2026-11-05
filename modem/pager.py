@@ -33,6 +33,8 @@ in software and never re-arms (the K6's key 7 stream mode).
 """
 from dataclasses import dataclass
 
+import re
+
 import numpy as np
 
 MAGIC = 0xA7
@@ -150,7 +152,10 @@ PROFILES = {"L": L, "XL": XL, "S": S}
 CTL_MAGIC = 0xA8
 CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, "vol": 64,
             "idlekeep": 128}
-CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 5}
+CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 5, "boot": 6}
+# "boot" (images after b1f0492): the K6 prints its stock bootloader (8 KB) as `K6 BOOT off=` lines,
+# read only; boot_dump() turns a serial log of them back into bytes. That image is Baofeng's code:
+# keep it on your own machine, never commit or share it
 # registers action "reg" may write (the K6 refuses others): AF filters, FSK mode, FSK control
 # (low byte only), CRC/scrambler, baud, (images after 647a60e) the RX bandwidth REG_43, and
 # (newer images) demod gain REG_44, AFC REG_73 and the RX DC filter REG_7E, then the
@@ -335,3 +340,19 @@ class Air:
         nbytes = lead + n_packets * (len(self.sync) + payload) + self._tail(baud)
         nbytes += sum(self._pre(i, baud) for i in range(n_packets))
         return nbytes * 8 / baud
+
+
+def boot_dump(text, size=0x2000):
+    """The bytes in `K6 BOOT off=XXXX <hex>` lines of a serial log (the last copy of each line
+    wins); raises if any of the `size` bytes is missing."""
+    out = bytearray(size)
+    seen = bytearray(size)
+    for m in re.finditer(r"K6 BOOT off=([0-9a-f]{4}) ([0-9a-f]+)", text):
+        off, data = int(m.group(1), 16), bytes.fromhex(m.group(2))
+        if off + len(data) <= size:
+            out[off:off + len(data)] = data
+            seen[off:off + len(data)] = b"\x01" * len(data)
+    gaps = [i for i in range(0, size, 32) if not all(seen[i:i + 32])]
+    if gaps:
+        raise ValueError(f"missing {len(gaps)} lines, first at off={gaps[0]:04x}")
+    return bytes(out)

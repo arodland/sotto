@@ -224,6 +224,13 @@ passed 7 of 28 packets, and the last 16 bytes of each failure were corrupt. With
 passed 31 of 31 (`2b=8000`, `8400`, `0400`, and `8000` with interrupt reads). FFSK at 1200 stayed
 clean (15 of 15). `--reg 2b=c000` turns it back on for 60 s.
 
+**Bootloader dump (action 6).** `modem.k6 ctl --action boot` makes the K6 print its stock
+bootloader (flash 0x0800_0000, 8 KB) on the serial report as `K6 BOOT off=` lines, about 2 s;
+`python -m modem.k6 bootdump LOG out.bin` turns a log of them back into the image. It is read
+only, and it is for finding how the bootloader enters UPDATE mode, so that a later control
+action can reboot into it without the side keys. The image is Baofeng's code: keep it on your
+own machine, never commit or share it.
+
 **Other bit rates.** REG_72 sets the chip's bit rate (rate x 10.3244: 0x3065 = 1200,
 0x4898 = 1800, 0x50A9 = 2000, 0x60CA = 2400), and the firmware paces its reads and waits from
 the REG_72 value in force, so `--reg 72=4898` runs it at 1800. On air (2026-11-05, e904cb0,
