@@ -81,7 +81,10 @@ def build_audio(payloads, a, fs):
     if getattr(a, "prime", False) and payloads:
         payloads = [payloads[0]] + list(payloads)   # the throwaway copy goes first
     # XL: 24 bytes of preamble after the first packet (see pager.Air)
-    later = getattr(a, "later_preamble", None) or (24 if a.payload == "XL" else 16)
+    # XL: 24 bytes at 1200 (timed reads: the chip's late RX-done false-syncs on less); at 1800
+    # with interrupt reads 12 was 24/24 and 8 23/24 on air (2026-11-05), so 12 there
+    xl_later = 12 if a.baud >= 1800 else 24
+    later = getattr(a, "later_preamble", None) or (xl_later if a.payload == "XL" else 16)
     first = getattr(a, "first_preamble", None) or 16
     air = pager.Air(lead_ms=a.lead_ms, preamble_bytes=0 if a.stream else first,
                     later_preamble_bytes=None if a.stream else later)
@@ -148,7 +151,8 @@ def _tx_opts(p):
                         "For tests: the K6 re-arms about 50 ms before the first sync (gap=42-53 "
                         "in every burst on 839924e), and a longer first preamble may give it room")
     p.add_argument("--later-preamble", type=int, metavar="BYTES",
-                   help="0x55 bytes before each packet after the first (default 24 for XL, 16 for L); "
+                   help="0x55 bytes before each packet after the first (default XL 12 at 1800 baud and up, "
+                        "24 below; L 16); "
                         "for tests of how short a gap the K6 still locks after")
     p.add_argument("--cw-id", metavar="CALL", help="append a Morse ID (FCC 97.119) after the data")
     p.add_argument("--cw-wpm", type=int, default=20)
