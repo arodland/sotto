@@ -261,8 +261,9 @@ codec. M0 emulator, decode plus PWM per 20 ms: 53-61 MHz mean, 75-78 worst of 96
 the same as v3.7; image 119,236 B, 3.6 KB free (sotto_pager.c now at -Os, 0.1 MHz cost).
 
 **Streaming (sotto 1200 image, on by default).** A sotto 1200 message starts playing as soon as
-its first interleave group is in (8 XL packets, 6.4 s of speech, 5.1 s on air), and the radio
-keeps receiving while it plays. The 4 KB store works as a ring of 4 groups (25.6 s), so a
+its first interleave group is in (8 XL packets, 6.4 s of speech, 5.1 s on air; sent with
+`modem.k6 tx --depth 4`, 4 packets, 2.6 s on air), and the radio keeps receiving while it
+plays. The 4 KB store works as a ring of 4 groups (25.6 s), so a
 message can be longer than the store. How it fits on the M0:
 
 - **Receiving while decoding.** A 20 ms frame takes 14-21 ms to decode. The RF chip's FIFO
