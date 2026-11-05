@@ -2,11 +2,13 @@
 
 This implements the K6 voice-pager FSK packet format, version 1 (the contract shared with
 the K6 receiver firmware; docs/k6-pager.md has the summary). A message is a .sot file: raw
-sotto v3.7 frames, 6 bytes per 20 ms.
+sotto v3.7 frames, 6 bytes per 20 ms, or sotto 1200 superframes (sotto_enc -1200), 6 bytes
+per 40 ms. Either way a "frame" here is one 6-byte slot; the magic byte says which codec.
 
 Profile L (primary), 64-byte payload, before whitening:
 
-    0       magic 0xA7 (format 1, sotto v3.7 8 kHz frames)
+    0       magic: 0xA7 (format 1, sotto v3.7 8 kHz frames, 20 ms each) or 0xA9 (sotto 1200
+            superframes, 40 ms each; docs/sotto-1200.md)
     1       msg_id
     2-3     seq, packet number, big-endian
     4-5     total frames in the message, big-endian
@@ -31,13 +33,15 @@ are off; all checking is ours. Stream framing (Air(preamble_bytes=0)): the lead-
 packet as just the sync word and the payload, back to back, for a receiver that finds the sync
 in software and never re-arms (the K6's key 7 stream mode).
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import re
 
 import numpy as np
 
-MAGIC = 0xA7
+MAGIC = 0xA7                    # sotto v3.7, 20 ms per frame
+MAGIC_1200 = 0xA9               # sotto 1200, 40 ms per frame (0xA8 is the control packet)
+CODECS = {"2400": (MAGIC, 0.020), "1200": (MAGIC_1200, 0.040)}     # magic, seconds per frame
 FRAME_BYTES = 6
 GROUP = 8                       # packets per interleave group
 SYNC = bytes([0x07, 0x6B, 0x3E, 0x36])
@@ -83,6 +87,12 @@ class Profile:
     name: str
     payload: int          # bytes per packet
     slots: int            # sotto frames per packet
+    magic: int = MAGIC    # byte 0 (L and XL): which codec the frames are
+
+    @property
+    def frame_s(self):
+        """Seconds of speech per frame."""
+        return next(t for m, t in CODECS.values() if m == self.magic)
 
     @property
     def group_frames(self):
@@ -108,7 +118,7 @@ class Profile:
         for seq in range(npk):
             body = b"".join(fr[f] if f < total else bytes(6) for f in self.packet_frames(seq))
             if self.name != "S":
-                p = bytes([MAGIC, msg_id & 0xFF]) + seq.to_bytes(2, "big") + total.to_bytes(2, "big")
+                p = bytes([self.magic, msg_id & 0xFF]) + seq.to_bytes(2, "big") + total.to_bytes(2, "big")
                 p += body
                 p += bytes(self.payload - 2 - len(p))         # L: 8 reserved bytes
             else:
@@ -123,7 +133,7 @@ class Profile:
         if len(p) != self.payload or crc16_ccitt(p[:-2]) != int.from_bytes(p[-2:], "big"):
             return None
         if self.name != "S":
-            if p[0] != MAGIC:
+            if p[0] != self.magic:
                 return None
             return dict(msg_id=p[1], seq=int.from_bytes(p[2:4], "big"),
                         total=int.from_bytes(p[4:6], "big"), last=None,
@@ -136,6 +146,15 @@ L = Profile("L", 64, 8)
 XL = Profile("XL", 128, 20)
 S = Profile("S", 16, 2)
 PROFILES = {"L": L, "XL": XL, "S": S}
+
+
+def profile(name, codec="2400"):
+    """The packet profile for a codec: "2400" (sotto v3.7) or "1200" (sotto 1200, magic 0xA9;
+    L and XL only, since profile S has no magic byte)."""
+    magic = CODECS[codec][0]
+    if name == "S" and magic != MAGIC:
+        raise ValueError("profile S carries sotto v3.7 frames only (it has no magic byte)")
+    return replace(PROFILES[name], magic=magic)
 
 
 # ---- control packets (spec section 13) ----------------------------------------------------

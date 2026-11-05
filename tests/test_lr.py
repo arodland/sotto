@@ -72,10 +72,14 @@ def run(*a):
 
 
 def c_decode(bits, good, exe):
+    return c_decode_flag(bits, good, exe, "-1200")
+
+
+def c_decode_flag(bits, good, exe, flag):
     with tempfile.TemporaryDirectory() as d:
         np.packbits(bits.astype(np.uint8), axis=1).tofile(f"{d}/b")
         np.asarray(good, np.uint8).tofile(f"{d}/g")
-        run(exe, "-1200", f"{d}/b", f"{d}/o", f"{d}/g")
+        run(exe, flag, f"{d}/b", f"{d}/o", f"{d}/g")
         return np.fromfile(f"{d}/o", "<i2").astype(float)
 
 
@@ -108,6 +112,12 @@ def test_fixed_decoders_agree_and_follow_float():
     yf = c_decode(b, good, os.path.join(C, "sotto_dec"))
     ys = [c_decode(b, good, os.path.join(C, "fixed", f"sotto_dec_fx{s}")) for s in ("", "_m0", "_arm")]
     assert np.array_equal(ys[0], ys[1]) and np.array_equal(ys[0], ys[2])     # M0 and M4 paths bit-exact
+    for s in ("", "_m0"):                # the 20 ms half calls (the K6's) give the same samples
+        assert np.array_equal(ys[0], c_decode_flag(b, good, os.path.join(C, "fixed", f"sotto_dec_fx{s}"), "-1200half"))
+    assert np.array_equal(yf, c_decode_flag(b, good, os.path.join(C, "sotto_dec"), "-1200half"))
+    for n in (1, 2, 3):
+        assert np.array_equal(c_decode(b[:n], good[:n], os.path.join(C, "fixed", "sotto_dec_fx")),
+                              c_decode_flag(b[:n], good[:n], os.path.join(C, "fixed", "sotto_dec_fx"), "-1200half"))
     # same 20 ms levels as the float decoder (its random phases differ)
     lv = lambda y: 10 * np.log10(np.mean(y.reshape(-1, 160) ** 2, 1) + 1)
     loud = lv(yf) > 30

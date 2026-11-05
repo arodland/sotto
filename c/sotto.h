@@ -151,6 +151,13 @@ SOTTO_API void sotto_lr_dec_destroy(struct sotto_lr_dec *d);
 SOTTO_API void sotto_lr_decode(struct sotto_lr_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME],
                                int good, short speech[SOTTO_LR_SAMPLES_PER_FRAME]);
 SOTTO_API int sotto_lr_dec_flush(struct sotto_lr_dec *d, short speech[SOTTO_LR_SAMPLES_PER_FRAME]);
+/* The same decoder in 20 ms halves, for a player with a 160-sample buffer: call
+ * sotto_lr_decode_half with half 0 (takes the superframe, returns its first 160 samples) and
+ * then half 1 (ignores in and good, returns the second 160); likewise sotto_lr_dec_flush_half
+ * until half 0 returns 0. The output is bit-exact with sotto_lr_decode / sotto_lr_dec_flush. */
+SOTTO_API int sotto_lr_decode_half(struct sotto_lr_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME],
+                                   int good, int half, short speech[SOTTO_SAMPLES_PER_FRAME]);
+SOTTO_API int sotto_lr_dec_flush_half(struct sotto_lr_dec *d, int half, short speech[SOTTO_SAMPLES_PER_FRAME]);
 
 #ifdef __cplusplus
 }

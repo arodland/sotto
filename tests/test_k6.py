@@ -277,3 +277,24 @@ def test_later_preamble_option_shortens_burst(tmp_path):
         assert cli(["test", str(out), "--repeat", "4", "--phy", "F", "--payload", "XL"] + extra) == 0
         lens.append(sf.info(str(out)).frames)
     assert lens[1] < lens[0]
+
+
+def test_codec_1200_magic(tmp_path, capsys):
+    """sotto 1200 packets carry magic 0xA9; each codec's profile drops the other's packets."""
+    p12, p24 = pager.profile("XL", "1200"), pager.profile("XL")
+    assert p24 == pager.XL and p12.magic == pager.MAGIC_1200 == 0xA9
+    assert (p24.frame_s, p12.frame_s) == (0.02, 0.04)
+    pk = p12.pack(VOICE, 7)
+    assert pager._whiten(pk[0])[0] == 0xA9
+    assert p12.unpack(pk[0])["msg_id"] == 7 and p24.unpack(pk[0]) is None
+    assert p12.unpack(p24.pack(VOICE, 7)[0]) is None
+    with pytest.raises(ValueError):
+        pager.profile("S", "1200")
+    sot, wav, back = (str(tmp_path / n) for n in ("m.sot", "tx.wav", "b.sot"))
+    open(sot, "wb").write(VOICE)
+    assert cli(["tx", sot, wav, "--phy", "F", "--payload", "XL", "--codec", "1200"]) == 0
+    n = len(VOICE) // 6
+    assert f"({n * 0.04:.1f} s of speech)" in capsys.readouterr().err
+    assert cli(["rx", wav, back, "--phy", "F", "--payload", "XL", "--codec", "1200"]) == 0
+    assert open(back, "rb").read() == VOICE
+    assert cli(["rx", wav, back, "--phy", "F", "--payload", "XL"]) == 1      # 2400 profile: all dropped

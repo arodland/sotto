@@ -107,14 +107,15 @@ mean PESQ-NB / ESTOI and the whole-utterance tracker. Every row except the 49-bi
   - decode is 55.0 MHz mean, 65.5 p99 and 66.9 worst, of 96 MHz. That is 11.5 ms mean and
     13.9 ms worst per 20 ms of output, the same class as v3.7.
   - Its output is bit-exact with x86.
-  - Code size of `sotto_fx_lr.o` on thumbv6m: 1,424 bytes at -Os (1,276 with
-    `-DLR_INTERP=0`, which holds and fades every loss), about 3 KB at -O2.
+  - Code size: `-DLR_INTERP=0` holds and fades every loss instead of rebuilding, for a
+    smaller image.
   - The v3.7 core is now `sotto_dec_frame` plus a bit-unpacking wrapper (`sotto_decode`),
     and the shared part is inlined into both. With `--gc-sections`, an image keeps only the
     entry points it uses. A v3.7-only K6 image grows 88 bytes (-O2). A sotto-1200-only image
-    drops `sotto_decode` (680 bytes) and adds `sotto_fx_lr.o` at -Os: on the K6 bench
-    link that is 777 bytes more than today's image (629 with `-DLR_INTERP=0`), before the
-    pager's 320-sample play path. The 988 bytes free leave about 210 for that.
+    drops `sotto_decode` (680 bytes) and adds `sotto_fx_lr.o` at -Os. With the 20 ms half
+    calls the K6 uses, the K6 bench link is 833 bytes more than today's image (701 with
+    `-DLR_INTERP=0`), before the pager's own changes. 988 bytes are free.
+  - RAM: `struct sotto_lr_dec` is 300 bytes on the M0, besides the v3.7 core's state.
 
 ## Use
 
@@ -128,7 +129,13 @@ python tools/check_lr.py CLIP.flac ... [--loss 0.1] [--dec c/fixed/sotto_dec_fx]
 API: `sotto_lr_enc_create` / `sotto_lr_encode` (320 samples in) / `sotto_lr_enc_flush`, and
 `sotto_lr_dec_create` / `sotto_lr_decode` (one 6-byte superframe in, 320 samples out,
 `SOTTO_LR_DEC_DELAY` = 2 superframes behind) / `sotto_lr_dec_flush` (call until it returns 0).
+For a player with a 160-sample buffer (the K6), `sotto_lr_decode_half` and
+`sotto_lr_dec_flush_half` give the same samples in two 20 ms halves (`sotto_dec -1200half`).
 See `c/sotto.h`.
+
+Over the air: `python -m modem.k6 tx msg.sot tx.wav --phy F --payload XL --codec 1200` sends
+sotto 1200 frames with magic 0xA9 (`modem/pager.py` `MAGIC_1200`, `profile("XL", "1200")`);
+`rx --codec 1200` decodes them.
 
 ## Listening round 18
 
@@ -148,9 +155,6 @@ Codec 2 1200.
 
 ## Open
 
-- On the K6:
-  - the firmware needs magic 0xA9 and the 320-sample play path;
-  - the softmodem needs `modem.k6 --codec 1200`.
-  - Both wait for the K6 thread's PR #49.
-  - Flash is tight: 988 bytes free. A sotto-1200-only image needs about 780 of them, and a
-    dual image doesn't fit.
+- On the K6, the firmware needs magic 0xA9 and the half-call play path (the K6 thread).
+  Flash is tight: 988 bytes free. A sotto-1200-only image needs about 830 of them, and a
+  dual image doesn't fit.
