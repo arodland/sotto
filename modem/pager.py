@@ -296,7 +296,7 @@ class Air:
     later_preamble_bytes: int | None = None
     lead_ms: float = 150.0
     tail_bytes: int = 2
-    tail_ms: float = 150.0
+    tail_ms: float = 300.0
     second_extra_ms: float = 50.0
 
     preamble_byte = PREAMBLE_BYTE
@@ -305,7 +305,8 @@ class Air:
         """0x55 bytes after the last packet: tail_ms of them, at least tail_bytes. With 2 bytes
         the K6 heard the last packet of a burst far less often than the others (2026-11-05, 3-packet
         bursts at 2400: first 50 of 76, middle 43, last 29): the PC's audio chain was still
-        playing when PTT dropped."""
+        playing when PTT dropped. With 300 ms of tail and PTT held 0.5 s after the player exits
+        it heard the last packet in 22 of 24 bursts."""
         return max(self.tail_bytes, int(np.ceil(self.tail_ms / 1000 * baud / 8)))
 
     def _extra(self, baud):

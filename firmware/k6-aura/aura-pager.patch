@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..7fc5592
+index 0000000..160b7d4
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2222 @@
+@@ -0,0 +1,2227 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -390,6 +390,11 @@ index 0000000..7fc5592
 +    (0x3F01, 0),
 +];
 +const REG_AF_FILT: u8 = 0x2B;
++/// REG_2B <14>: DC cancellation after the FM demodulator. Cleared for every PHY and baud: with it
++/// on, direct FSK at 1200 got 7 of 28 packets (the last 16 bytes corrupt); with it off, 31 of 31
++/// (2026-11-05, also with interrupt reads), and FFSK 1200 stayed clean (15/15). `--reg 2b=c000`
++/// turns it back on for 60 s.
++const AF_DC_CANCEL: u16 = 0x4000;
 +/// RF/AF receive bandwidth (Aura's wide/narrow, as saved for the VFO; the pager never sets it).
 +/// Writable by control packet to try other filter settings at 2400 baud
 +const REG_RX_BW: u8 = 0x43;
@@ -941,7 +946,7 @@ index 0000000..7fc5592
 +    let base = match known {
 +        Some(b) => b,
 +        None => {
-+            let b = app.radio.fd6818.reg_read(syst, REG_AF_FILT);
++            let b = app.radio.fd6818.reg_read(syst, REG_AF_FILT) & !AF_DC_CANCEL;
 +            app.pager.reg2b_base = Some(b);
 +            b
 +        }
