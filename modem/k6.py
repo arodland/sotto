@@ -125,12 +125,12 @@ def _tx_opts(p):
     p.add_argument("--repeat-first", action=argparse.BooleanOptionalAction, default=False,
                    help="tx/send: send the first packet again at the end (off since --prime; "
                         "2026-11-04 VE9QRP L: repeat-first 492/500, seq 1 lost)")
-    p.add_argument("--prime", action=argparse.BooleanOptionalAction, default=True,
-                   help="send a throwaway copy of the first packet before the burst (default on). "
-                        "On 839924e the K6 re-arms on an idle no-sync RX-done about 50 ms before "
-                        "the first sync (gap=42-53), and the first packet failed in 10/20 bursts; "
-                        "with the copy first, the first real packet was good in 20/20 and VE9QRP "
-                        "L arrived 500/500 (2026-11-04). Costs one packet, as --repeat-first did")
+    p.add_argument("--prime", action=argparse.BooleanOptionalAction, default=False,
+                   help="send a throwaway copy of the first packet before the burst. Only for K6 "
+                        "images before 8d4be41, which re-arm on an idle no-sync RX-done about 50 ms "
+                        "before the first sync (first packet 10/20 without it, 20/20 with it); "
+                        "8d4be41 boots with idlekeep=1 and got 20/20 and VE9QRP 500/500 without it "
+                        "(2026-11-05). Costs one packet")
     p.add_argument("--tones", type=lambda v: tuple(float(t) for t in v.split(",")), metavar="MARK,SPACE",
                    help="F only: these tones (Hz, bit 1 then bit 0) instead of the usual pair for --baud, "
                         "e.g. 1200,2400 at 1200 baud, to test the K6's tone pair and baud rate apart")
