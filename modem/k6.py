@@ -112,7 +112,7 @@ def _tx_opts(p):
     p.add_argument("--payload", choices=("L", "XL", "S"), default="L",
                    help="L: 64-byte packets, 8 frames; XL: 128-byte, 20 frames (K6 key 2); "
                         "S: 16-byte (the K6 no longer takes it)")
-    p.add_argument("--baud", type=int, choices=(1200, 2400), default=1200)
+    p.add_argument("--baud", type=int, choices=(1200, 1600, 1800, 2400), default=1200)
     p.add_argument("--stream", action="store_true",
                    help="packets back to back with only the sync word between them, no per-packet "
                         "preamble (for the K6's stream mode, key 7; about 20%% less air time)")
@@ -217,7 +217,7 @@ def main(argv=None):
     r.add_argument("--phy", choices="DF", default="D")
     r.add_argument("--payload", choices=("L", "XL", "S"), default="L")
     r.add_argument("--stream", action="store_true", help="the packets were sent with --stream")
-    r.add_argument("--baud", type=int, choices=(1200, 2400), default=1200)
+    r.add_argument("--baud", type=int, choices=(1200, 1600, 1800, 2400), default=1200)
     r.add_argument("--invert", action="store_true")
     r.add_argument("--tones", type=lambda v: tuple(float(t) for t in v.split(",")), metavar="MARK,SPACE",
                    help="F only: the tones sent (Hz, bit 1 then bit 0), as tx --tones, e.g. 1200,1800 at --baud 2400")

@@ -104,6 +104,14 @@ def test_loopback_other_tones():
     assert ok == n
 
 
+def test_loopback_intermediate_baud():
+    """1600 and 1800 baud, F with the 1200/1800 pair and D, for the K6 with REG_72 poked."""
+    for baud in (1600, 1800):
+        for phy in ("F", "D"):
+            ok, n, _, _ = _loop(phy, baud, tones=(1200.0, 1800.0) if phy == "F" else None)
+            assert ok == n, (phy, baud, ok, n)
+
+
 def test_loopback_profile_s():
     ok, n, asm, _ = _loop("D", 1200, pager.S)
     assert ok == n and asm.frames(77 & 15)[0] == VOICE      # profile S msg_id is 4 bits
