@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..5944d66
+index 0000000..77cbcc0
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2303 @@
+@@ -0,0 +1,2308 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -885,6 +885,21 @@ index 0000000..5944d66
 +        v
 +    }
 +
++    /// (REG_58, REG_72, TX gain) for the PHY and baud (before control-packet writes)
++    fn fsk_cfg(&self) -> (u16, u16, u16) {
++        if self.phy_ffsk && self.baud_2400 {
++            (self.rx2400().0, BAUD_2400, GAIN_F)
++        } else if self.phy_ffsk && self.reg72() == BAUD_1200 {
++            (CFG_F_1200, BAUD_1200, GAIN_F) // a 72=3065 write: the old F/1200 recipe
++        } else if self.phy_ffsk {
++            (CFG_F_1800, BAUD_1800, GAIN_F)
++        } else if self.baud_2400 {
++            (CFG_D_2400, BAUD_2400, GAIN_D)
++        } else {
++            (CFG_D_1200, BAUD_1200, GAIN_D)
++        }
++    }
++
 +    /// The bit rate on air, from REG_72
 +    pub fn baud(&self) -> u16 {
 +        ((self.reg72() as u32 * 1200 + BAUD_1200 as u32 / 2) / BAUD_1200 as u32) as u16
@@ -978,18 +993,8 @@ index 0000000..5944d66
 +
 +fn configure(app: &mut App, syst: &mut SYST) {
 +    let p = &app.pager;
-+    let (var58, var2b) = p.rx2400();
-+    let (cfg, baud, gain) = if p.phy_ffsk && p.baud_2400 {
-+        (var58, BAUD_2400, GAIN_F)
-+    } else if p.phy_ffsk && p.reg72() == BAUD_1200 {
-+        (CFG_F_1200, BAUD_1200, GAIN_F) // a 72=3065 write: the old F/1200 recipe
-+    } else if p.phy_ffsk {
-+        (CFG_F_1800, BAUD_1800, GAIN_F)
-+    } else if p.baud_2400 {
-+        (CFG_D_2400, BAUD_2400, GAIN_D)
-+    } else {
-+        (CFG_D_1200, BAUD_1200, GAIN_D)
-+    };
++    let var2b = p.rx2400().1;
++    let (cfg, baud, gain) = p.fsk_cfg();
 +    let len_field = p.len_field();
 +    let fifo_thr = p.fifo_thr().unwrap_or(FIFO_THR);
 +    let filt_or = var2b;
@@ -2273,7 +2278,7 @@ index 0000000..5944d66
 +        baud,
 +        p.stream() as u8,
 +        p.f2400_var,
-+        p.rx2400().0,
++        p.fsk_cfg().0, // REG_58 as written (a 58 write in force overrides it)
 +        p.reg2b_base.unwrap_or(0) | p.rx2400().1,
 +        p.invert as u8,
 +        p.soft_inv as u8,
