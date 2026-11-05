@@ -91,6 +91,11 @@ int main(int argc, char **argv) {
   } else {
     while (sp_play_frame(pcm)) fwrite(pcm, sizeof pcm[0], SP_FRAME_SAMPLES, out);
   }
+  {
+    unsigned ns;
+    uint32_t h = sp_pcm_hash(&ns);
+    printf("pcm=%08x samples=%u\n", (unsigned)h, ns);   /* the radio's PLAY line prints the same */
+  }
   fclose(out);
   return 0;
 }

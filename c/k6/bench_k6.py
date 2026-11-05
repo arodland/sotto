@@ -3,6 +3,8 @@ flash wait states), with the Cortex-M0 bench's emulator and timing model (c/fixe
 
 Usage: python c/k6/bench_k6.py c/k6/build/bench.elf IN.raw|IN.wav|IN.flac [--ws N] [--lose 3,17,...]
        [--store BYTES] [--pcm OUT.raw] [--json OUT.json]
+       python c/k6/bench_k6.py c/k6/build-lr/bench.elf IN --codec 1200   (K6_CODEC=1200 build:
+       sotto 1200, magic 0xA9, played in 20 ms halves)
 
 Encodes IN with c/fixed/sotto_enc_fx (v3.7; make -C c VARIANT=v3.7 fixed), packs the frames
 into packets with c/k6/k6fsk_ref.py (profile L), drops the --lose packets, then on the
@@ -39,11 +41,14 @@ def load_8k(path):
                           check=True, capture_output=True).stdout
 
 
-def encode(path):
+def encode(path, codec='2400'):
     pcm = load_8k(path)
     with tempfile.TemporaryDirectory() as d:
         open(f'{d}/in.raw', 'wb').write(pcm)
-        subprocess.run([os.path.join(ROOT, 'c', 'fixed', 'sotto_enc_fx'), f'{d}/in.raw', f'{d}/o.bit'], check=True)
+        # sotto 1200 has no fixed-point encoder: the float one (make -C c VARIANT=v3.7 sotto_enc)
+        enc = [os.path.join(ROOT, 'c', 'sotto_enc'), '-1200'] if codec == '1200' else \
+            [os.path.join(ROOT, 'c', 'fixed', 'sotto_enc_fx')]
+        subprocess.run(enc + [f'{d}/in.raw', f'{d}/o.bit'], check=True)
         b = open(f'{d}/o.bit', 'rb').read()
     return [b[i:i + 6] for i in range(0, len(b) - 5, 6)]
 
@@ -58,14 +63,21 @@ def main():
     ap.add_argument('--gain', type=int, default=256)
     ap.add_argument('--pcm')
     ap.add_argument('--json')
+    ap.add_argument('--codec', choices=('2400', '1200'), default='2400')
     a = ap.parse_args()
     cm0.WS = a.ws
     m = cm0.M0(a.elf)
     io = cm4.IO
     store, pkt, pwm = io + 0x10000, io + 0x100, io + 0x2000
-    frames = encode(a.input)
+    frames = encode(a.input, a.codec)
     lose = {int(x) for x in a.lose.split(',') if x}
-    packets = [p for i, p in enumerate(ref.pack_message(frames, 0x21)) if i not in lose]
+    if a.codec == '1200':
+        sys.path.insert(0, ROOT)
+        from modem import pager
+        all_pk = pager.profile('L', '1200').pack(b''.join(frames), msg_id=0x21)
+    else:
+        all_pk = ref.pack_message(frames, 0x21)
+    packets = [p for i, p in enumerate(all_pk) if i not in lose]
     nmax, _ = m.call('sp_init', store, a.store)
     pc = []
     for p in packets:
@@ -84,7 +96,7 @@ def main():
     if a.pcm:
         open(a.pcm, 'wb').write(out)
     res = {
-        'input': os.path.basename(a.input), 'frames': len(frames), 'packets': len(packets),
+        'input': os.path.basename(a.input), 'codec': a.codec, 'frames': len(frames), 'packets': len(packets),
         'lost_packets': sorted(lose), 'store_frames': nmax, 'flash_ws': a.ws,
         'play_MHz': {'mean': cm4.mhz(sum(fc) / len(fc)), 'worst': cm4.mhz(max(fc))},
         'packet_cycles': {'mean': round(sum(pc) / len(pc)), 'worst': max(pc)},

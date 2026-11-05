@@ -6,20 +6,32 @@
 #include "../sotto.h"
 #include "../fixed/fx.h"            /* FX_OA_PACKED: whether fx_cs512's 2 KB table is in RAM */
 
-/* ---- the decoder's one allocation: sotto_fx_dec.c is built with -Dcalloc=sp_calloc
-   -Dfree=sp_free, so its state lives here instead of on a heap ------------------------- */
-#define SP_DEC_MAX 864               /* sotto_fx_dec_bytes(): 836 on the M0 and x86 */
+/* ---- the decoder's allocations: sotto_fx_dec.c (and sotto_fx_lr.c) are built with
+   -Dcalloc=sp_calloc -Dfree=sp_free, so their state lives here instead of on a heap: one
+   block for v3.7 (the core), two for sotto 1200 (its own state, then the core). A bump pool,
+   emptied when every block is freed ---------------------------------------------------- */
+#define SP_DEC_CORE 864              /* sotto_fx_dec_bytes(): 836 on the M0 and x86 */
+#ifdef SP_LR
+#define SP_DEC_MAX (SP_DEC_CORE + 320)  /* + struct sotto_lr_dec (300 B on the M0) */
+#else
+#define SP_DEC_MAX SP_DEC_CORE
+#endif
 static uint32_t dec_mem[SP_DEC_MAX / 4];
-static int dec_taken;
+static unsigned dec_used, dec_blocks;
 void *sp_calloc(size_t n, size_t size);
 void sp_free(void *p);
 void *sp_calloc(size_t n, size_t size) {
-  if (dec_taken || n * size > sizeof dec_mem) return 0;
-  dec_taken = 1;
-  memset(dec_mem, 0, sizeof dec_mem);
-  return dec_mem;
+  size_t b = (n * size + 3u) & ~(size_t)3u;
+  void *p;
+  if (b > sizeof dec_mem - dec_used) return 0;
+  p = (uint8_t *)dec_mem + dec_used;
+  memset(p, 0, b);
+  dec_used += (unsigned)b, dec_blocks++;
+  return p;
 }
-void sp_free(void *p) { if (p == (void *)dec_mem) dec_taken = 0; }
+void sp_free(void *p) {
+  if (p && dec_blocks && --dec_blocks == 0) dec_used = 0;
+}
 
 /* ---- packet format v1 ------------------------------------------------------------------- */
 #define FPP_L 8                   /* frames per packet, profile L */
@@ -61,8 +73,31 @@ typedef struct {
 } store_t;
 
 static store_t S;
+#ifdef SP_LR
+static struct sotto_lr_dec *dec;
+static int play_half;               /* sotto 1200: which 20 ms half of the slot comes next */
+static int play_skip;               /* halves still to drop: the decoder's delay, silent */
+#else
 static struct sotto_dec *dec;
+#endif
 static int play_pos, play_end;
+static uint32_t pcm_hash, pcm_n;    /* FNV-1a of the samples played since sp_play_start */
+
+static void hash_pcm(const int16_t *pcm) {
+  uint32_t h = pcm_hash;
+  int i;
+  for (i = 0; i < SP_FRAME_SAMPLES; i++) {
+    unsigned v = (uint16_t)pcm[i];
+    h = (h ^ (v & 0xFF)) * 16777619u;
+    h = (h ^ (v >> 8)) * 16777619u;
+  }
+  pcm_hash = h, pcm_n += SP_FRAME_SAMPLES;
+}
+
+uint32_t sp_pcm_hash(unsigned *samples) {
+  if (samples) *samples = pcm_n;
+  return pcm_hash;
+}
 static int32_t emph1, emph2;
 
 static int bit(const uint8_t *m, int i) { return (m[i >> 3] >> (i & 7)) & 1; }
@@ -137,14 +172,14 @@ int sp_packet(const uint8_t *payload, int len) {
   if (!pn9[0]) pn9_init();
   for (i = 0; i < len; i++) last_pkt[i] = payload[i] ^ pn9[i];
   for (; i < SP_PAYLOAD_MAX; i++) last_pkt[i] = 0;
-  if (last_pkt[0] != SP_MAGIC) { S.st.bad_packets++; return SP_BAD_MAGIC; }
+  if (last_pkt[0] != SP_MAGIC && last_pkt[0] != SP_MAGIC_LR) { S.st.bad_packets++; return SP_BAD_MAGIC; }
   if (crc16(last_pkt, len - 2) != ((unsigned)last_pkt[len - 2] << 8 | last_pkt[len - 1])) {
     S.st.bad_packets++;
     return SP_BAD_CRC;
   }
   S.st.good_packets++;
   if (!S.max_frames) return SP_DUP;
-  r = packet(last_pkt, fpp_of(len), len == SP_PAYLOAD_XL ? 'X' : 'L');
+  r = packet(last_pkt, fpp_of(len), (len == SP_PAYLOAD_XL ? 'X' : 'L') | (last_pkt[0] == SP_MAGIC_LR ? 0x20 : 0));
   return r;
 }
 
@@ -153,7 +188,7 @@ int sp_check(const uint8_t *payload, int len) {
   unsigned c = 0xFFFF;
   if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return 0;
   if (!pn9[0]) pn9_init();
-  if ((payload[0] ^ pn9[0]) != SP_MAGIC) return 0;
+  if ((payload[0] ^ pn9[0]) != SP_MAGIC && (payload[0] ^ pn9[0]) != SP_MAGIC_LR) return 0;
   for (i = 0; i < len - 2; i++) {     /* the CRC as crc16(), de-whitening on the way: no copy */
     int b;
     c ^= (unsigned)(payload[i] ^ pn9[i]) << 8;
@@ -194,30 +229,70 @@ int sp_missing(uint16_t *out, int max) {
 }
 
 /* ---- playback ---------------------------------------------------------------------------- */
+#ifdef SP_LR
+#define MSG_PLAYS (S.st.profile & 0x20)       /* 'l' / 'x': a sotto 1200 message */
+#else
+#define MSG_PLAYS (!(S.st.profile & 0x20))
+#endif
+
 void sp_play_start(void) {
+#ifdef SP_LR
+  if (dec) sotto_lr_dec_destroy(dec);
+  dec = sotto_lr_dec_create();
+  play_half = 0;
+  play_skip = 2 * SOTTO_LR_DEC_DELAY;
+#else
   if (dec) sotto_dec_destroy(dec);
   dec = sotto_dec_create();
+#endif
   play_pos = 0;
-  play_end = S.st.have ? S.st.stored : 0;
+  play_end = S.st.have && MSG_PLAYS ? S.st.stored : -1;   /* -1: the other codec's message */
   emph1 = emph2 = 0;
+  pcm_hash = 2166136261u, pcm_n = 0;
+}
+
+#ifdef SP_LR
+/* sotto 1200: each 6-byte slot is 40 ms, played as two 20 ms halves (no 320-sample buffer);
+   the decoder runs SOTTO_LR_DEC_DELAY slots behind, and its flush plays the last ones */
+static int lr_half(int16_t pcm[SP_FRAME_SAMPLES]) {
+  int half = play_half;
+  if (play_pos < play_end)
+    sotto_lr_decode_half(dec, S.frames + 6 * play_pos, bit(S.good, play_pos), half, pcm);
+  else if (!sotto_lr_dec_flush_half(dec, half, pcm))
+    return 0;
+  play_half = !half;
+  if (half) play_pos++;
+  return 1;
 }
 
 int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
-  if (!dec) return 0;
+  if (!dec || play_end < 0) return 0;
+  for (;;) {
+    if (!lr_half(pcm)) return 0;
+    if (!play_skip) return hash_pcm(pcm), 1;
+    play_skip--;                  /* the first 80 ms out are the delay's silence */
+  }
+}
+#else
+int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
+  if (!dec || play_end < 0) return 0;
   if (play_pos < play_end) {
     sotto_decode(dec, S.frames + 6 * play_pos, bit(S.good, play_pos), pcm);
     play_pos++;
+    hash_pcm(pcm);
     return 1;
   }
   if (play_pos == play_end) {     /* the decoder's last 20 ms */
     sotto_dec_flush(dec, pcm);
     play_pos++;
+    hash_pcm(pcm);
     return 1;
   }
   return 0;
 }
+#endif
 
-int sp_play_pos(void) { return play_pos < play_end ? play_pos : play_end; }
+int sp_play_pos(void) { return play_end < 0 ? 0 : play_pos < play_end ? play_pos : play_end; }
 
 void sp_pcm_to_pwm(const int16_t *pcm, uint16_t *out, int n, unsigned top, int gain_q8, int emphasis) {
   int i;

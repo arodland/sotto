@@ -200,10 +200,10 @@ index 5f006e4..113eedb 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..663ae07
+index 0000000..21d373e
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2318 @@
+@@ -0,0 +1,2325 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -318,6 +318,7 @@ index 0000000..663ae07
 +        pub fn sp_play_start();
 +        pub fn sp_play_pwm(out: *mut u16, top: u32, gain_q8: i32, emphasis: i32) -> i32;
 +        pub fn sp_play_pos() -> i32;
++        pub fn sp_pcm_hash(samples: *mut u32) -> u32;
 +        pub fn sp_auto_gain_q8() -> i32;
 +        pub fn sp_test_packet(out: *mut u8);
 +        pub fn sp_control(payload: *const u8, len: i32, rec: *mut u8) -> i32;
@@ -2365,10 +2366,14 @@ index 0000000..663ae07
 +    let st = &p.status;
 +    let mut missing = [0u16; 8];
 +    let n_missing = unsafe { ffi::sp_missing(missing.as_mut_ptr(), missing.len() as i32) };
++    // a checksum of the samples decoded, before PWM: tools/k6_pcmhash.py gets the same
++    // from the PC's copy of the decoder when the radio played the right audio
++    let mut samples = 0u32;
++    let pcm = unsafe { ffi::sp_pcm_hash(&mut samples) };
 +    let mut s = Serial;
 +    write!(
 +        s,
-+        "K6 PLAY id={:02x} total={} stored={} got={} packets={}/{} played={} dec_mean_us={} dec_max_us={} ram_free={} aborted={} missing={}",
++        "K6 PLAY id={:02x} total={} stored={} got={} packets={}/{} played={} dec_mean_us={} dec_max_us={} ram_free={} aborted={} pcm={:08x} samples={} missing={}",
 +        st.msg_id,
 +        st.total,
 +        st.stored,
@@ -2380,6 +2385,8 @@ index 0000000..663ae07
 +        p.dec_max as u32 * 100,
 +        p.ram_free,
 +        p.aborted as u8,
++        pcm,
++        samples,
 +        n_missing
 +    )
 +    .ok();

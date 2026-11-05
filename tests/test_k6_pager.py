@@ -249,3 +249,97 @@ def test_control_packet_records():
     noise = bytes(np.random.default_rng(3).integers(0, 256, 64, dtype=np.uint8))
     assert [r[0] for r in run_control([SPEC_PACKET0, noise])] == ["0", "0"]
     assert pager.parse_control(pk).hex() == want and pager.parse_control(SPEC_PACKET0) is None
+
+
+HOST_LR = os.path.join(K6, "pager_host_lr")
+
+
+def _run(host, packets, xl=False, store=6144):
+    with tempfile.TemporaryDirectory() as d:
+        with open(f"{d}/p.bin", "wb") as f:
+            f.write(b"".join(packets))
+        args = [host] + (["-x"] if xl else []) + ["-b", str(store), f"{d}/p.bin", f"{d}/o.raw"]
+        out = subprocess.run(args, check=True, capture_output=True, text=True).stdout.split()
+        st = dict(kv.split("=", 1) for kv in out)
+        return st, np.fromfile(f"{d}/o.raw", "<i2")
+
+
+def _dec_lr(frames, good):
+    with tempfile.TemporaryDirectory() as d:
+        with open(f"{d}/in.bit", "wb") as f:
+            f.write(b"".join(frames))
+        np.asarray(good, np.uint8).tofile(f"{d}/good.u8")
+        subprocess.run([os.path.join(FX, "sotto_dec_fx_m0"), "-1200", f"{d}/in.bit", f"{d}/out.raw",
+                        f"{d}/good.u8"], check=True)
+        return np.fromfile(f"{d}/out.raw", "<i2")
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+@pytest.mark.parametrize("name,lost", [("L", []), ("XL", []), ("XL", [3])])
+def test_lr_pager_plays_what_the_m0_decoder_plays(name, lost):
+    """The SP_LR build (pager_host_lr) stores 0xA9 packets and plays them through the 20 ms half
+    calls bit-exactly as sotto_dec_fx_m0 -1200 decodes the same slots and good flags (the
+    decoder's 80 ms of delay dropped), with a lost packet concealed alike."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    prof = pager.profile(name, "1200")
+    fr = frames_of(70, seed=7)
+    pk = prof.pack(b"".join(fr), msg_id=9)
+    sent = [p for i, p in enumerate(pk) if i not in lost]
+    st, pcm = _run(HOST_LR, sent, xl=name == "XL")
+    good = [1] * len(fr)
+    for q in lost:
+        for f in prof.packet_frames(q):
+            if f < len(fr):
+                good[f] = 0
+    ref_pcm = _dec_lr(fr, good)
+    assert int(st["total"]) == 70 and int(st["got"]) == sum(good)
+    assert len(pcm) == len(ref_pcm) == 70 * 320
+    assert np.array_equal(pcm, ref_pcm)
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+def test_each_build_plays_only_its_codec():
+    """Both builds take both magics (good packets, stored), but the v3.7 build plays nothing of a
+    sotto 1200 message and the 1200 build nothing of a v3.7 one."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    fr = b"".join(frames_of(16, seed=3))
+    for host, codec, plays in ((HOST, "1200", False), (HOST_LR, "2400", False),
+                               (HOST, "2400", True), (HOST_LR, "1200", True)):
+        st, pcm = _run(host, pager.profile("L", codec).pack(fr, msg_id=4))
+        assert int(st["total"]) == 16 and int(st["got"]) == 16, (host, codec)
+        assert (len(pcm) > 0) == plays, (host, codec, len(pcm))
+
+
+def _fnv(pcm):
+    h = 2166136261
+    for b in np.asarray(pcm, "<i2").tobytes():
+        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+    return f"{h:08x}"
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+@pytest.mark.parametrize("host,codec,name,lost", [(HOST, "2400", "XL", []), (HOST_LR, "1200", "XL", []),
+                                                  (HOST_LR, "1200", "XL", [3]), (HOST_LR, "1200", "L", [1])])
+def test_pcm_hash_is_fnv_of_the_samples_played(host, codec, name, lost):
+    """pcm= (what the radio's PLAY line prints) is FNV-1a over exactly the samples played, and
+    tools/k6_pcmhash.py rebuilds it from the .sot and the missing list, MATCH or MISMATCH."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import k6_pcmhash
+    fr = b"".join(frames_of(70, seed=11))
+    pk = pager.profile(name, codec).pack(fr, msg_id=k6_pcmhash.msg_id_for(fr))
+    st, pcm = _run(host, [p for i, p in enumerate(pk) if i not in lost], xl=name == "XL")
+    assert st["pcm"] == _fnv(pcm) and int(st["samples"]) == len(pcm) > 0
+    h, n, _ = k6_pcmhash.reference(fr, codec, name, lost)
+    assert (h, n) == (st["pcm"], len(pcm))
+    with tempfile.TemporaryDirectory() as d:
+        with open(f"{d}/m.sot", "wb") as f:
+            f.write(fr)
+        miss = f"{len(lost)}" + (":" + ",".join(map(str, lost)) if lost else "")
+        line = f"K6 PLAY id=00 total=70 aborted=0 pcm={h} samples={n} missing={miss}"
+        args = [f"{d}/m.sot", "--codec", codec, "--payload", name, "--check"]
+        assert k6_pcmhash.main(args + [line]) == 0
+        assert k6_pcmhash.main(args + [line.replace(f"pcm={h}", "pcm=00000000")]) == 1
