@@ -195,7 +195,7 @@ def test_prime_sends_a_throwaway_first_copy(tmp_path):
 
 def test_later_preamble():
     """XL's framing: 16 bytes of 0x55 before the first packet, 24 (+ the second's extra) after."""
-    a = pager.Air(lead_ms=0, tail_bytes=0, later_preamble_bytes=24)
+    a = pager.Air(lead_ms=0, tail_bytes=0, tail_ms=0, later_preamble_bytes=24)
     raw = a.burst([bytes(128)] * 3)
     extra = a._extra(1200)
     assert len(raw) == 3 * (4 + 128) + 16 + 24 + extra + 24

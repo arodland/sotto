@@ -184,6 +184,8 @@ def main(argv=None):
     s.add_argument("--passes", type=int, default=1)
     s.add_argument("--port", help="CI-V / PTT serial port, e.g. /dev/ttyUSB0 or COM5")
     s.add_argument("--ptt", choices=("civ", "rts", "dtr", "none"), default="civ")
+    s.add_argument("--hang-ms", type=float, default=500.0,
+                   help="keep PTT on this long after the player exits (default 500; 50 cut the last packet)")
     s.add_argument("--civ-baud", type=int, default=19200)
     s.add_argument("--civ-addr", type=lambda v: int(v, 0), default=civ.IC7100)
     s.add_argument("--set-mode", action="store_true", help="switch the radio to FM-D over CI-V first")
@@ -347,7 +349,8 @@ def send(x, a, log):
             k.setup_fm_data()
         k.key(True)
         play(x, a)
-        time.sleep(0.05)
+        # the audio chain (PipeWire) may still be playing when the player exits
+        time.sleep(a.hang_ms / 1000)
     finally:
         k.close()          # always unkeys
     return 0

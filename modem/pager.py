@@ -296,9 +296,17 @@ class Air:
     later_preamble_bytes: int | None = None
     lead_ms: float = 150.0
     tail_bytes: int = 2
+    tail_ms: float = 150.0
     second_extra_ms: float = 50.0
 
     preamble_byte = PREAMBLE_BYTE
+
+    def _tail(self, baud):
+        """0x55 bytes after the last packet: tail_ms of them, at least tail_bytes. With 2 bytes
+        the K6 heard the last packet of a burst far less often than the others (2026-11-05, 3-packet
+        bursts at 2400: first 50 of 76, middle 43, last 29): the PC's audio chain was still
+        playing when PTT dropped."""
+        return max(self.tail_bytes, int(np.ceil(self.tail_ms / 1000 * baud / 8)))
 
     def _extra(self, baud):
         return int(np.ceil(self.second_extra_ms / 1000 * baud / 8))
@@ -316,13 +324,13 @@ class Air:
         p = bytes([PREAMBLE_BYTE])
         raw = p * lead + b"".join(p * self._pre(i, baud) + self.sync + bytes(x)
                                   for i, x in enumerate(payloads))
-        return raw + p * self.tail_bytes
+        return raw + p * self._tail(baud)
 
     def burst_bits(self, payloads, baud=1200):
         return np.unpackbits(np.frombuffer(self.burst(payloads, baud), np.uint8))
 
     def seconds(self, n_packets, payload=64, baud=1200):
         lead = int(np.ceil(self.lead_ms / 1000 * baud / 8))
-        nbytes = lead + n_packets * (len(self.sync) + payload) + self.tail_bytes
+        nbytes = lead + n_packets * (len(self.sync) + payload) + self._tail(baud)
         nbytes += sum(self._pre(i, baud) for i in range(n_packets))
         return nbytes * 8 / baud
