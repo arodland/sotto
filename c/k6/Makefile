@@ -4,6 +4,10 @@
 #   sh tools/k6_build.sh    libsotto_k6.a for the radio (thumbv6m, clang)
 #   km_host                 the module loader (k6_mod.c) with the test key 00..0f
 #   pager_host_lr           the same with -DSP_LR: plays sotto 1200 (magic 0xA9) messages
+#   pager_host_cbs, pager_host_lr_cbs   the same two with the codebook in (emulated) SPI flash
+#                           and not linked (-DFX_CB_SPI, sp_cb.c, flash_host.c): -F IMAGE loads it
+#   pager_host_cbi          v3.7, codebook in SPI flash, the table linked to install it (SP_CB_INSTALL)
+#   cb_image                writes the codebook image (cb_image OUT.bin) or prints its CRC (-c)
 # Always the v3.7 8 kHz core, whatever VARIANT the rest of c/ is built with: the packet
 # format's magic 0xA7 means v3.7 frames, 0xA9 sotto 1200 (on the v3.7 core).
 # SPDX-License-Identifier: MIT
@@ -11,11 +15,11 @@ CC ?= cc
 CFLAGS ?= -O2 -g -Wall -Wextra -Wno-unused-parameter
 K6FLAGS = -std=c99 -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DFX_NARROW_MUL -DFX_CHECK -I.. -DFX_CS512_CONST -DFX_YIELD_HOOK
 DECFLAGS = -Dcalloc=sp_calloc -Dfree=sp_free
-OBJS = host/sotto_pager.o host/sotto_fx_dec.o host/fx_math.o host/fx_tables.o
+OBJS = host/sotto_pager.o host/sotto_fx_dec.o host/sp_cb.o host/fx_math.o host/fx_tables.o
 
-LR_OBJS = host-lr/sotto_pager.o host-lr/sotto_fx_dec.o host-lr/sotto_fx_lr.o host/fx_math.o host/fx_tables.o
+LR_OBJS = host-lr/sotto_pager.o host-lr/sotto_fx_dec.o host-lr/sotto_fx_lr.o host/sp_cb.o host/fx_math.o host/fx_tables.o
 
-all: pager_host pager_host_lr km_host
+all: pager_host pager_host_lr km_host cb_image pager_host_cbs pager_host_lr_cbs pager_host_cbi
 km_host: host/km_host.o host/k6_mod_test.o $(OBJS)
 	$(CC) -o $@ $^
 host/k6_mod_test.o: k6_mod.c k6_mod.h sotto_pager.h
@@ -43,6 +47,40 @@ host/sotto_fx_dec.o: ../fixed/sotto_fx_dec.c ../fixed/fx.h ../fixed/fx_internal.
 host/%.o: ../fixed/%.c ../fixed/fx.h ../fixed/fx_tables.h
 	@mkdir -p host
 	$(CC) $(CFLAGS) $(K6FLAGS) -c -o $@ $<
+# the codebook in SPI flash (sp_cb.h): cb_image from the table build of sp_cb.c, its CRC into
+# host-cb/cb_crc.h for the builds without the table
+cb_image: host/cb_image.o host/sp_cb.o host/fx_tables.o
+	$(CC) -o $@ $^
+host-cb/cb_crc.h: cb_image
+	@mkdir -p host-cb
+	echo "#define SP_CB_CRC $$(./cb_image -c)" > $@
+CBFLAGS = -DFX_CB_SPI -include host-cb/cb_crc.h
+CB_SRC = sotto_pager.c sp_cb.c flash_host.c pager_host.c
+pager_host_cbs: $(CB_SRC:%.c=host-cbs/%.o) host-cbs/sotto_fx_dec.o host/fx_math.o host/fx_tables.o
+	$(CC) -o $@ $^
+pager_host_lr_cbs: $(CB_SRC:%.c=host-lrcbs/%.o) host-lrcbs/sotto_fx_dec.o host-lrcbs/sotto_fx_lr.o host/fx_math.o host/fx_tables.o
+	$(CC) -o $@ $^
+pager_host_cbi: $(CB_SRC:%.c=host-cbi/%.o) host-cbi/sotto_fx_dec.o host/fx_math.o host/fx_tables.o
+	$(CC) -o $@ $^
+host-cbs/%.o: %.c sotto_pager.h sp_cb.h host-cb/cb_crc.h
+	@mkdir -p host-cbs
+	$(CC) $(CFLAGS) $(K6FLAGS) $(CBFLAGS) -c -o $@ $<
+host-cbs/%.o: ../fixed/%.c ../fixed/fx.h ../fixed/fx_tables.h host-cb/cb_crc.h
+	@mkdir -p host-cbs
+	$(CC) $(CFLAGS) $(K6FLAGS) $(CBFLAGS) $(DECFLAGS) -c -o $@ $<
+host-lrcbs/%.o: %.c sotto_pager.h sp_cb.h host-cb/cb_crc.h
+	@mkdir -p host-lrcbs
+	$(CC) $(CFLAGS) $(K6FLAGS) $(CBFLAGS) -DSP_LR -c -o $@ $<
+host-lrcbs/%.o: ../fixed/%.c ../fixed/fx.h ../fixed/fx_tables.h ../sotto_lr_dec.inc ../sotto_lr_tables.h host-cb/cb_crc.h
+	@mkdir -p host-lrcbs
+	$(CC) $(CFLAGS) $(K6FLAGS) $(CBFLAGS) $(DECFLAGS) -DSP_LR -c -o $@ $<
+host-cbi/%.o: %.c sotto_pager.h sp_cb.h
+	@mkdir -p host-cbi
+	$(CC) $(CFLAGS) $(K6FLAGS) -DFX_CB_SPI -DSP_CB_INSTALL -c -o $@ $<
+host-cbi/%.o: ../fixed/%.c ../fixed/fx.h ../fixed/fx_tables.h
+	@mkdir -p host-cbi
+	$(CC) $(CFLAGS) $(K6FLAGS) -DFX_CB_SPI -DSP_CB_INSTALL $(DECFLAGS) -c -o $@ $<
 clean:
-	rm -rf host host-lr pager_host pager_host_lr km_host build build-lr
+	rm -rf host host-lr pager_host pager_host_lr km_host build build-lr \
+	  host-cb host-cbs host-lrcbs host-cbi cb_image pager_host_cbs pager_host_lr_cbs pager_host_cbi
 .PHONY: all clean

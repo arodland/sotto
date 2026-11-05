@@ -207,10 +207,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..40de041
+index 0000000..6c780d5
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2620 @@
+@@ -0,0 +1,2709 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -339,6 +339,11 @@ index 0000000..40de041
 +        pub fn km_run(arena: *mut u8, api: *const K6Api) -> i32;
 +        pub fn km_reset();
 +        pub fn km_status() -> *const KmStatus;
++        pub fn sp_cb_setup() -> i32;
++        pub fn sp_cb_mode() -> i32;
++        pub fn sp_cb_bench(n: u32) -> u32;
++        pub fn sp_cb_expected() -> u32;
++        pub fn sp_cb_reads() -> u32;
 +    }
 +    /// c/k6/k6_mod.h: what a RAM module can call (append-only, ABI 1)
 +    #[repr(C)]
@@ -576,6 +581,9 @@ index 0000000..40de041
 +
 +pub struct PagerState {
 +    pub chip_ok: bool,
++    /// sotto's codebook (c/k6/sp_cb.h): sp_cb_setup's result at power-on; 1 or 2 = it plays,
++    /// below 1 = no good codebook in the SPI flash, so messages are stored but not played
++    pub cb: i8,
 +    /// typing a frequency (#), in kHz like Aura's VFO entry; RAM only, never saved
 +    pub freq_entry: bool,
 +    pub phy_ffsk: bool,
@@ -766,6 +774,7 @@ index 0000000..40de041
 +    pub const fn new() -> Self {
 +        PagerState {
 +            chip_ok: false,
++            cb: 0,
 +            phy_ffsk: true, // F: the mode that works over the IC-7100's USB audio
 +            xl: false,
 +            baud_2400: false,
@@ -1026,6 +1035,85 @@ index 0000000..40de041
 +    (p - start) as u32
 +}
 +
++// ---- sotto's codebook in the SPI flash (c/k6/sp_cb.h) ----
++//
++// Built with K6_CB=spi or install (tools/k6_build.sh), the decoder reads each 20-byte codebook
++// vector from the SPI flash at 0x100000 through these three functions instead of a 30 KB table
++// in the MCU's flash. They run in the main loop only (the decoder, sp_cb_setup), like all of
++// Aura's other uses of the flash. The time spent is summed across calls (100 us ticks wrap
++// every 6.5 s, and an install takes a few seconds).
++
++static mut CB_NOR: *mut crate::drivers::norflash::NorFlash<'static> = core::ptr::null_mut();
++static mut CB_T_LAST: u16 = 0;
++static mut CB_TICKS: u32 = 0;
++
++unsafe fn cb_clock() {
++    let now = uptime::now();
++    CB_TICKS = CB_TICKS.wrapping_add(now.wrapping_sub(CB_T_LAST) as u32);
++    CB_T_LAST = now;
++}
++
++#[no_mangle]
++unsafe extern "C" fn sp_flash_read(addr: u32, buf: *mut u8, n: u32) {
++    let b = core::slice::from_raw_parts_mut(buf, n as usize);
++    if CB_NOR.is_null() {
++        b.fill(0xFF);
++    } else {
++        (*CB_NOR).read_bytes(addr, b);
++    }
++}
++
++#[no_mangle]
++unsafe extern "C" fn sp_flash_erase4k(addr: u32) {
++    cb_clock();
++    if !CB_NOR.is_null() {
++        (*CB_NOR).erase_sector(addr);
++    }
++}
++
++#[no_mangle]
++unsafe extern "C" fn sp_flash_write(addr: u32, buf: *const u8, n: u32) {
++    cb_clock();
++    if !CB_NOR.is_null() {
++        (*CB_NOR).write_bytes(addr, core::slice::from_raw_parts(buf, n as usize));
++    }
++}
++
++/// Power-on: check (and with K6_CB=install, write once) the codebook image, then time 1000
++/// random vector reads. Serial: `K6 CB r=.. mode=.. crc=.. ms=..` and `K6 CB bench ..`; the
++/// table build (mode 0) says `K6 CB r=1 mode=0` and touches no flash.
++fn cb_setup(app: &mut App) {
++    unsafe {
++        CB_NOR = &mut app.storage.norflash as *mut _;
++        CB_T_LAST = uptime::now();
++        CB_TICKS = 0;
++    }
++    let mode = unsafe { ffi::sp_cb_mode() };
++    let r = unsafe { ffi::sp_cb_setup() };
++    let dt = unsafe {
++        cb_clock();
++        CB_TICKS
++    };
++    app.pager.cb = r as i8;
++    let crc = unsafe { ffi::sp_cb_expected() };
++    report_line(format_args!("K6 CB r={} mode={} crc={:08x} ms={}.{}", r, mode, crc, dt / 10, dt % 10));
++    if mode != 0 && r > 0 {
++        const N: u32 = 1000;
++        let t0 = uptime::now();
++        let sum = unsafe { ffi::sp_cb_bench(N) };
++        let t = uptime::now().wrapping_sub(t0) as u32;
++        report_line(format_args!(
++            "K6 CB bench n={} ms={}.{} us_per_read={} sum={:08x} reads={}",
++            N,
++            t / 10,
++            t % 10,
++            t * 100 / N,
++            sum,
++            unsafe { ffi::sp_cb_reads() }
++        ));
++    }
++}
++
 +// ---- mode entry and exit ----
 +
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
@@ -1035,6 +1123,7 @@ index 0000000..40de041
 +    if app.pager.store_frames == 0 {
 +        // first entry since power-on
 +        default_freq(app);
++        cb_setup(app);
 +        app.pager.store_frames =
 +            unsafe { ffi::sp_init(addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) } as u16;
 +        app.pager.stream_play = unsafe { ffi::sp_stream() } != 0;
@@ -3261,10 +3350,10 @@ index cdfa0f7..6ca5a70 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..037b88e
+index 0000000..b0205d7
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,206 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
@@ -3422,6 +3511,8 @@ index 0000000..037b88e
 +    let mut b: TextBuf<24> = TextBuf::new();
 +    if !p.chip_ok {
 +        write!(b, "RF chip not FD6818").ok();
++    } else if p.cb < 1 {
++        write!(b, "NO CODEBOOK ({})", p.cb).ok();
 +    } else if p.last_result == i8::MIN {
 +        let how = if p.len_mode >= 2 { "stream" } else { "listening" };
 +        write!(b, "SYNC {} {}", p.last_sync as char, how).ok();

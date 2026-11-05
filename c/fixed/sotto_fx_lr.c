@@ -41,9 +41,10 @@ static void unpack(const unsigned char *b, lr_fields_t *f) {
 /* A's shape, DCT coefficients dB Q16 */
 static void a_shape(const int16_t *sa, int32_t *c) {
   int s, k;
+  int16_t cb_buf[FX_CBW];
   for (k = 0; k < NC; k++) c[k] = 0;
   for (s = 0; s < LR_NA; s++) {
-    const int16_t *y = fx_cb[s] + sa[s] * FX_CBW;
+    const int16_t *y = FX_CB_VEC(s, sa[s], cb_buf);
     for (k = 0; k < NC; k++) c[k] += (int32_t)FX_CB_VAL(y, k) * fx_cb_step[s];
   }
 }
@@ -63,7 +64,8 @@ static int e_b(int ea, int en, int de) {
 
 /* B's shape: (cA + cN) / 2 + 1.5 y = (cA + cN + 3 y) / 2 (sb < 0: no residual y) */
 static void b_shape(const int32_t *ca, const int32_t *cn, int sb, int32_t *c) {
-  const int16_t *y = fx_cb[LR_BST] + sb * FX_CBW;
+  int16_t cb_buf[FX_CBW];
+  const int16_t *y = sb >= 0 ? FX_CB_VEC(LR_BST, sb, cb_buf) : cb_buf;
   int k;
   for (k = 0; k < NC; k++)
     c[k] = fx_rshr((fx_acc)ca[k] + cn[k] + (sb >= 0 ? 3 * (int32_t)FX_CB_VAL(y, k) * fx_cb_step[LR_BST] : 0), 1);
