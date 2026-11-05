@@ -1,6 +1,7 @@
 /* sotto_dec [-16] IN.bit OUT.raw [GOOD.u8]: frames -> 8 kHz 16-bit mono raw speech.
  * -16: 16 kHz output through the v3.8 decoder (VARIANT=v3.8 build); its delay is removed too.
  * -1200: sotto 1200 superframes (40 ms each); GOOD.u8 then has one byte per superframe.
+ * -1200half: the same through the 20 ms half calls (sotto_lr_decode_half), as the K6 plays it.
  * GOOD.u8 holds one byte per frame, 0 for a frame that failed its CRC. The output is
  * aligned with the encoder input: the decoder's 20 ms of delay is removed.
  * SPDX-License-Identifier: MIT */
@@ -11,10 +12,11 @@
 int main(int argc, char **argv) {
   int k16 = argc > 1 && !strcmp(argv[1], "-16");
   argv += k16, argc -= k16;
-  int lr = argc > 1 && !strcmp(argv[1], "-1200");
+  int half = argc > 1 && !strcmp(argv[1], "-1200half");
+  int lr = half || (argc > 1 && !strcmp(argv[1], "-1200"));
   argv += lr, argc -= lr;
   if (argc != 3 && argc != 4) {
-    fprintf(stderr, "usage: %s [-16 | -1200] IN.bit OUT.raw [GOOD.u8]\n", argv[0]);
+    fprintf(stderr, "usage: %s [-16 | -1200 | -1200half] IN.bit OUT.raw [GOOD.u8]\n", argv[0]);
     return 1;
   }
   FILE *in = strcmp(argv[1], "-") ? fopen(argv[1], "rb") : stdin;
@@ -32,11 +34,23 @@ int main(int argc, char **argv) {
     while (fread(b, 1, sizeof b, in) == sizeof b) {
       int good = 1, c;
       if (gf && (c = fgetc(gf)) != EOF) good = c != 0;
-      sotto_lr_decode(d, b, good, y);
+      if (half) {
+        sotto_lr_decode_half(d, b, good, 0, y);
+        sotto_lr_decode_half(d, NULL, 0, 1, y + SOTTO_SAMPLES_PER_FRAME);
+      } else {
+        sotto_lr_decode(d, b, good, y);
+      }
       if (n++ >= SOTTO_LR_DEC_DELAY) fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME, out);
     }
-    for (; sotto_lr_dec_flush(d, y); n++)
+    for (;; n++) {
+      if (half) {
+        if (!sotto_lr_dec_flush_half(d, 0, y)) break;
+        sotto_lr_dec_flush_half(d, 1, y + SOTTO_SAMPLES_PER_FRAME);
+      } else if (!sotto_lr_dec_flush(d, y)) {
+        break;
+      }
       if (n >= SOTTO_LR_DEC_DELAY) fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME, out);
+    }
     sotto_lr_dec_destroy(d);
     return 0;
   }

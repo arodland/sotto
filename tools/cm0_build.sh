@@ -20,7 +20,7 @@ SYMS=""
 # LR=1: also the sotto 1200 decoder (fixed/sotto_fx_lr.c), for run.py --lr
 if [ -n "$LR" ]; then
   SRCS="$SRCS sotto_fx_lr"
-  SYMS="$SYMS -u sotto_lr_dec_create -u sotto_lr_decode -u sotto_lr_dec_flush"
+  SYMS="$SYMS -u sotto_lr_dec_create -u sotto_lr_decode -u sotto_lr_dec_flush -u sotto_lr_decode_half -u sotto_lr_dec_flush_half"
 fi
 if [ "${VARIANT:-v3.7}" = v3.8 ]; then
   SRCS="$SRCS sotto_fx_hiss"

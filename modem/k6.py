@@ -7,6 +7,9 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
   python -m modem.k6 tx msg.sot tx.wav --phy F --baud 2400 --payload XL --stream
                                                        fastest: FFSK 1200/2400 Hz, 128-byte packets,
                                                        no preamble between them (K6 keys 5, 2, 7)
+  python -m modem.k6 tx msg.sot tx.wav --phy F --payload XL --codec 1200
+                                                       a sotto 1200 message (sotto_enc -1200, 40 ms
+                                                       per frame, magic 0xA9): real time at F/1800
   python -m modem.k6 rx rx.wav back.sot --good g.u8    decode a recording (or our own tx.wav)
   python -m modem.k6 test test.wav                     spec test packet 0, repeated (calibration)
   python -m modem.k6 cal cal.wav                       modulation-path calibration signal
@@ -19,7 +22,8 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
                                                        (where it is now) and again in F
 
 Make .sot files with c/sotto_enc (8 kHz, 16-bit mono raw in) and play them back with
-c/sotto_dec back.sot out.raw g.u8 (the good-flag file conceals lost frames). Packet format:
+c/sotto_dec back.sot out.raw g.u8 (the good-flag file conceals lost frames); for sotto 1200,
+sotto_enc -1200 and sotto_dec -1200 with --codec 1200 here. Packet format:
 K6 voice-pager FSK packet format v1 (modem/pager.py). Setup notes: docs/k6-pager.md.
 """
 import argparse
@@ -43,7 +47,7 @@ MORSE = {"A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".", "F": "..-.",
          "7": "--...", "8": "---..", "9": "----.", "/": "-..-."}
 
 
-K6_STORE_FRAMES = 640      # the receiver firmware's default message store (12.8 s)
+K6_STORE_FRAMES = 640      # the receiver firmware's default message store (12.8 s; 25.6 s of sotto 1200)
 
 
 def cw(text, fs=fsk.FS, wpm=20, tone=800.0, level=0.4):
@@ -128,6 +132,9 @@ def _tx_opts(p):
     p.add_argument("--stream", action="store_true",
                    help="packets back to back with only the sync word between them, no per-packet "
                         "preamble (for the K6's stream mode, key 7; about 20%% less air time)")
+    p.add_argument("--codec", choices=tuple(pager.CODECS), default="2400",
+                   help="what the .sot holds: 2400 = sotto v3.7 (default), 1200 = sotto 1200 "
+                        "(sotto_enc -1200; magic 0xA9, L or XL)")
     p.add_argument("--level", type=float, default=0.5, help="peak audio, 0..1 (default 0.5)")
     p.add_argument("--invert", action="store_true", help="flip the bit polarity")
     p.add_argument("--comp", help="pre-compensate: a fit JSON, 'voice' (generic model) or 'preemph'")
@@ -158,8 +165,12 @@ def _tx_opts(p):
     p.add_argument("--cw-wpm", type=int, default=20)
 
 
+def _profile(a):
+    return pager.profile(a.payload, getattr(a, "codec", "2400"))
+
+
 def _payloads(a, frames):
-    prof = pager.PROFILES[a.payload]
+    prof = _profile(a)
     mid = a.msg_id if a.msg_id is not None else msg_id_for(frames)
     pk = prof.pack(frames, mid)
     pk = pk * a.passes
@@ -170,7 +181,7 @@ def _payloads(a, frames):
 
 def _test_payloads(a):
     frames = b"".join(bytes([f & 0xFF, f >> 8, 0x11, 0x22, 0x33, 0x44]) for f in range(70))
-    prof = pager.PROFILES[a.payload]
+    prof = _profile(a)
     pk = prof.pack(frames, 5 if a.payload == "S" else 0x42)
     return pk if a.message else [pk[0]] * a.repeat
 
@@ -240,6 +251,8 @@ def main(argv=None):
     r.add_argument("--phy", choices="DF", default="D")
     r.add_argument("--payload", choices=("L", "XL", "S"), default="L")
     r.add_argument("--stream", action="store_true", help="the packets were sent with --stream")
+    r.add_argument("--codec", choices=tuple(pager.CODECS), default="2400",
+                   help="the codec the packets carry (1200: magic 0xA9), as tx")
     r.add_argument("--baud", type=float, default=None, help="default: F 1800, D 1200, as tx")
     r.add_argument("--invert", action="store_true")
     r.add_argument("--tones", type=lambda v: tuple(float(t) for t in v.split(",")), metavar="MARK,SPACE",
@@ -270,13 +283,13 @@ def main(argv=None):
         frames = open(a.input, "rb").read()
         pk, mid = _payloads(a, frames)
         x = build_audio(pk, a, a.rate)
-        n = len(frames) // 6
+        n, fs_ = len(frames) // 6, _profile(a).frame_s
         if n > K6_STORE_FRAMES:
             log(f"warning: {n} frames is more than the K6 receiver holds by default "
-                f"({K6_STORE_FRAMES} frames, {K6_STORE_FRAMES / 50:.1f} s); split the message")
-        log(f"{n} frames ({n / 50:.1f} s of speech), msg_id {mid}, {len(pk)} packets, "
-            f"{len(x) / a.rate:.1f} s on air (profile {a.payload}, phy {a.phy}, {a.baud} baud"
-            f"{', stream' if a.stream else ''})")
+                f"({K6_STORE_FRAMES} frames, {K6_STORE_FRAMES * fs_:.1f} s); split the message")
+        log(f"{n} frames ({n * fs_:.1f} s of speech), msg_id {mid}, {len(pk)} packets, "
+            f"{len(x) / a.rate:.1f} s on air (profile {a.payload}, codec {a.codec}, phy {a.phy}, "
+            f"{a.baud} baud{', stream' if a.stream else ''})")
         if a.cmd == "tx":
             _write(a.output, x, a.rate)
             return 0
@@ -323,7 +336,7 @@ def main(argv=None):
 
     if a.cmd == "rx":
         x, fs = _read(a.input, a.iq)
-        prof = pager.PROFILES[a.payload]
+        prof = _profile(a)
         asm, times = fsk.receive(x, fs, a.phy, a.baud, prof, a.invert, a.stream, a.tones)
         good = sum(g for _, g, _, _ in times)
         invs = sum(1 for _, g, i, _ in times if g and i)
