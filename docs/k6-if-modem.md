@@ -235,9 +235,37 @@ paced by the emulated clock. Over the full 10-step run, 164 Hz off:
 - **FFSK at 44 dB-Hz:** BER 0.2-0.4% on every step.
 
 Both runs lost no counts, used 2.2 KB of stack (the K6 has 3.5 KB at a module's call), and
-kept 42% (4FSK) and 51% (FFSK) of the CPU idle. That is more CPU than the study's estimate,
-and it is the next thing to profile before the receiver can share the CPU with the sotto
-decoder.
+kept 42% (4FSK) and 51% (FFSK) of the CPU idle.
+
+**Profiled and sped up** (`python3 tests/k6_live_emu.py --module c/k6/mod/iflive.c --profile`:
+the PC sampled at jittered intervals; a fixed 256-instruction interval aliases with the
+per-count loop). Busy time, 4FSK, before:
+
+| | share of the CPU |
+|---|---|
+| the 24-tap filter, 20 samples a symbol (`sample`) | 21% |
+| counting the DMA's bytes and polling the ring | about 21% |
+| the template sums, kept running a sample (`take`) | 9% |
+| the rest (decisions, timing, AFC, PN9) | about 8% |
+
+Then:
+
+- **The filter.** The count ring is kept twice over, so the taps walk back without a mask.
+  Each tap's re and im share one word (`ifrx_g`), so it takes one load. 20 instructions a tap
+  became 13.
+- **The template sums.** These are now done twice a symbol, half way and at the end, in
+  registers, a pass a component. Before, four running sums were kept in memory for every
+  template and sample. That is no faster, but the code is smaller.
+- **The key check.** Aura scans the keypad, about 60 us. This now runs a third of the way into
+  a symbol, so it never falls on the receiver's bursts. Together with the end-of-symbol sums,
+  it had overrun the 186 us ring.
+- **Set-up.** One path now covers the receiver's first set-up and each step's, and the host's
+  statistics (`IFRX_STATS 0`) are left out of the module.
+
+Now 4FSK leaves 52% idle and FFSK 63%, with no counts lost. Over the full 10-step run (46 and 44 dB-Hz,
+164 Hz off) every step still locks, at 0.6-0.9% BER (4FSK) and 0.2-0.4% (FFSK), and the stack
+is 2.3 KB. The module is 3994 B (4FSK) and
+3846 B (FFSK) of 4072. The counting is the largest remaining cost.
 
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 

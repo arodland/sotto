@@ -28,6 +28,7 @@
 #ifndef IFRX_ONLY
 #define IFRX_ONLY 1 /* IFRX_4FSK */
 #endif
+#define IFRX_STATS 0 /* the lines carry none of them */
 #include "../k6_mod.h"
 #include "../ifrx.c"
 
@@ -190,10 +191,7 @@ IFRX_NOINLINE static int run(const k6_api_t *api, const saved_t *sv, uint8_t *rb
   r = wait_level(api, 1, WAIT_S * 1000u);
   if (r) return r;
   t0 = api->ms();
-  ifrx_zero(&g, sizeof(g) / 4);
-  gain(api, sv, 0);
-  start(rb);
-  c0 = tim();
+  goto fresh; /* the receiver is set up again once the rate is known */
   for (;;) {
     uint32_t a = avail(&g), d, cn = tim();
     d = (cn - c0) & 0xFFFF;
@@ -227,7 +225,10 @@ IFRX_NOINLINE static int run(const k6_api_t *api, const saved_t *sv, uint8_t *rb
       for (b = (uint32_t)rx.k; b--;) pn_bit(&pn, (s >> b) & 1);
     }
     g.consumed += L;
-    if (++k & 255) continue;
+    /* the key check (about 60 us: Aura scans the keypad) and the clock: every 256 counts, at a
+       sample a third into a symbol, away from the receiver's bursts half way and at the end */
+    if (++k < 256 || rx.i != IFRX_TL / 3) continue;
+    k = 0;
     if (api->key_down()) {
       r = -2;
       break;

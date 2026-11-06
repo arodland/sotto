@@ -296,8 +296,11 @@ what would settle it.
       51%. That is about twice the study's estimate, so it doesn't yet leave room for the sotto
       decoder (55-63%).
     - Buys: the live 4FSK voice pager.
-    - Settled by: a per-function profile on the emulator, then the bench's `i=` numbers.
-      Suspects are the per-count loop overhead and the 24-tap filter at 20 samples a symbol.
+    - Profiled (2026-11-06): the filter took 21%, counting and polling about 21%, the template
+      sums 9%. A mirrored ring, packed taps and moving the key check off the receiver's bursts
+      took idle to 52% (4FSK) and 63% (FFSK); docs/k6-if-modem.md has the table.
+    - Settled by: the bench's `i=` numbers. The decoder still wants about 10 more points, from
+      the counting (an unrolled loop, about 6% in `gp0dma`'s estimate).
 16. **Take a preamble's timing at the leading edge of its fit, not at its best.**
     - From: `iflive` in the emulator (2026-11-06). The 4FSK lead's fit against the clock offset
       is a plateau a third of a symbol wide. Its best fell anywhere on it, and on the late side

@@ -42,6 +42,10 @@ extern "C" {
 #define IFRX_WIN 32         /* the lead is checked in windows of this many symbols */
 #define IFRX_WIN_BAD 8      /* more misses than this in the first: no lead after all */
 
+#ifndef IFRX_STATS
+#define IFRX_STATS 1 /* 0: leave acq_off, lead_err, slips and terr unkept (a module that doesn't print them) */
+#endif
+
 #define IFRX_FFSK 0
 #define IFRX_4FSK 1
 enum { IFRX_ACQ = 0, IFRX_LEAD = 1, IFRX_TRACK = 2 };
@@ -89,7 +93,7 @@ typedef struct {
   int32_t fit[IFRX_HYP];    /* this sweep's lead fit at each offset, signed by parity */
   int16_t w[IFRX_TL + 2][2];
   int32_t A[IFRX_MAXS][4], A1[IFRX_MAXS][4]; /* each kept template's four sums; at half way */
-  int8_t ring[IFRX_RING];
+  int8_t ring[2 * IFRX_RING]; /* the counts, twice over */
 } ifrx_t;
 
 /* mode IFRX_FFSK or IFRX_4FSK; ks = DMA kS/s as measured (counts = ks * 1000 / 64 a second) */
