@@ -204,8 +204,19 @@ class Sotto1200Hiss(Sotto1200, hb.SottoV38):
         self._res = res
         rows = self._rows(code, side)                  # side bit lands in bit 8
         rgood = np.repeat(good | self.rebuilt, 2)
+        self._side_good = np.repeat(good, 2)          # a rebuilt frame carries no side bit
         self._dec_args = (sb, good)
         return hb.SottoV38.decode_audio16(self, rows, rgood, n16=n16, seed=seed)
+
+    @staticmethod
+    def _conceal_rows(rows, good):
+        """The rows are already concealed (frame_params repeats the last good superframe), so
+        a lost frame keeps its own repeated code and hiss; run counts lost 20 ms frames."""
+        run, r = np.zeros(len(rows), int), 0
+        for g in range(len(rows)):
+            r = 0 if good[g] else r + 1
+            run[g] = r
+        return rows.copy(), run
 
     def _hiss_model(self, rows, good):
         return Sotto1200.decode(self, *self._dec_args)
@@ -214,4 +225,4 @@ class Sotto1200Hiss(Sotto1200, hb.SottoV38):
         return self._res[g]
 
     def _read_pc(self, bits, good):
-        return hb.SottoV38._read_pc(self, self._side_rows(bits), good)
+        return hb.SottoV38._read_pc(self, self._side_rows(bits), self._side_good)

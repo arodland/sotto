@@ -167,6 +167,11 @@ fields. The running percentile of the side channel keeps every frame level so fa
 Python does); a 1 dB histogram would replace it on the DSP, changing a vowel-frame
 decision only when a level sits within the bin.
 
+**sotto 1200 hiss.** *2026-11-06.* The same layer runs under sotto 1200 at 48 bits per
+40 ms (`sotto_lr_enc16` / `sotto_lr_dec16` in `c/sotto_hiss.c`, float only for now): 14 of
+the 16 test voices bit-exact with `sim/sotto_lr_hiss.py`, the other two one superframe off.
+Details, delay and check in `docs/sotto-1200-hiss.md` ("C port").
+
 ## Fixed point: status
 
 The fixed-point build is in `c/fixed/` (`make fixed`). It is new MIT code, written from the

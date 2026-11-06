@@ -505,6 +505,20 @@ class SottoV38(vl.SottoV37):
         """The 8 kHz model under the high band (sotto 1200 decodes its superframes here)."""
         return self.decode(bits, good)
 
+    @staticmethod
+    def _conceal_rows(bits, good):
+        """-> (the bits concealment decodes: a lost frame repeats the last good one; lost
+        frames in a row, 0 for a good one)"""
+        b2, last, run, r = bits.copy(), None, np.zeros(len(bits), int), 0
+        for g in range(len(bits)):
+            r = 0 if good[g] else r + 1
+            run[g] = r
+            if good[g]:
+                last = bits[g].copy()
+            elif last is not None:
+                b2[g] = last
+        return b2, run
+
     def _uu_res(self, rows, g):
         """The coded 4-band correction to the guess for unvoiced frame g (dB)."""
         return self.cb[index_of(rows[g], self.nb)]
@@ -512,14 +526,7 @@ class SottoV38(vl.SottoV37):
     def decode_audio16(self, bits, good=None, n16=None, seed=0):
         bits = np.asarray(bits)
         good = np.ones(len(bits), bool) if good is None else np.asarray(good, bool)
-        b2, last, run, r = bits.copy(), None, np.zeros(len(bits), int), 0
-        for g in range(len(bits)):                      # the bits concealment decodes
-            r = 0 if good[g] else r + 1
-            run[g] = r
-            if good[g]:
-                last = bits[g].copy()
-            elif last is not None:
-                b2[g] = last
+        b2, run = self._conceal_rows(bits, good)
         m = self._hiss_model(bits, good)
         y8 = vl.synthesise(m)[vl.ar.CODEC_DELAY:]
         n8 = n16 // 2 if n16 else len(y8)

@@ -2,6 +2,7 @@
  * -16: 16 kHz output through the v3.8 decoder (VARIANT=v3.8 build); its delay is removed too.
  * -1200: sotto 1200 superframes (40 ms each); GOOD.u8 then has one byte per superframe.
  * -1200half: the same through the 20 ms half calls (sotto_lr_decode_half), as the K6 plays it.
+ * -16 -1200: sotto 1200 hiss, 16 kHz out (sotto_lr_decode16, VARIANT=v3.8 build).
  * GOOD.u8 holds one byte per frame, 0 for a frame that failed its CRC. The output is
  * aligned with the encoder input: the decoder's 20 ms of delay is removed.
  * SPDX-License-Identifier: MIT */
@@ -16,7 +17,7 @@ int main(int argc, char **argv) {
   int lr = half || (argc > 1 && !strcmp(argv[1], "-1200"));
   argv += lr, argc -= lr;
   if (argc != 3 && argc != 4) {
-    fprintf(stderr, "usage: %s [-16 | -1200 | -1200half] IN.bit OUT.raw [GOOD.u8]\n", argv[0]);
+    fprintf(stderr, "usage: %s [-16] [-1200 | -1200half] IN.bit OUT.raw [GOOD.u8]\n", argv[0]);
     return 1;
   }
   FILE *in = strcmp(argv[1], "-") ? fopen(argv[1], "rb") : stdin;
@@ -26,7 +27,33 @@ int main(int argc, char **argv) {
     perror("sotto_dec");
     return 1;
   }
+#ifndef SOTTO_V38
+  if (k16) {
+    fprintf(stderr, "sotto_dec: -16 needs a VARIANT=v3.8 build\n");
+    return 1;
+  }
+#endif
   unsigned char b[SOTTO_BYTES_PER_FRAME];
+#ifdef SOTTO_V38
+  if (lr && k16) {
+    struct sotto_lr_dec16 *d = sotto_lr_dec16_create();
+    short y[SOTTO_LR_SAMPLES_PER_FRAME_16K];
+    long n = 0;
+    if (!d) {
+      fprintf(stderr, "sotto_dec: this build has no sotto 1200 hiss decoder (use the float build)\n");
+      return 1;
+    }
+    while (fread(b, 1, sizeof b, in) == sizeof b) {
+      int good = 1, c;
+      if (gf && (c = fgetc(gf)) != EOF) good = c != 0;
+      sotto_lr_decode16(d, b, good, y);
+      if (n++ >= SOTTO_LR_DEC16_DELAY) fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME_16K, out);
+    }
+    while (sotto_lr_dec16_flush(d, y)) fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME_16K, out);
+    sotto_lr_dec16_destroy(d);
+    return 0;
+  }
+#endif
   if (lr) {
     struct sotto_lr_dec *d = sotto_lr_dec_create();
     short y[SOTTO_LR_SAMPLES_PER_FRAME];
@@ -68,11 +95,6 @@ int main(int argc, char **argv) {
     while (sotto_dec16_flush(d, y)) fwrite(y, sizeof(short), SOTTO_SAMPLES_PER_FRAME_16K, out);
     sotto_dec16_destroy(d);
     return 0;
-  }
-#else
-  if (k16) {
-    fprintf(stderr, "sotto_dec: -16 needs a VARIANT=v3.8 build\n");
-    return 1;
   }
 #endif
   struct sotto_dec *d = sotto_dec_create();

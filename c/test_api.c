@@ -77,6 +77,23 @@ int main(void) {
            nf16, early16, no, ti, to, bi, bo);
     int ok16 = nf16 == N && no == N + SOTTO_DEC16_DELAY_FRAMES && fabs(to - ti) < 3.0 && fabs(bo - bi) < 4.0;
     ok = ok && ok16;
+    /* sotto 1200 hiss: the same 16 kHz input, 40 ms superframes */
+    int ns = N / 2, nh = 0, earlyh;
+    struct sotto_lr_enc16 *eh = sotto_lr_enc16_create();
+    for (int f = 0; f < ns; f++) nh += sotto_lr_encode16(eh, in16 + f * SOTTO_LR_SAMPLES_PER_FRAME_16K, bits[nh]);
+    earlyh = nh;
+    while (sotto_lr_enc16_flush(eh, bits[nh])) nh++;
+    sotto_lr_enc16_destroy(eh);
+    struct sotto_lr_dec16 *dh = sotto_lr_dec16_create();
+    no = 0;
+    for (int f = 0; f < nh; f++) sotto_lr_decode16(dh, bits[f], 1, out16 + (no++) * SOTTO_LR_SAMPLES_PER_FRAME_16K);
+    while (sotto_lr_dec16_flush(dh, out16 + no * SOTTO_LR_SAMPLES_PER_FRAME_16K)) no++;
+    sotto_lr_dec16_destroy(dh);
+    d0 = SOTTO_LR_DEC16_DELAY * SOTTO_LR_SAMPLES_PER_FRAME_16K;
+    to = rms_dbfs(out16 + d0 + 3200, q - 6400), bo = rms_dbfs(out16 + d0 + 2 * q + 1600, q - 3200);
+    printf("sotto 1200 hiss: superframes %d (%d before flush), %d blocks out; tone %.1f -> %.1f dBFS, hiss burst %.1f -> %.1f dBFS\n",
+           nh, earlyh, no, ti, to, bi, bo);
+    ok = ok && nh == ns && earlyh == ns - 11 && no == ns + SOTTO_LR_DEC16_DELAY && fabs(to - ti) < 3.0 && fabs(bo - bi) < 4.0;
   }
 #endif
   /* sotto 600 / 400 encoder: one superframe per 4 / 6 frames, most of them before the flush */
