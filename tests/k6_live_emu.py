@@ -10,7 +10,8 @@ uses it; run on its own for the full 10-step run:
 Time: the module runs in chunks of CHUNK instructions, each CPI cycles of the 96 MHz clock (the
 module runs from RAM, no wait states; the M0 takes 1 to 3 cycles an instruction: 1.5 is a
 middling mix of loads, multiplies and branches); the API's calls cost what the radio's do
-(a line 5 ms, an FD6818 read 20 us). The DMA and TIM17 read the clock at each register read.
+(a line 5 ms, an FD6818 read 20 us, a key check 60 us: ft8wf's overruns on the K6 matched only
+at that). The DMA and TIM17 read the clock at each register read.
 
 Calibration: gp0dma (c/k6/mod/gp0dma.c), measured on Jeff's K6 at 72-73% idle with L = 64
 (docs/k6-fd6818-audio.md, run 8), runs here at CPI 1.5 at 72% (L = 32: 40% here, 56% on the
@@ -172,6 +173,8 @@ class Emu:
             us = r0
         elif name == "ms":
             ret = int(self.cyc / 96000)
+        elif name == "key_down":
+            us = 60                                  # Aura scans six keypad rows, 5 us waits each
         elif name == "scratch":
             if r0:
                 uc.mem_write(r0, (4096).to_bytes(4, "little"))
