@@ -180,7 +180,8 @@ def cmd_sweep(args):
     steps, cur, pas, last = {}, None, 0, 0
     for r in rows:
         f = min(SWEEP_HZ, key=lambda h: abs(h - r["tone"]))
-        if r["tone"] == 0 or abs(f - r["tone"]) > 0.08 * f or r["rms"] < 2 * max(noise, 50):
+        off = abs(f - r["tone"]) > max(0.08 * f, 25)
+        if r["tone"] == 0 or off or r["rms"] < 2 * max(noise, 50):
             cur = None
             continue
         if f < last and SWEEP_HZ.index(f) < SWEEP_HZ.index(last) - 3:
