@@ -249,9 +249,9 @@ def test_probe_decodes_two_ids_on_m0(scratch):
     REG_6F follows the tone in dB (12 dB gaps, 40 dB key down, attack 3 ms, release 8 ms, noise),
     REG_64 the same in linear amplitude, REG_0B shows the tone detector's symbol 4 (800 Hz)
     with the ready bit while the tone is on. A key press at 25 s ends it. The two registers
-    take turns: A must give the first ID and B the second. With the store's scratch RAM (what
-    the K6 has: 4096 - 16 - code - 8 bytes) the stack stays under 520 bytes; without it the
-    decoder goes on the stack, under 760."""
+    take turns: A must give the first ID and B the second. With scratch RAM the stack stays under
+    520 bytes; without it (the K6 gives 4096 - 16 - code - 8 bytes, about 200, which may be
+    too few) the decoder goes on the stack, under 760 (the K6 had 3.5 KB on 612fb72)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
     code, entry = k6mod.build(PROBE)
@@ -289,7 +289,7 @@ def test_probe_decodes_two_ids_on_m0(scratch):
     base, api, stubs, stop, sp0 = ram + 0x1000, ram + 0x8000, ram + 0x9000, ram + 0x9F00, ram + 0x7F00
     mu.mem_write(base, code)
     names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down", "scratch"]
-    spare = (4096 - 16 - len(code) - 8) & ~3 if scratch else 0
+    spare = 1024 if scratch else 0
     for i in range(len(names)):
         mu.mem_write(stubs + 16 * i, b"\x70\x47")
     mu.mem_write(stop, b"\x00\xbf" * 8)
