@@ -4,7 +4,7 @@
 `sim/data/vlr_tables.npz` from `tools/train_vlr.py`, scores from `tools/vlr_race.py`. Float C
 encoder `c/sotto_vlr.c` (in libsotto, `sotto_enc -600/-400`), fixed-point decoder
 `c/fixed/sotto_fx_vlr.c`. Listening round 20 (Jeff): sotto 600 beat Codec 2 700C 3-0 and
-Codec 2 1200 2-0; sotto 400 split 1-1 with 700C.*
+Codec 2 1200 2-0; sotto 400 split 1-1 with 700C. Hiss band: `sim/sotto_vlr_hiss.py`, see below.*
 
 ## The short answer
 
@@ -252,6 +252,64 @@ at half its rate (PESQ called that level), and tied sotto 1200 on one clean clip
 loss sotto 1200 is better, as expected: a lost 600 slot takes 80 ms of speech, not 40. sotto
 400 splits with Codec 2 700C, matching PESQ.
 
+## Hiss band (4-8 kHz)
+
+*Python reference `sim/sotto_vlr_hiss.py` (`SottoVLRHiss("600")`), tables `sim/data/vlr_hiss.npz`
+from `tools/train_vlr_hiss.py` (32 non-test LibriSpeech dev-clean voices, CC BY 4.0), scores
+`tools/eval_vlr_hiss.py` → `docs/results/vlr_hiss.json`. No C port, no listening yet.*
+
+Jeff asked (2026-11-06) whether v3.8's hiss band (`docs/unvoiced-hiss.md`) goes into sotto 600
+and 400 as easily as into sotto 1200 (`docs/sotto-1200-hiss.md`). It fits in the same 48 bits,
+but it reaches fewer frames, because the spare bits sit only in superframes without voiced
+speech:
+
+| Superframe (decoded voicing pattern) | Spare bits | Use | U frames there, 600 / 400 (plain encoder) |
+|---|---|---|---:|
+| no pitched frame (pattern all U) | pitch centre 7 + slope 3 | v3.8's 6-bit hiss index + 1 side bit; a level slope (8 trained steps, −11 to +8 dB per frame) | 59% / 43% |
+| one pitched frame | slope 3 (one point has no slope; the pitch is the centre) | a 2-bit level offset over the neighbours' hiss + 1 side bit | 13% / 16% |
+| two or more | none | the neighbours' hiss (nearest coded frame either side, within 2 superframes), or a trained mean | 28% / 41% |
+
+v3.8's encoder rules (bursts and sibilants sent as U, whispers, creaky onsets, flutter
+smoothing) change the per-20 ms voicing codes before the pattern search, and the decoder is
+v3.8's (guess from the 0-4 kHz envelope, vowel layer, blend).
+
+16 held-out voices at 16 kHz, same metrics as sotto 1200 hiss (hiss error on fricative frames):
+
+| | PESQ-NB | ESTOI | PESQ-WB | hiss error rms / bias |
+|---|---:|---:|---:|---:|
+| sotto 600 | 2.072 | 0.692 | 1.390 | no band |
+| **sotto 600 hiss** | 2.094 | 0.690 | 1.340 | **8.56 / −3.43 dB** |
+| the same, slope kept as pitch | 2.094 | 0.690 | 1.338 | 8.85 / −3.76 |
+| sotto 600 decoder reading the hiss stream | 2.091 | 0.692 | 1.391 | no band |
+| sotto 400 | 1.805 | 0.638 | 1.293 | no band |
+| **sotto 400 hiss** | 1.828 | 0.635 | 1.247 | **11.70 / −6.27 dB** |
+| sotto 1200 hiss, for comparison | 2.517 | 0.759 | 1.555 | 5.28 / −1.15 |
+
+With 1 XL packet in 8 lost: 600 hiss 11.38 dB, 400 hiss 15.17 dB.
+
+- **Where the bits are, the band is as good as v3.8's.** On sotto 600, fricative frames in
+  all-U superframes land within about 4.9 dB rms (bias −0.8, before the tables were trained), v3.8's own accuracy at 2400 (5.0). Next
+  to voiced speech it falls apart: about 9 dB with the 2-bit offset, 14 dB from the neighbours
+  alone. 12% of the fricative frames are coded voiced or mixed by the pattern search and get
+  the vowel layer instead (16-32 dB short), which no table fixes.
+- **The negative bias is selection.** A frame with no bits gets its neighbours' level, and the
+  fricative frames measured are the loud ones, so it comes out too quiet. The trained mean
+  over the neighbours is close to 0 dB.
+- **The side channel never locks.** One side bit per carrying superframe gives 25 (600) or
+  at most 16 (400) bits per 2 s window; the 16-bit message needs 16 carrying superframes in a
+  window, which speech rarely has. Without it the score is identical, so the decoder runs on
+  the mean speaker shape.
+- **v3.8's voicing rules help the 8 kHz part a little:** a plain sotto 600 decoder reading the
+  hiss stream scores 2.091 against 2.072 for plain sotto 600 (400: 1.830 against 1.805).
+  The one-pitched-frame superframes lose their slope there, but that costs nothing measurable.
+- **The K6 is unchanged:** it plays 8 kHz, so it can take a hiss stream and ignore the band, as
+  with sotto 1200. Its decoder would need `sf_pitch`'s zero-slope rule for one-pitched-frame
+  superframes (one line in `c/fixed/sotto_fx_vlr.c`, not done).
+
+So the hiss band in sotto 600 is roughly sotto 1200 hiss's "anchors only" variant (6.4 dB)
+or worse, and sotto 400's is weaker again. Whether that is worth having is a question for ears,
+best asked after round 19 says whether sotto 1200's own band is.
+
 ## Use
 
 ```sh
@@ -276,5 +334,8 @@ y = v.decode_audio(bits, good=None)   # good: per-superframe flags
 
 - On air: flash `aura-pager-vlri`, then send a sotto 600 and a sotto 400 message and check `pcm=`.
 - References that need an outside build: Codec 2 450, MELPe 600.
+- Hiss band: listening, then a C port if ears want it. To reach more fricatives, the voicing
+  pattern search could weight frames that v3.8's rules sent U more heavily, so fewer of them
+  land in voiced patterns.
 - Not tried: a residual for the interpolated frames (as sotto 1200's B frame), which needs bits
-  taken from the anchors; variable anchor positions; the 4-8 kHz hiss band.
+  taken from the anchors; variable anchor positions.

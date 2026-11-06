@@ -127,6 +127,11 @@ class SottoVLR(lr.Sotto1200):
         t = np.arange(N) - (N - 1) / 2
         return np.clip(np.floor(self.wc_value(wc) + self.slopes[ws] * t + 0.5), 0, 127).astype(int)
 
+    def sf_pitch(self, f):
+        """A superframe's per-frame pitch indices from its fields (a hook: the hiss variant
+        reads some slope fields as hiss)."""
+        return self.pitch_frames(f["wc"], f["ws"])
+
     def q_pitch(self, wi, voiced, prev_wc):
         """(centre index, slope index) minimising the voiced frames' squared index error."""
         line = self.pitch_line(wi, voiced)
@@ -302,13 +307,13 @@ class SottoVLR(lr.Sotto1200):
         for s, f in enumerate(F):
             fr = slice(s * N, (s + 1) * N)
             codes[fr] = self.vpat[f["v"]]
-            wis[fr] = self.pitch_frames(f["wc"], f["ws"])
+            wis[fr] = self.sf_pitch(f)
             eis[fr] = self.energy_frames(f["em"], f["er"])
         for s in np.where(self.rebuilt)[0]:
             a, b = s * N - 1, (s + 1) * N                 # the frames either side
             fn = F[s + 1]
             ca, cb_ = codes[a], int(self.vpat[fn["v"]][0])
-            wb = int(self.pitch_frames(fn["wc"], fn["ws"])[0])
+            wb = int(self.sf_pitch(fn)[0])
             eb = int(self.energy_frames(fn["em"], fn["er"])[0])
             for k in range(N):
                 t = (k + 1) / (N + 1)

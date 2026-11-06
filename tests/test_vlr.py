@@ -114,3 +114,28 @@ def test_c_encoder_follows_python(mode, monkeypatch):
     bc = cv.c_encode(mode, x16)
     assert bc.shape == bp.shape
     assert np.all(bp == bc, 1).mean() >= 0.98
+
+
+@pytest.mark.parametrize("mode", ["600", "400"])
+def test_hiss_band_rides_free_pitch_bits(mode):
+    """sotto 600 / 400 hiss (sim/sotto_vlr_hiss.py): 48 bits, 16 kHz out; superframes with no
+    pitched frame carry hiss in the pitch fields, and the 8 kHz part decodes as before."""
+    import sotto_vlr_hiss as vh
+    from scipy.signal import resample_poly
+    x = np.fromfile(HTS1A, "<i2").astype(float) / 32768
+    x16 = resample_poly(x, 2, 1)
+    x16 = x16[:len(x16) // 640 * 640]
+    c = vh.SottoVLRHiss(mode)
+    b = c.encode(x16)
+    assert b.shape[1] == 48
+    kinds = [c.kind(c.unpack(r)) for r in b]
+    assert 0 in kinds
+    y = c.decode_audio16(b, n16=len(x16))
+    assert len(y) == len(x16) and np.all(np.isfinite(y))
+    hi = np.abs(np.fft.rfft(y))[len(y) // 4:].sum() / np.abs(np.fft.rfft(y)).sum()
+    assert hi > 0.005                      # energy above 4 kHz exists
+    # a one-pitched-frame superframe's pitch is its centre (the slope field is hiss)
+    for r in b:
+        f = c.unpack(r)
+        if c.kind(f) == 1:
+            assert len(set(c.sf_pitch(f))) == 1

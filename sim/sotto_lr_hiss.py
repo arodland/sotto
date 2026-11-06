@@ -84,10 +84,9 @@ class Sotto1200Hiss(Sotto1200, hb.SottoV38):
         return r
 
     # ------------------------------------------------------------ encoder
-    def encode(self, x16):
-        x16 = np.asarray(x16, float)
-        x8 = resample_poly(x16, 1, 2)
-        p = self.params(x8)
+    def _v38_rules(self, x8, x16, p):
+        """v3.8's voicing rules (SottoV38.encode_low) on the per-20 ms fields p["code"] and
+        p["wi"], in place; -> the 16 kHz STFT power."""
         code, wi = p["code"].copy(), p["wi"].copy()
         rows = self._rows(code, wi)
         # v3.8's voicing rules (SottoV38.encode_low) on the per-20 ms fields
@@ -112,6 +111,14 @@ class Sotto1200Hiss(Sotto1200, hb.SottoV38):
                     rows[g, 0] = rows[g, 1] = 0
         p["code"] = rows[:, 0].astype(int) * 2 + rows[:, 1]
         p["wi"] = np.array([hb.index_of(r, 7) for r in rows])
+        return P
+
+    def encode(self, x16):
+        x16 = np.asarray(x16, float)
+        x8 = resample_poly(x16, 1, 2)
+        p = self.params(x8)
+        P = self._v38_rules(x8, x16, p)
+        nfr = len(P)
         sb = self.encode_params(p)
         self._sb_enc = sb
         m = Sotto1200.decode(self, sb)
