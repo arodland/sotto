@@ -237,6 +237,12 @@ and AF registers (0x63 0x64 0x65 0x6f 0x4f) and the status (0x0c) with the carri
 for the next step, the noise-based quick check. The return value is the worst settle time
 in us of the cases that arrive on the carrier, -1 if no carrier came, -2 if a key stopped it.
 
+## The receive coverage module (rxmap)
+
+`c/k6/mod/rxmap.c` sweeps RSSI across a segment (the K6 receives only) or measures the IC-7100's
+carriers on 2 m / 70 cm points. `tools/k6_rxmap.py` patches the segment into CI's
+`mod-rxmap.bin`, uploads it and decodes the over-air summary. See [k6-rxmap.md](k6-rxmap.md).
+
 ## Insights (a living list)
 
 Ideas from the K6 work that might change the plan. None has been tested unless it says so.
@@ -435,3 +441,16 @@ what would settle it.
       F/1800. If the IC-7100 doesn't decode them, try the reports at 1200 (a REG_72 write
       around the send) before anything else.
     - Settled by: the first `tools/k6_upload.py` run on the bench.
+24. **The REG_63 noise indicator as a sensitivity meter.**
+    - From: the coverage thread (2026-11-06, [k6-rxmap.md](k6-rxmap.md)). Phase 0 read 0x0000
+      on a strong carrier and 0x002a on an empty channel. If REG_63 rises smoothly as a carrier
+      weakens, it measures FM quieting, which is close to what SINAD measures. Then sensitivity
+      could be read off the IC-7100's power steps without a calibrated generator.
+    - Buys: a sensitivity number per band, and a squelch that opens on quieting, not on RSSI.
+    - Settled by: `k6_rxmap.py cal`'s `z` column against its levels (power steps at 440.850,
+      on a dummy load).
+25. **RSSI under-reads after a short tune, and by more for weak signals?**
+    - Phase 0's curves come from a -20 dBm carrier. rxmap's quick pass (3 ms) only ranks the
+      channels in a bin, then re-reads the winner at 30 ms. If a weak signal (-110 dBm) ramps
+      slower than the empty channel next to it, the quick pass ranks it below the noise.
+    - Settled by: a map run with `--quick-us 12000` over the same segment, compared bin by bin.
