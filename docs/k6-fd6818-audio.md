@@ -241,3 +241,76 @@ So **GP0 code 13 is a working FM receive path into the MCU**: the decimated dens
 ~16.9 kHz IF that demodulates in software to the transmitted audio, with no hardware change.
 The capture is a busy loop (the CPU does nothing else while it samples), so the limits are CPU
 time and RAM, not the signal. The bytes and plot are on hamlet (`~/k6-logs/gp0fm-20261106T0641*`).
+
+## Capturing the IF by DMA (`gp0raw`, `gp0dma`, `gp0sweep`, PR #69)
+
+**No hardware path on PB1.** The KD32F328 follows the STM32F030 alternate-function map (Aura's
+SPI1, SPI2, USART1 and TIM1 pins all match it), so PB1 offers only TIM14_CH1, TIM3_CH4,
+TIM1_CH3N and ADC_IN9: no SPI or USART input to shift the stream in, and no timer that can be
+gated or clocked by it. What is left is DMA reading GPIOB IDR into RAM. Jeff OK'd modules
+using TIM17 and DMA channel 1 (both unused by Aura and the pager; the pager's PWM audio is TIM1
+and channel 5).
+
+**Run 6, 07:37 UTC (`gp0raw`, 0.88 ms of the raw 22.9 MS/s stream):** `tools/k6_gp0.py rate`
+keeps every k-th sample to see how slowly the stream can be sampled. The stream's runs are
+whole multiples of about 156 ns, so GP0 is clocked at about 26 MHz / 4 = 6.5 MHz.
+
+| Sample rate | FM noise, bare carrier | Residual in a 1 kHz tone (sine fit) |
+| --- | --- | --- |
+| 22.9 MS/s | 60 Hz rms | 285 Hz rms |
+| 11.4 MS/s | 89 Hz | 367 Hz |
+| 5.7 MS/s | 166 Hz | 427 Hz |
+| 4.6 MS/s | 413 Hz | 792 Hz |
+| 2.9 MS/s | 625 Hz | 1266 Hz |
+
+**Run 7, 07:45 UTC (`gp0dma` v1):** DMA channel 1 with TIM17's update as its request, TIM17 ARR
+set for 24 to 1.5 MS/s. Every setting ran at the same 5.71 M transfers/s: TIM17 doesn't pace
+the channel. The CPU decimated and demodulated the ring as it filled, and at L = 64 samples an
+output (the setting nearest the real rate) the K6 itself read the 1 kHz tone at ±4.0 kHz on a
+16.93 kHz IF, with nothing lost.
+
+**Run 8, 08:09 UTC (`gp0dma` v2):** the module lets the DMA run flat out and times itself
+with TIM17's counter (0..0xFFFF at 96 MHz). Its probe counted transfers in 2 ms:
+
+| TIM17 | off | UDE only | UDE, counting | same, clearing SR | UDE, 1 MHz update | CC1DE, 1 MHz |
+| --- | --- | --- | --- | --- | --- | --- |
+| transfers | 10944 | 11268 | 11269 | 11608 | 11269 | 11268 |
+
+So channel 1 runs at 5.5-5.8 M transfers/s even with TIM17 off: on this chip an enabled channel
+1 is always requested (by what is not known; the ADC is clocked but has no DMAEN). There is no
+pacing to be had, and the free-running rate happens to sit at the usable floor of run 6.
+(An earlier attempt refused with -7 because the DMA's registers read 0x37 while its clock is
+off; the module now clocks the DMA before it looks.)
+
+| L (samples an output) | Output rate | 3 s / 1 s continuous, 1 kHz tone at peak 0.3 | CPU idle | Overruns |
+| --- | --- | --- | --- | --- |
+| 64 | 85.7 kHz | IF 16.934-16.960 kHz, tone 996-1006 Hz, ±4.03-4.18 kHz, all 30 blocks | 72-73% | 0 |
+| 32 | 174 kHz | ±17-20 kHz: noise (33 density levels) | 56% | 0 |
+| 128 | 42.5 kHz | IF biased low, tone 6-12% high | 93% | 4 |
+
+**L = 64 is the working set-up**: about 5.49 MS/s, one output per 11.7 us, the receive IF
+demodulated continuously on the MCU with about 27% of the CPU.
+
+**Run 9, 08:10 UTC (`gp0sweep`, `k6_gp0.py wav`: 24 tones 150-5000 Hz, 0.6 s each, at WAV peak
+0.1 then 0.3):** the received deviation, which mostly measures the IC-7100's TX audio chain in
+FM-D (DATA on, USB audio in), relative to the 935 Hz step:
+
+| Tone (Hz) | 150 | 237 | 321 | 508 | 935 | 1477 | 2003 | 2717 | 3165 | 3686+ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| peak 0.1 | -17 dB | -11.8 | -8.9 | -5.0 | 0 (±1.8 kHz) | +3.4 | +5.1 | +5.8 | -3.3 | none |
+| peak 0.3 | -13.7 | -9.5 | -6.9 | -3.1 | 0 (±4.3 kHz) | -0.5 | -1.0 | -1.8 | -2.5 | none |
+
+- Below the limiter (peak 0.1) the deviation rises about 5 dB an octave from 300 Hz to 2.3 kHz:
+  pre-emphasis on the USB input, or something like it.
+- Nothing above about 3.2 kHz reaches the air: the TX audio low-pass is a wall there.
+- At peak 0.3 the deviation flattens at about ±4.3 kHz from 700 Hz up: the IC-7100's limiter.
+  The 1 kHz tone at peak 0.3 used in runs 5-8 is already about 2 dB into it.
+- REG_6F[5:0] is no level meter: 37-38 on a bare carrier, 10-23 with tones, falling with
+  frequency, and a step between 276 and 321 Hz that fits the chip's ~300 Hz audio high-pass.
+- The module's tone counter holds from about 240 Hz (150 Hz at the higher level) to 2.7 kHz.
+  Its `dev` swing reads low above about 1.7 kHz (the 4-cycle average); use `rms`.
+
+For the FFSK pager this means: a tone above 3.2 kHz never leaves the IC-7100, and between 300
+Hz and 2.3 kHz the higher FFSK tone goes out about 5 dB an octave hotter than the lower one
+unless the sender de-emphasises it. Logs and tables are on hamlet (`~/k6-logs/gp0raw-*`,
+`gp0dma*-*`, `gp0sweep-20261106T0809*`).

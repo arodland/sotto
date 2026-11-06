@@ -17,6 +17,10 @@
    Writes only REG_34[3:0] and REG_33 bit 8 (the PR #68 image), both put back. No TX.
    Returns the bytes per capture, or -2 (a key), -3 (old image), -4 (PB1 not an input), -5
    (REG_33 refused), -6 (no carrier in 90 s).
+
+   Built with GP0_RAW defined (gp0raw.c) it stores the raw samples instead, 32 to a word, first
+   sample in bit 31, words little-endian: about 0.8 ms of the 22.9 M samples/s stream per capture,
+   to find on the host how slowly the stream can be sampled (by DMA, say) and still give the IF.
    SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 2
 #include "../k6_mod.h"
@@ -65,6 +69,26 @@ static volatile const uint32_t *reg32(uint32_t a) { return (volatile const uint3
 
 static int rssi(const k6_api_t *api) { return KM_RSSI_DBM(api->fd_read(0x67)); }
 
+#ifdef GP0_RAW
+/* n bytes of raw samples (n a multiple of 4) */
+NOINLINE static void capd(uint8_t *out, uint32_t n) {
+  volatile const uint32_t *idr = reg32(GPIOB + 0x10);
+  n /= 4;
+  __asm__ volatile(
+      "1:\n"
+      ".rept 32\n"
+      "ldr r3, [%[idr]]\n"
+      "lsrs r3, r3, #2\n"
+      "adcs r2, r2\n"
+      ".endr\n"
+      "stmia %[out]!, {r2}\n"
+      "subs %[n], #1\n"
+      "bne 1b\n"
+      : [out] "+l"(out), [n] "+l"(n)
+      : [idr] "l"(idr)
+      : "r2", "r3", "cc", "memory");
+}
+#else
 /* n outputs, each the number of high samples in 256, halved */
 NOINLINE static void capd(uint8_t *out, uint32_t n) {
   volatile const uint32_t *idr = reg32(GPIOB + 0x10);
@@ -90,6 +114,7 @@ NOINLINE static void capd(uint8_t *out, uint32_t n) {
       : [idr] "l"(idr), [z] "l"(zero)
       : "r2", "r3", "r4", "cc", "memory");
 }
+#endif
 
 static void say0(const k6_api_t *api, char *line, char *p) {
   *p = 0;
@@ -125,7 +150,7 @@ int k6_main(const k6_api_t *api) {
   api->delay_us(200000);
   floor = rssi(api);
   buf = (uint8_t *)api->scratch(&room);
-  n = room > MAXB ? MAXB : room;
+  n = (room > MAXB ? MAXB : room) & ~3u;
   if (*reg32(GPIOB) & (3u << 2)) {
     api->say("fm PB1 is not an input: no writes");
     return -4;

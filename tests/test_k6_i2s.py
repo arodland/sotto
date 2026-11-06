@@ -6,6 +6,11 @@ import sys
 
 import pytest
 
+try:
+    import numpy as np
+except ImportError:  # the dma tests skip without it
+    np = None
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "c", "k6", "mod", "i2sprobe.c")
 CAP = os.path.join(ROOT, "c", "k6", "mod", "i2scap.c")
@@ -21,13 +26,16 @@ REFUSED = (0x30, 0x33, 0x36, 0x37)
 PERIOD = 400            # samples between modelled DFS edges
 
 
-def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024):
+def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024,
+        mmio=()):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
     lets a module change REG_33's GP0 bits (8 and 0); False = an image that refuses REG_33.
     model(sel, reads, regs) -> 0/1 replaces that GP0 model while GP0 drives. spare: the scratch
-    RAM the module is given. Returns (ret, said lines, registers at the end, writes)."""
+    RAM the module is given. mmio: (base, size, read(uc, off, size, st), write(uc, off, size,
+    value, st)) for more MCU peripherals.
+    Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
     st = {"us": 0, "said": [], "writes": [], "reads": 0, "pin": 0}
@@ -67,6 +75,9 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     def gpio_write(uc, off, size, value, _):
         raise AssertionError(f"module wrote GPIOB+{off:#x}")
     mu.mmio_map(0x48000400, 0x400, gpio_read, None, gpio_write, None)
+    st["regs"] = regs
+    for b, n, r, w in mmio:
+        mu.mmio_map(b, n, r, st, w, st)
 
     def on_stub(uc, addr, size, _):
         name = NAMES[(addr - stubs) // 16]
@@ -300,4 +311,185 @@ def test_fm_records_the_if():
         # 256 outputs of 256 reads at 24 MHz = 2.73 ms of 17 kHz: about 93 crossings
         assert 80 <= zc <= 105, zc
     assert said[-1] == "fm done"
+    assert regs[0x33] == 0xd300 and regs[0x34] == 0
+
+
+@need_clang
+def test_raw_records_the_bitstream():
+    """gp0raw: the same run, but each capture holds the raw samples, first in bit 31 of each
+    little-endian word"""
+    raw = os.path.join(ROOT, "c", "k6", "mod", "gp0raw.c")
+    regs = {**START, 0x67: lambda us: rssi_reg(-21 if us >= 3_000_000 else -103)}
+    ret, said, regs, writes = run(regs, src=raw, model=fm_model(), spare=1600)
+    assert ret == 1600 and said[0].startswith("fm start floor=-103 bytes=1600")
+    rows = [ln for ln in said if ln.startswith("x 1 ")]
+    data = bytes.fromhex("".join(r.split()[3] for r in rows))
+    words = [int.from_bytes(data[i:i + 4], "little") for i in range(0, len(data), 4)]
+    bits = [(w >> (31 - b)) & 1 for w in words for b in range(32)]
+    assert len(bits) == 12800 and 0.4 < sum(bits) / len(bits) < 0.6
+    dens = [sum(bits[i:i + 256]) - 128 for i in range(0, len(bits), 256)]
+    zc = sum(1 for a, b in zip(dens, dens[1:]) if (a < 0) != (b < 0))
+    # 12800 reads at 24 MHz = 0.53 ms of 17 kHz: about 18 crossings
+    assert 14 <= zc <= 22, (zc, dens)
+    assert said[-1] == "fm done" and regs[0x33] == 0xd300 and regs[0x34] == 0
+    assert {r for r, _ in writes} <= {0x34, 0x33}
+
+
+DMA_SRC = os.path.join(ROOT, "c", "k6", "mod", "gp0dma.c")
+
+
+def dma_bench(f_if=17000.0, dev=4000.0, f_tone=1000.0, rcc_apb2=0, ccr1=0, dma_hz=5.71e6):
+    """RCC, TIM14, TIM17 and DMA channel 1 as on the K6 (run 7): the channel runs flat out at
+    dma_hz whenever it and TIM17 are on with a DMA request enabled, whatever the ARR. Each read
+    of CNDTR1 then moves it on by half an output's worth of transfers, writing GPIOB IDR bytes
+    (PB4 high, PB1 a first-order sigma-delta of an FM IF) into the ring; TIM17's counter follows
+    the DMA's time at 96 MHz; TIM14's (100 us ticks) moves 7 us a read"""
+    import numpy as np
+    rcc = {0x14: 0x14 | (1 if ccr1 else 0), 0x18: rcc_apb2}
+    tim, dma = {}, {0x08: ccr1}
+    sim = {"t": 0.0, "acc": 0.0, "phase": 0.0, "written": 0, "us14": 0.0, "L": 64}
+
+    def rcc_r(uc, off, size, st):
+        return rcc.get(off, 0)
+
+    def rcc_w(uc, off, size, value, st):
+        rcc[off] = value
+
+    def tim_r(uc, off, size, st):
+        if off == 0x24:
+            return int(sim["t"] * 96e6) & 0xFFFF
+        return tim.get(off, 0)
+
+    def tim_w(uc, off, size, value, st):
+        assert rcc[0x18] & (1 << 18), "TIM17 written with its clock off"
+        tim[off] = value
+
+    def t14_r(uc, off, size, st):
+        assert off == 0x24, hex(off)
+        sim["us14"] += 7
+        return int(sim["us14"] / 100) & 0xFFFF
+
+    def t14_w(uc, off, size, value, st):
+        raise AssertionError("module wrote TIM14")
+
+    def produce(uc, n):
+        fs = dma_hz
+        t = sim["t"] + np.arange(n) / fs
+        ft = f_tone(t) if callable(f_tone) else f_tone
+        ph = sim["phase"] + 2 * np.pi * np.cumsum(f_if + dev * np.sin(2 * np.pi * ft * t)) / fs
+        d = 0.5 + 0.3 * np.sin(ph)
+        acc = sim["acc"] + np.cumsum(d)
+        bits = np.diff(np.floor(np.concatenate(([sim["acc"]], acc)))).astype(np.uint8)
+        sim["t"] += n / fs
+        sim["phase"] = ph[-1]
+        sim["acc"] = acc[-1] - np.floor(acc[-1])
+        return bytes((0x10 | (bits << 1)).tolist())
+
+    def dma_r(uc, off, size, st):
+        if not rcc[0x14] & 1:
+            return 0x37                   # what the K6 reads with the DMA's clock off (run 8)
+        if off == 0x0C and dma.get(0x08, 0) & 1 and tim.get(0x00, 0) & 1 and \
+                tim.get(0x0C, 0) & 0x300:
+            ring, n = dma[0x14], dma[0x0C]
+            step = 32
+            data = produce(uc, step)
+            rsz = sim["rsz"]
+            pos = rsz - n
+            first = min(step, rsz - pos)
+            uc.mem_write(ring + pos, data[:first])
+            if first < step:
+                uc.mem_write(ring, data[first:])
+            n -= step
+            while n <= 0:
+                n += rsz
+            dma[0x0C] = n
+            sim["written"] += step
+        return dma.get(off, 0)
+
+    def dma_w(uc, off, size, value, st):
+        assert rcc[0x14] & 1, "DMA written with its clock off"
+        if off == 0x04:
+            return
+        dma[off] = value
+        if off == 0x08 and value & 1:
+            assert dma[0x10] == 0x48000410 and dma[0x0C] in (512, 1024)
+            sim["rsz"] = dma[0x0C]
+            assert value & 0xFFE == (3 << 12 | 1 << 7 | 1 << 5) & 0xFFE, hex(value)
+    mmio = [(0x40021000, 0x400, rcc_r, rcc_w), (0x40014800, 0x400, tim_r, tim_w),
+            (0x40020000, 0x400, dma_r, dma_w), (0x40002000, 0x400, t14_r, t14_w)]
+    return mmio, rcc, tim, dma, sim
+
+
+def dma_build_small(tmp_path):
+    w = tmp_path / "gp0dma_small.c"
+    w.write_text(f'#define BLK 940u\n#define NBLK 6\n#include "{DMA_SRC}"\n')
+    return str(w)
+
+
+@need_clang
+@pytest.mark.parametrize("spare,ring", [(1100, 1024), (800, 512)])
+def test_dma_demodulates_on_the_mcu(tmp_path, spare, ring):
+    mmio, rcc, tim, dma, sim = dma_bench()
+    regs = {**START, 0x67: lambda us: rssi_reg(-21 if us >= 3_000_000 else -103)}
+    ret, said, regs, writes = run(regs, src=dma_build_small(tmp_path), spare=spare, mmio=mmio)
+    assert ret == 3, said
+    rr = [ln for ln in said if ln.startswith("R ")]
+    assert rr == ["R 00000000 00000015 0000 0000 0000 0000 00000000 00000000",
+                  "R 00040000 00000015 0000 0000 0000 0000 00000000 00000000"], rr
+    said = [ln for ln in said if ln not in rr]
+    assert said[0] == f"dma start floor=-103 ring={ring}"
+    pr = said[1].split()
+    assert pr[0] == "p" and len(pr) == 7 and pr[1] == pr[2] == "0" and int(pr[3]) > 0, said[1]
+    assert "dma waiting for a carrier" in said and said[-1] == "dma done"
+    runs = [ln.split()[1] for ln in said if ln.startswith("r ")]
+    assert runs == ["64", "32", "128"] * 2
+    for L, nb in (("64", 6), ("32", 2), ("128", 2)):
+        bl = [dict(kv.split("=") for kv in ln.split()[3:]) for ln in said
+              if ln.startswith(f"b {L} ")][1:]          # the carrier pass
+        assert len(bl) == nb, said
+        for b in bl:
+            assert "lost" not in b and 5650 <= int(b["ks"]) <= 5770, (L, b)
+            assert 16700 <= int(b["if"]) <= 17300, (L, b)
+            assert 0 <= int(b["idle"]) <= 100
+            if L != "32":
+                assert 3000 <= int(b["dev"]) <= 5000, (L, b)
+                assert 850 <= int(b["tone"]) <= 1150, (L, b)
+    assert all(len(ln) <= 60 for ln in said)
+    # everything put back: clocks, timer, channel, chip registers
+    assert rcc[0x18] == 0 and rcc[0x14] == 0x14
+    assert tim[0x00] == 0 and tim[0x0C] == 0 and dma[0x08] == 0
+    assert regs[0x33] == 0xd300 and regs[0x34] == 0
+    assert {r for r, _ in writes} <= {0x34, 0x33}
+
+
+@need_clang
+def test_dma_leaves_a_busy_timer_alone(tmp_path):
+    for apb2, ccr1 in ((1 << 18, 0), (0, 1)):
+        mmio, rcc, tim, dma, sim = dma_bench(rcc_apb2=apb2, ccr1=ccr1)
+        ret, said, regs, writes = run(START, src=dma_build_small(tmp_path), spare=1100, mmio=mmio)
+        assert ret == -7 and "busy" in said[-1] and not writes and not tim
+        assert rcc[0x18] == apb2 and dma[0x08] == ccr1 and rcc[0x14] == 0x14 | ccr1
+
+
+@need_clang
+def test_sweep_follows_the_tone(tmp_path):
+    """gp0sweep: blocks while the carrier lasts; a tone stepping from 500 to 2000 Hz"""
+    mmio, rcc, tim, dma, sim = dma_bench(f_tone=lambda t: np.where(t < 0.025, 500.0, 2000.0))
+    w = tmp_path / "gp0sweep_small.c"
+    w.write_text(f'#define BLK 940u\n#define MAXB 6u\n#include '
+                 f'"{os.path.join(ROOT, "c", "k6", "mod", "gp0sweep.c")}"\n')
+    regs = {**START, 0x6F: 0x1a63,
+            0x67: lambda us: rssi_reg(-21 if us >= 3_000_000 else -103)}
+    ret, said, regs, writes = run(regs, src=str(w), spare=1100, mmio=mmio)
+    assert ret == 6, said
+    said = [ln for ln in said if not ln.startswith("R ")]
+    assert said[0] == "sweep start floor=-103 blk=940" and said[1] == "sweep waiting for a carrier"
+    bl = [dict(kv.split("=") for kv in ln.split()[2:]) for ln in said if ln.startswith("s ")]
+    assert len(bl) == 6 and all(b["af"] == "35" and "lost" not in b for b in bl)
+    assert 400 <= int(bl[1]["tone"]) <= 600, bl
+    for b in bl[4:]:
+        assert 1850 <= int(b["tone"]) <= 2150, bl
+        assert 2500 <= int(b["rms"]) <= 3000, bl
+        assert 16800 <= int(b["if"]) <= 17200, bl
+    assert said[-1] == "sweep done" and rcc[0x18] == 0 and dma[0x08] == 0
     assert regs[0x33] == 0xd300 and regs[0x34] == 0
