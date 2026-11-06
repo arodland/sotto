@@ -3,138 +3,206 @@
   "mode": "600",
   "loss": 0.1,
   "every": 0,
-  "min_snr_db": 10.0,
-  "pesq_py": 1.877,
-  "pesq_c": 1.869
+  "min_snr_db": 9.9,
+  "enc_bit_exact": 0.9996,
+  "pesq_cc": 1.869,
+  "pesq_py": 1.879,
+  "pesq_c": 1.871
  },
  "clips": [
   {
    "clip": "ears_p020_m",
    "superframes": 144,
+   "superframes_c": 144,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 20.4,
-   "pesq_py": 1.955,
-   "pesq_c": 1.956
+   "snr_db": 25.2,
+   "pesq_py": 1.98,
+   "pesq_c": 1.982,
+   "pesq_cc": 1.982
   },
   {
    "clip": "ears_p025_m",
    "superframes": 133,
+   "superframes_c": 133,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
    "snr_db": 26.9,
-   "pesq_py": 2.281,
-   "pesq_c": 2.248
+   "pesq_py": 2.272,
+   "pesq_c": 2.239,
+   "pesq_cc": 2.239
   },
   {
    "clip": "ears_p047_f",
    "superframes": 112,
+   "superframes_c": 112,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 27.5,
+   "snr_db": 26.7,
    "pesq_py": 1.69,
-   "pesq_c": 1.696
+   "pesq_c": 1.698,
+   "pesq_cc": 1.698
   },
   {
    "clip": "ears_p051_f",
    "superframes": 149,
+   "superframes_c": 149,
+   "enc_bit_exact": 0.9933,
+   "field_mismatch": {
+    "a1s0": 1
+   },
    "c_lag": 160,
-   "snr_db": 63.7,
-   "pesq_py": 1.722,
-   "pesq_c": 1.722
+   "snr_db": 45.8,
+   "pesq_py": 1.714,
+   "pesq_c": 1.718,
+   "pesq_cc": 1.691
   },
   {
    "clip": "ears_p070_f",
    "superframes": 145,
+   "superframes_c": 145,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 22.9,
-   "pesq_py": 1.849,
-   "pesq_c": 1.844
+   "snr_db": 16.2,
+   "pesq_py": 1.797,
+   "pesq_c": 1.789,
+   "pesq_cc": 1.789
   },
   {
    "clip": "ears_p095_m",
    "superframes": 111,
+   "superframes_c": 111,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 15.0,
-   "pesq_py": 1.826,
-   "pesq_c": 1.813
+   "snr_db": 15.1,
+   "pesq_py": 1.857,
+   "pesq_c": 1.853,
+   "pesq_cc": 1.853
   },
   {
    "clip": "ears_p100_f",
-   "superframes": 118,
+   "superframes": 117,
+   "superframes_c": 117,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 19.5,
-   "pesq_py": 1.644,
-   "pesq_c": 1.657
+   "snr_db": 19.6,
+   "pesq_py": 1.625,
+   "pesq_c": 1.613,
+   "pesq_cc": 1.613
   },
   {
    "clip": "ears_p107_m",
    "superframes": 138,
+   "superframes_c": 138,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 33.4,
-   "pesq_py": 2.132,
-   "pesq_c": 2.13
+   "snr_db": 29.8,
+   "pesq_py": 2.17,
+   "pesq_c": 2.171,
+   "pesq_cc": 2.171
   },
   {
    "clip": "librispeech_2428_m",
    "superframes": 150,
+   "superframes_c": 150,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 17.4,
-   "pesq_py": 2.118,
-   "pesq_c": 2.128
+   "snr_db": 19.4,
+   "pesq_py": 2.115,
+   "pesq_c": 2.119,
+   "pesq_cc": 2.119
   },
   {
    "clip": "librispeech_251_m",
    "superframes": 150,
+   "superframes_c": 150,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
    "snr_db": 12.5,
    "pesq_py": 1.991,
-   "pesq_c": 1.943
+   "pesq_c": 1.943,
+   "pesq_cc": 1.943
   },
   {
    "clip": "librispeech_3081_f",
    "superframes": 150,
+   "superframes_c": 150,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 10.0,
-   "pesq_py": 1.57,
-   "pesq_c": 1.559
+   "snr_db": 9.9,
+   "pesq_py": 1.585,
+   "pesq_c": 1.581,
+   "pesq_cc": 1.581
   },
   {
    "clip": "librispeech_3536_f",
    "superframes": 150,
+   "superframes_c": 150,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 13.9,
-   "pesq_py": 1.815,
-   "pesq_c": 1.832
+   "snr_db": 13.8,
+   "pesq_py": 1.823,
+   "pesq_c": 1.832,
+   "pesq_cc": 1.832
   },
   {
    "clip": "librispeech_6313_f",
    "superframes": 150,
+   "superframes_c": 150,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 13.5,
-   "pesq_py": 1.795,
-   "pesq_c": 1.797
+   "snr_db": 13.3,
+   "pesq_py": 1.787,
+   "pesq_c": 1.779,
+   "pesq_cc": 1.779
   },
   {
    "clip": "librispeech_652_m",
    "superframes": 150,
+   "superframes_c": 150,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 12.0,
-   "pesq_py": 1.674,
-   "pesq_c": 1.664
+   "snr_db": 11.9,
+   "pesq_py": 1.7,
+   "pesq_c": 1.697,
+   "pesq_cc": 1.697
   },
   {
    "clip": "librispeech_777_m",
    "superframes": 150,
+   "superframes_c": 150,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 65.2,
+   "snr_db": 65.3,
    "pesq_py": 2.226,
-   "pesq_c": 2.225
+   "pesq_c": 2.225,
+   "pesq_cc": 2.225
   },
   {
    "clip": "librispeech_8842_f",
    "superframes": 150,
+   "superframes_c": 150,
+   "enc_bit_exact": 1.0,
+   "field_mismatch": {},
    "c_lag": 160,
-   "snr_db": 63.6,
-   "pesq_py": 1.736,
-   "pesq_c": 1.692
+   "snr_db": 63.7,
+   "pesq_py": 1.731,
+   "pesq_c": 1.694,
+   "pesq_cc": 1.694
   }
  ]
 }

@@ -115,9 +115,12 @@ class SottoVLR(lr.Sotto1200):
             return None
         if len(v) == 1:
             return float(wi[v[0]]), 0.0
-        A = np.stack([np.ones(len(v)), t[v]], 1)
-        c, s = np.linalg.lstsq(A, wi[v].astype(float), rcond=None)[0]
-        return c, s
+        # the normal equations in closed form (as c/sotto_vlr.c): the sums are exact, so a
+        # centre that lands on .5 rounds the same way in both
+        tv, y = t[v], wi[v].astype(float)
+        sn, st, stt, sy, sty = float(len(v)), tv.sum(), (tv * tv).sum(), y.sum(), (tv * y).sum()
+        s = (sn * sty - st * sy) / (sn * stt - st * st)
+        return (sy - s * st) / sn, s
 
     def pitch_frames(self, wc, ws):
         N = self.N

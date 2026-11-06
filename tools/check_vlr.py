@@ -1,13 +1,17 @@
-"""Check the fixed-point very-low-rate decoder (c/fixed/sotto_fx_vlr.c, sotto_vlr_dec_fx)
-against the Python reference (sim/sotto_vlr.py) on the same bits.
+"""Check the very-low-rate C port against the Python reference (sim/sotto_vlr.py): the float
+encoder (c/sotto_vlr.c, sotto_enc -600/-400) and the fixed-point decoder
+(c/fixed/sotto_fx_vlr.c, sotto_vlr_dec_fx).
 
 Usage: python tools/check_vlr.py CLIP.flac [...] [--mode 600|400] [--loss FRAC | --every 8]
        [--json OUT.json] [--bits-dir DIR]
 
-Both decoders get the Python encoder's bits (and the same loss pattern). Reports the C output's
-sample SNR against the Python output (after finding their offset, which is the v3.7 core's
-one-frame delay) and both PESQ-NB scores against the input. --bits-dir also keeps the .bit
-files, for the Cortex-M0 bench. Build first: make -C c VARIANT=v3.7 all fixed.
+Encoder: the fraction of superframes whose 48 bits match the Python encoder's (with the C
+encoder's fixed-lag pitch tracker, TRACK2["lag"] = 8), and which fields differ.
+Decoder: both decoders get the Python encoder's bits (and the same loss pattern). Reports the C
+output's sample SNR against the Python output (after finding their offset, which is the v3.7
+core's one-frame delay) and both PESQ-NB scores against the input; pesq_cc is C encoder into C
+decoder. --bits-dir also keeps the .bit files, for the Cortex-M0 bench.
+Build first: make -C c VARIANT=v3.7 all fixed.
 """
 import argparse, json, os, subprocess, sys, tempfile
 import numpy as np, soundfile as sf
@@ -17,8 +21,28 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(ROOT, "sim"))
 import audio_race as ar                                        # noqa: E402
 import sotto_vlr as vr                                         # noqa: E402
+import vocoder_lab as vl                                       # noqa: E402
 
 EXE = os.path.join(ROOT, "c", "fixed", "sotto_vlr_dec_fx")
+ENC = os.path.join(ROOT, "c", "sotto_enc")
+
+
+def c_encode(mode, x16, exe=ENC):
+    with tempfile.TemporaryDirectory() as d:
+        np.asarray(x16, "<i2").tofile(f"{d}/in.raw")
+        subprocess.run([exe, f"-{mode}", f"{d}/in.raw", f"{d}/out.bit"], check=True)
+        b = np.fromfile(f"{d}/out.bit", np.uint8)
+    return np.unpackbits(b).reshape(-1, 48).astype(np.int8)
+
+
+def field_mismatch(v, bp, bc):
+    out, p = {}, 0
+    for k, w in v.layout():
+        d = int(np.sum(np.any(bp[:, p:p + w] != bc[:, p:p + w], 1)))
+        if d:
+            out[k] = d
+        p += w
+    return out
 
 
 def c_decode(mode, bits, good=None, exe=EXE):
@@ -45,13 +69,18 @@ def snr_db(ref, y):
 
 
 def main(clips, mode, loss, every, out, bits_dir):
+    vl.TRACK2["lag"] = 8
     v = vr.SottoVLR(mode)
     rows = []
     for path in clips:
         x, fs = sf.read(path)
         assert fs == 8000
-        x = np.round(x * 32767) / 32768
-        bits = v.encode(x)
+        x = x[:len(x) // 80 * 80]
+        x16 = np.round(x * 32767).astype(np.int16)
+        bits = v.encode(x16 / 32767.0)
+        bc = c_encode(mode, x16)
+        n = min(len(bits), len(bc))
+        same = np.all(bits[:n] == bc[:n], 1)
         good = None
         if every:
             good = np.arange(len(bits)) % every != 3
@@ -65,12 +94,19 @@ def main(clips, mode, loss, every, out, bits_dir):
         if bits_dir:
             os.makedirs(bits_dir, exist_ok=True)
             np.packbits(bits.astype(np.uint8), axis=1).tofile(os.path.join(bits_dir, f"{name}_{mode}.bit"))
-        r = dict(clip=name, superframes=len(bits), c_lag=lag, snr_db=round(float(snr_db(yp, yc)), 1),
+        ycc = c_decode(mode, bc, None if good is None else good[:len(bc)])[lag:]
+        r = dict(clip=name, superframes=len(bits), superframes_c=len(bc),
+                 enc_bit_exact=round(float(same.mean()), 4), field_mismatch=field_mismatch(v, bits[:n], bc[:n]),
+                 c_lag=lag, snr_db=round(float(snr_db(yp, yc)), 1),
                  pesq_py=round(float(ar.score(x, yp, ar.CODEC_DELAY)[0]), 3),
-                 pesq_c=round(float(ar.score(x, yc, ar.CODEC_DELAY)[0]), 3))
+                 pesq_c=round(float(ar.score(x, yc, ar.CODEC_DELAY)[0]), 3),
+                 pesq_cc=round(float(ar.score(x, ycc, ar.CODEC_DELAY)[0]), 3))
         print(json.dumps(r), flush=True)
         rows.append(r)
     s = dict(mode=mode, loss=loss, every=every, min_snr_db=min(r["snr_db"] for r in rows),
+             enc_bit_exact=round(float(np.average([r["enc_bit_exact"] for r in rows],
+                                                  weights=[r["superframes"] for r in rows])), 4),
+             pesq_cc=round(float(np.mean([r["pesq_cc"] for r in rows])), 3),
              pesq_py=round(float(np.mean([r["pesq_py"] for r in rows])), 3),
              pesq_c=round(float(np.mean([r["pesq_c"] for r in rows])), 3))
     print(json.dumps(s))

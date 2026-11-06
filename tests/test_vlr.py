@@ -93,3 +93,24 @@ def test_fixed_decoder_follows_python(mode):
         bp, bc = _bands(yp), _bands(yc)
         act = bp.max(1) > bp.max() - 40
         assert np.abs(bp - bc)[act].mean() < 1.0
+
+
+ENC = os.path.join(ROOT, "c", "sotto_enc")
+
+
+@pytest.mark.skipif(not os.path.exists(ENC), reason="needs make -C c")
+@pytest.mark.parametrize("mode", ["600", "400"])
+def test_c_encoder_follows_python(mode, monkeypatch):
+    """The float C encoder (c/sotto_vlr.c, sotto_enc -600/-400) writes the Python encoder's bits
+    (with the C core's fixed-lag pitch tracker): its anchors settle as soon as every Viterbi
+    path agrees, which gives the whole-utterance search's choice."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import check_vlr as cv
+    monkeypatch.setitem(vl.TRACK2, "lag", 8)
+    x16 = np.fromfile(HTS1A, "<i2")
+    x16 = x16[:len(x16) // 80 * 80]
+    v = vr.SottoVLR(mode)
+    bp = v.encode(x16 / 32767.0)
+    bc = cv.c_encode(mode, x16)
+    assert bc.shape == bp.shape
+    assert np.all(bp == bc, 1).mean() >= 0.98

@@ -1,8 +1,9 @@
 # Very-low-rate sotto: sotto 600 and sotto 400
 
 *2026-11-06. Python reference `sim/sotto_vlr.py` (`SottoVLR("600")`, `SottoVLR("400")`), tables
-`sim/data/vlr_tables.npz` from `tools/train_vlr.py`, scores from `tools/vlr_race.py`. Fixed-point
-decoder `c/fixed/sotto_fx_vlr.c` (no C encoder yet). Listening round 20: see below.*
+`sim/data/vlr_tables.npz` from `tools/train_vlr.py`, scores from `tools/vlr_race.py`. Float C
+encoder `c/sotto_vlr.c` (in libsotto, `sotto_enc -600/-400`), fixed-point decoder
+`c/fixed/sotto_fx_vlr.c`. Listening round 20: see below.*
 
 ## The short answer
 
@@ -140,6 +141,27 @@ What didn't help (each within ±0.03 PESQ of the others, which is noise here):
 - For sotto 400, three single-stage anchors every 40 ms (9, 8, 8 bits) beat two two-stage
   anchors every 60 ms (6+5 each) by 0.03 PESQ and 0.01 ESTOI.
 
+## C encoder
+
+`c/sotto_vlr.c` (API in `c/sotto_vlr.h`, in libsotto; `c/sotto_enc -600 | -400 IN.raw
+OUT.bit`) is the float port of `SottoVLR.encode_params` on the v3.7 encoder core, as sotto
+1200's `c/sotto_lr.c` is. Voicing pattern, pitch line and energy depend on a superframe's own
+frames. The shape anchors come from the same Viterbi search over each anchor's 16 best paths,
+run as a stream: an anchor is final once every surviving path goes through the same candidate,
+which is the choice the whole-utterance search makes. (After 96 anchors without agreement the
+best path would decide; that hasn't happened on speech.) The encoder therefore hands out a
+superframe 145 ms after its end on average and 390 ms at most (16 voices), on top of the
+core's own look-ahead.
+
+- **Against the Python encoder** (`tools/check_vlr.py`, with the C core's fixed-lag pitch
+  tracker, `TRACK2["lag"] = 8`): 99.96% of sotto 600 superframes and 99.93% of sotto 400's are
+  bit-exact on the 16 voices (one superframe each differs, on EARS p051, both at frames
+  336-339). C encoder into C decoder scores PESQ 2.083 (600) and 1.810 (400).
+- To get there the Python pitch line now solves its normal equations in closed form, as C
+  does: `lstsq` put some centres a hair below .5 and rounded them the other way.
+- The fixed-point build (`make fixed`) has no encoder for these modes (`sotto_vlr_enc_create`
+  returns NULL), as for sotto 1200: the K6 only receives.
+
 ## Fixed-point decoder and the K6 budget
 
 `c/fixed/sotto_fx_vlr.c` (API in `c/sotto_vlr.h`, tool `c/fixed/sotto_vlr_dec_fx 600|400
@@ -193,7 +215,9 @@ python tools/vlr_corpus.py SC_DIR corpus.npz --exclude-clips /mnt/project-files/
 python tools/train_vlr.py corpus.npz                 # writes sim/data/vlr_tables.npz
 python tools/vlr_race.py [--every 8 | --loss 0.1] [--json OUT]
 python tools/export_vlr_c.py                         # c/sotto_vlr_tables.c (make tables does it too)
-make -C c VARIANT=v3.7 all fixed                     # c/fixed/sotto_vlr_dec_fx
+make -C c VARIANT=v3.7 all fixed                     # c/sotto_enc, c/fixed/sotto_vlr_dec_fx
+c/sotto_enc -600 in.raw out.bit                      # 8 kHz 16-bit mono in, 6 bytes per 80 ms out
+c/fixed/sotto_vlr_dec_fx 600 out.bit back.raw
 python tools/check_vlr.py CLIP.flac ... --mode 600 [--loss 0.1] [--bits-dir DIR]
 ```
 
@@ -206,7 +230,7 @@ y = v.decode_audio(bits, good=None)   # good: per-superframe flags
 
 ## Open
 
-- A C encoder (the Python reference's Viterbi search is the bulk of it), and the K6 image.
+- The K6 image.
 - Ears: round 20.
 - References that need an outside build: Codec 2 450, MELPe 600.
 - Not tried: a residual for the interpolated frames (as sotto 1200's B frame), which needs bits

@@ -21,7 +21,8 @@ def mode_bits(cfg):
 
 def quantize_tables(t):
     """The tables as the C decoder stores them: slopes and energy residuals in 1/16 steps,
-    shape codebooks as int8 times one step per stage (max |value| / 127). Idempotent."""
+    shape codebooks as int8 times one step per stage (max |value| / 127, rounded to Q16, as
+    c/sotto_vlr_tables.c stores it, so the C encoder searches the same values). Idempotent."""
     t = dict(t)
     for k in list(t):
         if not k.startswith("m"):
@@ -32,5 +33,5 @@ def quantize_tables(t):
         elif name.startswith("a"):
             c = np.asarray(t[k], float)
             step = np.abs(c).max() / 127
-            t[k] = np.round(c / step) * step
+            t[k] = np.round(c / step) * (np.round(step * 65536) / 65536)
     return t
