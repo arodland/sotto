@@ -3,7 +3,7 @@
 from a K6 serial log and look at the receive IF they hold (docs/k6-fd6818-audio.md).
 
   python3 tools/k6_gp0.py fm  LOG [--png out.png]   gp0fm: FM-demodulate each capture
-  python3 tools/k6_gp0.py rate LOG                   gp0raw: the IF's quality if the raw
+  python3 tools/k6_gp0.py rate LOG [--tone 1000]     gp0raw: the IF's quality if the raw
                                                      22.9 MS/s stream were sampled k times
                                                      slower (DMA at a lower rate, say)
 
@@ -123,6 +123,13 @@ def cmd_rate(args):
                 fi = inst_freq(z, fsk)
                 cut = len(fi) // 8
                 fi = fi[cut:len(fi) - cut]
+                if args.tone:
+                    # a capture inside a tone: the residual of a fitted sine plus offset
+                    tt = (np.arange(len(fi)) + cut) / fsk
+                    A = np.stack([np.sin(2 * np.pi * args.tone * tt),
+                                  np.cos(2 * np.pi * args.tone * tt), np.ones_like(tt)], 1)
+                    coef, *_ = np.linalg.lstsq(A, fi, rcond=None)
+                    fi = fi - A @ coef + coef[2]
                 fif.append(fi.mean())
                 fn.append(fi.std())
             print(f"  {k:2d} {fs / k / 1e6:6.2f}  {100 * s.mean():4.1f}   {np.mean(snr):8.1f}"
@@ -138,6 +145,8 @@ def main():
     a.set_defaults(fn=cmd_fm)
     a = sub.add_parser("rate")
     a.add_argument("log")
+    a.add_argument("--tone", type=float, help="the captures are inside this tone (Hz): FM noise"
+                   " is then the residual of a fitted sine")
     a.set_defaults(fn=cmd_rate)
     args = ap.parse_args()
     args.fn(args)
