@@ -1,0 +1,218 @@
+{
+ "loss": 0.1,
+ "every": 0,
+ "summary": {
+  "600": {
+   "pesq": 1.803,
+   "estoi": 0.64
+  },
+  "400": {
+   "pesq": 1.656,
+   "estoi": 0.588
+  },
+  "lr1200": {
+   "pesq": 2.148,
+   "estoi": 0.713
+  }
+ },
+ "per_clip": {
+  "600": {
+   "ears_p020_m": {
+    "pesq": 2.08,
+    "estoi": 0.654
+   },
+   "ears_p025_m": {
+    "pesq": 2.043,
+    "estoi": 0.581
+   },
+   "ears_p047_f": {
+    "pesq": 1.668,
+    "estoi": 0.667
+   },
+   "ears_p051_f": {
+    "pesq": 1.462,
+    "estoi": 0.639
+   },
+   "ears_p070_f": {
+    "pesq": 1.645,
+    "estoi": 0.625
+   },
+   "ears_p095_m": {
+    "pesq": 1.754,
+    "estoi": 0.633
+   },
+   "ears_p100_f": {
+    "pesq": 1.388,
+    "estoi": 0.583
+   },
+   "ears_p107_m": {
+    "pesq": 2.038,
+    "estoi": 0.689
+   },
+   "librispeech_2428_m": {
+    "pesq": 2.212,
+    "estoi": 0.69
+   },
+   "librispeech_251_m": {
+    "pesq": 1.988,
+    "estoi": 0.723
+   },
+   "librispeech_3081_f": {
+    "pesq": 1.51,
+    "estoi": 0.526
+   },
+   "librispeech_3536_f": {
+    "pesq": 1.873,
+    "estoi": 0.67
+   },
+   "librispeech_6313_f": {
+    "pesq": 1.808,
+    "estoi": 0.634
+   },
+   "librispeech_652_m": {
+    "pesq": 1.781,
+    "estoi": 0.645
+   },
+   "librispeech_777_m": {
+    "pesq": 2.101,
+    "estoi": 0.651
+   },
+   "librispeech_8842_f": {
+    "pesq": 1.489,
+    "estoi": 0.628
+   }
+  },
+  "400": {
+   "ears_p020_m": {
+    "pesq": 1.891,
+    "estoi": 0.595
+   },
+   "ears_p025_m": {
+    "pesq": 2.027,
+    "estoi": 0.53
+   },
+   "ears_p047_f": {
+    "pesq": 1.619,
+    "estoi": 0.619
+   },
+   "ears_p051_f": {
+    "pesq": 1.432,
+    "estoi": 0.561
+   },
+   "ears_p070_f": {
+    "pesq": 1.77,
+    "estoi": 0.62
+   },
+   "ears_p095_m": {
+    "pesq": 1.59,
+    "estoi": 0.589
+   },
+   "ears_p100_f": {
+    "pesq": 1.217,
+    "estoi": 0.489
+   },
+   "ears_p107_m": {
+    "pesq": 1.858,
+    "estoi": 0.635
+   },
+   "librispeech_2428_m": {
+    "pesq": 1.944,
+    "estoi": 0.639
+   },
+   "librispeech_251_m": {
+    "pesq": 1.674,
+    "estoi": 0.667
+   },
+   "librispeech_3081_f": {
+    "pesq": 1.278,
+    "estoi": 0.458
+   },
+   "librispeech_3536_f": {
+    "pesq": 1.502,
+    "estoi": 0.629
+   },
+   "librispeech_6313_f": {
+    "pesq": 1.582,
+    "estoi": 0.575
+   },
+   "librispeech_652_m": {
+    "pesq": 1.772,
+    "estoi": 0.592
+   },
+   "librispeech_777_m": {
+    "pesq": 1.941,
+    "estoi": 0.6
+   },
+   "librispeech_8842_f": {
+    "pesq": 1.404,
+    "estoi": 0.607
+   }
+  },
+  "lr1200": {
+   "ears_p020_m": {
+    "pesq": 2.23,
+    "estoi": 0.695
+   },
+   "ears_p025_m": {
+    "pesq": 2.69,
+    "estoi": 0.673
+   },
+   "ears_p047_f": {
+    "pesq": 1.957,
+    "estoi": 0.72
+   },
+   "ears_p051_f": {
+    "pesq": 1.867,
+    "estoi": 0.727
+   },
+   "ears_p070_f": {
+    "pesq": 2.092,
+    "estoi": 0.712
+   },
+   "ears_p095_m": {
+    "pesq": 2.264,
+    "estoi": 0.714
+   },
+   "ears_p100_f": {
+    "pesq": 1.76,
+    "estoi": 0.689
+   },
+   "ears_p107_m": {
+    "pesq": 2.365,
+    "estoi": 0.731
+   },
+   "librispeech_2428_m": {
+    "pesq": 2.538,
+    "estoi": 0.757
+   },
+   "librispeech_251_m": {
+    "pesq": 2.305,
+    "estoi": 0.782
+   },
+   "librispeech_3081_f": {
+    "pesq": 1.957,
+    "estoi": 0.627
+   },
+   "librispeech_3536_f": {
+    "pesq": 2.168,
+    "estoi": 0.741
+   },
+   "librispeech_6313_f": {
+    "pesq": 2.047,
+    "estoi": 0.705
+   },
+   "librispeech_652_m": {
+    "pesq": 1.925,
+    "estoi": 0.697
+   },
+   "librispeech_777_m": {
+    "pesq": 2.445,
+    "estoi": 0.724
+   },
+   "librispeech_8842_f": {
+    "pesq": 1.752,
+    "estoi": 0.712
+   }
+  }
+ }
+}
