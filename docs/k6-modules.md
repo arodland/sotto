@@ -245,3 +245,13 @@ what would settle it.
    - An RC tap from EARO (or the speaker node) into a free ADC pin gives 8 kHz receive audio.
      It would also let the K6 measure its own audio passband, to put the FFSK tones on the
      flattest part. Jeff has ruled out hardware mods so far.
+9. **FT8 (and WSPR) from the receive IF.**
+   - From: the FT8/WSPR thread, 2026-11-06 ([k6-ft8-wspr.md](k6-ft8-wspr.md)).
+   - Tested in simulation and on the emulated M0, not on air: `ft8wf` (3.7 KB) streams a 4-bit
+     waterfall that the PC decodes; 75% at -16 dB through the modelled GP0 path. The whole
+     decoder `ft8rx` is 7.2 KB and waits for a bigger module arena.
+   - Untested: the K6's IF offset against the IC-7100 (xtalstep read 164 Hz low, gp0fm 8 Hz),
+     which must sit inside the 200 Hz window; the receiver-noise floor that the noise-filling
+     gain assumes; the K6 crystal's drift over 2 minutes, which decides WSPR at 440 MHz.
+   - Buys: a weak-signal mode on the pager's own hardware, and a first user of a bigger arena.
+   - Settled by: the bench run in k6-ft8-wspr.md, and a 10-minute IF log of a bare carrier.
