@@ -306,18 +306,31 @@ what would settle it.
     - Buys: false locks fell from 4-6 in 18 streams to none, for about 70 B of code. The same applies to any
       module that sweeps a clock against a known preamble (FT8's Costas arrays, CW's dits).
     - Settled: yes, on the emulator; the first `iflive` bench run checks it on air.
-17. **FT8 (and WSPR) from the receive IF.**
+17. **The K6 transmitting FSK the MCU writes.**
+    - From: the "Transmit our own FSK from the K6" thread, 2026-11-06 ([k6-own-fsk.md](k6-own-fsk.md)).
+    - Tested on air (xtalstep, PR #71): the crystal value REG_3B and the frequency word REG_38 are
+      latched. Neither moves the synthesizer until RXON/TXON, so there is no per-symbol modulator
+      there. After RXON, REG_3B steps exactly 84.8 Hz at 440.850 MHz.
+    - Untested: the tone oscillator (REG_70/71) as continuous-phase audio FSK, with the frequency
+      word changed per symbol. It would give 4-tone audio FSK, matching the receive thread's 4FSK
+      tones (900/1500/2100/2700 Hz).
+    - Buys: K6-to-PC and K6-to-K6 links in modes the chip's FSK modem lacks. The module TX API
+      (level 3, PR #71) is the prerequisite; it isn't on the radio yet.
+    - Settled by: a module that switches REG_71 per symbol while keyed, recorded on the IC-7100.
+18. **FT8 (and WSPR) from the receive IF.**
     - From: the FT8/WSPR thread, 2026-11-06 ([k6-ft8-wspr.md](k6-ft8-wspr.md)).
     - Tested in simulation and on the emulated M0: `ft8wf` (3.8 KB) streams a 4-bit waterfall
       that the PC decodes; 75% at -16 dB through the modelled GP0 path. The whole decoder
       `ft8rx` is 7.2 KB and waits for a bigger module arena.
     - Run 1 on air (2026-11-06): the IF offset is +11 Hz, well inside the 200 Hz window. The
       noise rms reached only 4.1 at the top gain step (the sim assumed 8), so expect the sim's
-      floor-0.06 numbers (-16 dB 42%). No decodes: the ring overran (see 18).
+      floor-0.06 numbers (-16 dB 42%). No decodes: the ring overran (see 19).
+    - Run 2: no overruns, but no tones in the window; a mirrored IF is the suspect (run 3's
+      tone capture, `tools/k6_ft8.py tone`, settles it).
     - Untested: the K6 crystal's drift over 2 minutes, which decides WSPR at 440 MHz.
     - Buys: a weak-signal mode on the pager's own hardware, and a first user of a bigger arena.
     - Settled by: the bench run in k6-ft8-wspr.md, and a 10-minute IF log of a bare carrier.
-18. **Keep API calls out of a streaming module's hot loop.**
+19. **Keep API calls out of a streaming module's hot loop.**
     - From: the FT8/WSPR thread, run 1 (2026-11-06).
     - `api->key_down()` costs about 60 us on the radio: Aura's `any_pressed` scans six keypad
       rows with a 5 us SysTick wait each. Called on every drain pass, it overran ft8wf's 93 us

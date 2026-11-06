@@ -56,7 +56,9 @@
 #define CODE 13
 #define FS_Q8 (93750u * 256u)
 #ifdef GP0_SWEEP
+#ifndef TAG
 #define TAG "sweep"
+#endif
 #ifndef BLK
 #define BLK 4688u            /* outputs per block: about 52 ms at 89 kHz */
 #endif
@@ -478,7 +480,7 @@ out:
   teardown(api, &sv);
   return ret;
 }
-#else
+#elif !defined(GP0_NO_MAIN)
 /* the sweep: blocks of BLK outputs at L 64 while the carrier lasts, each with REG_6F */
 int k6_main(const k6_api_t *api) {
   blk_t blk;
