@@ -34,8 +34,12 @@ extern "C" {
 #define SP_PAYLOAD_MAX SP_PAYLOAD_XL
 #define SP_MAGIC 0xA7               /* v3.7 voice packets */
 #define SP_MAGIC_LR 0xA9            /* sotto 1200 voice packets: each 6-byte slot is 40 ms */
-/* The codec this build plays: v3.7, or sotto 1200 with -DSP_LR. Either build takes both kinds
-   of packet (CRC, sync, store, bit-error tests); a message of the other codec doesn't play. */
+#define SP_MAGIC_600 0xAC           /* sotto 600: each slot is an 80 ms superframe */
+#define SP_MAGIC_400 0xAD           /* sotto 400: each slot is a 120 ms superframe */
+/* The codec this build plays: v3.7, or sotto 1200 with -DSP_LR, and with -DSP_LR -DSP_VLR also
+   sotto 600 and 400 (docs/sotto-vlr.md; their tables in SPI flash, sp_vlr.h). Every build
+   takes every kind of voice packet (CRC, sync, store, bit-error tests); a message of a codec
+   the build doesn't play stays unplayed. */
 #ifdef SP_LR
 #define SP_PLAY_MAGIC SP_MAGIC_LR
 #else
@@ -48,7 +52,7 @@ extern "C" {
 /* sp_packet results */
 enum {
   SP_BAD_LENGTH = -3,
-  SP_BAD_MAGIC = -2,             /* de-whitened byte 0 is not 0xA7 or 0xA9 */
+  SP_BAD_MAGIC = -2,             /* de-whitened byte 0 is not 0xA7, 0xA9, 0xAC or 0xAD */
   SP_BAD_CRC = -1,
   SP_DUP = 0,                    /* good packet, nothing new in it */
   SP_ADDED = 1,                  /* good packet with new frames */
@@ -77,7 +81,7 @@ const uint8_t *sp_last_packet(void);
 typedef struct {
   int16_t have;                  /* 1 while a message is in the store */
   uint8_t msg_id;
-  uint8_t profile;               /* 'L' or 'X' (XL); 'l' or 'x' for sotto 1200 (magic 0xA9) */
+  uint8_t profile;               /* 'L' or 'X' (XL); 'l' or 'x' for sotto 1200, 600 or 400 (sp_magic) */
   uint16_t total;                /* frames in the message */
   uint16_t stored;               /* frames that fit the store (= total unless it was truncated) */
   uint16_t frames_got;           /* frames received, of stored */
@@ -88,6 +92,7 @@ typedef struct {
   int16_t complete;              /* every stored frame arrived */
 } sp_status_t;
 void sp_status(sp_status_t *st);
+int sp_magic(void);              /* the stored message's magic byte (its codec), 0 for none */
 /* The seqs (packets of one pass) not received yet, up to max of them into out; returns how many
    are missing in all (0 while the total is unknown). */
 int sp_missing(uint16_t *out, int max);
@@ -97,7 +102,8 @@ int sp_missing(uint16_t *out, int max);
    1, or returns 0 once the message and the decoder's 20 ms delay are done. Frames that never
    arrived are concealed. With -DSP_LR (sotto 1200) each stored slot is 40 ms, played as two
    calls of 20 ms (sotto_lr_decode_half), the decoder's 80 ms of delay dropped at the start; a
-   message of the other codec plays nothing (returns 0). Takes about 55-75 MHz-milliseconds per call on the K6's M0 at
+   message of the other codec plays nothing (returns 0). With -DSP_VLR a sotto 600 / 400 slot
+   is 4 / 6 calls (sotto_vlr_decode_frame), the decoder's 2 superframes of delay dropped. Takes about 55-75 MHz-milliseconds per call on the K6's M0 at
    96 MHz (docs/k6-receiver.md), so it must not run inside an interrupt. */
 void sp_play_start(void);
 int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]);

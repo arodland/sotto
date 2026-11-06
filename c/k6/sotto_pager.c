@@ -4,7 +4,14 @@
 #include <string.h>
 #include "sotto_pager.h"
 #include "sp_cb.h"
+#include "sp_vlr.h"
 #include "../sotto.h"
+#ifdef SP_VLR
+#include "../sotto_vlr.h"
+#ifndef SP_LR
+#error "SP_VLR builds on SP_LR: the image plays sotto 1200, 600 and 400"
+#endif
+#endif
 #include "../fixed/fx.h"            /* FX_OA_PACKED: whether fx_cs512's 2 KB table is in RAM */
 
 /* ---- the decoder's allocations: sotto_fx_dec.c (and sotto_fx_lr.c) are built with
@@ -12,7 +19,10 @@
    block for v3.7 (the core), two for sotto 1200 (its own state, then the core). A bump pool,
    emptied when every block is freed ---------------------------------------------------- */
 #define SP_DEC_CORE 864              /* sotto_fx_dec_bytes(): 836 on the M0 and x86 */
-#ifdef SP_LR
+#if defined(SP_VLR)
+#define SP_DEC_MAX (SP_DEC_CORE + 640)  /* + struct sotto_vlr_dec (sotto_vlr_dec_bytes(): 580 B on
+                                           the M0), or struct sotto_lr_dec: one at a time */
+#elif defined(SP_LR)
 #define SP_DEC_MAX (SP_DEC_CORE + 320)  /* + struct sotto_lr_dec (300 B on the M0) */
 #else
 #define SP_DEC_MAX SP_DEC_CORE
@@ -72,6 +82,7 @@ static unsigned crc16(const uint8_t *p, int n) {
 /* ---- the store -------------------------------------------------------------------------- */
 typedef struct {
   sp_status_t st;
+  uint8_t magic;                  /* the message's codec */
   int max_frames;
   uint8_t *frames;                /* max_frames x 6 */
   uint8_t *good;                  /* bit per frame */
@@ -83,6 +94,10 @@ static store_t S;
 static struct sotto_lr_dec *dec;
 static int play_half;               /* sotto 1200: which 20 ms half of the slot comes next */
 static int play_skip;               /* halves still to drop: the decoder's delay, silent */
+#ifdef SP_VLR
+static struct sotto_vlr_dec *vdec;  /* a sotto 600 / 400 message's decoder (dec is then 0) */
+static int play_k, play_n;          /* the next 20 ms of the slot, of play_n */
+#endif
 #else
 static struct sotto_dec *dec;
 #endif
@@ -140,7 +155,11 @@ int sp_init(void *mem, unsigned bytes) {
   return (int)n;
 }
 
-static void clear_message(uint8_t msg_id, uint8_t profile) {
+static int voice_magic(int m) {
+  return m == SP_MAGIC || m == SP_MAGIC_LR || m == SP_MAGIC_600 || m == SP_MAGIC_400;
+}
+
+static void clear_message(uint8_t msg_id, uint8_t profile, uint8_t magic) {
   uint16_t gp = S.st.good_packets, bp = S.st.bad_packets;
   ring = fpg_now = hi_count = avail = ended = overruns = playing = 0;
   hi_group = -1;
@@ -149,6 +168,7 @@ static void clear_message(uint8_t msg_id, uint8_t profile) {
   memset(&S.st, 0, sizeof S.st);
   S.st.good_packets = gp, S.st.bad_packets = bp;
   S.st.have = 1, S.st.msg_id = msg_id, S.st.profile = profile;
+  S.magic = magic;
 }
 
 static int pos_of(long f) { return ring ? (int)(f % ring) : (int)f; }
@@ -192,8 +212,9 @@ static int packet(const uint8_t *p, int fpp, uint8_t profile) {
   int dep = GROUP >> (p[2] >> 6), seq = (p[2] & 0x3F) << 8 | p[3], total = p[4] << 8 | p[5];
   int s, was_new = 0, fpg = fpp * dep;
   unsigned before;
-  if (!S.st.have || S.st.profile != profile || p[1] != S.st.msg_id || total != S.st.total || dep != gp_now) {
-    clear_message(p[1], profile);
+  if (!S.st.have || S.st.profile != profile || p[0] != S.magic || p[1] != S.st.msg_id || total != S.st.total ||
+      dep != gp_now) {
+    clear_message(p[1], profile, p[0]);
     S.st.total = (uint16_t)total;
     S.st.stored = (uint16_t)(total < S.max_frames ? total : S.max_frames);
     S.st.packets_total = (uint16_t)((total + fpg - 1) / fpg * dep);
@@ -231,14 +252,14 @@ int sp_packet(const uint8_t *payload, int len) {
   if (!pn9[0]) pn9_init();
   for (i = 0; i < len; i++) last_pkt[i] = payload[i] ^ pn9[i];
   for (; i < SP_PAYLOAD_MAX; i++) last_pkt[i] = 0;
-  if (last_pkt[0] != SP_MAGIC && last_pkt[0] != SP_MAGIC_LR) { S.st.bad_packets++; return SP_BAD_MAGIC; }
+  if (!voice_magic(last_pkt[0])) { S.st.bad_packets++; return SP_BAD_MAGIC; }
   if (crc16(last_pkt, len - 2) != ((unsigned)last_pkt[len - 2] << 8 | last_pkt[len - 1])) {
     S.st.bad_packets++;
     return SP_BAD_CRC;
   }
   S.st.good_packets++;
   if (!S.max_frames) return SP_DUP;
-  r = packet(last_pkt, fpp_of(len), (len == SP_PAYLOAD_XL ? 'X' : 'L') | (last_pkt[0] == SP_MAGIC_LR ? 0x20 : 0));
+  r = packet(last_pkt, fpp_of(len), (len == SP_PAYLOAD_XL ? 'X' : 'L') | (last_pkt[0] != SP_MAGIC ? 0x20 : 0));
   return r;
 }
 
@@ -247,7 +268,7 @@ int sp_check(const uint8_t *payload, int len) {
   unsigned c = 0xFFFF;
   if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return 0;
   if (!pn9[0]) pn9_init();
-  if ((payload[0] ^ pn9[0]) != SP_MAGIC && (payload[0] ^ pn9[0]) != SP_MAGIC_LR) return 0;
+  if (!voice_magic(payload[0] ^ pn9[0])) return 0;
   for (i = 0; i < len - 2; i++) {     /* the CRC as crc16(), de-whitening on the way: no copy */
     int b;
     c ^= (unsigned)(payload[i] ^ pn9[i]) << 8;
@@ -283,6 +304,7 @@ const uint8_t *sp_pn9(void) {
 unsigned sp_crc16(const uint8_t *p, int n) { return crc16(p, n); }
 
 void sp_status(sp_status_t *st) { *st = S.st; }
+int sp_magic(void) { return S.st.have ? S.magic : 0; }
 
 int sp_missing(uint16_t *out, int max) {
   int n = 0;
@@ -295,25 +317,47 @@ int sp_missing(uint16_t *out, int max) {
 }
 
 /* ---- playback ---------------------------------------------------------------------------- */
-#ifdef SP_LR
-#define MSG_PLAYS (S.st.profile & 0x20)       /* 'l' / 'x': a sotto 1200 message */
+#if defined(SP_VLR)
+#define MSG_VLR (S.magic == SP_MAGIC_600 || S.magic == SP_MAGIC_400)
+#define MSG_PLAYS (S.magic == SP_MAGIC_LR || MSG_VLR)
+#elif defined(SP_LR)
+#define MSG_PLAYS (S.magic == SP_MAGIC_LR)
 #else
-#define MSG_PLAYS (!(S.st.profile & 0x20))
+#define MSG_PLAYS (S.magic == SP_MAGIC)
+#endif
+/* the tables a message needs: sotto 600 / 400 their own (sp_vlr.h), the rest the codebook */
+#ifdef SP_VLR
+#define TABLES_READY (MSG_VLR ? sp_vlr_ready() : sp_cb_ready())
+#else
+#define TABLES_READY sp_cb_ready()
 #endif
 
 void sp_play_start(void) {
 #ifdef SP_LR
   if (dec) sotto_lr_dec_destroy(dec);
-  dec = sotto_lr_dec_create();
+  dec = 0;
+#ifdef SP_VLR
+  if (vdec) sotto_vlr_dec_destroy(vdec);
+  vdec = 0;
+  play_k = 0;
+  if (S.st.have && MSG_VLR) {
+    vdec = sotto_vlr_dec_create(S.magic == SP_MAGIC_600 ? 600 : 400);
+    play_n = vdec ? sotto_vlr_samples(vdec) / SP_FRAME_SAMPLES : 0;
+    play_skip = play_n * SOTTO_VLR_DEC_DELAY;
+  } else
+#endif
+  {
+    dec = sotto_lr_dec_create();
+    play_skip = 2 * SOTTO_LR_DEC_DELAY;
+  }
   play_half = 0;
-  play_skip = 2 * SOTTO_LR_DEC_DELAY;
 #else
   if (dec) sotto_dec_destroy(dec);
   dec = sotto_dec_create();
 #endif
   play_pos = 0;
-  /* -1: the other codec's message, or no codebook to decode with (sp_cb.h) */
-  play_end = S.st.have && MSG_PLAYS && sp_cb_ready() ? S.st.stored : -1;
+  /* -1: the other codec's message, or no tables to decode with (sp_cb.h, sp_vlr.h) */
+  play_end = S.st.have && MSG_PLAYS && TABLES_READY ? S.st.stored : -1;
   playing = 1;
   emph1 = emph2 = 0;
   pcm_hash = 2166136261u, pcm_n = 0;
@@ -335,7 +379,32 @@ static int lr_half(int16_t pcm[SP_FRAME_SAMPLES]) {
   return 1;
 }
 
+#ifdef SP_VLR
+/* sotto 600 / 400: each slot is play_n x 20 ms; the decoder runs SOTTO_VLR_DEC_DELAY slots
+   behind, and its flush plays the last ones */
+static int vlr_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
+  int r;
+  if (play_pos < play_end) {
+    if (ring && play_pos >= avail && play_k == 0) return SP_PLAY_WAIT;
+    r = pos_of(play_pos);
+    sotto_vlr_decode_frame(vdec, S.frames + 6 * r, bit(S.good, r), play_k, pcm);
+    if (++play_k == play_n) play_k = 0, play_pos++;
+    return 1;
+  }
+  return sotto_vlr_dec_flush_frame(vdec, pcm);
+}
+#endif
+
 int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
+#ifdef SP_VLR
+  if (vdec && play_end >= 0)
+    for (;;) {
+      int r = vlr_frame(pcm);
+      if (r != 1) return r;
+      if (!play_skip) return hash_pcm(pcm), 1;
+      play_skip--;                /* the first 2 slots out are the delay's silence */
+    }
+#endif
   if (!dec || play_end < 0) return 0;
   for (;;) {
     int r = lr_half(pcm);
@@ -407,6 +476,8 @@ int sp_auto_gain_q8(void) {
     if (bit(S.good, f)) {
       const uint8_t *q = S.frames + 6 * f;
       int e = ((q[1] << 8 | q[2]) >> 10) & 31;      /* bits 9..13: voicing 2 | Wo 7 | energy 5 */
+      if (S.magic == SP_MAGIC_600 || S.magic == SP_MAGIC_400)  /* bits 13..17: the energy mean */
+        e = (int)(((uint32_t)q[1] << 16 | (uint32_t)q[2] << 8 | q[3]) >> 14) & 31;
       if (e > top) top = e;
     }
   return top < 0 ? 256 : auto_gain[top];
@@ -474,6 +545,9 @@ int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e) {
 
 unsigned sp_static_bytes(void) {
   return (unsigned)(sizeof dec_mem + sizeof pn9 + sizeof last_pkt + sizeof S + sizeof dec + 14 * sizeof(int)
+#ifdef SP_VLR
+                    + sizeof vdec + 2 * sizeof(int)
+#endif
                     + 2 * sizeof(int32_t) + 2 * SP_FRAME_SAMPLES
 #ifdef FX_OA_PACKED
                     + 2048u                       /* fx_cs512's table (fx_math.c) */

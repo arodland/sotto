@@ -22,8 +22,21 @@ typedef struct {
   unsigned char sbits[VLR_MAX_ANCHORS][VLR_MAX_STAGES];
   const int8_t *cb[VLR_MAX_ANCHORS][VLR_MAX_STAGES];   /* [2^bits][VLR_NC] */
   int32_t step[VLR_MAX_ANCHORS][VLR_MAX_STAGES];       /* dB per codebook unit, Q16 */
+  uint32_t cboff[VLR_MAX_ANCHORS][VLR_MAX_STAGES];     /* where cb[j][i] starts in vlr_cb_all */
 } vlr_mode_t;
 
 extern const vlr_mode_t vlr_mode600, vlr_mode400;
+extern const uint32_t vlr_cb_bytes;            /* both modes' shape codebooks, int8 */
+extern const int8_t vlr_cb_all[];              /* them (not in a -DVLR_CB_SPI tables build) */
+
+/* Codebook vector idx of anchor j's stage i (VLR_NC int8 values). Built with -DVLR_CB_SPI (the
+   K6), the tables leave the codebooks out (cb[][] is NULL) and the vector comes from
+   vlr_cb_fetch (c/k6/sp_vlr.c), which reads it from the SPI flash into buf. */
+#ifdef VLR_CB_SPI
+const int8_t *vlr_cb_fetch(const vlr_mode_t *m, int j, int i, int idx, int8_t buf[VLR_NC]);
+#define VLR_CB_VEC(m, j, i, idx, buf) vlr_cb_fetch(m, j, i, idx, buf)
+#else
+#define VLR_CB_VEC(m, j, i, idx, buf) ((void)(buf), (m)->cb[j][i] + (idx) * VLR_NC)
+#endif
 
 #endif

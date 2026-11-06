@@ -5,6 +5,8 @@ Usage: python c/k6/bench_k6.py c/k6/build/bench.elf IN.raw|IN.wav|IN.flac [--ws 
        [--store BYTES] [--pcm OUT.raw] [--json OUT.json]
        python c/k6/bench_k6.py c/k6/build-lr/bench.elf IN --codec 1200   (K6_CODEC=1200 build:
        sotto 1200, magic 0xA9, played in 20 ms halves)
+       python c/k6/bench_k6.py c/k6/build-vlr/bench.elf IN --codec 600   (K6_CODEC=vlr build:
+       sotto 600 / 400, magic 0xAC / 0xAD, 4 / 6 calls of 20 ms per slot)
 
 Encodes IN with c/fixed/sotto_enc_fx (v3.7; make -C c VARIANT=v3.7 fixed), packs the frames
 into packets with c/k6/k6fsk_ref.py (profile L), drops the --lose packets, then on the
@@ -46,7 +48,7 @@ def encode(path, codec='2400'):
     with tempfile.TemporaryDirectory() as d:
         open(f'{d}/in.raw', 'wb').write(pcm)
         # sotto 1200 has no fixed-point encoder: the float one (make -C c VARIANT=v3.7 sotto_enc)
-        enc = [os.path.join(ROOT, 'c', 'sotto_enc'), '-1200'] if codec == '1200' else \
+        enc = [os.path.join(ROOT, 'c', 'sotto_enc'), '-' + codec] if codec in ('1200', '600', '400') else \
             [os.path.join(ROOT, 'c', 'fixed', 'sotto_enc_fx')]
         subprocess.run(enc + [f'{d}/in.raw', f'{d}/o.bit'], check=True)
         b = open(f'{d}/o.bit', 'rb').read()
@@ -63,7 +65,7 @@ def main():
     ap.add_argument('--gain', type=int, default=256)
     ap.add_argument('--pcm')
     ap.add_argument('--json')
-    ap.add_argument('--codec', choices=('2400', '1200'), default='2400')
+    ap.add_argument('--codec', choices=('2400', '1200', '600', '400'), default='2400')
     ap.add_argument('--yield-gap', action='store_true',
                     help='with the decoder yield hook set to sp_yield_probe (builds with FX_YIELD_HOOK): '
                          'the longest stretch of work between yields, in us at 96 MHz')
@@ -74,10 +76,10 @@ def main():
     store, pkt, pwm = io + 0x10000, io + 0x100, io + 0x2000
     frames = encode(a.input, a.codec)
     lose = {int(x) for x in a.lose.split(',') if x}
-    if a.codec == '1200':
+    if a.codec != '2400':
         sys.path.insert(0, ROOT)
         from modem import pager
-        all_pk = pager.profile('L', '1200').pack(b''.join(frames), msg_id=0x21)
+        all_pk = pager.profile('L', a.codec).pack(b''.join(frames), msg_id=0x21)
     else:
         all_pk = ref.pack_message(frames, 0x21)
     packets = [p for i, p in enumerate(all_pk) if i not in lose]
@@ -85,6 +87,10 @@ def main():
         r, c = m.call('sp_cb_setup')
         assert r > 0, r
         print(f'codebook check: {c / 96e3:.1f} ms')
+    if 'sp_vlr_setup' in m.sym and a.codec in ('600', '400'):
+        r, c = m.call('sp_vlr_setup')
+        assert r > 0, r
+        print(f'sotto 600 / 400 tables check: {c / 96e3:.1f} ms')
     nmax, _ = m.call('sp_init', store, a.store)
     pc = []
     for p in packets:

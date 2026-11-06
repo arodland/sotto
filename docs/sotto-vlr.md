@@ -14,7 +14,7 @@ the 6-byte slot:
 |---|---:|---:|---:|---:|
 | sotto 1200 (reference) | 1200 | 2.578 / 0.762 | 2.168 / 0.715 | 2.148 / 0.713 |
 | Codec 2 1200 | 1200 | 2.145 / 0.683 | | |
-| **sotto 600** | **600** | **2.097 / 0.690** | **1.814 / 0.638** | 1.795 / 0.638 |
+| **sotto 600** | **600** | **2.096 / 0.690** | **1.814 / 0.638** | 1.795 / 0.638 |
 | Codec 2 700C | 700 | 1.909 / 0.606 | | |
 | **sotto 400** | **400** | **1.826 / 0.637** | 1.609 / 0.577 | 1.645 / 0.587 |
 
@@ -173,8 +173,8 @@ the same fields for every frame, with losses too (checked frame by frame on two 
 clean and with 1 superframe in 5 or 8 lost).
 
 - **Against the Python decoder** (`tools/check_vlr.py`, `docs/results/vlr_fx_check_*.json`, 16
-  voices): mean PESQ 2.083 against 2.097 (600) and 1.822 against 1.826 (400); with 10% of
-  superframes lost, 1.869 / 1.877 and 1.664 / 1.667. The waveforms match to 62-65 dB SNR on a
+  voices): mean PESQ 2.083 against 2.095 (600, with the C tracker's fixed lag) and 1.808 against 1.813 (400); with 10% of
+  superframes lost, 1.871 / 1.879 and 1.672 / 1.677. The waveforms match to 62-65 dB SNR on a
   few voices and drift in phase on the others (6-33 dB), as sotto 1200's fixed decoder does on
   the same voices (11.8 dB on 652_m): that is the v3.7 core, not this layer.
 - **Cortex-M0 emulator** (`VLR=1 sh tools/cm0_build.sh`, `c/fixed/cm0/run.py ELF BITS --vlr 600`),
@@ -189,9 +189,37 @@ clean and with 1 superframe in 5 or 8 lost).
   Output is bit-exact with x86. Heap 1,072 bytes, stack 3.3 KB, both the core's. The layer is
   2.1 KB of code at -Os. It reads 4 codebook vectors per 80 ms (600) or 3 per 120 ms (400),
   against sotto 1200's 3 per 40 ms, so SPI-flash tables would cost less than they do now.
-- **Not done:** the K6 image. The pager would need magic bytes for the two modes, and the
-  tables in SPI flash (7.2 or 15 KB, a second one-time install next to v3.7's codebook), or a
-  600-only image with them in MCU flash, which doesn't fit beside the v3.7 table.
+- **Per frame.** `sotto_vlr_decode_frame` plays one 20 ms frame per call (the anchors are worked
+  out at the superframe's first frame), so the K6 pager needs no 640- or 960-sample buffer; it is
+  bit-exact with the whole-superframe call (same samples, with losses too).
+
+## The K6 image
+
+The pager library (`c/k6`) plays sotto 600 and 400 in a build on top of sotto 1200's
+(`K6_CODEC=vlr sh tools/k6_build.sh`, `-DSP_LR -DSP_VLR`; Aura images `aura-pager-vlr` and the
+one-time install `aura-pager-vlri`, `firmware/k6-aura/README.md`):
+
+- **Magic bytes.** 0xAC is sotto 600 and 0xAD sotto 400 (`modem/pager.py`; 0xAA is
+  `tools/k6_update.py`'s and 0xAB the RAM modules'). Every build takes the packets (CRC, store,
+  bit-error tests); only this one plays them. A change of magic starts a new message.
+  `python -m modem.k6 send msg.sot --codec 600` sends them; `tools/k6_pcmhash.py --codec 600`
+  checks the radio's `pcm=`.
+- **Tables in SPI flash.** The 21,280 bytes of int8 shape codebooks (vlr_cb_all in
+  `c/sotto_vlr_tables.c`: 6,688 for 600, 14,592 for 400) sit at SPI flash 0x108000, after v3.7's
+  codebook (`c/k6/sp_vlr.h`: a 32-byte header, `K6VL`, CRC-32s; image `c/k6/vlr_image`). The
+  decoder reads a 19-byte vector per anchor stage (`VLR_CB_VEC`): 6 per 80 ms or 4 per 120 ms,
+  34 us each on the radio. The 0.7 KB of small tables stay in the MCU. `sp_vlr_setup` checks the
+  image at power-on (serial `K6 VLR r= crc= ms=`); the install build writes it once.
+- **Host checks** (`tests/test_k6_vlr.py`, `make -C c/k6`): the pager's output is bit-exact with
+  `sotto_vlr_dec_fx` for L and XL, with lost packets; the SPI-flash build matches the table
+  build; a missing or damaged image plays no sotto 600 / 400 but sotto 1200 still plays; the
+  install writes vlr_image's bytes once; a 1500-slot message streams through the 640-slot ring as
+  a store-then-play plays it.
+- **Cortex-M0** (`c/k6/bench_k6.py`, the radio's -O2/-Os build, EARS p020,
+  `docs/results/vlr_k6_bench_*.json`), decode plus PWM per 20 ms: sotto 600 57.9 MHz mean, 71.5
+  worst; sotto 400 57.7, 76.6; sotto 1200 in the same build 57.5, 75.8 (of 96). Library 4.3 KB
+  more flash than sotto 1200's and 340 bytes more RAM (decoder pool 1.5 KB).
+- **Not yet on air.** The Aura images are built by CI only (no cargo here).
 
 ## Listening round 20
 
@@ -230,7 +258,7 @@ y = v.decode_audio(bits, good=None)   # good: per-superframe flags
 
 ## Open
 
-- The K6 image.
+- On air: flash `aura-pager-vlri`, then send a sotto 600 and a sotto 400 message and check `pcm=`.
 - Ears: round 20.
 - References that need an outside build: Codec 2 450, MELPe 600.
 - Not tried: a residual for the interpolated frames (as sotto 1200's B frame), which needs bits

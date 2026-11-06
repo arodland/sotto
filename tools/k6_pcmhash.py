@@ -7,9 +7,9 @@ be checked over the serial report without anyone listening.
   python3 tools/k6_pcmhash.py msg.sot --codec 1200 --payload XL --check 'K6 PLAY id=.. pcm=..'
 
 It packs the .sot exactly as `python -m modem.k6 tx` does (same profile, msg_id), leaves out the
-packets the K6 reported missing, and plays the rest through c/k6/pager_host (v3.7) or
-c/k6/pager_host_lr (sotto 1200): the same C as the radio's decoder, bit-exact with it, built for
-the PC. The hash is FNV-1a over the int16 samples before the PWM conversion (sp_pcm_hash in
+packets the K6 reported missing, and plays the rest through c/k6/pager_host (v3.7),
+c/k6/pager_host_lr (sotto 1200) or c/k6/pager_host_vlr (sotto 600 / 400): the same C as the
+radio's decoder, bit-exact with it, built for the PC. The hash is FNV-1a over the int16 samples before the PWM conversion (sp_pcm_hash in
 c/k6/sotto_pager.h). With --check it reads the K6 PLAY line, takes its missing= list, and says
 MATCH or MISMATCH (exit 1). Build the hosts first: make -C c/k6.
 
@@ -39,7 +39,8 @@ def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store
     prof = pager.profile(payload, codec, depth)
     mid = msg_id if msg_id is not None else msg_id_for(frames)
     pk = [p for i, p in enumerate(prof.pack(frames, mid)) if i not in set(missing)]
-    host = os.path.join(K6, "pager_host_lr" if codec == "1200" else "pager_host")
+    host = os.path.join(K6, {"1200": "pager_host_lr", "600": "pager_host_vlr", "400": "pager_host_vlr"}
+                        .get(codec, "pager_host"))
     if not os.path.exists(host):
         sys.exit(f"{host} not built: make -C c/k6")
     with tempfile.TemporaryDirectory() as d:
@@ -65,7 +66,7 @@ def parse_play(line):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("sot", help="the .sot that was sent")
-    ap.add_argument("--codec", choices=("2400", "1200"), default="2400")
+    ap.add_argument("--codec", choices=("2400", "1200", "600", "400"), default="2400")
     ap.add_argument("--payload", choices=("L", "XL"), default="XL")
     ap.add_argument("--depth", type=int, choices=pager.DEPTHS, default=8, help="as given to modem.k6")
     ap.add_argument("--msg-id", type=int, help="as given to modem.k6 (default: from the frames, as it does)")

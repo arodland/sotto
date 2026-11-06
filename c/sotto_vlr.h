@@ -15,6 +15,11 @@
  * 8 kHz). Its output runs SOTTO_VLR_DEC_DELAY superframes behind its input, so that a lone
  * lost superframe can be rebuilt from both neighbours, plus the v3.7 core's own 20 ms.
  * After the last superframe call sotto_vlr_dec_flush until it returns 0.
+ *
+ * Or 20 ms at a time (the K6 pager, which has no room for N x 160 samples):
+ * sotto_vlr_decode_frame(d, in, good, k, pcm) for k = 0 .. N-1 with the same superframe (it is
+ * taken in at k = 0) writes frame k; it returns 0 (and silence) for the frames of the start-up
+ * delay. Then sotto_vlr_dec_flush_frame until it returns 0. Don't mix the two ways in one stream.
  * SPDX-License-Identifier: MIT */
 #ifndef SOTTO_VLR_H
 #define SOTTO_VLR_H
@@ -37,5 +42,9 @@ SOTTO_API int sotto_vlr_samples(const struct sotto_vlr_dec *d);
 SOTTO_API void sotto_vlr_decode(struct sotto_vlr_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
                                 short *speech);
 SOTTO_API int sotto_vlr_dec_flush(struct sotto_vlr_dec *d, short *speech);
+SOTTO_API int sotto_vlr_decode_frame(struct sotto_vlr_dec *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
+                                     int k, short speech[SOTTO_SAMPLES_PER_FRAME]);
+SOTTO_API int sotto_vlr_dec_flush_frame(struct sotto_vlr_dec *d, short speech[SOTTO_SAMPLES_PER_FRAME]);
+SOTTO_API int sotto_vlr_dec_bytes(void);         /* sizeof the decoder's own state (the core's apart) */
 
 #endif

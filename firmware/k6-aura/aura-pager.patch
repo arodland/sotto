@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..1af095d
+index 0000000..65681e7
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2951 @@
+@@ -0,0 +1,2963 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -360,6 +360,8 @@ index 0000000..1af095d
 +        pub fn sp_cb_bench(n: u32) -> u32;
 +        pub fn sp_cb_expected() -> u32;
 +        pub fn sp_cb_reads() -> u32;
++        pub fn sp_vlr_setup() -> i32;
++        pub fn sp_vlr_expected() -> u32;
 +    }
 +    /// c/k6/k6_mod.h: what a RAM module can call (append-only, ABI 1)
 +    #[repr(C)]
@@ -1217,7 +1219,8 @@ index 0000000..1af095d
 +
 +/// Power-on: check (and with K6_CB=install, write once) the codebook image, then time 1000
 +/// random vector reads. Serial: `K6 CB r=.. mode=.. crc=.. ms=..` and `K6 CB bench ..`; the
-+/// table build (mode 0) says `K6 CB r=1 mode=0` and touches no flash.
++/// table build (mode 0) says `K6 CB r=1 mode=0` and touches no flash. The sotto 600 / 400
++/// images then add `K6 VLR r=.. crc=.. ms=..` for their own codebooks (same r codes).
 +fn cb_setup(app: &mut App) {
 +    unsafe {
 +        CB_NOR = &mut app.storage.norflash as *mut _;
@@ -1247,6 +1250,15 @@ index 0000000..1af095d
 +            sum,
 +            unsafe { ffi::sp_cb_reads() }
 +        ));
++    }
++    // sotto 600 / 400's codebooks (c/k6/sp_vlr.h, SPI flash 0x108000): checked, or written once
++    // by the install image, in the images that play them. 0 = this image doesn't: no line.
++    let t0 = uptime::now();
++    let v = unsafe { ffi::sp_vlr_setup() };
++    if v != 0 {
++        let t = uptime::now().wrapping_sub(t0) as u32;
++        let crc = unsafe { ffi::sp_vlr_expected() };
++        report_line(format_args!("K6 VLR r={} crc={:08x} ms={}.{}", v, crc, t / 10, t % 10));
 +    }
 +}
 +

@@ -8,6 +8,12 @@
 # Usage: sh tools/k6_build.sh [extra clang options]
 #        K6_CODEC=1200 sh tools/k6_build.sh   the sotto 1200 build (-DSP_LR, plays magic 0xA9
 #            messages, 40 ms per slot; c/fixed/sotto_fx_lr.c at -Os) into c/k6/build-lr
+#        K6_CODEC=vlr sh tools/k6_build.sh   sotto 1200 plus sotto 600 / 400 (-DSP_LR -DSP_VLR: magic
+#            0xA9, 0xAC, 0xAD; c/fixed/sotto_fx_vlr.c and c/sotto_vlr_tables.c) into c/k6/build-vlr.
+#            With K6_CB=spi both codebooks are read from the SPI flash: v3.7's at 0x100000 and
+#            sotto 600 / 400's 21 KB at 0x108000 (c/k6/sp_vlr.h, image $OUT/sotto-vlr.bin, CRC
+#            -DSP_VLR_CRC); with K6_CB=install the sotto 600 / 400 tables are linked and written
+#            there once at power-on (v3.7's codebook must be there already: aura-pager-cbi).
 #        K6_MOD_KEY_FILE=~/.config/sotto/k6-mod.key sh tools/k6_build.sh   the RAM module loader
 #            (c/k6/k6_mod.c) accepts modules signed with that key (`python -m modem.k6 modkey`
 #            makes one). Without it the loader holds a placeholder and refuses every module
@@ -27,9 +33,14 @@
 # Needs clang and ld.lld (tested with 18). SPDX-License-Identifier: MIT
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
+VLR=
 if [ "${K6_CODEC:-}" = 1200 ]; then
   OUT=${K6_OUT:-"$ROOT/c/k6/build-lr"}
   LR=-DSP_LR
+elif [ "${K6_CODEC:-}" = vlr ]; then
+  OUT=${K6_OUT:-"$ROOT/c/k6/build-vlr"}
+  LR="-DSP_LR -DSP_VLR"
+  VLR=1
 else
   OUT=${K6_OUT:-"$ROOT/c/k6/build"}
   LR=
@@ -38,7 +49,7 @@ CB=
 case "${K6_CB:-}" in
   "") ;;
   spi) OUT=${K6_OUT:-$OUT-cbs} ;;
-  install) OUT=${K6_OUT:-$OUT-cbi}; CB="-DFX_CB_SPI -DSP_CB_INSTALL" ;;
+  install) OUT=${K6_OUT:-$OUT-cbi}; [ -n "$VLR" ] || CB="-DFX_CB_SPI -DSP_CB_INSTALL" ;;
   *) echo "K6_CB is spi or install" >&2; exit 1 ;;
 esac
 CC=${K6_CC:-clang}
@@ -55,7 +66,15 @@ if [ -n "${K6_CB:-}" ]; then
   ${HOSTCC:-cc} -O2 -std=c99 -I"$ROOT/c" "$ROOT/c/k6/cb_image.c" "$ROOT/c/k6/sp_cb.c" "$ROOT/c/fixed/fx_tables.c" \
     -o "$OUT/cb_image"
   "$OUT/cb_image" "$OUT/sotto-cb.bin"
-  [ "$K6_CB" = spi ] && CB="-DFX_CB_SPI -DSP_CB_CRC=$("$OUT/cb_image" -c)"
+  if [ "$K6_CB" = spi ] || [ -n "$VLR" ]; then CB="-DFX_CB_SPI -DSP_CB_CRC=$("$OUT/cb_image" -c)"; fi
+  if [ -n "$VLR" ]; then
+    # sotto 600 / 400's codebooks: their image and CRC (c/k6/vlr_image, a host build)
+    ${HOSTCC:-cc} -O2 -std=c99 -DSP_VLR -I"$ROOT/c" "$ROOT/c/k6/vlr_image.c" "$ROOT/c/k6/sp_vlr.c" "$ROOT/c/k6/sp_cb.c" \
+      "$ROOT/c/sotto_vlr_tables.c" "$ROOT/c/fixed/fx_tables.c" -o "$OUT/vlr_image"
+    "$OUT/vlr_image" "$OUT/sotto-vlr.bin"
+    if [ "$K6_CB" = spi ]; then CB="$CB -DVLR_CB_SPI -DSP_VLR_CRC=$("$OUT/vlr_image" -c)"
+    else CB="$CB -DVLR_CB_SPI -DSP_VLR_INSTALL"; fi
+  fi
   CFLAGS="$CFLAGS $CB"
   echo "codebook in SPI flash: $CB"
 fi
@@ -73,13 +92,21 @@ $CC $CFLAGS -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_dec.c" 
 $CC $CFLAGS -c "$ROOT/c/fixed/fx_math.c" -o "$OUT/fx_math.o"
 $CC $CFLAGS -c "$ROOT/c/fixed/fx_tables.c" -o "$OUT/fx_tables.o"
 $CC $CFLAGS -Os -c "$ROOT/c/k6/sp_cb.c" -o "$OUT/sp_cb.o"
+$CC $CFLAGS -Os -c "$ROOT/c/k6/sp_vlr.c" -o "$OUT/sp_vlr.o"
 if [ "${K6_RAMFUNC:-0}" = 1 ]; then
   $OBJCOPY --rename-section .text.fx_oa_block=.data.ramfunc.fx_oa_block,alloc,load,contents,code "$OUT/fx_math.o"
 fi
-LIBOBJS="$OUT/sotto_pager.o $OUT/k6_mod.o $OUT/sotto_fx_dec.o $OUT/sp_cb.o $OUT/fx_math.o $OUT/fx_tables.o"
+LIBOBJS="$OUT/sotto_pager.o $OUT/k6_mod.o $OUT/sotto_fx_dec.o $OUT/sp_cb.o $OUT/sp_vlr.o $OUT/fx_math.o $OUT/fx_tables.o"
 if [ -n "$LR" ]; then     # not hot (field unpacking and shape sums once per 40 ms): -Os
   $CC $CFLAGS -Os -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_lr.c" -o "$OUT/sotto_fx_lr.o"
   LIBOBJS="$LIBOBJS $OUT/sotto_fx_lr.o"
+fi
+if [ -n "$VLR" ]; then    # once per 20 ms frame, then the v3.7 core's synthesis: -Os too
+  $CC $CFLAGS -Os -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_vlr.c" -o "$OUT/sotto_fx_vlr.o"
+  # the tables build: with K6_CB=spi the codebooks are left out (VLR_CB_SPI); install links them
+  VT=; [ "${K6_CB:-}" = install ] && VT=-UVLR_CB_SPI
+  $CC $CFLAGS $VT -c "$ROOT/c/sotto_vlr_tables.c" -o "$OUT/sotto_vlr_tables.o"
+  LIBOBJS="$LIBOBJS $OUT/sotto_fx_vlr.o $OUT/sotto_vlr_tables.o"
 fi
 rm -f "$OUT/libsotto_k6.a"
 $AR rcs "$OUT/libsotto_k6.a" $LIBOBJS
@@ -91,6 +118,10 @@ BENCHCB=
 if [ -n "${K6_CB:-}" ]; then
   python3 -c 'import sys; d = open(sys.argv[1], "rb").read(); print("const unsigned char sp_cb_bench_image[%d] = {%s};" % (len(d), ",".join(map(str, d))))' \
     "$OUT/sotto-cb.bin" > "$OUT/cb_bench_image.c"
+  if [ -n "$VLR" ]; then
+    python3 -c 'import sys; d = open(sys.argv[1], "rb").read(); print("const unsigned char sp_vlr_bench_image[%d] = {%s};" % (len(d), ",".join(map(str, d))))' \
+      "$OUT/sotto-vlr.bin" >> "$OUT/cb_bench_image.c"
+  fi
   $CC $CFLAGS -c "$OUT/cb_bench_image.c" -o "$OUT/cb_bench_image.o"
   $CC $CFLAGS -fno-builtin -c "$ROOT/c/k6/flash_bench.c" -o "$OUT/flash_bench.o"
   BENCHCB="$OUT/cb_bench_image.o $OUT/flash_bench.o"
@@ -99,6 +130,6 @@ $CC $CFLAGS -fno-builtin -c "$ROOT/c/fixed/cm4/shim.c" -o "$OUT/shim.o"
 $CC $CFLAGS -fno-builtin -c "$ROOT/c/fixed/cm0/rt.c" -o "$OUT/rt.o"
 $CC --target=thumbv6m-none-eabi -mcpu=cortex-m0 -c "$ROOT/c/fixed/cm0/divmod.s" -o "$OUT/divmod.o"
 ld.lld -T "$ROOT/c/fixed/cm4/link.ld" --gc-sections -e sp_init -u sp_packet -u sp_status -u sp_play_start \
-  -u sp_play_frame -u sp_play_pwm -u sp_pcm_to_pwm -u sp_test_packet -u sp_last_packet -u sp_static_bytes -u sotto_fx_dec_bytes -u heap_used -u sp_set_yield -u sp_yield_probe -u sp_cb_setup -u sp_cb_bench \
+  -u sp_play_frame -u sp_play_pwm -u sp_pcm_to_pwm -u sp_test_packet -u sp_last_packet -u sp_static_bytes -u sotto_fx_dec_bytes -u heap_used -u sp_set_yield -u sp_yield_probe -u sp_cb_setup -u sp_cb_bench -u sp_vlr_setup \
   $LIBOBJS $BENCHCB "$OUT/shim.o" "$OUT/rt.o" "$OUT/divmod.o" -o "$OUT/bench.elf"
 echo "built $OUT/bench.elf"

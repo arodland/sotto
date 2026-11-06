@@ -1,0 +1,20 @@
+{
+ "input": "ears_p020_m.flac",
+ "codec": "600",
+ "frames": 144,
+ "packets": 24,
+ "lost_packets": [],
+ "store_frames": 992,
+ "flash_ws": 2,
+ "play_MHz": {
+  "mean": 57.9,
+  "worst": 71.5
+ },
+ "packet_cycles": {
+  "mean": 15992,
+  "worst": 17499
+ },
+ "stack_bytes": 2920,
+ "flash_bytes": 90828,
+ "static_ram_bytes": 4248
+}

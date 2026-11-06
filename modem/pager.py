@@ -3,12 +3,14 @@
 This implements the K6 voice-pager FSK packet format, version 1 (the contract shared with
 the K6 receiver firmware; docs/k6-pager.md has the summary). A message is a .sot file: raw
 sotto v3.7 frames, 6 bytes per 20 ms, or sotto 1200 superframes (sotto_enc -1200), 6 bytes
-per 40 ms. Either way a "frame" here is one 6-byte slot; the magic byte says which codec.
+per 40 ms, or sotto 600 / 400 superframes (sotto_enc -600 / -400; docs/sotto-vlr.md), 6 bytes per
+80 / 120 ms. Either way a "frame" here is one 6-byte slot; the magic byte says which codec.
 
 Profile L (primary), 64-byte payload, before whitening:
 
-    0       magic: 0xA7 (format 1, sotto v3.7 8 kHz frames, 20 ms each) or 0xA9 (sotto 1200
-            superframes, 40 ms each; docs/sotto-1200.md)
+    0       magic: 0xA7 (format 1, sotto v3.7 8 kHz frames, 20 ms each), 0xA9 (sotto 1200
+            superframes, 40 ms each; docs/sotto-1200.md), 0xAC (sotto 600, 80 ms each) or
+            0xAD (sotto 400, 120 ms each; docs/sotto-vlr.md)
     1       msg_id
     2-3     big-endian: bits 15-14 the interleave depth (0: 8 packets per group, 1: 4, 2: 2,
             3: 1; receivers before 2026-11-05 know only 0), bits 13-0 seq, the packet number
@@ -44,7 +46,10 @@ import numpy as np
 
 MAGIC = 0xA7                    # sotto v3.7, 20 ms per frame
 MAGIC_1200 = 0xA9               # sotto 1200, 40 ms per frame (0xA8 is the control packet)
-CODECS = {"2400": (MAGIC, 0.020), "1200": (MAGIC_1200, 0.040)}     # magic, seconds per frame
+MAGIC_600 = 0xAC                # sotto 600, 80 ms per frame (0xAA: k6_update, 0xAB: RAM modules)
+MAGIC_400 = 0xAD                # sotto 400, 120 ms per frame
+CODECS = {"2400": (MAGIC, 0.020), "1200": (MAGIC_1200, 0.040),     # magic, seconds per frame
+          "600": (MAGIC_600, 0.080), "400": (MAGIC_400, 0.120)}
 FRAME_BYTES = 6
 GROUP = 8                       # packets per interleave group, unless the header says otherwise
 DEPTHS = (8, 4, 2, 1)           # by the depth code in seq's top 2 bits
@@ -159,8 +164,9 @@ PROFILES = {"L": L, "XL": XL, "S": S}
 
 
 def profile(name, codec="2400", depth=GROUP):
-    """The packet profile for a codec: "2400" (sotto v3.7) or "1200" (sotto 1200, magic 0xA9;
-    L and XL only, since profile S has no magic byte), with `depth` packets per interleave group
+    """The packet profile for a codec: "2400" (sotto v3.7), "1200" (sotto 1200, magic 0xA9), "600"
+    or "400" (0xAC, 0xAD; the last three L and XL only, since profile S has no magic byte), with
+    `depth` packets per interleave group
     (8, 4, 2 or 1; S only 8)."""
     magic = CODECS[codec][0]
     if name == "S" and magic != MAGIC:

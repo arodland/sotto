@@ -22,7 +22,9 @@ flash serves both.
   `src/app/pager.rs`, on its `NorFlash` driver.
 - **The image** sits at SPI flash 0x100000 (32 + 30,720 bytes, 8 sectors of 4 KB). That is above
   everything Aura uses, which ends near 0xED200, and in the first slots of the module library
-  planned in the explorer design. The image is a 32-byte header followed by the table:
+  planned in the explorer design. (sotto 600 / 400's own 21 KB of codebooks follow at 0x108000,
+  in the same kind of image with the magic `K6VL`: `c/k6/sp_vlr.h`, docs/sotto-vlr.md.) The
+  image is a 32-byte header followed by the table:
   - the magic `K6CB`, then version 1
   - 20 bytes per vector and the table's length
   - the stages and their bits (9 9 8 8)

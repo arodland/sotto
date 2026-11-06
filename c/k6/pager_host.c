@@ -16,7 +16,10 @@
  * put at SP_CB_ADDR in the emulated flash before sp_cb_setup) and -W FILE (the image region
  * written out after it), and print cb= (sp_cb_setup's result) mode= before max_frames and
  * cb_reads= (vectors fetched) after pcm=. -B N -F IMAGE prints the sum of N random reads
- * (sp_cb_bench), as the radio's `K6 CB bench n=N ... sum=` line should. pager_host -e [-x] PACKETS.bin prints, for each packet,
+ * (sp_cb_bench), as the radio's `K6 CB bench n=N ... sum=` line should. The sotto 600 / 400 builds
+ * (pager_host_vlr*, -DSP_VLR) also print vlr= (sp_vlr_setup's result) after cb=, and with their
+ * tables in SPI flash take -V IMAGE (put at SP_VLR_ADDR) and -X FILE (that region written out
+ * after the setup), and print vlr_reads= after cb_reads=. pager_host -e [-x] PACKETS.bin prints, for each packet,
  * sp_test_errors: errors seq swap invert and the eight block counts.
  * SPDX-License-Identifier: MIT */
 #include <stdio.h>
@@ -24,6 +27,7 @@
 #include <string.h>
 #include "sotto_pager.h"
 #include "sp_cb.h"
+#include "sp_vlr.h"
 #ifdef FX_CB_SPI
 #include "flash_host.h"
 #endif
@@ -36,7 +40,7 @@ int main(int argc, char **argv) {
   int16_t pcm[SP_FRAME_SAMPLES];
   sp_status_t st;
   FILE *in, *out;
-  const char *cb_load = 0, *cb_save = 0;
+  const char *cb_load = 0, *cb_save = 0, *vlr_load = 0, *vlr_save = 0;
   unsigned cb_bench = 0;
   if (argc == 2 && !strcmp(argv[1], "-t")) {          /* the calibration test packet, hex */
     int i;
@@ -53,6 +57,8 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[1], "-b") && argc > 2) bytes = (unsigned)atoi(argv[2]), argv += 2, argc -= 2;
     else if (!strcmp(argv[1], "-F") && argc > 2) cb_load = argv[2], argv += 2, argc -= 2;
     else if (!strcmp(argv[1], "-W") && argc > 2) cb_save = argv[2], argv += 2, argc -= 2;
+    else if (!strcmp(argv[1], "-V") && argc > 2) vlr_load = argv[2], argv += 2, argc -= 2;
+    else if (!strcmp(argv[1], "-X") && argc > 2) vlr_save = argv[2], argv += 2, argc -= 2;
     else if (!strcmp(argv[1], "-B") && argc > 2) cb_bench = (unsigned)atoi(argv[2]), argv += 2, argc -= 2;
     else break;
   }
@@ -101,6 +107,19 @@ int main(int argc, char **argv) {
 #else
   (void)cb_load, (void)cb_save;
   sp_cb_setup();
+#endif
+#ifdef VLR_CB_SPI
+  if (vlr_load && flash_host_load(vlr_load, SP_VLR_ADDR) < 0) { perror("pager_host -V"); return 1; }
+#endif
+#ifdef SP_VLR
+  printf("vlr=%d ", sp_vlr_setup());
+#else
+  sp_vlr_setup();
+#endif
+#ifdef VLR_CB_SPI
+  if (vlr_save) flash_host_save(vlr_save, SP_VLR_ADDR, SP_VLR_HDR + sp_vlr_table_bytes());
+#else
+  (void)vlr_load, (void)vlr_save;
 #endif
   n = sp_init(mem, bytes);
   printf("max_frames=%d static=%u results=", n, sp_static_bytes());
@@ -153,6 +172,9 @@ int main(int argc, char **argv) {
     printf("pcm=%08x samples=%u", (unsigned)h, ns);   /* the radio's PLAY line prints the same */
 #ifdef FX_CB_SPI
     printf(" cb_reads=%u", (unsigned)sp_cb_reads());
+#endif
+#ifdef VLR_CB_SPI
+    printf(" vlr_reads=%u", (unsigned)sp_vlr_reads());
 #endif
     printf("\n");
   }
