@@ -256,7 +256,8 @@ loss sotto 1200 is better, as expected: a lost 600 slot takes 80 ms of speech, n
 
 *Python reference `sim/sotto_vlr_hiss.py` (`SottoVLRHiss("600")`), tables `sim/data/vlr_hiss.npz`
 from `tools/train_vlr_hiss.py` (32 non-test LibriSpeech dev-clean voices, CC BY 4.0), scores
-`tools/eval_vlr_hiss.py` → `docs/results/vlr_hiss.json`. No C port, no listening yet.*
+`tools/eval_vlr_hiss.py` → `docs/results/vlr_hiss.json`. Listening round 21: won 7 of 7 against the
+plain modes. No C port yet.*
 
 Jeff asked (2026-11-06) whether v3.8's hiss band (`docs/unvoiced-hiss.md`) goes into sotto 600
 and 400 as easily as into sotto 1200 (`docs/sotto-1200-hiss.md`). It fits in the same 48 bits,
@@ -312,7 +313,18 @@ or worse, and sotto 400's is weaker again. Round 19 found sotto 1200's band clea
 (`tools/listening/render_ab21.py`, key `/mnt/project-files/vocoder/listening/ab-21-key.json`,
 https://claude.ai/artifact/4A7QkE4JwYJ5YgbMrqp7wy): sotto 600 hiss against plain sotto 600
 (4 pairs clean, 1 with 1 XL packet in 8 lost), sotto 400 hiss against plain sotto 400 (2),
-sotto 600 hiss against sotto 1200 hiss (2), and a null pair. Results: pending.
+sotto 600 hiss against sotto 1200 hiss (2), and a null pair. Jeff, 2026-11-06:
+
+| Pairs | hiss wins | ties | other wins |
+|---|---:|---:|---:|
+| sotto 600 hiss against sotto 600, clean (4) | 4 | 0 | 0 |
+| sotto 600 hiss against sotto 600, 1 XL packet in 8 lost (1) | 1 | 0 | 0 |
+| sotto 400 hiss against sotto 400 (2) | 2 | 0 | 0 |
+| sotto 600 hiss against sotto 1200 hiss (2) | | 2 (777_m, p047_f) | |
+| null pair | | correct | |
+
+By ear the band is worth having at both rates, despite the larger band error: it won all 7
+pairs against the plain modes, and sotto 600 hiss tied sotto 1200 hiss on both clips.
 
 ## Use
 
@@ -338,7 +350,7 @@ y = v.decode_audio(bits, good=None)   # good: per-superframe flags
 
 - On air: flash `aura-pager-vlri`, then send a sotto 600 and a sotto 400 message and check `pcm=`.
 - References that need an outside build: Codec 2 450, MELPe 600.
-- Hiss band: listening, then a C port if ears want it. To reach more fricatives, the voicing
+- Hiss band: a C port (round 21 says ears want it), on the v3.8 layer in `c/sotto_hiss.c`. To reach more fricatives, the voicing
   pattern search could weight frames that v3.8's rules sent U more heavily, so fewer of them
   land in voiced patterns.
 - Not tried: a residual for the interpolated frames (as sotto 1200's B frame), which needs bits
