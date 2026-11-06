@@ -357,10 +357,13 @@ NOINLINE static int setup(const k6_api_t *api, saved_t *sv, uint8_t **ring) {
     api->say(TAG " PB1 is not an input: no writes");
     return -4;
   }
-  regs(api);
   sv->apb2 = rd(RCC_APB2ENR);
   sv->ahb = rd(RCC_AHBENR);
+  /* the DMA's registers read junk with its clock off (run 8: 0x37 everywhere): clock it first */
+  wr(RCC_AHBENR, sv->ahb | 1u);
+  regs(api);
   if ((sv->apb2 & TIM17EN) || (rd(DMA_CCR1) & 1)) {
+    wr(RCC_AHBENR, sv->ahb);
     api->say(TAG " TIM17 or DMA channel 1 busy: no writes");
     return -7;
   }
@@ -383,11 +386,11 @@ NOINLINE static void teardown(const k6_api_t *api, const saved_t *sv) {
   wr(DMA_CNDTR1, 0);
   wr(DMA_CPAR1, 0);
   wr(DMA_CMAR1, 0);
+  regs(api);
   wr(RCC_APB2ENR, sv->apb2);
   wr(RCC_AHBENR, sv->ahb);
   api->fd_write(SEL_REG, sv->r34);
   api->fd_write(0x33, sv->r33);
-  regs(api);
   api->say(TAG " done");
 }
 

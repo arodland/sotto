@@ -345,7 +345,7 @@ def dma_bench(f_if=17000.0, dev=4000.0, f_tone=1000.0, rcc_apb2=0, ccr1=0, dma_h
     (PB4 high, PB1 a first-order sigma-delta of an FM IF) into the ring; TIM17's counter follows
     the DMA's time at 96 MHz; TIM14's (100 us ticks) moves 7 us a read"""
     import numpy as np
-    rcc = {0x14: 0x14, 0x18: rcc_apb2}
+    rcc = {0x14: 0x14 | (1 if ccr1 else 0), 0x18: rcc_apb2}
     tim, dma = {}, {0x08: ccr1}
     sim = {"t": 0.0, "acc": 0.0, "phase": 0.0, "written": 0, "us14": 0.0, "L": 64}
 
@@ -386,6 +386,8 @@ def dma_bench(f_if=17000.0, dev=4000.0, f_tone=1000.0, rcc_apb2=0, ccr1=0, dma_h
         return bytes((0x10 | (bits << 1)).tolist())
 
     def dma_r(uc, off, size, st):
+        if not rcc[0x14] & 1:
+            return 0x37                   # what the K6 reads with the DMA's clock off (run 8)
         if off == 0x0C and dma.get(0x08, 0) & 1 and tim.get(0x00, 0) & 1 and \
                 tim.get(0x0C, 0) & 0x300:
             ring, n = dma[0x14], dma[0x0C]
@@ -432,7 +434,8 @@ def test_dma_demodulates_on_the_mcu(tmp_path, spare, ring):
     ret, said, regs, writes = run(regs, src=dma_build_small(tmp_path), spare=spare, mmio=mmio)
     assert ret == 3, said
     rr = [ln for ln in said if ln.startswith("R ")]
-    assert rr == ["R 00000000 00000014 0000 0000 0000 0000 00000000 00000000"] * 2
+    assert rr == ["R 00000000 00000015 0000 0000 0000 0000 00000000 00000000",
+                  "R 00040000 00000015 0000 0000 0000 0000 00000000 00000000"], rr
     said = [ln for ln in said if ln not in rr]
     assert said[0] == f"dma start floor=-103 ring={ring}"
     pr = said[1].split()
@@ -465,7 +468,7 @@ def test_dma_leaves_a_busy_timer_alone(tmp_path):
         mmio, rcc, tim, dma, sim = dma_bench(rcc_apb2=apb2, ccr1=ccr1)
         ret, said, regs, writes = run(START, src=dma_build_small(tmp_path), spare=1100, mmio=mmio)
         assert ret == -7 and "busy" in said[-1] and not writes and not tim
-        assert rcc[0x18] == apb2 and dma[0x08] == ccr1
+        assert rcc[0x18] == apb2 and dma[0x08] == ccr1 and rcc[0x14] == 0x14 | ccr1
 
 
 @need_clang
