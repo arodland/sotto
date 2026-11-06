@@ -1,8 +1,8 @@
 # Very-low-rate sotto: sotto 600 and sotto 400
 
 *2026-11-06. Python reference `sim/sotto_vlr.py` (`SottoVLR("600")`, `SottoVLR("400")`), tables
-`sim/data/vlr_tables.npz` from `tools/train_vlr.py`, scores from `tools/vlr_race.py`. No C port
-yet. Listening round 20: see below.*
+`sim/data/vlr_tables.npz` from `tools/train_vlr.py`, scores from `tools/vlr_race.py`. Fixed-point
+decoder `c/fixed/sotto_fx_vlr.c` (no C encoder yet). Listening round 20: see below.*
 
 ## The short answer
 
@@ -13,21 +13,23 @@ the 6-byte slot:
 |---|---:|---:|---:|---:|
 | sotto 1200 (reference) | 1200 | 2.578 / 0.762 | 2.168 / 0.715 | 2.148 / 0.713 |
 | Codec 2 1200 | 1200 | 2.145 / 0.683 | | |
-| **sotto 600** | **600** | **2.094 / 0.692** | **1.804 / 0.639** | 1.803 / 0.640 |
+| **sotto 600** | **600** | **2.097 / 0.690** | **1.814 / 0.638** | 1.795 / 0.638 |
 | Codec 2 700C | 700 | 1.909 / 0.606 | | |
-| **sotto 400** | **400** | **1.825 / 0.637** | 1.597 / 0.577 | 1.656 / 0.588 |
+| **sotto 400** | **400** | **1.826 / 0.637** | 1.609 / 0.577 | 1.645 / 0.587 |
 
 - **sotto 600** beats Codec 2 700C on 15 of 16 voices by PESQ and on all 16 by ESTOI, at 6/7 of
   its rate. Against Codec 2 1200, at half the rate, it is level: PESQ 0.05 lower, ESTOI 0.01
-  higher (it wins 5 and 10 of 16).
+  higher (it wins 6 and 10 of 16).
 - **sotto 400** is level with Codec 2 700C: PESQ 0.08 lower (wins 5 of 16), ESTOI 0.03 higher
-  (wins 13 of 16), at 4/7 of the rate. That is about as far as this structure goes.
+  (wins 14 of 16), at 4/7 of the rate. That is about as far as this structure goes.
 - Neither is close to sotto 1200. Going from 1200 to 600 costs 0.5 PESQ and 0.07 ESTOI.
+- **The K6 can decode both.** On the Cortex-M0 emulator the fixed-point decoder takes 56 MHz
+  on average and 66 (600) or 71 (400) MHz in the worst superframe, of the K6's 96, the same
+  as sotto 1200 (55 and 67).
 - Not measured: Codec 2 450 and MELPe 600. Our Codec 2 fork is 1.2, which dropped mode 450,
   and this sandbox refuses to build code downloaded from outside (an older Codec 2, or the
-  STANAG reference MELPe code, which is reference-only anyway). Published listening tests put
-  MELPe 600 near or above Codec 2 700C, so sotto 600 probably ties it rather than beating it
-  clearly. That needs a run on a machine that can build them.
+  STANAG reference MELPe code, which is reference-only anyway). Comparing against them needs
+  a run on a machine that can build them.
 
 ## What it is for
 
@@ -66,8 +68,9 @@ A superframe holds N 20 ms frames (N = 4 for 600, 6 for 400), coded together:
 | shape anchors | frame 0: 7+6, frame 2: 7+5 | frames 0, 2, 4: 9, 8, 8 | trained multistage codebooks on DCT coefficients 1..19 of the mean-removed rate-K envelope |
 
 - **Every frame between two anchors** has its shape on the straight line between them (the
-  last frames run to the next superframe's first anchor). The decoder therefore runs one
-  superframe behind, which a store-and-forward link doesn't notice.
+  last frames run to the next superframe's first anchor). The streaming decoder therefore
+  plays superframe s once s + 2 has arrived (s + 2's first anchor is the next one when s + 1 is
+  rebuilt): 160 ms (600) or 240 ms (400) behind, which a store-and-forward link doesn't notice.
 - **The encoder picks the anchors jointly.** A Viterbi search runs over each anchor's 16 best
   codebook paths and counts the interpolated frames' errors on both sides. So an anchor is
   chosen for the trajectory around it, not only for its own frame.
@@ -77,8 +80,11 @@ A superframe holds N 20 ms frames (N = 4 for 600, 6 for 400), coded together:
   under a voicing-mismatch cost), the slopes (1-D k-means), the energy residuals (k-means), and
   the shape codebooks (k-means, then 4 closed-loop passes that refit every codeword by least
   squares through the interpolation the decoder applies: -1.5% weighted error). `vlr_tables.npz`
-  is 105 KB (float32, compressed). In int8 the shape codebooks would be about 7 KB (600) and 15 KB (400, whose two 8-bit slots share one codebook),
-  small enough for the K6's SPI flash next to v3.7's codebook.
+  is 105 KB (float32, compressed). The decoder stores the shape codebooks as int8 with one
+  step per stage, the slopes and energy residuals in 1/16 steps (`vlr_tables.quantize_tables`,
+  which the Python reference applies too: PESQ 2.094 -> 2.097). In C
+  (`c/sotto_vlr_tables.c`, from `tools/export_vlr_c.py`) that is 7.2 KB for sotto 600 and 15 KB
+  for sotto 400 (whose two 8-bit slots share one codebook).
 - **Lost superframes.** A lost superframe between two good ones is rebuilt from both, as in
   sotto 1200. Its shape follows the line between the neighbouring anchors, its pitch and energy
   run linearly from the frame before to the frame after, and its voicing copies the nearer
@@ -134,16 +140,36 @@ What didn't help (each within ±0.03 PESQ of the others, which is noise here):
 - For sotto 400, three single-stage anchors every 40 ms (9, 8, 8 bits) beat two two-stage
   anchors every 60 ms (6+5 each) by 0.03 PESQ and 0.01 ESTOI.
 
-## K6 decode budget
+## Fixed-point decoder and the K6 budget
 
-The decoder turns each superframe into N per-frame field sets (voicing code, pitch index,
-energy code, 19 shape coefficients) and calls the v3.7 synthesis core once per 20 ms frame,
-exactly as sotto 1200's decoder does (`sotto_dec_frame` in `c/fixed/sotto_fx_dec.c`). The
-extra work per frame is one 19-coefficient interpolation and a few table reads. It reads
-fewer codebook vectors from SPI flash than sotto 1200: 4 per 80 ms (600) or 3 per 120 ms
-(400), against 3 per 40 ms. So the expected cost on the M0 is sotto 1200's, 55 MHz mean and
-67 MHz worst of 96. That is an estimate from the shared core: the fixed-point port and an
-emulator run come next.
+`c/fixed/sotto_fx_vlr.c` (API in `c/sotto_vlr.h`, tool `c/fixed/sotto_vlr_dec_fx 600|400
+in.bit out.raw [good.u8]`) turns each superframe into N per-frame field sets (voicing code,
+pitch index, energy code, 19 shape coefficients in dB Q16) and calls the v3.7 fixed-point
+synthesis core once per 20 ms frame (`sotto_dec_frame`), as sotto 1200's decoder does. Its
+rounding is integer (half up), and the Python reference rounds the same way, so the two build
+the same fields for every frame, with losses too (checked frame by frame on two voices,
+clean and with 1 superframe in 5 or 8 lost).
+
+- **Against the Python decoder** (`tools/check_vlr.py`, `docs/results/vlr_fx_check_*.json`, 16
+  voices): mean PESQ 2.083 against 2.097 (600) and 1.822 against 1.826 (400); with 10% of
+  superframes lost, 1.869 / 1.877 and 1.664 / 1.667. The waveforms match to 62-65 dB SNR on a
+  few voices and drift in phase on the others (6-33 dB), as sotto 1200's fixed decoder does on
+  the same voices (11.8 dB on 652_m): that is the v3.7 core, not this layer.
+- **Cortex-M0 emulator** (`VLR=1 sh tools/cm0_build.sh`, `c/fixed/cm0/run.py ELF BITS --vlr 600`),
+  -O2, EARS p020, `docs/results/vlr_cm0_*.json`:
+
+  | | mean | p99 | worst superframe | ms per 20 ms at 96 MHz |
+  |---|---:|---:|---:|---:|
+  | sotto 600 | 56.3 MHz | 63.0 | 65.9 | 11.7 mean, 13.7 worst |
+  | sotto 400 | 56.1 MHz | 64.6 | 70.6 | 11.7 mean, 14.7 worst |
+  | sotto 1200 (docs/sotto-1200.md) | 55.0 MHz | 65.5 | 66.9 | 11.5 mean, 13.9 worst |
+
+  Output is bit-exact with x86. Heap 1,072 bytes, stack 3.3 KB, both the core's. The layer is
+  2.1 KB of code at -Os. It reads 4 codebook vectors per 80 ms (600) or 3 per 120 ms (400),
+  against sotto 1200's 3 per 40 ms, so SPI-flash tables would cost less than they do now.
+- **Not done:** the K6 image. The pager would need magic bytes for the two modes, and the
+  tables in SPI flash (7.2 or 15 KB, a second one-time install next to v3.7's codebook), or a
+  600-only image with them in MCU flash, which doesn't fit beside the v3.7 table.
 
 ## Listening round 20
 
@@ -157,7 +183,8 @@ https://claude.ai/artifact/HsbfSvv453Dk2hMTywm1v7:
 - sotto 600 against sotto 1200, both with 1 XL packet in 8 lost (1)
 - a null pair
 
-Results: pending.
+The page was rendered before the tables' int8 rounding (2.094 rather than 2.097 PESQ for
+sotto 600). Results: pending.
 
 ## Use
 
@@ -165,6 +192,9 @@ Results: pending.
 python tools/vlr_corpus.py SC_DIR corpus.npz --exclude-clips /mnt/project-files/vocoder/samples-sc
 python tools/train_vlr.py corpus.npz                 # writes sim/data/vlr_tables.npz
 python tools/vlr_race.py [--every 8 | --loss 0.1] [--json OUT]
+python tools/export_vlr_c.py                         # c/sotto_vlr_tables.c (make tables does it too)
+make -C c VARIANT=v3.7 all fixed                     # c/fixed/sotto_vlr_dec_fx
+python tools/check_vlr.py CLIP.flac ... --mode 600 [--loss 0.1] [--bits-dir DIR]
 ```
 
 ```python
@@ -176,8 +206,7 @@ y = v.decode_audio(bits, good=None)   # good: per-superframe flags
 
 ## Open
 
-- C port: float encoder and decoder, fixed-point decoder on the v3.7 core, int8 shape tables,
-  the K6 SPI table, Cortex-M0 emulator run.
+- A C encoder (the Python reference's Viterbi search is the bulk of it), and the K6 image.
 - Ears: round 20.
 - References that need an outside build: Codec 2 450, MELPe 600.
 - Not tried: a residual for the interpolated frames (as sotto 1200's B frame), which needs bits

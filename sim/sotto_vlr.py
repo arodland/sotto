@@ -28,10 +28,11 @@ oracle runs in docs/sotto-vlr.md show is what intelligibility needs. In detail:
               and not only for themselves.
 
 The decoder rebuilds per-20 ms parameters (voicing code, Wo index, energy code, shape) and
-runs sotto 1200's v3.7 synthesis on them. It needs the next superframe's first anchor, so its
-output is one superframe behind; with a store-and-forward link like the K6 pager that costs
-nothing. Tables: sim/data/vlr_tables.npz, written by tools/train_vlr.py from Speech Commands
-(CC BY 4.0).
+runs sotto 1200's v3.7 synthesis on them. It needs the next superframe's first anchor (the one
+after that when the next is rebuilt), so the streaming decoder (c/fixed/sotto_fx_vlr.c) plays
+2 superframes behind; with a store-and-forward link like the K6 pager that costs nothing.
+Tables: sim/data/vlr_tables.npz, written by tools/train_vlr.py from Speech Commands (CC BY 4.0),
+used as vlr_tables.quantize_tables rounds them for the C decoder.
 """
 import os, sys
 import numpy as np
@@ -41,7 +42,7 @@ sys.path.insert(0, HERE)
 import vocoder_lab as vl
 import sotto_lr as lr
 
-TABLES = os.path.join(HERE, "data", "vlr_tables.npz")
+from vlr_tables import TABLES, MODES, mode_bits, quantize_tables  # noqa: F401
 
 # voicing: each 20 ms code as two 10 ms halves (U, V, M); edge (3) taken as (M, U)
 HALVES = {0: (0, 0), 1: (1, 1), 2: (2, 2), 3: (2, 0)}
@@ -49,17 +50,11 @@ HALF_COST = np.array([[0, 1.0, 0.6], [1.0, 0, 0.3], [0.6, 0.3, 0]])
 V_COST = np.array([[sum(HALF_COST[a, b] for a, b in zip(HALVES[t], HALVES[c])) for c in range(4)]
                    for t in range(4)])
 
-MODES = {
-    # name: N, voicing bits, pitch centre bits, slope bits, energy mean bits, energy residual
-    # bits, shape anchors as (frame offset, stage bits)
-    "600": dict(N=4, bv=3, bw=7, bs=3, be=5, br=5, anchors=((0, (7, 6)), (2, (7, 5)))),
-    "400": dict(N=6, bv=3, bw=7, bs=3, be=5, br=5, anchors=((0, (9,)), (2, (8,)), (4, (8,)))),
-}
-
-
-def mode_bits(cfg):
-    return cfg["bv"] + cfg["bw"] + cfg["bs"] + cfg["be"] + cfg["br"] + \
-        sum(sum(b) for _, b in cfg["anchors"])
+def _lerp_round(a, b, k, N):
+    """Frame k of N between a (the frame before) and b (the frame after), rounded half up in
+    integers as the fixed-point decoder does: (a (N - k) + b (k + 1)) / (N + 1)."""
+    num = int(a) * (N - k) + int(b) * (k + 1)
+    return (2 * num + N + 1) // (2 * (N + 1))
 
 
 def frame_weight(ei):
@@ -78,7 +73,7 @@ class SottoVLR(lr.Sotto1200):
         self.N = self.cfg["N"]
         self.BITS = mode_bits(self.cfg)
         super().__init__(**kw)
-        t = tables if tables is not None else dict(np.load(TABLES))
+        t = quantize_tables(tables if tables is not None else dict(np.load(TABLES)))
         p = f"m{mode}_"
         self.vpat = np.asarray(t[p + "vpat"], int)                       # (2^bv, N)
         self.slopes = np.asarray(t[p + "slope"], float)                   # (2^bs,)
@@ -127,7 +122,7 @@ class SottoVLR(lr.Sotto1200):
     def pitch_frames(self, wc, ws):
         N = self.N
         t = np.arange(N) - (N - 1) / 2
-        return np.clip(np.round(self.wc_value(wc) + self.slopes[ws] * t), 0, 127).astype(int)
+        return np.clip(np.floor(self.wc_value(wc) + self.slopes[ws] * t + 0.5), 0, 127).astype(int)
 
     def q_pitch(self, wi, voiced, prev_wc):
         """(centre index, slope index) minimising the voiced frames' squared index error."""
@@ -148,7 +143,7 @@ class SottoVLR(lr.Sotto1200):
     def energy_frames(self, em, er):
         lv = (1 << self.cfg["be"]) - 1
         m = em * 31 / lv
-        return np.clip(np.round(m + self.eres[er]), 0, 31).astype(int)
+        return np.clip(np.floor(m + self.eres[er] + 0.5), 0, 31).astype(int)
 
     def q_energy(self, ei):
         lv = (1 << self.cfg["be"]) - 1
@@ -320,10 +315,10 @@ class SottoVLR(lr.Sotto1200):
                     codes[f] = 2
                 va, vb = ca != 0, cb_ != 0
                 if va and vb:
-                    wis[f] = int(round((1 - t) * wis[a] + t * wb))
+                    wis[f] = _lerp_round(wis[a], wb, k, N)
                 else:
                     wis[f] = wis[a] if va or not vb else wb
-                eis[f] = int(round((1 - t) * eis[a] + t * eb))
+                eis[f] = _lerp_round(eis[a], eb, k, N)
         out = []
         for f in range(nf):
             z = np.zeros(vl.K)

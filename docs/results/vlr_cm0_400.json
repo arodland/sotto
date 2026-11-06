@@ -1,0 +1,18 @@
+{
+ "elf": "c/fixed/cm0/build/bench.elf",
+ "input": "ears_p020_m_400.bit",
+ "rate": 400,
+ "superframes": 96,
+ "decoder_MHz": {
+  "mean": 56.13,
+  "p99": 64.57,
+  "worst": 70.56
+ },
+ "decoder_ms_per_20ms_at_96MHz": {
+  "mean": 11.69,
+  "worst_superframe_mean": 14.7
+ },
+ "heap_bytes": 1072,
+ "stack_bytes": 3300,
+ "flash_bytes": 126292
+}

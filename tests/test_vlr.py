@@ -63,3 +63,33 @@ def test_round_trip_and_rebuild(mode):
     y = v.decode_audio(bits, good)
     assert len(y) == len(bits) * v.N * 160 and np.isfinite(y).all()
     assert np.sqrt(np.mean(y ** 2)) > 1e-3
+
+
+EXE = os.path.join(ROOT, "c", "fixed", "sotto_vlr_dec_fx")
+
+
+def _bands(y):
+    n = len(y) // 320 * 320
+    f = np.abs(np.fft.rfft(y[:n].reshape(-1, 320) * np.hanning(320), axis=1)) ** 2
+    return 10 * np.log10(f[:, :160].reshape(len(f), 16, 10).sum(2) + 1e-9)
+
+
+@pytest.mark.skipif(not os.path.exists(EXE), reason="needs make -C c VARIANT=v3.7 all fixed")
+@pytest.mark.parametrize("mode", ["600", "400"])
+def test_fixed_decoder_follows_python(mode):
+    """The fixed-point decoder (c/fixed/sotto_fx_vlr.c) builds the same per-frame fields; the
+    v3.7 core's waveform drifts in phase from the Python synthesis (as for sotto 1200), so
+    compare band energies: within 1 dB on average, 160 samples (the core's frame) behind."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import check_vlr as cv
+    x = np.fromfile(HTS1A, "<i2").astype(float) / 32768
+    v = vr.SottoVLR(mode)
+    bits = v.encode(x)
+    for good in (None, np.arange(len(bits)) % 5 != 3):
+        yp = v.decode_audio(bits, good)
+        yc = cv.c_decode(mode, bits, good)
+        assert cv.offset(yp, yc) == 160
+        yc = yc[160:160 + len(yp)]
+        bp, bc = _bands(yp), _bands(yc)
+        act = bp.max(1) > bp.max() - 40
+        assert np.abs(bp - bc)[act].mean() < 1.0

@@ -1,0 +1,140 @@
+{
+ "summary": {
+  "mode": "400",
+  "loss": 0.0,
+  "every": 0,
+  "min_snr_db": 6.2,
+  "pesq_py": 1.826,
+  "pesq_c": 1.822
+ },
+ "clips": [
+  {
+   "clip": "ears_p020_m",
+   "superframes": 96,
+   "c_lag": 160,
+   "snr_db": 64.9,
+   "pesq_py": 1.984,
+   "pesq_c": 1.997
+  },
+  {
+   "clip": "ears_p025_m",
+   "superframes": 89,
+   "c_lag": 160,
+   "snr_db": 62.2,
+   "pesq_py": 2.17,
+   "pesq_c": 2.156
+  },
+  {
+   "clip": "ears_p047_f",
+   "superframes": 75,
+   "c_lag": 160,
+   "snr_db": 13.9,
+   "pesq_py": 1.678,
+   "pesq_c": 1.687
+  },
+  {
+   "clip": "ears_p051_f",
+   "superframes": 100,
+   "c_lag": 160,
+   "snr_db": 13.1,
+   "pesq_py": 1.68,
+   "pesq_c": 1.679
+  },
+  {
+   "clip": "ears_p070_f",
+   "superframes": 97,
+   "c_lag": 160,
+   "snr_db": 19.5,
+   "pesq_py": 1.831,
+   "pesq_c": 1.833
+  },
+  {
+   "clip": "ears_p095_m",
+   "superframes": 74,
+   "c_lag": 160,
+   "snr_db": 22.5,
+   "pesq_py": 1.886,
+   "pesq_c": 1.882
+  },
+  {
+   "clip": "ears_p100_f",
+   "superframes": 79,
+   "c_lag": 160,
+   "snr_db": 63.2,
+   "pesq_py": 1.602,
+   "pesq_c": 1.602
+  },
+  {
+   "clip": "ears_p107_m",
+   "superframes": 92,
+   "c_lag": 160,
+   "snr_db": 26.1,
+   "pesq_py": 2.086,
+   "pesq_c": 2.081
+  },
+  {
+   "clip": "librispeech_2428_m",
+   "superframes": 100,
+   "c_lag": 160,
+   "snr_db": 23.0,
+   "pesq_py": 2.083,
+   "pesq_c": 2.091
+  },
+  {
+   "clip": "librispeech_251_m",
+   "superframes": 100,
+   "c_lag": 160,
+   "snr_db": 18.3,
+   "pesq_py": 1.822,
+   "pesq_c": 1.765
+  },
+  {
+   "clip": "librispeech_3081_f",
+   "superframes": 100,
+   "c_lag": 160,
+   "snr_db": 21.9,
+   "pesq_py": 1.506,
+   "pesq_c": 1.495
+  },
+  {
+   "clip": "librispeech_3536_f",
+   "superframes": 100,
+   "c_lag": 160,
+   "snr_db": 12.7,
+   "pesq_py": 1.614,
+   "pesq_c": 1.64
+  },
+  {
+   "clip": "librispeech_6313_f",
+   "superframes": 100,
+   "c_lag": 160,
+   "snr_db": 6.2,
+   "pesq_py": 1.62,
+   "pesq_c": 1.627
+  },
+  {
+   "clip": "librispeech_652_m",
+   "superframes": 100,
+   "c_lag": 160,
+   "snr_db": 10.4,
+   "pesq_py": 1.99,
+   "pesq_c": 1.997
+  },
+  {
+   "clip": "librispeech_777_m",
+   "superframes": 100,
+   "c_lag": 160,
+   "snr_db": 15.6,
+   "pesq_py": 1.996,
+   "pesq_c": 1.978
+  },
+  {
+   "clip": "librispeech_8842_f",
+   "superframes": 100,
+   "c_lag": 160,
+   "snr_db": 64.7,
+   "pesq_py": 1.671,
+   "pesq_c": 1.649
+  }
+ ]
+}
