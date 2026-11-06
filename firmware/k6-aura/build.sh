@@ -170,22 +170,26 @@ if [ "${TABLE:-1}" = 1 ]; then
   if [ "${LR:-1}" = 1 ]; then
     K6_CODEC=1200 sh "$ROOT/tools/k6_build.sh"
     lib build-lr
-    variant aura-pager-lr-table "pager-only image, sotto 1200, codebook in MCU flash" --features pager-only
+    # module API level 2 took it 44 B over: lean, as the install image
+    variant aura-pager-lr-table "pager-only image, sotto 1200, codebook in MCU flash" --features pager-only,lean
   fi
 fi
 [ -f "$OUT/sotto-cb.bin" ] && (cd "$OUT" && sha256sum sotto-cb.bin | tee sotto-cb.bin.sha256)
 
-# The hello-world RAM module's code (docs/k6-modules.md), built as modem/k6mod.py builds it, for
-# `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...` on a machine without clang.
-# Linked at two addresses: the same bytes, or it isn't position-independent.
+# The RAM modules' code (docs/k6-modules.md: hello, and settle, a level 2 module), built as
+# modem/k6mod.py builds them, for `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...`
+# (`--api-level 2` for mod-settle.bin) on a machine without clang. Linked at two addresses: the
+# same bytes, or it isn't position-independent.
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -Wall -Werror -I$ROOT/c/k6"
-clang $MODF -c "$ROOT/c/k6/mod/hello.c" -o "$HERE/build/hello.o"
-for base in 0 4096; do
-  ld.lld -T "$ROOT/c/k6/mod/module.ld" --defsym MODULE_BASE=$base --gc-sections --no-undefined \
-    "$HERE/build/hello.o" -o "$HERE/build/hello-$base.elf"
-  llvm-objcopy -O binary --only-section=.text "$HERE/build/hello-$base.elf" "$HERE/build/hello-$base.bin"
+for m in hello settle; do
+  clang $MODF -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
+  for base in 0 4096; do
+    ld.lld -T "$ROOT/c/k6/mod/module.ld" --defsym MODULE_BASE=$base --gc-sections --no-undefined \
+      "$HERE/build/$m.o" -o "$HERE/build/$m-$base.elf"
+    llvm-objcopy -O binary --only-section=.text "$HERE/build/$m-$base.elf" "$HERE/build/$m-$base.bin"
+  done
+  cmp "$HERE/build/$m-0.bin" "$HERE/build/$m-4096.bin"
+  cp "$HERE/build/$m-0.bin" "$OUT/mod-$m.bin"
+  ls -l "$OUT/mod-$m.bin"
 done
-cmp "$HERE/build/hello-0.bin" "$HERE/build/hello-4096.bin"
-cp "$HERE/build/hello-0.bin" "$OUT/mod-hello.bin"
-ls -l "$OUT/mod-hello.bin"

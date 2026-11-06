@@ -251,6 +251,8 @@ def main(argv=None):
     m.add_argument("source", help="module C source, e.g. c/k6/mod/hello.c (entry: int k6_main(const k6_api_t *)), "
                                   "or its built code (.bin, k6_main first, as the firmware CI artifact's mod-hello.bin)")
     _tx_opts(m)
+    m.add_argument("--api-level", type=int, help="the k6_api_t level the module needs (default: the source's "
+                   "K6_MODULE_LEVEL, else 1; a K6 refuses a level newer than its own)")
     m.add_argument("--key-file", required=True, help="the 16-byte key the K6 image was built with (modkey)")
     m.add_argument("--serial", type=int, help="must be newer than the last module the K6 ran this boot "
                                               "(default: the clock, in seconds)")
@@ -370,10 +372,12 @@ def main(argv=None):
         from . import k6mod
         if a.source.endswith(".bin"):
             code, entry = open(a.source, "rb").read(), 0     # module.ld puts k6_main first
+            level = a.api_level or k6mod.LEVEL
         else:
             code, entry = k6mod.build(a.source)
+            level = a.api_level or k6mod.source_level(a.source)
         serial = a.serial if a.serial is not None else int(time.time())
-        img = k6mod.image(code, entry, serial, k6mod.read_key(a.key_file))
+        img = k6mod.image(code, entry, serial, k6mod.read_key(a.key_file), level)
         pk = k6mod.packets(img, a.xfer if a.xfer is not None else serial & 0xFF,
                            pager.PROFILES[a.payload].payload)
         n = len(pk)
@@ -381,7 +385,7 @@ def main(argv=None):
             pk = [pk[int(i)] for i in a.only.split(",")]
         x = build_audio(pk * a.copies, a, a.rate)
         _write(a.output, x, a.rate)
-        log(f"module {a.source}: {len(code)} B code, entry +{entry}, serial {serial}, "
+        log(f"module {a.source}: {len(code)} B code, entry +{entry}, API level {level}, serial {serial}, "
             f"{len(img)} B image in {n} {a.payload} chunks; {len(pk) * a.copies} packets, "
             f"{len(x) / a.rate:.1f} s on air")
         return 0

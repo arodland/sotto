@@ -48,13 +48,32 @@ The chunks' data, in order, is the image (the last chunk padded with zeros):
 | 4 | code length, u16 little-endian |
 | 6 | entry offset in the code, u16, even |
 | 8 | serial, u32: must be newer than the last module this boot ran |
-| 12 | API level (1), flags (0), 2 reserved bytes |
+| 12 | API level the module needs (1 or 2; a K6 refuses a newer one), flags (0), 2 reserved bytes |
 | 16 | code: Thumb, position-independent, no writable statics |
 | 16 + code length | SipHash-2-4 tag of bytes 0 .. 15 + code length, u64 little-endian |
 
 The entry is `int k6_main(const k6_api_t *api)`. API level 1 (`c/k6/k6_mod.h`) has `say`, a
 serial line `K6 MOD say <text>` of up to 60 characters, and `ticks`, the 100 us uptime
 counter (16 bits). The table only grows: a later level appends services and keeps these.
+
+API level 2 (images from 2026-11-06 on) adds the receiver:
+
+| Call | What it does |
+| --- | --- |
+| `fd_read(reg)` | an FD6818 register |
+| `fd_write(reg, v)` | writes one, 0; or -1 for the registers it refuses: 0x30 (RX/TX state), 0x33 (GPIO), 0x36 (PA), 0x37 (power) |
+| `delay_us(us)` | busy wait, any length |
+| `tune(hz, wide)` | receive on `hz`: band switch, PLL, wide or narrow filter, RX on |
+| `rx_hz()` | the frequency the pager listens on |
+| `ms()` | ms since the module started, 32 bits |
+| `key_down()` | 1 while any key is held |
+| `scratch(&bytes)` | RAM free while the module runs: the rest of the 4 KB module store past the code, word aligned, its size in `bytes` |
+
+Level 2 is receive only: there is no way to key the transmitter. After the module returns the
+firmware puts the radio back on the pager's frequency and sets the FSK receiver up again,
+whatever the module changed. `KM_RSSI_DBM(fd_read(0x67))` is the RSSI in dBm. A module that
+uses level 2 says so with `#define K6_MODULE_LEVEL 2` before including `k6_mod.h`;
+`modem.k6 mod` reads it and puts it in the header (`--api-level` for a `.bin`).
 
 ## Security
 
@@ -103,10 +122,10 @@ K6 MOD r=1 xfer=.. chunk=0 have=1/4
 K6 MOD r=1 xfer=.. chunk=1 have=2/4
 K6 MOD r=1 xfer=.. chunk=2 have=3/4
 K6 MOD r=3 xfer=.. chunk=3 have=4/4
-K6 MOD run serial=... code=366 B at 0x2000....
+K6 MOD run serial=... code=366 B at 0x2000.... stack=... B scratch=... B
 K6 MOD say hello world from RAM at 0x2000....
 K6 MOD say sum of squares 0x9f31fc58 in 0x.... ticks of 100 us
-K6 MOD ret=107 (0x6b) in .. ms
+K6 MOD ret=107 (0x6b) in .. ms stack_free=... B
 ```
 
 `r` is `km_packet`'s result: 1 a new chunk, 2 a repeat, 3 the module checks and runs, -1 bad
@@ -122,9 +141,46 @@ Copy `c/k6/mod/hello.c`. The rules, which the build checks where it can:
 - No libraries: no `memcpy`, no `printf`. The M0 has no divide instruction, so no `/` or `%`
   on variables either (clang would call a run-time helper the module doesn't have).
 - No writable statics (`.data`, `.bss`): the linker script refuses them. Use the stack, and
-  keep it small: the module runs on the pager's stack, about 1 KB deep at most.
+  keep it small: the module runs on the pager's stack, with about 700 B to spare. Level 2's
+  `scratch()` gives the rest of the module store for tables and buffers (4 KB less the
+  code). `K6 MOD run` reports the stack room at the call (`stack=`) and the scratch size,
+  and `K6 MOD ret` the stack never touched since VOICE MSG started (`stack_free=`).
 - No tables of pointers: they need relocation, and the two-address check refuses them.
-- Return quickly. The pager doesn't receive while the module runs.
+- Return quickly, or give a way out: the pager doesn't receive while the module runs. A
+  long level 2 module polls `key_down()` and stops on a key.
 
-Tests: `tests/test_k6_mod.py` (the loader on this machine with a test key, and the thumbv6m
-loader running the hello module in an emulated Cortex-M0).
+Tests: `tests/test_k6_mod.py` (the loader on this machine with a test key, the thumbv6m
+loader running the hello module in an emulated Cortex-M0, and the settle module against a
+modelled receiver).
+
+## The settle-time module (explorer phase 0)
+
+`c/k6/mod/settle.c` measures how long after a retune the FD6818's RSSI reads true, the number
+every sweep speed in the explorer design rests on. With a steady carrier on the pager's
+frequency F, for each way of arriving at F (from F - 10 kHz, from F - 1 MHz, from the other
+band; and leaving, F to F + 1 MHz), at wide and at narrow, it parks 5 ms on the start
+frequency, tunes, waits t and reads RSSI, for t from 0 to 20 ms, four times each. The settle
+time is the first t from which every reading is within 2 dB of the reading after 30 ms.
+
+```sh
+python -m modem.k6 mod settle.wav c/k6/mod/settle.c --key-file ~/.config/sotto/k6-mod.key \
+    --phy F --payload XL
+# play settle.wav to the K6 as usual; when the report says "waiting for a carrier",
+# key the IC-7100 on the same frequency (FM, no modulation) for about 10 s
+```
+
+It waits up to 60 s for the carrier (RSSI 15 dB over where it started), and any key stops
+it. The report, for each case:
+
+```
+K6 MOD say settle 10k W ref -61 dBm 700 us
+K6 MOD say curve 10k W 0:-118 100:-118 200:-118 400:-118 700:-61
+K6 MOD say    1000:-61 1500:-61 ...
+...
+K6 MOD say settle: done in 6328 ms, worst on-case 1500 us
+```
+
+`curve` is the mean RSSI (dBm) at each t (us). `probe on|off` lines dump the noise, glitch
+and AF registers (0x63 0x64 0x65 0x6f 0x4f) and the status (0x0c) with the carrier on and off,
+for the next step, the noise-based quick check. The return value is the worst settle time
+in us of the cases that arrive on the carrier, -1 if no carrier came, -2 if a key stopped it.
