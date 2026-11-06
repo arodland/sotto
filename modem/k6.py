@@ -18,6 +18,8 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
   python -m modem.k6 send msg.sot --port /dev/ttyUSB0  key the IC-7100 over CI-V and play
   python -m modem.k6 mod hello.wav c/k6/mod/hello.c --key-file KEY --phy F --payload XL
                                                        a RAM module the K6 runs once (modem/k6mod.py)
+  python -m modem.k6 cw id.wav "AG7EW SOTTO TEST" --wpm 20 --tone 800
+                                                       a Morse ID, the CW ID module's test signal
   python -m modem.k6 ctl ctl.wav --phy D --set phy=F frames=XL --also F
                                                        a control packet (spec 13): change the K6's
                                                        receive settings over the air, sent in D
@@ -52,16 +54,20 @@ MORSE = {"A": ".-", "B": "-...", "C": "-.-.", "D": "-..", "E": ".", "F": "..-.",
 K6_STORE_FRAMES = 640      # the receiver firmware's default message store (12.8 s; 25.6 s of sotto 1200)
 
 
-def cw(text, fs=fsk.FS, wpm=20, tone=800.0, level=0.4):
-    """Morse ID as audio (for the station identification an FM data transmission needs)."""
+def cw(text, fs=fsk.FS, wpm=20, tone=800.0, level=0.4, farnsworth=None):
+    """Morse ID as audio (for the station identification an FM data transmission needs).
+    farnsworth: send the characters at wpm but space them as at this lower speed."""
+    gap = 1.0
+    if farnsworth and farnsworth < wpm:   # ARRL: stretch the 3- and 7-dit gaps only
+        gap = (60 * wpm - 37.2 * farnsworth) / (19 * farnsworth * wpm) / (1.2 / wpm)
     keys = [0, 0, 0]                      # in dits: 1 = tone
     for ch in text.upper():
         if ch == " ":
-            keys += [0] * 4
+            keys += [0] * int(round(4 * gap))
             continue
         for s in MORSE.get(ch, ""):
             keys += [1] * (1 if s == "." else 3) + [0]
-        keys += [0, 0]
+        keys += [0] * int(round(2 * gap + (gap - 1)))
     dit = int(fs * 1.2 / wpm)
     mask = np.repeat(np.array(keys, float), dit)
     r = int(0.005 * fs)                   # 5 ms edges, no key clicks
@@ -262,6 +268,18 @@ def main(argv=None):
     m.add_argument("--copies", type=int, default=2,
                    help="send every chunk this many times (default 2: on air 2026-11-05 a burst's first "
                         "packet and one more were lost at level 0.3; repeats cost nothing on the K6)")
+    c2 = sub.add_parser("cw", help="a Morse ID as transmit audio: test signal for the K6 CW ID module "
+                                   "(c/k6/mod/cwprobe.c); it identifies the station too")
+    c2.add_argument("output")
+    c2.add_argument("text", help='e.g. "AG7EW SOTTO TEST"')
+    c2.add_argument("--wpm", type=float, default=20)
+    c2.add_argument("--tone", type=float, default=800.0, help="Hz (default 800, as the hamlet ID keeper)")
+    c2.add_argument("--level", type=float, default=0.4)
+    c2.add_argument("--farnsworth", type=float, metavar="WPM", help="space the characters as at this speed")
+    c2.add_argument("--repeat", type=int, default=1, help="send it this many times")
+    c2.add_argument("--gap", type=float, default=3.0, help="seconds between repeats (default 3: the K6 "
+                                                          "decoder ends a transmission after 1.2 s)")
+    c2.add_argument("--rate", type=int, default=48000)
     mk = sub.add_parser("modkey", help="make a random module key file (32 hex digits, mode 600)")
     mk.add_argument("path")
     ki = sub.add_parser("keyimage", help="write a module key into a K6 image built without one (e.g. CI's)")
@@ -352,6 +370,18 @@ def main(argv=None):
         rec = pager.control_reg_record(seq, *reg) if reg else pager.control_record(seq, settings, a.action)
         log(f"control seq {seq} record {rec.hex()}: "
             f"{(len(parts) + 1) // 2 * a.copies} packets, {len(x) / a.rate:.1f} s on air")
+        return 0
+
+    if a.cmd == "cw":
+        one = cw(a.text, a.rate, a.wpm, a.tone, a.level, a.farnsworth)
+        parts = []
+        for i in range(a.repeat):
+            if i:
+                parts.append(np.zeros(int(a.gap * a.rate)))
+            parts.append(one)
+        x = np.concatenate(parts)
+        _write(a.output, x, a.rate)
+        log(f"{a.text!r} at {a.wpm:g} wpm, {a.tone:g} Hz, x{a.repeat}: {len(x) / a.rate:.1f} s on air")
         return 0
 
     if a.cmd == "modkey":

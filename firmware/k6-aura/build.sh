@@ -176,14 +176,16 @@ if [ "${TABLE:-1}" = 1 ]; then
 fi
 [ -f "$OUT/sotto-cb.bin" ] && (cd "$OUT" && sha256sum sotto-cb.bin | tee sotto-cb.bin.sha256)
 
-# The RAM modules' code (docs/k6-modules.md: hello, and settle, a level 2 module), built as
+# The RAM modules' code (docs/k6-modules.md: hello; settle and cwprobe, level 2 modules), built as
 # modem/k6mod.py builds them, for `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...`
-# (`--api-level 2` for mod-settle.bin) on a machine without clang. Linked at two addresses: the
+# (`--api-level 2` for mod-settle.bin and mod-cwprobe.bin) on a machine without clang. A module
+# that says #define K6_MODULE_OPT z gets -Oz instead of -Os. Linked at two addresses: the
 # same bytes, or it isn't position-independent.
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -Wall -Werror -I$ROOT/c/k6"
-for m in hello settle; do
-  clang $MODF -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
+for m in hello settle cwprobe; do
+  opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
+  clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do
     ld.lld -T "$ROOT/c/k6/mod/module.ld" --defsym MODULE_BASE=$base --gc-sections --no-undefined \
       "$HERE/build/$m.o" -o "$HERE/build/$m-$base.elf"
