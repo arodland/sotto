@@ -199,8 +199,10 @@ what would settle it.
    - Buys: received audio samples with no hardware change, so a software modem past the chip
      FSK's 2400 baud slips, maybe live sotto 2400. It gives no mic samples.
    - Settled by: the I2S probe thread (`i2sprobe`, a module that puts the frame clock on GP0
-     and counts PB1 edges). Run 1 (06:02 UTC): GP0's output is off on Aura (REG_33 0xd300)
-     and level 2 refused REG_33; the next image lets a module change GP0's two bits there.
+     and counts PB1 edges). Result (2026-11-06, PR #68): no I2S port, but GP0 output code 13
+     is a 1-bit sigma-delta stream of the receive low IF (about 17 kHz on a carrier, moving
+     with the deviation), readable on PB1. Software FM demodulation from it is the open
+     question: `gp0fm` records about 28 ms of decimated IF for the host to try.
 2. **The tone detector as a slow MFSK receiver.**
    - From: the CW ID thread (on air it follows a keyed tone to about 10 ms and says which of
      16 tones it is).

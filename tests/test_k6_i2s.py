@@ -259,3 +259,45 @@ def test_tone_follows_the_carrier():
     assert said[-1] == f"tone done cycles={ret}"
     assert regs[0x33] == 0xd300 and regs[0x34] == 0
     assert {r for r, _ in writes} <= {0x34, 0x33}
+
+
+FM = os.path.join(ROOT, "c", "k6", "mod", "gp0fm.c")
+
+
+def fm_model():
+    """code 13: a first-order sigma-delta of 0.5 + 0.35 sin(2 pi 17 kHz t) while the carrier is
+    up (3 s on), 50% otherwise; t = PB1 reads / 24 MHz"""
+    import math
+    st = {"acc": 0.0}
+
+    def model(sel, reads, regs, us):
+        if sel != 13:
+            return 0
+        d = 0.5
+        if us >= 3_000_000:
+            d += 0.35 * math.sin(2 * math.pi * 17000 * reads / 24e6)
+        st["acc"] += d
+        if st["acc"] >= 1:
+            st["acc"] -= 1
+            return 1
+        return 0
+    return model
+
+
+@need_clang
+def test_fm_records_the_if():
+    regs = {**START, 0x67: lambda us: rssi_reg(-21 if us >= 3_000_000 else -103)}
+    ret, said, regs, writes = run(regs, src=FM, model=fm_model(), spare=256)
+    assert ret == 256 and said[0].startswith("fm start floor=-103 bytes=256 cal caps=10 t=")
+    assert said[1] == "fm waiting for a carrier"
+    for k in range(2):
+        rows = [ln for ln in said if ln.startswith(f"x {k} ")]
+        assert len(rows) == 11 and all(len(r) <= 60 for r in rows)
+        data = bytes.fromhex("".join(r.split()[3] for r in rows))
+        assert len(data) == 256 and max(data) <= 128
+        x = [v - 64 for v in data]
+        zc = sum(1 for a, b in zip(x, x[1:]) if (a < 0) != (b < 0))
+        # 256 outputs of 256 reads at 24 MHz = 2.73 ms of 17 kHz: about 93 crossings
+        assert 80 <= zc <= 105, zc
+    assert said[-1] == "fm done"
+    assert regs[0x33] == 0xd300 and regs[0x34] == 0

@@ -188,3 +188,41 @@ guide's I2S set-up isn't at those addresses; REG_31 = REG_04 = 0x0000.
 **Image change (PR from this thread):** a module may change REG_33 bits 8 and 0 (GP0's enable
 and value) and nothing else in it; the firmware puts REG_33 back when the module returns.
 GP0 only reaches PB1, an MCU input.
+
+**Run 2, 06:13 UTC (image e46e7bd, `i2sprobe`):** REG_33 d300 -> d200 put GP0's output on, and
+the sweep showed REG_34[3:0] is GP0's output select (the guide's 26H, moved by 0x0E). With no
+carrier, per 100 ms window at about 6.3 M samples/s:
+
+| Code | PB1 | Code | PB1 |
+| --- | --- | --- | --- |
+| 0 | low (out_val bit 0) | 8 | low |
+| 1 | high | 9 | 20 edges, slow |
+| 2-7 | low | 10 | high |
+| 11 | 93 edges, slow | 12, 13, 14 | about 340,000 edges, 50% high |
+| 15 | 188,000 edges | | |
+
+No window gave the 1,600 edges an 8 kHz frame clock would. REG_31 bit 0 changed nothing and
+REG_04 doesn't hold a write.
+
+**Run 3, 06:21 UTC (`i2scap`, 22.9 M samples/s bursts of 12,000 samples):** codes 12, 13 and 14
+give one and the same signal, also with REG_31 bit 0 set: high and low runs both cluster at 3-4,
+7-8 and 11-12 samples (units of about 160 ns, 26 MHz / 4), never longer, 50% ones. That is a
+bitstream, not a clock or a frame pulse. Code 15 is mostly 1-sample runs (13 MHz, aliased).
+Codes 9 and 11 change only on a 25.39 kHz grid (26 MHz / 1024): every gap between edges is a
+whole multiple of 286 samples (39.4 us) of the slow counter.
+
+**Run 4, 06:34 UTC (`gp0tone`, the IC-7100 sending a carrier, then 1000, 1800 and 600 Hz):**
+the density of code 13 (ones per 256 samples, 11.2 us) is the receiver's low IF:
+
+| Signal | Code 13 density | Codes 11 and 9 |
+| --- | --- | --- |
+| no carrier | flat at 50%, a few % of noise | about 900 and 200 edges/s |
+| bare carrier | a clean sine, 65-195 of 256, at 16.9-17.0 kHz | silent |
+| 600/1000/1800 Hz tones | the same sine at 13.3-20.7 kHz, about 17 kHz plus the deviation | silent |
+
+So the chip has **no I2S port** here, but GP0 code 13 hands the MCU a 1-bit sigma-delta stream
+of the receive IF (17 kHz is 26 MHz / 1536). Codes 9 and 11 behave like noise or squelch
+detector outputs. Software FM demodulation of that IF would give the MCU received audio; the
+limit is the CPU: the stream is about 6.5 Mbit/s on one pin with no clock, so the MCU must
+sample it by polling. `gp0fm` decimates while it samples (one byte per 256 samples, about
+89 k a second) so the module store holds about 28 ms of IF for the host to demodulate.
