@@ -86,7 +86,7 @@ def parse_line(line):
                 d[k] = b""
         elif k == "blk":
             d[k] = [int(x) for x in v.split(",") if x]
-        elif k in ("magic", "chip", "build", "pcm"):
+        elif k in ("magic", "chip", "build", "pcm", "crc", "sum"):
             d[k] = v
         else:
             try:

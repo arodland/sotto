@@ -23,5 +23,10 @@ c/k6/pager_host -t                              # the calibration test packet, h
   the message store and run once ([`docs/k6-modules.md`](../../docs/k6-modules.md)). `mod/hello.c`
   is the first module, `mod/module.ld` their linker script, and `km_host.c` the loader on this
   machine for `tests/test_k6_mod.py` (`make -C c/k6 km_host`, test key 00..0f).
+- `sp_cb.h/.c` puts sotto's 30 KB codebook in the radio's SPI flash, read a vector at a time
+  (`-DFX_CB_SPI`), with a power-on check, a one-time installer and a speed bench
+  ([`docs/k6-spi-codebook.md`](../../docs/k6-spi-codebook.md)). `cb_image.c` writes the image,
+  `flash_host.c` is the emulated NOR flash for `pager_host_cbs` / `_lr_cbs` / `_cbi`, and
+  `flash_bench.c` is the stand-in for `bench.elf` (`tests/test_k6_cb.py`).
 
 SPDX-License-Identifier: MIT

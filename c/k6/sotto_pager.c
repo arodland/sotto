@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "sotto_pager.h"
+#include "sp_cb.h"
 #include "../sotto.h"
 #include "../fixed/fx.h"            /* FX_OA_PACKED: whether fx_cs512's 2 KB table is in RAM */
 
@@ -311,7 +312,8 @@ void sp_play_start(void) {
   dec = sotto_dec_create();
 #endif
   play_pos = 0;
-  play_end = S.st.have && MSG_PLAYS ? S.st.stored : -1;   /* -1: the other codec's message */
+  /* -1: the other codec's message, or no codebook to decode with (sp_cb.h) */
+  play_end = S.st.have && MSG_PLAYS && sp_cb_ready() ? S.st.stored : -1;
   playing = 1;
   emph1 = emph2 = 0;
   pcm_hash = 2166136261u, pcm_n = 0;

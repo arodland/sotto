@@ -34,6 +34,16 @@ extern const uint32_t fx_exp2_tab[257];   /* the last entry, 2^31, needs 32 unsi
 #define FX_CB_VAL(y, k) ((k) & 1 ? FX_CB_LO((y)[(k) >> 1]) : FX_CB_HI((y)[(k) >> 1]))
 #endif
 extern const int16_t fx_cb_stages;
+/* the decoders' codebook look-up: FX_CB_VEC(s, i, buf) points at vector i of stage s. With
+ * FX_CB_SPI (the K6 pager) the decoder doesn't reference the table, so the linker drops it:
+ * fx_cb_fetch reads the vector's FX_CBW words into buf (int16_t[FX_CBW]) from wherever the
+ * codebook lives (c/k6/sp_cb.c: the radio's SPI flash). Same values, so the output is the same. */
+#ifdef FX_CB_SPI
+const int16_t *fx_cb_fetch(int s, int i, int16_t *buf);
+#define FX_CB_VEC(s, i, buf) fx_cb_fetch((s), (i), (buf))
+#else
+#define FX_CB_VEC(s, i, buf) ((void)(buf), fx_cb[s] + (i) * FX_CBW)
+#endif
 extern const int16_t fx_cb_bits[];
 extern const int16_t *const fx_cb[];
 extern const int32_t *const fx_cb_e2[];  /* sum of squares of each vector, for the search */
