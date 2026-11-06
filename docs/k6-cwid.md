@@ -119,6 +119,19 @@ Image 6473ca7 (level 2), module call stack 3,512 B, scratch 204 B (too small for
   cause 0x0800). The event log (12 entries) overflowed during the 20 and 25 wpm IDs, so those
   aren't confirmed edge by edge, but at 10 ms resolution a 48 ms dot (25 wpm) is easy.
 
+Register ranges over the whole 600 s run (the probe's `R` lines; it read all six every 2 ms).
+The dBm column uses the UV-K5 firmware's conversion (REG_67[8:0] / 2 - 160), with no
+correction for the receiver gain:
+
+| Register | Min..max | What it is | Reading |
+| --- | --- | --- | --- |
+| REG_6F | 0x0023..0x1A5B | [5:0] AF amplitude, dB; upper bits vary | 7 dB of keying, updates about every 120 ms |
+| REG_64 | 0x000A..0x000A | vox_amp, the mic (TX) amplitude | flat on receive |
+| REG_65 | 0x0007..0x0050 | [6:0] noise indicator | 7 to 80 |
+| REG_67 | 0x008A..0x0136 | [8:0] RSSI | about -91 to -5 dBm (idle to the IC-7100 keyed) |
+| REG_0B | 0xC006..0xDFA6 | tone detector: [12] tone present, [11:8] which tone | the keying (T above) |
+| REG_0C | 0x0200..0x0203 | [0] interrupt pending | the tone-on interrupts |
+
 ## The listener module (`c/k6/mod/cwlisten.c`, API level 2)
 
 The tone detector set up as the probe set it (16 tones, 600 to 1350 Hz in 50 Hz steps,
@@ -153,9 +166,92 @@ Unknowns for real repeaters: an ID tone outside 600-1350 Hz, an ID sent over voi
 detector may not lock), and whether 50 Hz steps are finer than the detector can tell apart
 (the 'tone' field and q will show it).
 
+## Listener results (hamlet, 2026-11-06 05:30-05:35 UTC)
+
+Image 6473ca7 on 440.850 MHz, with the IC-7100 at RFPOWER 0. There were three runs. Each sent a
+freshly built module (its own serial), then one ID sent twice with a 4 s gap
+(`--repeat 2 --gap 4`), keyed 3 s after the upload's carrier dropped. Module call: stack
+3,512 B, scratch 164 B, 864 B of stack left at the end of every run.
+
+| Run | ID | Decoded (both copies) | tone | q | lag | ok after PTT off | run to ret | msgs |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 20 wpm, 800 Hz | AG7EW SOTTO TEST, n=61 | 800 | 100 | 12 ms | 0.48 s | 48.5 s | 9 |
+| 2 | 13 wpm, 600 Hz | AG7EW SOTTO TEST, n=61 | 600 | 100 | 12 ms | 0.41 s | 53.2 s | 5 |
+| 3 | 25 wpm, 1200 Hz | AG7EW SOTTO TEST, n=61 | 1200 | 100 | 8 ms | 0.52 s | 45.2 s | 8 |
+
+All 6 copies decoded exactly. The tone was right every time, with every mark on it (q=100).
+Every run confirmed on the second copy (`seen=2`, `CWID ok AG7EW fl=0`) and returned 1, and no
+ID had to be sent again.
+
+The marks and spaces as reported, in ms (4 ms units). Heard values are min-max over both
+copies; each copy has 14 dots, 17 dashes, 17 element spaces, 11 letter spaces and 2 word spaces:
+
+| | dot | dash | element space | letter space | word space |
+| --- | --- | --- | --- | --- | --- |
+| 20 wpm sent | 60 | 180 | 60 | 180 | 420 |
+| 20 wpm heard | 68-72 | 188-192 | 48-52 | 168-172 | 408-412 |
+| 13 wpm sent | 92 | 277 | 92 | 277 | 646 |
+| 13 wpm heard | 100-104 | 284-288 | 80-88 | 264-268 | 636 |
+| 25 wpm sent | 48 | 144 | 48 | 144 | 336 |
+| 25 wpm heard | 52-56 | 148-156 | 40-44 | 136-140 | 328 |
+
+Every mark is 8-12 ms long and every space as much short, as in the probe's event log. That is
+the detector's lag, which the decoder measures and removes. Within each kind the spread is one
+or two 4 ms units, so there is a lot of margin at these speeds.
+
+**False decodes during the upload.** The module starts as soon as its last chunk is in, while
+the sender is still keyed and repeating chunks. Over that FFSK carrier the listener reported
+short transmissions on tone 15 (1350 Hz, the top tone), as the host tests' upload-tail blips
+model. Run 1 had 7, run 2 had 3 and run 3 had 6, with 1-13 marks each. They decoded as `E`,
+`EE E`, `NE`, `TE E E` and `I E EE E` at "23-60 wpm", with q 77-100. None looked like a
+callsign, so none counted toward a confirmation, and they are the extra msgs in the table
+(msgs = false + 2). None came after the carrier dropped or from the quiet channel between IDs.
+Ignoring tone 15, or transmissions under 10 marks, would drop them.
+
+**Upload.** Runs 1 and 3 got all 33 chunks on the first pass. In run 2, chunk 5 was bad
+(`r=-1 xfer=75 chunk=5 have=5/33`). The sender's second pass filled it (five `r=2` repeats,
+then `r=3` on chunk 5), so no `--only` resend was needed.
+
+**Bench notes.** The image boots with frames=L, so a run needs `ctl --set frames=XL` (sent as
+L) and an `--action none` confirm (XL) before the XL module packets. Send a station ID just
+before the first module, so the session's ID keeper doesn't key its own ID during a run. Each
+run took about 50 s from the run line to ret.
+
+## Speech from the detectors? (no)
+
+Asked after the probe run: could the level registers be sampled fast enough for speech? Not on
+a stock K6. Speech needs the waveform at about 8 kHz, and nothing the MCU can read gives it:
+
+- **No sample register.** The only FIFO is the FSK packet FIFO (REG_5F; FD6818_cn.txt:1542),
+  which holds demodulated bits. The audio registers are levels or routing:
+  - REG_6F (the guide's REG_87H, "audio amplitude output, 1 dB/step") is an envelope that
+    updates about every 120 ms (above).
+  - REG_64 is the mic's VOX amplitude (FD6818_cn.txt:2114), flat on receive.
+  - REG_47 picks the AF output source.
+- **The audio output reaches no ADC.** The chip's EARO output (pin 8) feeds the volume control
+  and the speaker amplifier (ht-survey.md: "The MCU sees neither"). Aura's only ADC inputs are
+  PA1, the battery divider, and PA0, the mic VOX level (board/power.rs:31-39).
+- **SPI speed isn't the limit.** The BK4819 allows 8 MHz SCK. Aura bit-bangs at 2 us a bit
+  (fd6818.rs), about 55 us a read, so roughly 18,000 reads a second. That would be fast enough
+  if any register held samples.
+- **The guide's I2S port probably doesn't apply.**
+  - What the guide says: the FD6818 has an MCBSP/I2S block (`mcbsp_en`, FD6818_cn.txt:2619)
+    that can output FM-demodulated or IQ data (`mcbsp_dsel`, REG_76H[11], line 3086) on the
+    chip's GPIO pins (DOUT, DFS, DCLK; lines 2438-2440).
+  - Why it probably doesn't apply here: the BK4819 datasheets have no such block. Jeff's chip
+    follows the BK4819 map, where 0x75 is an RX audio EQ rather than the guide's MCBSP setup.
+    On the K6 the chip's GPIO pins drive the PA band switch and the red LED, and only SCN, SCK
+    and SDA reach the MCU.
+  - Probing it is a long shot, and it would still need a wire.
+
+The route that would work is a hardware mod: an RC-coupled tap from EARO or the speaker node
+into a free ADC-capable MCU pin, or into PA0 with the VOX rectifier lifted. The MCU's 12-bit
+ADC runs at 8 kHz easily.
+
 ## Next
 
-- A bench run of `cwlisten` on hamlet, then on a real repeater.
+- A run of `cwlisten` on a real repeater (the hamlet bench run passed, above). Perhaps drop
+  tone 15 or short transmissions, against the upload's false decodes.
 - The table update: the explorer's `rt_find` / `rt_update_call` once they exist (fill only an
   empty or CW-sourced call, never a user one; on a mismatch set the mismatch flag; byte 51 gets
   the tone and speed). Until then the ok line is the result, and this module writes no flash.
