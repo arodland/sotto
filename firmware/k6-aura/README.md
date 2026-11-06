@@ -230,6 +230,15 @@ since the sync (a decoder yield notes when it saw the sync, and each almost-full
 finds more words in than the clock says moves that start earlier), and the 30 ms before the
 speaker opens at a stream's start takes the FIFO's words too.
 
+That clock can still undercount when the sync and the first almost-full are noticed together
+after a long idle: the read takes 3 words, but more were in. On d77ae9d (2026-11-06) that left
+2 words behind in one packet. The next almost-full came inside the guard and was dropped, the
+read by time took only the 5 words that had come since, and the loop held for the whole packet:
+10 reads by time and `spur=` +10, with the FIFO peaking at 7 of its 8 words. So a read by time
+right after another one now takes one more word than came since the last read, until an
+almost-full read comes again. Two reads by time in a row only happen with words left behind:
+with N or more the edge never comes, and with fewer it comes inside the guard.
+
 **Interrupt order.** The UV-K5 BK4819 drivers write REG_02 = 0 first and then read REG_02:
 the write latches the pending causes for the read. This firmware has always read first. If the
 chip latches as those drivers assume, every cause it saw was the previous interrupt's, one event
