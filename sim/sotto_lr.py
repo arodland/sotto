@@ -318,14 +318,14 @@ class Sotto1200(vl.SottoV37):
         rk = vl.decimate_interp(rk)
         en = vl.decimate_interp(en)
         wo[1::2] = wo[0::2]
-        wo = vl.interp_wo(wo, voiced)
+        wo = vl.interp_wo(wo, voiced, getattr(self, "UU_WO_GUARD", False))
         wo = np.where(voiced > 0, wo, np.maximum(wo, vl.WO_MIN))
         m = np.zeros(2 * n, vl.MODEL)
         m = vl.set_wo(m, wo, np.minimum(voiced, 1))
         m = vl.set_energy(vl.from_rate_k(m, rk), en)
         for k in np.where(voiced == vl.MIXED)[0]:
             m[k]["voiced"] = vl.mixed_cutoff(m[k]["Wo"])
-        return m
+        return self._model_hook(m, rk, en)          # identity here; 50 Hz unvoiced spacing in sotto 1200 hiss
 
     def _conceal(self, m, good):
         """v3.5 concealment on 20 ms frames: a lost superframe is two lost frames (hold 40 ms,

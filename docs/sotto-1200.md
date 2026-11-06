@@ -155,6 +155,8 @@ Codec 2 1200.
 
 ## Open
 
+- The 4-8 kHz hiss band fits in the same 48 bits for 16 kHz receivers: `docs/sotto-1200-hiss.md`
+  (not for the K6, whose output stops at 4 kHz).
 - On the K6, the firmware needs magic 0xA9 and the half-call play path (the K6 thread).
   Flash is tight: 988 bytes free. A sotto-1200-only image needs about 830 of them, and a
   dual image doesn't fit.
