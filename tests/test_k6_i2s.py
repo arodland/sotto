@@ -342,7 +342,8 @@ def dma_bench(f_if=17000.0, dev=4000.0, f_tone=1000.0, rcc_apb2=0, ccr1=0, dma_h
     """RCC, TIM14, TIM17 and DMA channel 1 as on the K6 (run 7): the channel runs flat out at
     dma_hz whenever it and TIM17 are on with a DMA request enabled, whatever the ARR. Each read
     of CNDTR1 then moves it on by half an output's worth of transfers, writing GPIOB IDR bytes
-    (PB4 high, PB1 a first-order sigma-delta of an FM IF) into the ring; TIM17's counter follows
+    (PB4 high, PB1 a first-order sigma-delta of an FM IF) into the ring (f_if: Hz, or a
+    function of (times, the chip's registers) giving Hz); TIM17's counter follows
     the DMA's time at 96 MHz; TIM14's (100 us ticks) moves 7 us a read"""
     import numpy as np
     rcc = {0x14: 0x14 | (1 if ccr1 else 0), 0x18: rcc_apb2}
@@ -376,7 +377,8 @@ def dma_bench(f_if=17000.0, dev=4000.0, f_tone=1000.0, rcc_apb2=0, ccr1=0, dma_h
         fs = dma_hz
         t = sim["t"] + np.arange(n) / fs
         ft = f_tone(t) if callable(f_tone) else f_tone
-        ph = sim["phase"] + 2 * np.pi * np.cumsum(f_if + dev * np.sin(2 * np.pi * ft * t)) / fs
+        fi = f_if(t, sim["st"]["regs"]) if callable(f_if) else f_if
+        ph = sim["phase"] + 2 * np.pi * np.cumsum(fi + dev * np.sin(2 * np.pi * ft * t)) / fs
         d = 0.5 + 0.3 * np.sin(ph)
         acc = sim["acc"] + np.cumsum(d)
         bits = np.diff(np.floor(np.concatenate(([sim["acc"]], acc)))).astype(np.uint8)
@@ -386,6 +388,7 @@ def dma_bench(f_if=17000.0, dev=4000.0, f_tone=1000.0, rcc_apb2=0, ccr1=0, dma_h
         return bytes((0x10 | (bits << 1)).tolist())
 
     def dma_r(uc, off, size, st):
+        sim["st"] = st
         if not rcc[0x14] & 1:
             return 0x37                   # what the K6 reads with the DMA's clock off (run 8)
         if off == 0x0C and dma.get(0x08, 0) & 1 and tim.get(0x00, 0) & 1 and \
