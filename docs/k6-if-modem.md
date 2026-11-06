@@ -226,12 +226,14 @@ Fitting it into 4 KB (from 7.6 KB) took these changes:
 instruction. Its DMA ring is filled from the model's sigma-delta bits at the K6's 5.49 MS/s,
 paced by the emulated clock. Over the full 10-step run, 164 Hz off:
 
-- **4FSK at 46 dB-Hz:** every step locked, 9,100 bits a step, BER 0.6-0.9%. Two steps were
-  near 5%: some lock slips mid-step, not yet looked into.
+- **4FSK at 46 dB-Hz:** every step locked, 8,350 bits a step, BER 0.6-0.9%. Before the
+  leading-edge pick, two steps in ten ran near 5%, and CI's 2-step test once locked 0.26 symbol
+  late at 8%. At 2 cycles an instruction the same (idle 25%); at 1.2 and on frequency, the
+  same, with one false start thrown out by the lead check.
 - **FFSK at 44 dB-Hz:** BER 0.2-0.4% on every step.
 
-Both runs lost no counts, used 2.1 KB of stack (the K6 has 3.5 KB at a module's call), and
-kept 41% (4FSK) and 51% (FFSK) of the CPU idle. That is more CPU than the study's estimate,
+Both runs lost no counts, used 2.2 KB of stack (the K6 has 3.5 KB at a module's call), and
+kept 42% (4FSK) and 51% (FFSK) of the CPU idle. That is more CPU than the study's estimate,
 and it is the next thing to profile before the receiver can share the CPU with the sotto
 decoder.
 
