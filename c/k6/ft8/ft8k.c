@@ -11,8 +11,8 @@
 #endif
 
 #define NN 79
-#define R1 16
-#define SH1 16 /* x cos (Q12) and the CIC's 16^3 = 2^12: keep about 15 bits */
+/* the first CIC: k->r1 (16) and k->sh1 (16): x cos (Q12) and the CIC's 16^3 = 2^12, keep about
+   15 bits */
 #define SH2 15 /* CIC r2^3, r2 26..28: about 2^14.3 */
 
 static const uint8_t COSTAS[7] = {3, 1, 4, 0, 6, 5, 2};
@@ -75,6 +75,8 @@ void fk_init(fk_t *k, int nb, int r2, uint8_t *wf, int16_t *sc, void *work) {
     for (i = 0; i < (unsigned)FK_SC_WORDS(nb); i++) sc[i] = -32000;
   k->nb = (uint8_t)nb;
   k->r2 = (uint8_t)r2;
+  k->r1 = 16;
+  k->sh1 = 16;
   k->qs = 3;     /* one waterfall step = 8/16 octave of power = 1.5 dB */
   k->thr = 20;   /* 1.25 steps a neighbour (in 1/16 step): strong signals score low, as
                     their skirts fill the neighbours */
@@ -103,7 +105,7 @@ void fk_in(fk_t *k, int x, uint32_t phase) {
      to fit. */
   i1[0] += (uint32_t)(x * c), i1[1] += i1[0], i1[2] += i1[1];
   i1[3] += (uint32_t)(-x * s), i1[4] += i1[3], i1[5] += i1[4];
-  if (++k->n1 < R1) return;
+  if (++k->n1 < k->r1) return;
   k->n1 = 0;
   {
     uint32_t *c1 = (uint32_t *)k->c1, *i2 = (uint32_t *)k->i2, *c2 = (uint32_t *)k->c2;
@@ -114,7 +116,7 @@ void fk_in(fk_t *k, int x, uint32_t phase) {
       t = v - c1[3 * ch], c1[3 * ch] = v, v = t;
       t = v - c1[3 * ch + 1], c1[3 * ch + 1] = v, v = t;
       t = v - c1[3 * ch + 2], c1[3 * ch + 2] = v, v = t;
-      y[ch] = (uint32_t)((int32_t)v >> SH1);
+      y[ch] = (uint32_t)((int32_t)v >> k->sh1);
       i2[3 * ch] += y[ch], i2[3 * ch + 1] += i2[3 * ch], i2[3 * ch + 2] += i2[3 * ch + 1];
     }
     if (++k->n2 < k->r2) return;

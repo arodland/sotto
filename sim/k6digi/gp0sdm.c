@@ -43,7 +43,7 @@ int gp0_counts(const double *zr, const double *zi, int n, double fz, double fif,
       tdma = t0 + ddma * (++kd + jit * (urand() - 0.5));
       acc += y > 0;
       if (++k == L) {
-        out[no++] = (int8_t)(2 * acc - L);
+        out[no++] = (int8_t)(2 * acc - L > 127 ? 127 : 2 * acc - L); /* L = 128: one count clips */
         acc = k = 0;
       }
     }

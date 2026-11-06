@@ -9,7 +9,7 @@
                                    FMIX Hz with the phase the K6 would use, a row every 80 ms
 
    Prints one line a decode: "row bin snr score iters text". Options after the arguments:
-   thr=N qs=N hann=0|1 fosr=0|1 tosr=0|1, gap=MS (counts: zeros for MS after every fourth
+   thr=N qs=N hann=0|1 fosr=0|1 tosr=0|1, r1=N sh1=N (counts: the first CIC), gap=MS (counts: zeros for MS after every fourth
    row call, as gp0rx.h fills the counts a K6 report line every 160 ms loses), and wfout=FILE (iq, counts): write each row as ft8wf
    would send it, decoding through fk_rowq + fk_putrow as the host does from a K6. MIT licence. */
 #include <stdio.h>
@@ -62,6 +62,8 @@ static void opts(fk_t *k, int argc, char **argv, int a) {
     if (!strncmp(argv[a], "hann=", 5)) k->hann = (uint8_t)atoi(argv[a] + 5);
     if (!strncmp(argv[a], "fosr=", 5)) k->fosr = (uint8_t)atoi(argv[a] + 5);
     if (!strncmp(argv[a], "tosr=", 5)) k->tosr = (uint8_t)atoi(argv[a] + 5);
+    if (!strncmp(argv[a], "r1=", 3)) k->r1 = (uint8_t)atoi(argv[a] + 3);
+    if (!strncmp(argv[a], "sh1=", 4)) k->sh1 = (uint8_t)atoi(argv[a] + 4);
     if (!strncmp(argv[a], "gap=", 4)) gap = atof(argv[a] + 4) / 1000;
     if (!strncmp(argv[a], "wfout=", 6) && !(wfo = fopen(argv[a] + 6, "wb")))
       perror(argv[a] + 6), exit(1);

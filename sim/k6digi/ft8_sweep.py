@@ -39,10 +39,12 @@ def trial(args):
         sigma = np.sqrt(fs / 2 / 2500 / 10 ** (snr / 10))                    # 2500 Hz noise
         x += rng.normal(0, sigma, len(x))
         res = ft8_wav.run_iq(ft8_wav.to_iq(x, fs, 1520.0), nb, opts)
-    else:                                       # "k6" or "k6:FLOOR"
+    else:                                       # "k6", "k6:FLOOR" or "k6:FLOOR:L"
         from . import gp0
-        floor = float(path.split(":")[1]) if ":" in path else 0.05
-        res = gp0.run_ssb(x, fs, 1520.0, nb, opts, snr, seed=seed, floor=floor)
+        f = path.split(":")                    # k6[:FLOOR[:L]]
+        floor = float(f[1]) if len(f) > 1 else 0.05
+        L = int(f[2]) if len(f) > 2 else gp0.L
+        res = gp0.run_ssb(x, fs, 1520.0, nb, opts, snr, seed=seed, floor=floor, L=L)
     return any(d["text"] == want for d in res)
 
 

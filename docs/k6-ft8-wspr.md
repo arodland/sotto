@@ -17,12 +17,15 @@ radio today, and what is still waiting on a bench run, a firmware change or a de
   - WSJT-X reaches about -21 dB. The difference is the cost of a fixed-point decoder with 4-bit
     waterfall values and no a-priori passes.
 - **What fits on the radio today:**
-  - `ft8wf` (3.7 KB of code) fits the 4 KB module store. It runs the front end and the waterfall
+  - `ft8wf` (3.9 KB of code) fits the 4 KB module store. It runs the front end and the waterfall
     on the K6 and streams the waterfall over the serial report. `tools/k6_ft8.py decode LOG`
     decodes it on the PC with the same receiver.
-  - `ft8rx`, the whole decoder on the K6, builds at 7.2 KB of code and needs about 4 KB of RAM
+  - `ft8rx`, the whole decoder on the K6, builds at 7.4 KB of code and needs about 4 KB of RAM
     besides. That doesn't fit until the firmware gives modules a bigger arena (see "Getting
     ft8rx onto the radio").
+- **Bench run 1 (2026-11-06): no decodes.** The K6's IF offset is only +11 Hz, but the DMA
+  ring overran about 6,450 times a second because the stop-key scan (about 60 us on the radio)
+  ran on every pass of the drain loop. Fixed for run 2; see "Bench run 1".
 - **FT8 transmit:**
   - Planned as AFSK on FM through the chip's tone oscillator (REG_70/71). A 12.64 s FT8
     transmission plus a CW ID fits the 20 s limit of the level 3 TX API (PR #71).
@@ -112,8 +115,8 @@ path it reads several dB low: for example, -19 for a -12 dB signal.
 
 | Part | Size |
 | --- | --- |
-| `ft8wf` | 3,668 B of code at -Oz, so the image is 3.7 KB of 4 KB |
-| `ft8rx` | 7,246 B |
+| `ft8wf` | 3,930 B of code at -Oz, so the image is 3.9 KB of 4 KB |
+| `ft8rx` | 7,418 B |
 
 The largest functions in `ft8rx`:
 
@@ -128,13 +131,19 @@ The largest functions in `ft8rx`:
 
 **RAM:**
 
-- `ft8wf`: about 1.8 KB of stack (measured in the emulator), with the DMA ring on the stack.
+- `ft8wf`: about 2.3 KB of stack (measured in the emulator), with the 1 KB DMA ring on the stack.
   It needs no scratch.
 - `ft8rx`: needs the ring (512 B), fk_t (~0.5 KB), the 162-row waterfall (nb = 24: 1.9 KB), the
   sync scores (0.1 KB) and the LDPC work (0.9 KB).
 
-**CPU:** `ft8wf` runs about 27.5 M instructions per second of signal on the emulated M0, which
-is about 35-40% of the 96 MHz core counting 1.3 cycles an instruction (modules run from RAM).
+**CPU:** on the softmodem thread's calibrated M0 emulator (`tests/k6_live_emu.py --module`,
+1.5 cycles an instruction, checked against gp0dma's measured idle on the K6), `ft8wf` waits for
+the DMA about 30% of the time, with the stop-key scan costed at 60 us (see run 1 below). The
+drain loop was tightened for run 2: a 64-sample count is four unrolled passes of four words,
+the mixer's phase steps by one add a count, and the ring is 1 KB (186 us at 5.5 MS/s) instead
+of 512 B. Counts of 128 samples would halve the per-count work, but their boxcar folds more of
+the sigma-delta's noise onto the IF: in the sim, -16 dB fell from 75% to 38% (floor 0.15) and
+from 42% to 5% (floor 0.06), so the counts stay at 64 (`LCNT` in gp0rx.h).
 A decode in `ft8rx` adds a short burst; its pause is zero-filled like any other.
 
 ## ft8wf: what runs on the radio today
@@ -145,7 +154,8 @@ A decode in `ft8rx` adds a short burst; its pause is zero-filled like any other.
 ft8wf start nb=32 f=1500 inv=0
 ft8wf gain rms=4.7 g=03ff rms=9.1 r2=27 ks=5490     (noise rms at the AGC, at the gain chosen)
 w 0 <44 base64 chars>                              (two 80 ms rows of 16 bytes, numbered)
-ft8wf st t=15 lost=12 ks=5492 flo=812              (every 15 s; lost = DMA ring overruns)
+ft8wf st t=15 lost=0 ks=5492 flo=812 idle=30       (every 15 s; lost = DMA ring overruns,
+                                                    idle = % of the time waiting for the DMA)
 ft8wf done rows=3750 lost=180
 ```
 
@@ -166,7 +176,33 @@ ft8wf done rows=3750 lost=180
 - **Making test audio.** `tools/k6_ft8.py wav OUT.wav --text "CQ AG7EW CN87" --f0 1480` makes
   12 kHz FT8 audio, a transmission every 15 s, to play into the IC-7100.
 
-## Bench run (not yet done)
+## Bench run 1 (2026-11-06): no decodes, the ring overran
+
+Run on Jeff's bench through hamlet, with FT8 from the IC-7100 in PKTUSB on 440.850.
+
+- **Offset: fine.** gp0dma read the carrier at IF 16,938 Hz, 11 Hz above nominal, so the audio
+  went at `--f0 1468`. The xtalstep reading of 16,763 Hz (below) was wrong; gp0fm's 16,919 was
+  close.
+- **Noise floor: low.** `ft8wf gain rms=3.7 g=03ff rms=4.1`: the gain went to its top step and
+  the counts' rms only reached 4.1, under the 8.0 the sim's floor-0.15 numbers assume. It is
+  nearer the sim's floor 0.06, where -14 dB decodes 80% and -16 dB 42%.
+- **The ring overran about 6,450 times a second** (`lost=1933930` over 300 s), and nothing
+  decoded. The 3,748 rows reached the PC intact (0 lost on the link), but they held mostly
+  zero-filled gaps.
+- **The cause: the stop-key check.** The main loop called `api->key_down()` on every pass of
+  the drain loop. Aura's `any_pressed` scans six keypad rows with a 5 us SysTick wait each. In
+  the emulator, a 1 us key_down gives 0 overruns, 36 us gives 7 a second, and 60 us gives
+  6,140 a second, which matches the radio. gp0dma never calls it inside its sampling loop,
+  which is why its calibration held. Run 2's image checks the key once a row (every 40 ms),
+  in `ft8wf` and `ft8rx`, and the emulator then shows 0 overruns at 60 us.
+
+## Bench run 2 (next)
+
+Same steps as below, with `--f0 1468`, and Jeff listening on another radio. The CW ID for the
+run goes as true CW: the 800 Hz `modem.k6 cw` WAV played with the IC-7100 in PKTUSB. Look for
+`lost=0` and `idle=` in the st lines before reading anything into the decode rate.
+
+## Bench steps
 
 The run needs no keys on the K6 itself. It sends one module and plays FT8 from the IC-7100 in
 USB on 440.850; Jeff OK'd PKTUSB on 440.850 on 2026-11-06 for the AF sweep. Bench rules: never

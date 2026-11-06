@@ -41,6 +41,8 @@ typedef struct {
 typedef struct {
   /* set up by fk_init */
   uint8_t nb, r2, qs;               /* bins, second decimation, waterfall step (log2 Q4 >> qs) */
+  uint8_t r1, sh1;                  /* fk_in: the first CIC's decimation (16) and its output shift
+                                       (16); a caller with counts of 128 samples sets 8 and 14 */
   int16_t thr;                      /* sync threshold, as fk_dec_t.score */
   uint8_t *wf;                      /* FK_ROWS rows of nb 4-bit values */
   int16_t *sc;                      /* sync scores for the last 3 starts */

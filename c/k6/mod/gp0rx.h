@@ -18,8 +18,15 @@
 #define DMA_CPAR1 (DMA + 0x10)
 #define DMA_CMAR1 (DMA + 0x14)
 #define TIM17EN (1u << 18)
-#define RSZ 512u
-#define LCNT 64u
+#ifndef RSZ
+#define RSZ 1024u /* the DMA ring: 186 us at 5.5 MS/s */
+#endif
+#ifndef LCNT
+#define LCNT 64u /* samples a count (64 or 128, in 64-sample halves, so the gain set-up's rms
+                    stays in 64-sample counts); ft8k's first CIC decimates by 1024 / LCNT.
+                    128 halves the per-count work but its boxcar folds more of the
+                    sigma-delta's noise onto the IF: sim -16 dB 75% -> 38% (floor 0.15) */
+#endif
 /* the mixer: phase a 96 MHz cycle for 26 MHz / 1536 +- FT8_AUDIO, in 2^32 a turn */
 #define FMIX_MHZ (FT8_INV ? 16927083ull - FT8_AUDIO * 1000ull : 16927083ull + FT8_AUDIO * 1000ull)
 #define KMIX ((uint32_t)((FMIX_MHZ << 32) / 96000000000ull))
@@ -85,7 +92,12 @@ typedef struct {
   uint32_t p0, t0;               /* the start of this gap-free stretch */
   uint32_t lost, rows;
   uint32_t tc, tcok;             /* the next count's time, once the receiver has had one */
+  uint32_t tp, idle, was_idle;   /* the last poll's time; cycles spent waiting for the DMA */
 } rx_t;
+
+/* ft8k's first CIC for counts of LCNT samples: 1024 / LCNT, and the shift that keeps its output
+   at the scale of 64-sample counts into 16 */
+#define RX_FK(k) ((k)->r1 = (uint8_t)(1024u / LCNT), (k)->sh1 = (uint8_t)(LCNT == 128 ? 14 : 16))
 
 static uint32_t now(rx_t *r) {
   uint32_t c17 = rd(TIM17_CNT) & 0xFFFF, c14 = rd(TIM14_CNT) & 0xFFFF;
@@ -116,19 +128,20 @@ static void resync(rx_t *r) {
   r->t0 = now(r);
 }
 
-static int ones(const uint8_t *ring, uint32_t at) {
-  const uint32_t *p = (const uint32_t *)(ring + at);
-  uint32_t acc = 0, i;
-  for (i = 0; i < LCNT / 4; i++) acc += p[i] & 0x02020202u;
-  acc >>= 1;
-  acc = (acc & 0x00FF00FFu) + ((acc >> 8) & 0x00FF00FFu);
-  return (int)((acc & 0xFFFF) + (acc >> 16));
+/* the ones on PB1 (bit 1 of each byte) in 64 samples, unrolled four words a pass */
+static int ones64(const uint8_t *q) {
+  const uint32_t *p = (const uint32_t *)q, m = 0x02020202u;
+  uint32_t a = 0, i;
+  for (i = 0; i < 16; i += 4) a += (p[i] & m) + (p[i + 1] & m) + (p[i + 2] & m) + (p[i + 3] & m);
+  a >>= 1;
+  a = (a & 0x00FF00FFu) + ((a >> 8) & 0x00FF00FFu);
+  return (int)((a & 0xFFFF) + (a >> 16));
 }
 
 /* take every whole count the DMA has made; with k, mix them into the receiver. Returns the
-   counts, and the sum of their squares in *sq */
+   counts, and the sum of their 64-sample halves' squares in *sq */
 static uint32_t drain(rx_t *r, fk_t *k, uint32_t *sq) {
-  uint32_t n = 0, t, P;
+  uint32_t n = 0, t, P, cpc, tx, ph = 0, dph = 0;
   P = poll(r);
   t = now(r);
   if (P - r->consumed > RSZ - LCNT) { /* overrun */
@@ -136,26 +149,39 @@ static uint32_t drain(rx_t *r, fk_t *k, uint32_t *sq) {
     resync(r);
     return 0;
   }
-  while (P - r->consumed >= LCNT) {
-    int x = 2 * ones(r->ring, r->consumed & (RSZ - 1)) - (int)LCNT;
-    if (k) {
-      /* the count's middle sample was taken (P - that) transfers before t */
-      uint32_t ago = ((P - r->consumed - LCNT / 2) * r->cps8) >> 8, tx = t - ago, ph;
-      uint32_t cpc = (r->cps8 * LCNT) >> 8;
-      /* counts missed while the CPU was away (a report line, a row's decode): zeros, so the
-         decimated samples stay evenly spaced in real time. Skipping them instead would slip
-         the 200 Hz clock and smear the tones across a row (sim: -16 dB 75% -> 20% with one
-         16 ms line every 160 ms; 68% with the zeros) */
-      if (r->tcok)
-        while ((int32_t)(tx - r->tc) > (int32_t)(cpc >> 1)) fk_in(k, 0, 0), r->tc += cpc;
-      r->tc = tx + cpc, r->tcok = 1;
-      ph = KMIX * tx;
-      fk_in(k, x, FT8_INV ? 0u - ph : ph); /* mirrored: mix by e^{+j...} below the IF */
+  if (P - r->consumed < LCNT) {
+    if (r->was_idle) r->idle += t - r->tp;
+    r->tp = t, r->was_idle = 1;
+    return 0;
+  }
+  r->tp = t, r->was_idle = 0;
+  cpc = (r->cps8 * LCNT) >> 8;
+  /* the first count's middle sample was taken (P - that) transfers before t */
+  tx = t - (((P - r->consumed - LCNT / 2) * r->cps8) >> 8);
+  if (k) {
+    /* counts missed while the CPU was away (a report line, a row's decode): zeros, so the
+       decimated samples stay evenly spaced in real time. Skipping them instead would slip
+       the 200 Hz clock and smear the tones across a row (sim: -16 dB 75% -> 20% with one
+       16 ms line every 160 ms; 68% with the zeros). Not after a pause of over 4096 counts. */
+    if (r->tcok) {
+      int32_t gap = (int32_t)(tx - r->tc);
+      if (gap < (int32_t)(cpc << 12))
+        for (; gap > (int32_t)(cpc >> 1); gap -= (int32_t)cpc) fk_in(k, 0, 0);
     }
-    if (sq) *sq += (uint32_t)(x * x);
+    ph = KMIX * tx, dph = KMIX * cpc;
+  }
+  while (P - r->consumed >= LCNT) {
+    const uint8_t *q = r->ring + (r->consumed & (RSZ - 1));
+    int a = 2 * ones64(q) - 64, b = LCNT == 128 ? 2 * ones64(q + 64) - 64 : 0;
+    if (k) {
+      fk_in(k, a + b, FT8_INV ? 0u - ph : ph); /* mirrored: mix by e^{+j...} below the IF */
+      ph += dph;
+    }
+    if (sq) *sq += (uint32_t)(a * a + b * b);
     r->consumed += LCNT;
     n++;
   }
+  if (k) r->tc = tx + n * cpc, r->tcok = 1;
   return n;
 }
 
@@ -172,7 +198,8 @@ static void dma_on(uint8_t *ring) {
 static uint32_t noise(rx_t *r) {
   uint32_t sq = 0, n = 0, t1, p1;
   resync(r);
-  while (n < 4096) n += drain(r, 0, &sq);
+  while (n < 4096 * 64 / LCNT) n += drain(r, 0, &sq);
+  n = n * (LCNT / 64); /* 64-sample halves */
   p1 = r->consumed, t1 = r->t;
   r->cps8 = fk_udiv((t1 - r->t0) << 8, p1 - r->p0);
   {
@@ -251,7 +278,7 @@ static int rx_setup(const k6_api_t *api, saved_t *sv, rx_t *r, uint8_t *ring) {
   wr(TIM17 + 0x0C, 1u << 8);
   wr(TIM17 + 0x00, 1);
   r->t = 0, r->c17 = rd(TIM17_CNT) & 0xFFFF, r->c14 = rd(TIM14_CNT) & 0xFFFF;
-  r->lost = r->rows = r->tcok = 0;
+  r->lost = r->rows = r->tcok = r->idle = r->was_idle = 0;
   r->ring = ring;
   dma_on(ring);
   return 0;

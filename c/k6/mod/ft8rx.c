@@ -43,6 +43,9 @@
 #ifndef FT8_SECONDS
 #define FT8_SECONDS 300
 #endif
+#ifndef FT8_STAT
+#define FT8_STAT 375 /* rows between status lines: 15 s */
+#endif
 #ifndef FT8_RMS_LO
 #define FT8_RMS_LO 80  /* counts' rms x 10 under which the gain goes up */
 #endif
@@ -50,6 +53,7 @@
 #define FT8_RMS_HI 140
 #endif
 
+#define RSZ 512u
 #include "gp0rx.h"
 
 int k6_main(const k6_api_t *api) {
@@ -74,9 +78,10 @@ int k6_main(const k6_api_t *api) {
   p = rx_gain(api, &sv, &r, &r2, put(line, "ft8 start"));
   say0(api, line, p);
   fk_init(k, FT8_NB, (int)r2, wf, sc, work);
+  RX_FK(k);
   resync(&r);
   next = r.t + ROW_CYC;
-  while (!api->key_down() && r.rows < (uint32_t)FT8_SECONDS * 25u) {
+  while (r.rows < (uint32_t)FT8_SECONDS * 25u) {
     drain(&r, k, 0);
     if ((int32_t)(r.t - next) < 0) continue;
     rx_rate(&r);
@@ -98,7 +103,7 @@ int k6_main(const k6_api_t *api) {
         ndec++;
       }
     }
-    if (++stat == 375) { /* 15 s */
+    if (++stat == FT8_STAT) {
       stat = 0;
       p = kv(line, "ft8 st t=", fk_udiv(r.rows, 25));
       p = kv(p, " lost=", r.lost);
@@ -107,6 +112,9 @@ int k6_main(const k6_api_t *api) {
       p = kv(p, " flo=", (uint32_t)(k->flo >> 4));
       say0(api, line, p);
     }
+    /* the stop key once a row, never in the drain loop: Aura scans the keypad with six
+       5 us waits, about 60 us on the K6, and that each pass overran the ring (run 1) */
+    if (api->key_down()) break;
     resync(&r);
   }
   teardown(api, &sv);

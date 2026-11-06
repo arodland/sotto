@@ -159,7 +159,7 @@ def k6_bench(sig, regs, fdma=5.71e6, step=128):
             sim["t"] += step / fdma
             sim["n"] += step
             data = bytes((0x10 | (bits << 1)).tolist())
-            ring, n, rsz = dma[0x14], dma[0x0C], 512
+            ring, n, rsz = dma[0x14], dma[0x0C], sim["rsz"]
             pos = rsz - n
             first = min(step, rsz - pos)
             uc.mem_write(ring + pos, data[:first])
@@ -177,7 +177,8 @@ def k6_bench(sig, regs, fdma=5.71e6, step=128):
             return
         dma[off] = value
         if off == 0x08 and value & 1:
-            assert dma[0x10] == 0x48000410 and dma[0x0C] == 512
+            assert dma[0x10] == 0x48000410 and dma[0x0C] in (512, 1024)
+            sim["rsz"] = dma[0x0C]
             assert value & 0xFFE == (3 << 12 | 1 << 7 | 1 << 5) & 0xFFE, hex(value)
 
     def gpio_r(uc, off, size, st):

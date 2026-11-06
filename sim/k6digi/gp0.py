@@ -41,7 +41,7 @@ def lib():
     return _lib
 
 
-def counts(z, fz, fdma=FDMA, jit=0.3, seed=1, fif=FIF):
+def counts(z, fz, fdma=FDMA, jit=0.3, seed=1, fif=FIF, L=L):
     zr = np.ascontiguousarray(z.real, float)
     zi = np.ascontiguousarray(z.imag, float)
     nmax = int(len(z) / fz * fdma / L) + 4
@@ -75,10 +75,14 @@ def ssb(x, fs, fz=48000):
     return signal.resample_poly(a, r.numerator, r.denominator)
 
 
-def run_counts(c, nb, fmix, opts=(), fdma=FDMA, r2=None):
+def run_counts(c, nb, fmix, opts=(), fdma=FDMA, r2=None, L=L):
+    """L = 128: counts of 128 samples into a first CIC of 8 (as gp0rx.h), else 64 into 16"""
     fs = fdma / L
+    r1 = 1024 // L
+    if L != 64:
+        opts = list(opts) + ["r1=%d" % r1, "sh1=%d" % (16 - 2 * (L // 64 - 1))]
     if r2 is None:
-        r2 = int(round(fs / 16 / 200))
+        r2 = int(round(fs / r1 / 200))
     with tempfile.NamedTemporaryFile(suffix=".s8", delete=False) as f:
         f.write(c.astype(np.int8).tobytes())
         name = f.name
@@ -105,11 +109,11 @@ def ideal_counts(z, fz, fdma=FDMA):
     return np.clip(np.round(L * np.real(zi * np.exp(2j * np.pi * FIF * t))), -64, 64)
 
 
-def run_ssb(clean, fs, fc, nb, opts, snr, seed=1, floor=0.05):
+def run_ssb(clean, fs, fc, nb, opts, snr, seed=1, floor=0.05, L=L):
     """clean audio (unit power while on) -> USB -> K6 at snr -> counts -> the receiver centred
     on audio fc. floor < 0: no sigma-delta (the front end's own loss). Returns the decodes."""
     fz = 48000
     sig = ssb(clean, fs, fz)
     z = k6_if(sig, fz, snr, floor=abs(floor), seed=seed)
-    c = counts(z, fz, seed=seed) if floor > 0 else ideal_counts(z, fz)
-    return run_counts(c, nb, FIF + fc, opts)
+    c = counts(z, fz, seed=seed, L=L) if floor > 0 else ideal_counts(z, fz)
+    return run_counts(c, nb, FIF + fc, opts, L=L)

@@ -12,7 +12,8 @@
      ft8wf start nb=32 f=1500 inv=0
      ft8wf gain rms=4.7 g=03ff rms=9.1 r2=27 ks=5490        (noise rms at the AGC, at the gain)
      w 0 <44 base64 chars>                                  (the first row's number)
-     ft8wf st t=15 lost=12 ks=5492 flo=812                  (every 15 s)
+     ft8wf st t=15 lost=12 ks=5492 flo=812 idle=60          (every 15 s; idle: % of it spent
+                                                            waiting for the DMA)
      ft8wf done rows=3750 lost=180
    Runs FT8_SECONDS (300) or until a key; returns the rows sent, or ft8rx's errors (not -8:
    the ring is on the stack). Writes what
@@ -33,6 +34,9 @@
 #endif
 #ifndef FT8_SECONDS
 #define FT8_SECONDS 300
+#endif
+#ifndef FT8_STAT
+#define FT8_STAT 375 /* rows between status lines: 15 s */
 #endif
 #ifndef FT8_RMS_LO
 #define FT8_RMS_LO 80  /* counts' rms x 10 under which the gain goes up */
@@ -80,9 +84,10 @@ int k6_main(const k6_api_t *api) {
   p = rx_gain(api, &sv, &r, &r2, put(line, "ft8wf gain"));
   say0(api, line, p);
   fk_init(&k, FT8_NB, (int)r2, 0, 0, 0); /* the front end only: no waterfall here */
+  RX_FK(&k);
   resync(&r);
   next = r.t + ROW_CYC;
-  while (!api->key_down() && r.rows < (uint32_t)FT8_SECONDS * 25u) {
+  while (r.rows < (uint32_t)FT8_SECONDS * 25u) {
     drain(&r, &k, 0);
     if ((int32_t)(r.t - next) < 0) continue;
     rx_rate(&r);
@@ -96,14 +101,19 @@ int k6_main(const k6_api_t *api) {
       sent += 2;
       have = 0;
     }
-    if (++stat == 375) { /* 15 s */
+    if (++stat == FT8_STAT) {
       stat = 0;
       p = kv(line, "ft8wf st t=", fk_udiv(r.rows, 25));
       p = kv(p, " lost=", r.lost);
       p = kv(p, " ks=", fk_udiv(96000u * 256u, r.cps8));
       p = kv(p, " flo=", (uint32_t)(k.flo >> 4));
+      p = kv(p, " idle=", fk_udiv(r.idle, FT8_STAT * 38400u)); /* % of the time waiting for the DMA */
+      r.idle = 0;
       say0(api, line, p);
     }
+    /* the stop key once a row, never in the drain loop: Aura scans the keypad with six
+       5 us waits, about 60 us on the K6, and that each pass overran the ring (run 1) */
+    if (api->key_down()) break;
     resync(&r);
   }
   teardown(api, &sv);
