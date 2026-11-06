@@ -125,6 +125,22 @@ has no menu to change it. Jeff chose to give the module transmitter its own lock
 allows the US amateur 2 m and 70 cm bands (FCC HAM, 144-148 and 420-450 MHz) for its key-up
 only, and puts the radio's FLOCK back straight after.
 
+Second try (15:46 UTC, image e57af49, the same 1096 B module): **the K6 sent AG7EW.** The upload
+took one send. The module keyed up 1.1 s after the IC-7100 unkeyed, and returned 52:
+
+```
+15:46:42.635 K6 MOD say cw key AG7EW 20wpm rx=440850000
+15:46:54.150 K6 MOD tx on hz=440850000 max=4420 ms
+15:46:57.153 K6 MOD tx off
+15:46:57.154 K6 MOD say cw sent units=52 ms=3432
+```
+
+The IC-7100 recorded it in USB 2400 as a ~160 Hz beat note for 3420 ms. It decodes as AG7EW:
+dots 50-70 ms, dashes 170-180 ms, gaps 60-70 and 170-180 ms, after a 290 ms lead-in. On this
+bench (radios a metre apart) the carrier still comes through with the PA off, about 40 dB down,
+so the IC-7100's AGC shows the keying as edges. That is leakage past the PA. At range the PA-off
+spans would be silent.
+
 ## Next
 
 REG_3B turned out to be latched, so MCU-written FSK needs another source. Module API
