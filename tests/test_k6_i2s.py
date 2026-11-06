@@ -301,3 +301,24 @@ def test_fm_records_the_if():
         assert 80 <= zc <= 105, zc
     assert said[-1] == "fm done"
     assert regs[0x33] == 0xd300 and regs[0x34] == 0
+
+
+@need_clang
+def test_raw_records_the_bitstream():
+    """gp0raw: the same run, but each capture holds the raw samples, first in bit 31 of each
+    little-endian word"""
+    raw = os.path.join(ROOT, "c", "k6", "mod", "gp0raw.c")
+    regs = {**START, 0x67: lambda us: rssi_reg(-21 if us >= 3_000_000 else -103)}
+    ret, said, regs, writes = run(regs, src=raw, model=fm_model(), spare=1600)
+    assert ret == 1600 and said[0].startswith("fm start floor=-103 bytes=1600")
+    rows = [ln for ln in said if ln.startswith("x 1 ")]
+    data = bytes.fromhex("".join(r.split()[3] for r in rows))
+    words = [int.from_bytes(data[i:i + 4], "little") for i in range(0, len(data), 4)]
+    bits = [(w >> (31 - b)) & 1 for w in words for b in range(32)]
+    assert len(bits) == 12800 and 0.4 < sum(bits) / len(bits) < 0.6
+    dens = [sum(bits[i:i + 256]) - 128 for i in range(0, len(bits), 256)]
+    zc = sum(1 for a, b in zip(dens, dens[1:]) if (a < 0) != (b < 0))
+    # 12800 reads at 24 MHz = 0.53 ms of 17 kHz: about 18 crossings
+    assert 14 <= zc <= 22, (zc, dens)
+    assert said[-1] == "fm done" and regs[0x33] == 0xd300 and regs[0x34] == 0
+    assert {r for r, _ in writes} <= {0x34, 0x33}
