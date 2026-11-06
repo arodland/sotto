@@ -52,8 +52,9 @@
 #define AF_ON 1              /* route the receive audio to the speaker (REG_47), to hear the ID */
 #endif
 #ifndef LISTEN_MIN
-#define LISTEN_MIN 9         /* fewer marks and spaces than this (5 marks) is no ID: only counted.
-                                On air a module upload's FFSK gave many 1-3 mark bursts on tone 15 */
+#define LISTEN_MIN 21        /* fewer marks and spaces than this (11 marks) with no callsign in it
+                                is no ID: only counted. On air a module upload's FFSK gave bursts
+                                of 1-7 marks on tone 15; the shortest call (K1E) is 9 marks */
 #endif
 #define TONE_LO 600
 #define TONE_STEP 50
@@ -82,13 +83,15 @@ typedef struct {
 
 static char *line_start(char *p) { return put(p, "CWID "); }
 
-/* a finished transmission: report it, and return 1 if it confirmed a callsign */
+/* a finished transmission: report it, and return 1 if it confirmed a callsign, -1 if it was
+   too short to be an ID (not reported) */
 NOINLINE static int report(const k6_api_t *api, work_t *w) {
   char line[64], call[11], *p;
   const cw_t *c = &w->cw;
   uint32_t sum = 0, top = 0;
   uint8_t fl = 0;
-  int i, ok = 0;
+  int i, ok = 0, n = cw_call(c->text, call, &fl);
+  if (!n && c->nd < LISTEN_MIN) { ok = -1; goto done; }
   for (i = 0; i < 16; i++) {
     sum += w->hist[i];
     if (w->hist[i] > top) { top = w->hist[i]; w->tone = (uint8_t)i; }
@@ -102,7 +105,7 @@ NOINLINE static int report(const k6_api_t *api, work_t *w) {
   if (c->why) p = put(p, c->why == CW_LONG ? " long" : " full");
   *p = 0; api->say(line);
   p = put(line_start(line), "text "); p = put(p, c->text); *p = 0; api->say(line);
-  if (cw_call(c->text, call, &fl)) {
+  if (n) {
     for (i = 0; call[i] == w->last[i] && call[i]; i++) {}
     if (call[i] == w->last[i] && fl == w->fl) { if (w->seen < 255) w->seen++; }
     else { for (i = 0; i < 11; i++) w->last[i] = call[i]; w->fl = fl; w->seen = 1; }
@@ -128,6 +131,7 @@ NOINLINE static int report(const k6_api_t *api, work_t *w) {
     if (p - line > 52 || i == c->nd - 1) { *p = 0; api->say(line); p = line; }
   }
 #endif
+done:
   for (i = 0; i < 16; i++) w->hist[i] = 0;
   return ok;
 }
@@ -179,12 +183,11 @@ NOINLINE static int run(const k6_api_t *api, work_t *w) {
     if (keyed && w->hist[(b >> 8) & 15] < 0xFFFF) w->hist[(b >> 8) & 15]++;
     if (api->fd_read(0x0C) & 1) { api->fd_write(0x02, 0); (void)api->fd_read(0x02); }
     if (stop ? cw_flush(&w->cw, t) : cw_feed(&w->cw, t, keyed)) {
-      if (w->cw.nd && w->cw.nd < LISTEN_MIN) {
-        junk++;
-        for (i = 0; i < 16; i++) w->hist[i] = 0;
-      } else if (w->cw.nd) {
-        msgs++;
-        if (report(api, w)) { ok = 1; if (LISTEN_STOP && !stop) stop = 3; }
+      if (w->cw.nd) {
+        int r = report(api, w);
+        if (r < 0) junk++;
+        else msgs++;
+        if (r > 0) { ok = 1; if (LISTEN_STOP && !stop) stop = 3; }
       }
     }
     {

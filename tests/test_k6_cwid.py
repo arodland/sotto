@@ -397,7 +397,7 @@ def test_listener_builds_fits_level_2():
 @need_clang
 @pytest.mark.parametrize("wpm,idx,scratch", [(20, 4, True), (13, 0, False), (25, 12, False)])
 def test_listener_confirms_call_on_m0(wpm, idx, scratch):
-    """Short bursts on tone 15 at the start, as a module upload's FFSK gave on air (1-3 marks of
+    """Short bursts on tone 15 at the start, as a module upload's FFSK gave on air (1-7 marks of
     16-50 ms, a second or two apart), then the ID twice: the bursts are only counted, the second
     ID confirms the call, with the tone and speed, and the module returns 1."""
     code, entry = k6mod.build(LISTEN)
@@ -405,7 +405,7 @@ def test_listener_confirms_call_on_m0(wpm, idx, scratch):
     text = "AG7EW SOTTO TEST"
     n = 129 * 1200 / wpm                               # the ID is 129 dots long
     edges = edges_of([(10000.0, text, wpm), (10000.0 + n + 4000, text, wpm)], rnd)
-    junk = [(200.0 + 1500 * i + 60 * j, 20 + 8 * j, 15) for i in range(5) for j in range(1 + i % 3)]
+    junk = [(200.0 + 1900 * i + 60 * j, 24 + 4 * j, 15) for i in range(5) for j in range(1 + 3 * (i % 3))]
     ret, said, writes, stack, _ = run_m0(code, entry, tone_reg(edges, idx, junk=junk), 60_000,
                                          1024 if scratch else 0)
     f = 600 + 50 * idx
