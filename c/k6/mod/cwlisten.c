@@ -51,6 +51,10 @@
 #ifndef AF_ON
 #define AF_ON 1              /* route the receive audio to the speaker (REG_47), to hear the ID */
 #endif
+#ifndef LISTEN_MIN
+#define LISTEN_MIN 9         /* fewer marks and spaces than this (5 marks) is no ID: only counted.
+                                On air a module upload's FFSK gave many 1-3 mark bursts on tone 15 */
+#endif
 #define TONE_LO 600
 #define TONE_STEP 50
 
@@ -135,16 +139,17 @@ NOINLINE static void say_start(const k6_api_t *api) {
   *p = 0; api->say(line);
 }
 
-NOINLINE static void say_end(const k6_api_t *api, int why, int msgs) {
+NOINLINE static void say_end(const k6_api_t *api, int why, int msgs, int junk) {
   char line[40], *p;
   p = put(line_start(line), "end ");
   p = put(p, why == 3 ? "ok" : why == 2 ? "key" : "time");
-  p = put(p, " msgs="); p = cw_utoa(p, (uint32_t)msgs); *p = 0;
+  p = put(p, " msgs="); p = cw_utoa(p, (uint32_t)msgs);
+  p = put(p, " short="); p = cw_utoa(p, (uint32_t)junk); *p = 0;
   api->say(line);
 }
 
 NOINLINE static int run(const k6_api_t *api, work_t *w) {
-  int i, stop = 0, msgs = 0, ok = 0;
+  int i, stop = 0, msgs = 0, junk = 0, ok = 0;
   uint32_t t, start;
 
   cw_init(&w->cw);
@@ -174,7 +179,10 @@ NOINLINE static int run(const k6_api_t *api, work_t *w) {
     if (keyed && w->hist[(b >> 8) & 15] < 0xFFFF) w->hist[(b >> 8) & 15]++;
     if (api->fd_read(0x0C) & 1) { api->fd_write(0x02, 0); (void)api->fd_read(0x02); }
     if (stop ? cw_flush(&w->cw, t) : cw_feed(&w->cw, t, keyed)) {
-      if (w->cw.nd) {
+      if (w->cw.nd && w->cw.nd < LISTEN_MIN) {
+        junk++;
+        for (i = 0; i < 16; i++) w->hist[i] = 0;
+      } else if (w->cw.nd) {
         msgs++;
         if (report(api, w)) { ok = 1; if (LISTEN_STOP && !stop) stop = 3; }
       }
@@ -184,7 +192,7 @@ NOINLINE static int run(const k6_api_t *api, work_t *w) {
       if (used < POLL_MS) api->delay_us((POLL_MS - used) * 1000u);
     }
   }
-  say_end(api, stop, msgs);
+  say_end(api, stop, msgs, junk);
   return ok;
 }
 

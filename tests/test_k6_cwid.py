@@ -397,14 +397,15 @@ def test_listener_builds_fits_level_2():
 @need_clang
 @pytest.mark.parametrize("wpm,idx,scratch", [(20, 4, True), (13, 0, False), (25, 12, False)])
 def test_listener_confirms_call_on_m0(wpm, idx, scratch):
-    """FFSK-like blips on tone 15 (a module upload's tail) at the start, then the ID twice: the
-    second one confirms the call, with the tone and speed, and the module returns 1."""
+    """Short bursts on tone 15 at the start, as a module upload's FFSK gave on air (1-3 marks of
+    16-50 ms, a second or two apart), then the ID twice: the bursts are only counted, the second
+    ID confirms the call, with the tone and speed, and the module returns 1."""
     code, entry = k6mod.build(LISTEN)
     rnd = random.Random(wpm)
     text = "AG7EW SOTTO TEST"
     n = 129 * 1200 / wpm                               # the ID is 129 dots long
-    edges = edges_of([(3000.0, text, wpm), (3000.0 + n + 4000, text, wpm)], rnd)
-    junk = [(200.0 + 37 * i, 18, 15) for i in range(30)]
+    edges = edges_of([(10000.0, text, wpm), (10000.0 + n + 4000, text, wpm)], rnd)
+    junk = [(200.0 + 1500 * i + 60 * j, 20 + 8 * j, 15) for i in range(5) for j in range(1 + i % 3)]
     ret, said, writes, stack, _ = run_m0(code, entry, tone_reg(edges, idx, junk=junk), 60_000,
                                          1024 if scratch else 0)
     f = 600 + 50 * idx
@@ -416,7 +417,7 @@ def test_listener_confirms_call_on_m0(wpm, idx, scratch):
     assert abs(int(ok[0].split("wpm=")[1]) - wpm) <= 1
     head = [s for s in said if s.startswith("CWID ") and "wpm lag=" in s]
     assert all(f"tone={f} q=100 " in s for s in head[-2:]), head
-    assert ret == 1 and said[-1].startswith("CWID end ok msgs=")
+    assert ret == 1 and said[-1] == "CWID end ok msgs=2 short=5"
     assert all(len(s) <= 60 for s in said)
     assert writes[0x24] & 0x10 == 0 and writes[0x3F] == 0x0800
     print(f"cwlisten stack {stack} B, code {len(code)} B")
@@ -432,4 +433,4 @@ def test_listener_needs_two_identical():
     ret, said, _, _, _ = run_m0(code, entry, tone_reg(edges, 4), 12_000, 1024)
     assert "CWID call=AG7EW fl=0 seen=1" in said and "CWID call=VE9QRP fl=0 seen=1" in said
     assert not any(s.startswith("CWID ok") for s in said)
-    assert ret == 0 and said[-1] == "CWID end key msgs=2"
+    assert ret == 0 and said[-1] == "CWID end key msgs=2 short=0"

@@ -132,14 +132,15 @@ CWID text AG7EW SOTTO TEST
 CWID call=AG7EW fl=0 seen=1                             callsign, flags (1 /P, 2 /M, 4 /R), count
 CWID d +60 -60 +184 ...                                 marks and spaces, ms
 CWID ok AG7EW fl=0 rx=440850000 tone=800 wpm=20         the same call twice in a row
-CWID end ok msgs=2                                      why it stopped (ok, key, time)
+CWID end ok msgs=2 short=7                              why it stopped (ok, key, time); IDs
+                                                        decoded; bursts of under 5 marks
 ```
 
 It stops at the ok line, on any key, or after 25 minutes (two IDs 10 minutes apart and some),
-and returns 1 if it confirmed a call. 3.9 KB (-Oz), 360 B of stack with its 210 B of state in
+and returns 1 if it confirmed a call. 3.95 KB (-Oz), 360 B of stack with its 210 B of state in
 scratch, 576 B without (the K6 gives it about 167 B of scratch, so on the radio it's the
 stack, of which there are 3.5 KB). Host tests: 13, 20 and 25 wpm on tones 0, 4 and 12, after
-upload-tail blips on tone 15; two different calls confirm nothing.
+upload-tail bursts on tone 15 (only counted); two different calls confirm nothing.
 
 To run it (a machine without clang sends the CI artifact's `mod-cwlisten.bin` with
 `--api-level 2`):
@@ -149,13 +150,30 @@ python -m modem.k6 mod listen.wav c/k6/mod/cwlisten.c --key-file ~/.config/sotto
 python -m modem.k6 cw id.wav "AG7EW SOTTO TEST" --wpm 20 --tone 800 --repeat 2 --gap 4
 ```
 
+### On air (hamlet, 2026-11-06 05:30-05:35 UTC, image 6473ca7)
+
+One fresh upload per run, then the ID twice with a 4 s gap. Every run confirmed the call on
+the second copy, both copies decoded exactly, q=100, n=61:
+
+| run | ok line | lag | marks heard (dot / dash, ms) | module start to ok |
+| --- | --- | --- | --- | --- |
+| 20 wpm, 800 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=800 wpm=20` | 12 | 68-72 / 188-192 | 48.5 s |
+| 13 wpm, 600 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=600 wpm=13` | 12 | 100-104 / 284-288 | 53.2 s |
+| 25 wpm, 1200 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=1200 wpm=25` | 8 | 52-56 / 148-156 | 45.2 s |
+
+The module starts while the IC-7100 is still sending the upload's repeat copies, and that
+FFSK gave 3-7 junk transmissions per run on tone 15 (1350 Hz): 1-3 marks of 16-52 ms, read
+as `E`, `NE`, `TE E E`. None looked like a call. Since then (commit after 4e055e3) anything
+under 5 marks is only counted (`short=`), so the serial report carries IDs only. Store 164 B
+of scratch, so the state ran on the stack; 864 B of stack were left.
+
 Unknowns for real repeaters: an ID tone outside 600-1350 Hz, an ID sent over voice (the
 detector may not lock), and whether 50 Hz steps are finer than the detector can tell apart
 (the 'tone' field and q will show it).
 
 ## Next
 
-- A bench run of `cwlisten` on hamlet, then on a real repeater.
+- `cwlisten` on a real repeater's ID.
 - The table update: the explorer's `rt_find` / `rt_update_call` once they exist (fill only an
   empty or CW-sourced call, never a user one; on a mismatch set the mismatch flag; byte 51 gets
   the tone and speed). Until then the ok line is the result, and this module writes no flash.
