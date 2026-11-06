@@ -7,9 +7,7 @@ It can read each vector from the radio's 2 MB SPI flash when the decoder asks fo
 A v3.7 frame takes 4 reads per 20 ms, and a sotto 1200 slot takes 3 reads per 40 ms.
 
 The bytes are the table's, so the decode is bit-exact with the table build, and the pager image
-gets about 30 KB of MCU flash back. Since the on-air test (2026-11-06, below), the table-free
-sotto 1200 image `aura-pager-lr-cbs` is the default image to flash; a radio gets
-`aura-pager-cbi` once first to install the codebook. v3.7 and sotto 1200 share the codebook, so one image in SPI
+gets about 30 KB of MCU flash back. v3.7 and sotto 1200 share the codebook, so one image in SPI
 flash serves both.
 
 ## How it works
@@ -62,8 +60,14 @@ K6_CB=spi sh tools/k6_build.sh     # c/k6/build-cbs: library without the table, 
 K6_CB=install sh tools/k6_build.sh # c/k6/build-cbi: with the table and the installer
 K6_CODEC=1200 K6_CB=spi sh tools/k6_build.sh   # c/k6/build-lr-cbs
 python c/k6/bench_k6.py c/k6/build-cbs/bench.elf clip.wav   # bench.elf serves the image from MCU flash
-sh firmware/k6-aura/build.sh       # + out/aura-pager-cbi.bin, aura-pager-cbs.bin, aura-pager-lr-cbs.bin, sotto-cb.bin
+sh firmware/k6-aura/build.sh       # out/aura-pager-only.bin, aura-pager-lr.bin, aura-pager-cbi.bin, sotto-cb.bin,
+                                   # + aura-pager-only-table.bin, aura-pager-lr-table.bin (TABLE=0 skips them)
 ```
+
+Since 2026-11-06 the images `build.sh` writes as `aura-pager-only` (v3.7) and `aura-pager-lr`
+(sotto 1200) are the ones without the table. They were `aura-pager-cbs` and
+`aura-pager-lr-cbs` before that. The table builds are now `aura-pager-only-table` and
+`aura-pager-lr-table`. A radio needs `aura-pager-cbi` once, to write the codebook.
 
 The host harnesses take `-F IMAGE`, the image to put at 0x100000 in the emulated flash, and
 `-W FILE`, the image region after setup. They print `cb=` and `mode=`, and `cb_reads=` after
@@ -98,11 +102,11 @@ bench line measures the real figure.
 
 | image | bytes | free of 122,880 |
 |---|---|---|
-| aura-pager-only (v3.7, table) | 121,356 | 1,524 |
-| aura-pager-lr (sotto 1200, table) | 122,304 | 576 |
+| aura-pager-only-table (v3.7, table) | 121,356 | 1,524 |
+| aura-pager-lr-table (sotto 1200, table) | 122,304 | 576 |
 | **aura-pager-cbi** (v3.7, table + installer) | 122,724 | 156 |
-| **aura-pager-cbs** (v3.7, no table) | 91,372 | 31,508 |
-| **aura-pager-lr-cbs** (sotto 1200, no table) | 92,308 | 30,572 |
+| **aura-pager-only** (v3.7, no table; was -cbs) | 91,372 | 31,508 |
+| **aura-pager-lr** (sotto 1200, no table; was -lr-cbs) | 92,308 | 30,572 |
 
 sotto 1200 with both the table and the installer is 780 bytes too big. That is why the
 install image is v3.7. Since the codebook is the same, the image it writes serves the sotto 1200
@@ -133,19 +137,21 @@ The test plan:
    check for `r=1`, which shows the image wasn't written again.
 3. Send a v3.7 message (`--codec 2400`) and check `tools/k6_pcmhash.py ... --check` for MATCH.
    Compare the `DEC` worst time with the table image.
-4. Flash `aura-pager-lr-cbs.bin` and check for `K6 CB r=1 mode=1`. Send sotto 1200 (VE9QRP,
-   streamed with `--depth 4`) and check for MATCH. The `DEC` worst time should be within 0.5 ms of
-   the table image's 23-24 ms.
+4. Flash `aura-pager-lr.bin` (`aura-pager-lr-cbs.bin` before 2026-11-06) and check for
+   `K6 CB r=1 mode=1`. Send sotto 1200 (VE9QRP, streamed with `--depth 4`) and check for MATCH.
+   The `DEC` worst time should be within 0.5 ms of the table image's 23-24 ms.
 
-**On air, 2026-11-06** (CI image 778ebc8, keyed, flashed with `tools/k6_update.py`):
+**On air, 2026-11-06** (images from 778ebc8, F/1800 XL, the VE9QRP 10 s clip): all passed.
 
-- install image first boot `K6 CB r=2 mode=2 crc=d5856ecd ms=566.4`; after a reset `r=1 ms=159.9`
-  (it CRCs its linked table too); `aura-pager-lr-cbs` `r=1 mode=1 ms=81.6`
-- bench every boot: `n=1000 ms=34.3 us_per_read=34 sum=9ae62243`
-- v3.7, VE9QRP 10 s, same clip: SPI decode 15.85 ms mean / 23.2 worst, table image 15.69 / 23.1;
-  both pcm MATCH (the SPI run with one packet lost)
-- `aura-pager-lr-cbs`, sotto 1200 streamed at depth 4, 3 sends: all pcm MATCH, decode 16.0 ms
-  mean / 23.7-24.2 worst (the table image: about 16 / 23-24), 0 overruns
+| image | `K6 CB` | v3.7 / sotto 1200 PLAY | DEC mean / worst |
+|---|---|---|---|
+| cbi, first boot | `r=2 mode=2 ms=566.4`, bench `us_per_read=34 sum=9ae62243` | | |
+| cbi, after a reset | `r=1 mode=2 ms=159.9` | v3.7, 31/32 packets, MATCH | 15.85 / 23.2 ms |
+| table (v3.7) | `r=1 mode=0 ms=0.0` | v3.7, 32/32, MATCH | 15.69 / 23.1 ms |
+| no table, sotto 1200 | `r=1 mode=1 ms=81.6`, `us_per_read=34` | 3 sends, 14-16/16, MATCH each | 15.97-16.01 / 23.7-24.2 ms |
+
+One read takes 34 us, so the SPI reads add 0.16 ms to a v3.7 frame's decode. In the streamed
+sends, `overruns=0`, and `waits=` only counted frames from packets lost on air.
 
 To go back, flash any table image. The codebook in SPI flash does no harm there. Aura never
 reads or writes 0x100000.

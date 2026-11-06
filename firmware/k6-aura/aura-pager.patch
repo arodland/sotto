@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 785c441..b56ebb9 100644
+index 785c441..f783b78 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -21,6 +21,11 @@ st7565 = "0.6"
+@@ -21,6 +21,14 @@ st7565 = "0.6"
  embedded-graphics = "0.8"
  profont = "0.7"
  
@@ -10,6 +10,9 @@ index 785c441..b56ebb9 100644
 +# The sotto voice pager as the whole firmware: Aura's drivers and VOICE MSG only, so the
 +# decoder's 66 KB fits (full Aura leaves 7.5 KB). Built by sotto's firmware/k6-aura/build.sh.
 +pager-only = []
++# with pager-only: no PTT calibration transmit, for the codebook install image (flashed once),
++# which holds sotto's 30 KB codebook in MCU flash as well
++lean = []
 +
  [profile.release]
  opt-level = "z"
@@ -207,10 +210,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..6c780d5
+index 0000000..49e524c
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2709 @@
+@@ -0,0 +1,2784 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -1229,6 +1232,7 @@ index 0000000..6c780d5
 +    fd.reg_write(syst, REG_IRQ_FLAGS, 0);
 +    fd.reg_write(syst, REG_IRQ_EN, IRQ_RX_DONE | IRQ_RX_FULL | IRQ_RX_SYNC);
 +    soft_clear();
++    unsafe { Y_GUARD = (app.pager.irq_words() * app.pager.tpb()) as u16 }; // half of N words
 +    let p = &mut app.pager;
 +    p.t_rearm = uptime::now();
 +    p.st_last_irq = p.t_rearm;
@@ -1277,14 +1281,11 @@ index 0000000..6c780d5
 +    let irq_n = app.pager.irq_words();
 +    let fd = &mut app.radio.fd6818;
 +    let mut flags = 0;
-+    if fd.reg_read(syst, REG_STATUS) & 1 != 0 {
-+        if clear_first {
-+            fd.reg_write(syst, REG_IRQ_FLAGS, 0);
-+            flags = fd.reg_read(syst, REG_IRQ_FLAGS);
-+        } else {
-+            flags = fd.reg_read(syst, REG_IRQ_FLAGS);
-+            fd.reg_write(syst, REG_IRQ_FLAGS, 0);
-+        }
++    if clear_first {
++        flags = chip_irq(fd, syst);
++    } else if fd.reg_read(syst, REG_STATUS) & 1 != 0 {
++        flags = fd.reg_read(syst, REG_IRQ_FLAGS);
++        fd.reg_write(syst, REG_IRQ_FLAGS, 0);
 +    }
 +    // what the decoder's yields took while a frame decoded (streaming): their flags, and the
 +    // words in the soft FIFO, which come before the chip's
@@ -1329,7 +1330,46 @@ index 0000000..6c780d5
 +        Y_SOFT_N = 0;
 +        Y_SOFT_R = 0;
 +        Y_PENDING = 0;
++        Y_FULL_ON = false;
++        Y_SYNC_ON = false;
 +    }
++}
++
++// A second FIFO-almost-full interrupt sometimes comes 1-2 ms after a real one (on air,
++// 2026-11-05, f548d3e: 3 copies of the FIFO's last word read into the packet, which failed its
++// CRC, and its true last 3 words left for the next packet, one word off). The next N words take
++// N word times to come, so an almost-full within half of that of the last one is dropped; a
++// real one dropped by mistake is caught by the stalled-interrupt read by time.
++static mut Y_FULL_T: u16 = 0;
++static mut Y_FULL_ON: bool = false;
++static mut Y_GUARD: u16 = 0;
++static mut Y_SPUR: u16 = 0;
++// when a decoder yield took the sync interrupt (the packet's words count from there)
++static mut Y_SYNC_T: u16 = 0;
++static mut Y_SYNC_ON: bool = false;
++
++#[inline(never)]
++/// The chip's pending interrupt causes, cleared (interrupt reads' order), without a spurious
++/// almost-full; 0 if none
++fn chip_irq(fd: &mut crate::drivers::fd6818::Fd6818<'static>, syst: &mut SYST) -> u16 {
++    if fd.reg_read(syst, REG_STATUS) & 1 == 0 {
++        return 0;
++    }
++    fd.reg_write(syst, REG_IRQ_FLAGS, 0);
++    let flags = fd.reg_read(syst, REG_IRQ_FLAGS);
++    if flags & IRQ_RX_FULL == 0 {
++        return flags;
++    }
++    let now = uptime::now();
++    unsafe {
++        if Y_FULL_ON && now.wrapping_sub(Y_FULL_T) < Y_GUARD {
++            Y_SPUR = Y_SPUR.wrapping_add(1);
++            return flags & !IRQ_RX_FULL;
++        }
++        Y_FULL_T = now;
++        Y_FULL_ON = true;
++    }
++    flags
 +}
 +
 +/// n words off the chip's FIFO into the soft FIFO (raw, before the byte swap)
@@ -1346,6 +1386,7 @@ index 0000000..6c780d5
 +    }
 +}
 +
++#[inline(never)] // the decoder's callback, also called once in stream_begin
 +unsafe extern "C" fn fifo_yield() {
 +    let now = uptime::now();
 +    if now.wrapping_sub(Y_LAST) < YIELD_TICKS || Y_FD.is_null() {
@@ -1354,12 +1395,15 @@ index 0000000..6c780d5
 +    Y_LAST = now;
 +    let fd = &mut *Y_FD;
 +    let syst = &mut *Y_SYST;
-+    if fd.reg_read(syst, REG_STATUS) & 1 == 0 {
++    let flags = chip_irq(fd, syst);
++    if flags == 0 {
 +        return;
 +    }
-+    fd.reg_write(syst, REG_IRQ_FLAGS, 0); // the order of take_irq's interrupt reads
-+    let flags = fd.reg_read(syst, REG_IRQ_FLAGS);
 +    Y_SERVICED = Y_SERVICED.wrapping_add(1);
++    if flags & IRQ_RX_SYNC != 0 && !Y_SYNC_ON {
++        Y_SYNC_T = now;
++        Y_SYNC_ON = true;
++    }
 +    Y_PENDING |= flags & !IRQ_RX_FULL;
 +    if flags & IRQ_RX_FULL != 0 {
 +        soft_pull(fd, syst, Y_IRQN as usize);
@@ -1706,6 +1750,7 @@ index 0000000..6c780d5
 +    let lead = if app.pager.baud_2400 { TIMED_LEAD_WORDS_2400 } else { TIMED_LEAD_WORDS };
 +    let tpb = app.pager.tpb();
 +    let mut t_sync = t0;
++    let mut t_due = t0;
 +    // interrupt reads: when the last words were taken. The FIFO-almost-full interrupt is an
 +    // edge; with N or more words still waiting after a read it never comes again (5e=0201
 +    // and some 0202 packets on air, 2026-11-05), so a word is taken by time after N+1 word
@@ -1719,6 +1764,9 @@ index 0000000..6c780d5
 +            if !saw_sync {
 +                t_sync = uptime::now();
 +                t_read = t_sync;
++                // the read schedule: a decoder yield may have taken this sync well before
++                // the receive loop came (t_sync stays the re-arm's clock, as tuned)
++                t_due = unsafe { if Y_SYNC_ON { Y_SYNC_T } else { t_sync } };
 +            }
 +            saw_sync = true;
 +            let s = app.radio.fd6818.reg_read(syst, REG_SYNC_STATUS);
@@ -1734,6 +1782,11 @@ index 0000000..6c780d5
 +            let n = (words - got / 2).min(irq_n);
 +            read_words(app, syst, &mut buf, &mut got, n);
 +            t_read = uptime::now();
++            // the sync was noticed late if more words were in than its time says: count from earlier
++            let due = t_read.wrapping_sub(t_due) as usize / word_ticks;
++            if saw_sync && got / 2 > due {
++                t_due = t_due.wrapping_sub(((got / 2 - due) * word_ticks) as u16);
++            }
 +        }
 +        let flags_seen = flags;
 +        if saw_sync
@@ -1801,9 +1854,19 @@ index 0000000..6c780d5
 +                // FIFO was about empty then), which brings the level back under the threshold
 +                // so its edge comes again. One word at a time (876ba93) fell behind and
 +                // overflowed the FIFO
-+                let n = (since / word_ticks).min(FIFO_WORDS).min(words - got / 2);
++                // (the FIFO may not have been empty after the last read: a late sync, or a decode
++                // that held the CPU at the start of a stream, left words behind and the FIFO ran
++                // full, losing words, f548d3e/89d0bf2 on air)
++                let due = (now.wrapping_sub(t_due) as usize / word_ticks).saturating_sub(got / 2);
++                let soft = unsafe { Y_SOFT_N as usize };
++                let n = (since / word_ticks).max(due).min(FIFO_WORDS + soft).min(words - got / 2);
 +                read_words(app, syst, &mut buf, &mut got, n);
 +                t_read = now;
++                // (e) an almost-full latched before this read is for words it already took
++                unsafe {
++                    Y_FULL_T = now;
++                    Y_FULL_ON = true;
++                }
 +                // pseudo event 1: words taken by time
 +                app.pager.ev_push((1, now.wrapping_sub(t0), n as u8));
 +                if got / 2 >= words {
@@ -2520,7 +2583,15 @@ index 0000000..6c780d5
 +    }
 +    let s = unsafe { &mut *addr_of_mut!(STREAM) };
 +    s.audio.start();
-+    delay::ms(syst, 30); // as stock: let the RC filter settle before the amplifier opens
++    // as stock: let the RC filter settle before the amplifier opens, taking the RF chip's FIFO
++    // words meanwhile (a packet is arriving: 30 ms is 3 words at 1800 baud)
++    for _ in 0..15 {
++        delay::ms(syst, 2);
++        unsafe {
++            Y_LAST = uptime::now().wrapping_sub(YIELD_TICKS);
++            fifo_yield();
++        }
++    }
 +    app.radio.set_speaker(true);
 +    s.last_fill = uptime::now();
 +}
@@ -2630,6 +2701,13 @@ index 0000000..6c780d5
 +/// sends test packet 0 of the spec (profile L) twice in profile D, then twice in F, at the
 +/// baud rate key 5 set (F at 2400: the FFSK 1200/2400 Hz mode, for checking on the IC-7100
 +/// that the chip really sends it at 2400 baud).
++/// (Not in the `lean` build, the codebook install image, which is flashed once.)
++#[cfg(feature = "lean")]
++pub(super) fn cal_tx(app: &mut App, _syst: &mut SYST) {
++    app.pager.cal_pending = false;
++}
++
++#[cfg(not(feature = "lean"))]
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn cal_tx(app: &mut App, syst: &mut SYST) {
 +    app.pager.cal_pending = false;
@@ -2803,7 +2881,7 @@ index 0000000..6c780d5
 +    if p.stream() {
 +        write!(s, " restarts={}", p.st_restarts).ok();
 +    }
-+    write!(s, " good={} bad={} to={}", st.good_packets, st.bad_packets, p.timeouts).ok();
++    write!(s, " good={} bad={} to={} spur={}", st.good_packets, st.bad_packets, p.timeouts, unsafe { Y_SPUR }).ok();
 +    // the bytes only for a packet that failed (about 130 characters, 11 ms at 115200): this line
 +    // goes out between back-to-back packets, and at 2400 baud that quiet stretch is ~45 ms. At
 +    // 2400 baud only the first 64 bytes (an XL packet's 256 hex digits alone take 22 ms)
