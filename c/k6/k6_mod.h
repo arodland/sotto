@@ -36,7 +36,7 @@ extern "C" {
 #define KM_HDR 16
 #define KM_TAG 8
 #define KM_ABI 1
-#define KM_LEVEL 2
+#define KM_LEVEL 3
 
 typedef struct k6_api {
   uint16_t abi, level;              /* KM_ABI, KM_LEVEL */
@@ -59,6 +59,17 @@ typedef struct k6_api {
                                                    module store, word aligned), its size in *bytes:
                                                    a module's tables and buffers, since it has no
                                                    statics and only about 700 B of stack */
+  /* level 3: a guarded transmitter (Jeff OK'd a module TX API, 2026-11-06). tx_on keys up on
+     the pager's own frequency (rx_hz) only, inside Aura's TX band lock (144-148, 420-450 MHz),
+     FM, low power, no CTCSS, mic ADC off, for at most max_ms (clamped to 20 s): every other
+     call (fd_write, delay_us, ms, ticks, key_down, tx_pa) checks the time and keys down when
+     it is up, and the core keys down when the module returns. The module makes the modulation
+     (REG_3B, the crystal value; the tone oscillator REG_70/71) and sends its own CW ID.
+     REG_30/33/36/37 stay refused. A module that uses these declares K6_MODULE_LEVEL 3. */
+  int (*tx_on)(uint32_t max_ms);                /* 0 on the air, -1 refused, -2 already on */
+  void (*tx_off)(void);
+  int (*tx_pa)(int on);                         /* PA on/off while keyed (CW keying, PLL locked);
+                                                   -1 if not keyed */
 } k6_api_t;
 
 /* REG 0x67 bits 8:1 = RSSI in dB above -174 dBm (as Aura's get_rssi) */

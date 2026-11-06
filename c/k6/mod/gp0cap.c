@@ -193,7 +193,7 @@ NOINLINE static void dump(const k6_api_t *api, const int8_t *buf, uint32_t k) {
 
 typedef struct {
   uint32_t ahb, apb2;
-  uint16_t r33, r34, r7e, r13;
+  uint16_t r33, r34, r7e, r13, r73;
   int floor;
   uint32_t k; /* captures so far */
 } saved_t;
@@ -280,6 +280,13 @@ int k6_main(const k6_api_t *api) {
     return -5;
   }
   api->fd_write(0x34, (uint16_t)((sv.r34 & 0xFFF0) | 13));
+  sv.r73 = api->fd_read(0x73);
+#ifdef CAP_AFC_OFF
+  /* AFC off, then RX on again for it to take hold (the FT8 thread's run 3: the AFC pulls a
+     steady USB tone toward the IF's centre, and REG_73 latches like REG_38/3B) */
+  api->fd_write(0x73, (uint16_t)(sv.r73 | 0x0010));
+  api->tune(api->rx_hz(), api->fd_read(0x43) == 0x3028);
+#endif
   wr(RCC_APB2ENR, sv.apb2 | TIM17EN);
   p = put(line, "cap start floor=");
   p = sdec(p, sv.floor);
@@ -289,6 +296,8 @@ int k6_main(const k6_api_t *api) {
   p = hex4(p, sv.r7e);
   p = put(p, " r13=");
   p = hex4(p, sv.r13);
+  p = put(p, " r73=");
+  p = hex4(p, api->fd_read(0x73));
   *p = 0;
   api->say(line);
   for (pass = 0; pass < 3; pass++) {
@@ -328,6 +337,7 @@ out:
   wr(RCC_AHBENR, sv.ahb);
   api->fd_write(0x34, sv.r34);
   api->fd_write(0x33, sv.r33);
+  api->fd_write(0x73, sv.r73);
   api->say("cap done");
   return ret;
 }
