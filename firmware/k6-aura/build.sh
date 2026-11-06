@@ -133,6 +133,29 @@ if [ "${LR:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
   variant aura-pager-lr "pager-only image, sotto 1200" --features pager-only
 fi
 
+# sotto's codebook in the K6's SPI flash (CB=0 skips these; c/k6/sp_cb.h, docs/k6-spi-codebook.md).
+# v3.7 and sotto 1200 share the codebook, so one image (out/sotto-cb.bin) serves both:
+#   aura-pager-cbi     v3.7 with the table linked: at power-on it writes sotto-cb.bin to the SPI
+#                      flash at 0x100000 if it isn't there yet (once), then plays from the flash
+#                      and times 1000 reads (serial `K6 CB ...` lines). Flash this one first.
+#                      (sotto 1200 with the table and the installer is 0.8 KB too big.)
+#   aura-pager-cbs     v3.7 without the 30 KB table: reads the codebook the cbi image wrote
+#   aura-pager-lr-cbs  sotto 1200 without the table
+if [ "${CB:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
+  rm -f "$OUT/sotto-cb.bin"
+  for v in cbi cbs lr-cbs; do
+    case $v in cbi) mode=install ;; *) mode=spi ;; esac
+    case $v in lr-*) codec=1200 ;; *) codec=2400 ;; esac
+    K6_CODEC=$codec K6_CB=$mode sh "$ROOT/tools/k6_build.sh"
+    cp "$ROOT/c/k6/build-$v/libsotto_k6.a" "$WORK/lib/libsotto_k6.a"
+    variant aura-pager-$v "pager-only image, $([ $codec = 1200 ] && echo "sotto 1200" || echo v3.7), codebook in SPI flash ($mode)" \
+      --features pager-only
+    if [ -f "$OUT/sotto-cb.bin" ]; then cmp "$ROOT/c/k6/build-$v/sotto-cb.bin" "$OUT/sotto-cb.bin"
+    else cp "$ROOT/c/k6/build-$v/sotto-cb.bin" "$OUT/sotto-cb.bin"; fi
+  done
+  (cd "$OUT" && sha256sum sotto-cb.bin | tee sotto-cb.bin.sha256)
+fi
+
 # The hello-world RAM module's code (docs/k6-modules.md), built as modem/k6mod.py builds it, for
 # `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...` on a machine without clang.
 # Linked at two addresses: the same bytes, or it isn't position-independent.

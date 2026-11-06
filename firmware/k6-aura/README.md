@@ -45,7 +45,9 @@ below.
 - **Flash writes.** Installing writes the MCU's internal flash once. On Aura's first boot, the
   `FORMAT FLASH?` prompt formats part of the 2 MB SPI flash once. That part holds Aura's settings,
   VFO, contacts, satellites, FM, logo and SSTV image, but not the calibration. After that the pager
-  never writes flash. Aura itself still saves settings and channel state to the SPI flash
+  never writes flash, with one exception. The codebook install image (`aura-pager-cbi.bin`)
+  writes sotto's codebook to the SPI flash at 0x100000, once
+  ([`docs/k6-spi-codebook.md`](../../docs/k6-spi-codebook.md)). Aura itself still saves settings and channel state to the SPI flash
   (wear-levelled) when you change them or power off, as it always does.
 
 ## Flashing and backup
@@ -259,6 +261,14 @@ XL packet carries 800 ms of speech (640 ms on air at F/1800 with 12-byte preambl
 time). Both images take both kinds of packet (sync, CRC, bit-error tests); each plays only its own
 codec. M0 emulator, decode plus PWM per 20 ms: 53-61 MHz mean, 75-78 worst of 96 (three clips),
 the same as v3.7; image 119,236 B, 3.6 KB free (sotto_pager.c now at -Os, 0.1 MHz cost).
+
+**Codebook in SPI flash (`out/aura-pager-cbi.bin`, `-cbs`, `-lr-cbs`).** The decoder can read
+sotto's 30 KB codebook from the radio's SPI flash, one 20-byte vector at a time, so the table
+doesn't need to be in the MCU's flash. The images without it have 30 KB free. Flash the install
+image (v3.7) first. On its first boot it writes `out/sotto-cb.bin` to 0x100000, and the serial
+report shows `K6 CB r=2`. The `-cbs` (v3.7) and `-lr-cbs` (sotto 1200) images then read that
+codebook. They show `NO CODEBOOK` and play nothing if it isn't there. The serial lines, the
+result codes and the test plan are in [`docs/k6-spi-codebook.md`](../../docs/k6-spi-codebook.md).
 
 **Streaming (sotto 1200 image, on by default).** A sotto 1200 message starts playing as soon as
 its first interleave group is in (8 XL packets, 6.4 s of speech, 5.1 s on air; sent with

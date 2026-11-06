@@ -81,6 +81,10 @@ def main():
     else:
         all_pk = ref.pack_message(frames, 0x21)
     packets = [p for i, p in enumerate(all_pk) if i not in lose]
+    if 'sp_cb_setup' in m.sym:   # codebook in SPI flash (K6_CB=...): check the stand-in flash
+        r, c = m.call('sp_cb_setup')
+        assert r > 0, r
+        print(f'codebook check: {c / 96e3:.1f} ms')
     nmax, _ = m.call('sp_init', store, a.store)
     pc = []
     for p in packets:

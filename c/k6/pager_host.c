@@ -11,13 +11,22 @@
  * not in yet when their turn came), overruns= and start= (packets in when playback began); only decoded frames are written, so the
  * output matches a store-then-play of the same packets. -p writes the PWM compare values the radio would
  * send to TIM1 instead (uint16, top 2000, automatic gain, pre-emphasis on), via sp_play_pwm. pager_host -t prints the
- * calibration test packet (sp_test_packet) in hex. pager_host -e [-x] PACKETS.bin prints, for each packet,
+ * calibration test packet (sp_test_packet) in hex. The builds with the codebook in SPI flash
+ * (pager_host_cbs, pager_host_lr_cbs, pager_host_cbi; sp_cb.h) take -F IMAGE (a codebook image
+ * put at SP_CB_ADDR in the emulated flash before sp_cb_setup) and -W FILE (the image region
+ * written out after it), and print cb= (sp_cb_setup's result) mode= before max_frames and
+ * cb_reads= (vectors fetched) after pcm=. -B N -F IMAGE prints the sum of N random reads
+ * (sp_cb_bench), as the radio's `K6 CB bench n=N ... sum=` line should. pager_host -e [-x] PACKETS.bin prints, for each packet,
  * sp_test_errors: errors seq swap invert and the eight block counts.
  * SPDX-License-Identifier: MIT */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "sotto_pager.h"
+#include "sp_cb.h"
+#ifdef FX_CB_SPI
+#include "flash_host.h"
+#endif
 
 int main(int argc, char **argv) {
   int len = SP_PAYLOAD_L, n, r, c, pwm = 0, ber = 0, halves = 0, playing = 0, waits = 0, ov = 0, ringf, npk = 0, start = 0;
@@ -27,6 +36,8 @@ int main(int argc, char **argv) {
   int16_t pcm[SP_FRAME_SAMPLES];
   sp_status_t st;
   FILE *in, *out;
+  const char *cb_load = 0, *cb_save = 0;
+  unsigned cb_bench = 0;
   if (argc == 2 && !strcmp(argv[1], "-t")) {          /* the calibration test packet, hex */
     int i;
     sp_test_packet(pkt);
@@ -40,8 +51,20 @@ int main(int argc, char **argv) {
     else if (!strcmp(argv[1], "-S")) sp_set_stream(0), argv++, argc--;
     else if (!strcmp(argv[1], "-s") && argc > 2) halves = atoi(argv[2]), argv += 2, argc -= 2;
     else if (!strcmp(argv[1], "-b") && argc > 2) bytes = (unsigned)atoi(argv[2]), argv += 2, argc -= 2;
+    else if (!strcmp(argv[1], "-F") && argc > 2) cb_load = argv[2], argv += 2, argc -= 2;
+    else if (!strcmp(argv[1], "-W") && argc > 2) cb_save = argv[2], argv += 2, argc -= 2;
+    else if (!strcmp(argv[1], "-B") && argc > 2) cb_bench = (unsigned)atoi(argv[2]), argv += 2, argc -= 2;
     else break;
   }
+#ifdef FX_CB_SPI
+  if (cb_bench) {      /* what the radio's `K6 CB bench n=N ... sum=` should say */
+    int r;
+    if (cb_load && flash_host_load(cb_load, SP_CB_ADDR) < 0) { perror("pager_host -F"); return 1; }
+    r = sp_cb_setup();
+    printf("cb=%d n=%u sum=%08x\n", r, cb_bench, (unsigned)sp_cb_bench(cb_bench));
+    return 0;
+  }
+#endif
   if (argc == 3 && !strcmp(argv[1], "-c")) {        /* control records found in each packet */
     uint8_t rec[6];
     if (!(in = fopen(argv[2], "rb"))) { perror("pager_host"); return 1; }
@@ -71,6 +94,14 @@ int main(int argc, char **argv) {
   }
   in = fopen(argv[1], "rb"), out = fopen(argv[2], "wb");
   if (!in || !out) { perror("pager_host"); return 1; }
+#ifdef FX_CB_SPI
+  if (cb_load && flash_host_load(cb_load, SP_CB_ADDR) < 0) { perror("pager_host -F"); return 1; }
+  printf("cb=%d mode=%d ", sp_cb_setup(), sp_cb_mode());
+  if (cb_save) flash_host_save(cb_save, SP_CB_ADDR, SP_CB_HDR + sp_cb_table_bytes());
+#else
+  (void)cb_load, (void)cb_save;
+  sp_cb_setup();
+#endif
   n = sp_init(mem, bytes);
   printf("max_frames=%d static=%u results=", n, sp_static_bytes());
   while (fread(pkt, 1, (size_t)len, in) == (size_t)len) {
@@ -119,7 +150,11 @@ int main(int argc, char **argv) {
   {
     unsigned ns;
     uint32_t h = sp_pcm_hash(&ns);
-    printf("pcm=%08x samples=%u\n", (unsigned)h, ns);   /* the radio's PLAY line prints the same */
+    printf("pcm=%08x samples=%u", (unsigned)h, ns);   /* the radio's PLAY line prints the same */
+#ifdef FX_CB_SPI
+    printf(" cb_reads=%u", (unsigned)sp_cb_reads());
+#endif
+    printf("\n");
   }
   fclose(out);
   return 0;

@@ -122,12 +122,13 @@ static void postfilter_rk(int32_t *v) {
 /* the frame fields of a 48-bit frame: shape stages summed into DCT coefficients (dB Q16) */
 static void bits_to_params(const unsigned char *b, fx_fparams_t *p) {
   int s, k, pos = 0;
+  int16_t cb_buf[FX_CBW];
   p->code = (int16_t)get_bits(b, &pos, 2);
   p->wi = (int16_t)get_bits(b, &pos, 7);
   p->ei = (int16_t)get_bits(b, &pos, 5);
   for (k = 0; k < NC; k++) p->c[k] = 0;
   for (s = 0; s < fx_cb_stages; s++) {
-    const int16_t *y = fx_cb[s] + get_bits(b, &pos, fx_cb_bits[s]) * FX_CBW;
+    const int16_t *y = FX_CB_VEC(s, (int)get_bits(b, &pos, fx_cb_bits[s]), cb_buf);
     for (k = 0; k < NC; k++) p->c[k] += (int32_t)FX_CB_VAL(y, k) * fx_cb_step[s];
   }
 }
