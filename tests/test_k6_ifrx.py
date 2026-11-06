@@ -104,6 +104,21 @@ def test_ber_on_the_model(lib, name, cn0, off, limit):
 
 
 @pytest.mark.parametrize("name", ["ffsk1200", "4fsk1200"])
+def test_other_dma_rates(lib, name):
+    """the DMA's rate moves with the CPU's load (5490 .. 5875 kS/s on Jeff's K6): told the
+    rate, the receiver works at any of them; told one 1% off, it doesn't lock (iflive measures
+    the rate as it runs for this)"""
+    m = mode_of(name)
+    for f in (5.40e6, 5.875e6):
+        lk = mcu.Link(m, 1500, lead=1800, f_off=-164, pre=0.3, seed=3, fdma=f)
+        c = lk.counts(50, seed=5)
+        sym, gap, taus, info = run(lib, c, m, ks=round(f / 1000), start=int(0.02 * f / 64))
+        assert info[5] == 2 and info[3] == 0 and ber(lk, sym) < 0.005, (f, info)
+        sym, gap, taus, info = run(lib, c, m, ks=round(f / 1000 * 1.01), start=int(0.02 * f / 64))
+        assert info[5] != 2 or len(sym) < 200, (f, info)
+
+
+@pytest.mark.parametrize("name", ["ffsk1200", "4fsk1200"])
 def test_no_lock_on_a_bare_carrier(lib, name):
     m = mode_of(name)
     lk = mcu.Link(m, 200, lead=2, pre=3.0, seed=4)
@@ -136,20 +151,25 @@ def test_live_module_builds_fits_level_2(src):
 
 
 @need_clang
-@pytest.mark.parametrize("mode,cn0", [("4fsk", 47.0), ("ffsk", 45.0)])
-def test_live_module_on_m0(mode, cn0):
+@pytest.mark.parametrize("mode,cn0,fdma,stall", [("4fsk", 47.0, None, None), ("ffsk", 45.0, None, None),
+                                                 ("4fsk", 50.0, 5.875e6, (40, 400))])
+def test_live_module_on_m0(mode, cn0, fdma, stall):
     """two 3.5 s steps (a 1.5 s lead each, then PN9) 164 Hz off: both lock and decode, no
-    counts lost, CPU to spare, the stack well inside the 3.5 KB the K6 has at a module's call"""
+    counts lost, CPU to spare, the stack well inside the 3.5 KB the K6 has at a module's call.
+    The module starts on KS0 (5530 kS/s) and must measure the DMA's real rate: the model's
+    5490, and 5875 (what the K6 polled at on 2026-11-06), there with a 400 us stall every 40
+    key checks (a lap of the ring missed: counts lost, never the clock)"""
     pytest.importorskip("unicorn")
     import k6_ifcap as ic
     import k6_live_emu as emu
-    ret, said, used, writes = emu.run_live(mode, cn0, -164.0, steps=2, seg_s=3.5, lead_s=1.5)
+    ret, said, used, writes = emu.run_live(mode, cn0, -164.0, steps=2, seg_s=3.5, lead_s=1.5,
+                                           fdma=fdma, stall=stall)
     head, steps = ic.parse_live("K6 MOD say " + s for s in said)
     assert ret == 2, said
-    assert 5480 <= head["ks"] <= 5500, said
     assert len(steps) == 2, said
     for d in steps:
-        assert d["s"] == 2 and d["L"] == 0, said         # locked, nothing lost
+        assert abs(d["k"] - (fdma or mcu.FDMA) / 1000) <= 2, said   # the rate it measured
+        assert d["j"] == 0 and (d["L"] == 0 or stall), said          # no reject, nothing lost
         assert d["b"] > 300 and d["e"] / 3 / d["b"] < 0.01, said
         assert d["i"] > 20, said                         # idle %
         assert abs(d["f"] * 65536 / 50069 + 164) < 60, said

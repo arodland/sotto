@@ -4,20 +4,24 @@
    in turn, then PN9). This file is the 4FSK receiver; iflive_ffsk.c the FFSK one.
    docs/k6-if-modem.md.
 
-   It waits for the carrier, times the DMA (kS/s), then streams: every 64 DMA samples' count
-   goes to ifrx, which finds the lead, locks, and decides symbols. The bits go through a PN9
+   It waits for the carrier, then streams: every 64 DMA samples' count goes to ifrx, which
+   finds the lead, locks, and decides symbols. The DMA runs flat out, at a rate that moves with
+   what the CPU does (5490 to 5875 kS/s seen), so the loop measures it on TIM17 as it goes and
+   hands it to the receiver (ifrx_rate), which needs it to 0.05% to acquire. A look at the ring
+   more than STALL_US after the last (an interrupt, a slow key scan) counts the laps it can't
+   see by the clock, so the ring's index never runs ahead of the data (a missed lap, and the
+   catch-up after it, is the likely reason it hung on Jeff's K6 on 2026-11-06). The bits go through a PN9
    check (each bit against the two 5 and 9 back: x^9 + x^5 + 1 needs no sync, and one wrong
    bit fails three checks), counted once 32 checks in a row have passed (the data has
    started). Each segment is a gain step as in gp0cap (0: the pager's AGC, 1..9 REG_7E fixed
    with REG_13 falling) and a fresh acquisition: STEP_MS after the first lock less LEAD_MS,
-   before the next segment's lead, the module prints the step's lines, sets the next gain and
+   before the next segment's lead, the module prints the step's line, sets the next gain and
    starts the receiver over, so nothing it does between steps (a line holds the CPU ~5 ms, the
-   ring lasts 186 us) can upset the count index. Lines:
-     live ks=5490 rx=704                    the DMA's kS/s, the receiver's state bytes
-     l 3 b=10200 e=12 r=-95 f=9 s=2 q=110 w=4 j=0 L=0 i=61
-                                            a step: bits, check fails, RSSI, AFC (1.31 Hz
-                                            units), ifrx state (0: no lock), lead fit (of 256),
-                                            sweeps, rejects, counts lost, CPU idle %
+   ring lasts 186 us) can upset the count index. A line a step:
+     l 3 b=10200 e=12 r=-95 f=9 q=110 j=0 L=0 i=61 k=5512
+                                            bits, check fails, RSSI, AFC (1.31 Hz units),
+                                            lead fit (of 256), rejects, counts lost, CPU
+                                            idle %, the DMA's kS/s (the last measurement)
    BER ~ e / 3 / b. Writes REG_34[3:0], REG_33 bit 8 (PR #68 image), REG_7E, REG_13, the MCU's
    TIM17, DMA channel 1 and their clock enables, all put back. No TX. The ring and the
    receiver live on the stack (~2 KB). Returns NG (the steps done), or -2 (a key), -3 (old
@@ -57,7 +61,13 @@
 #ifndef NG
 #define NG 10
 #endif
-#define NCAL 4096u /* counts timed for the DMA's rate */
+#ifndef KS0
+#define KS0 5530 /* kS/s to start on (the rate is measured as it runs) */
+#endif
+#ifndef BLK_US
+#define BLK_US 131072u /* TIM17 microseconds a measurement of the rate */
+#endif
+#define STALL_US 120u  /* well under a lap of the ring (1024 samples: 175 us at 5.875 MS/s) */
 #define CARRIER_DBM -100
 static const uint16_t gains[10] = {0,      0x03FF, 0x03BE, 0x037E, 0x033E,
                                    0x031E, 0x021E, 0x011E, 0x001E, 0x0018};
@@ -104,7 +114,7 @@ static void start(uint8_t *ring) {
   wr(DMA_CPAR1, GPIOB + 0x10);
   wr(DMA_CMAR1, (uint32_t)ring);
   wr(DMA_CNDTR1, RSZ);
-  wr(TIM17 + 0x28, 0);
+  wr(TIM17 + 0x28, 95); /* PSC: 1 MHz, a lap of 65 ms */
   wr(TIM17 + 0x2C, 0xFFFF);
   wr(TIM17 + 0x14, 1);
   wr(TIM17 + 0x10, 0);
@@ -126,16 +136,8 @@ static int count(const uint8_t *ring, uint32_t r) {
 }
 
 typedef struct {
-  uint32_t laps, lastw, produced, consumed;
+  uint32_t lastw, produced, consumed;
 } ring_t;
-
-static uint32_t avail(ring_t *g) {
-  uint32_t w = RSZ - (rd(DMA_CNDTR1) & 0xFFFF);
-  if (w < g->lastw) g->laps++;
-  g->lastw = w;
-  g->produced = g->laps * RSZ + w;
-  return g->produced - g->consumed;
-}
 
 typedef struct {
   uint32_t ahb, apb2;
@@ -178,37 +180,40 @@ IFRX_NOINLINE static void pn_bit(pn_t *p, uint32_t b) {
   p->h = (p->h << 1) | b;
 }
 
-/* wait for the carrier, time the DMA (its first NCAL counts on TIM17: kS/s), then stream the
-   IF into the receiver for NG steps. The steps' ends are reckoned from the first lock (the
-   lead's start plus 0.6 .. 1.3 s): STEP_MS on, less LEAD_MS, falls before the next lead. */
+/* wait for the carrier, then stream the IF into the receiver for NG steps. The DMA's rate
+   moves with what the CPU does (5490 kS/s under gp0dma, 5555 under gp0cap, 5875 while this
+   only polled the ring), so it is measured as the receiver runs, over each BLK of TIM17's
+   microseconds, and handed to it; each step starts on the last step's. The steps' ends are
+   reckoned from the first lock (the lead's start plus 0.6 .. 1.3 s): STEP_MS on, less
+   LEAD_MS, falls before the next lead. */
 IFRX_NOINLINE static int run(const k6_api_t *api, const saved_t *sv, uint8_t *rb) {
   ifrx_t rx;
   ring_t g;
   pn_t pn;
-  uint32_t t_end = 0, t0, c0, k = 0, lost = 0, idle = 0, tot = 0, ks = 0;
+  uint32_t t_end = 0, t0, c0, k = 0, kq = 0, lost = 0, idle = 0, tot = 0, ks = KS0 * 16, bp, bt;
   int step = 0, r;
-  int32_t v[11];
+  int32_t v[10];
   r = wait_level(api, 1, WAIT_S * 1000u);
   if (r) return r;
   t0 = api->ms();
-  goto fresh; /* the receiver is set up again once the rate is known */
+  goto fresh;
   for (;;) {
-    uint32_t a = avail(&g), d, cn = tim();
+    uint32_t w = RSZ - (rd(DMA_CNDTR1) & 0xFFFF), dw = (w - g.lastw) & (RSZ - 1), cn = tim(), d, a,
+             nc = 0;
     d = (cn - c0) & 0xFFFF;
     c0 = cn;
     tot += d;
-    if (!ks) {
-      g.consumed = g.produced;
-      if (g.produced < NCAL * L) continue;
-      ks = ifrx_udiv(g.produced * 96, ifrx_udiv(tot, 1000) | 1);
-      v[0] = (int32_t)ks, v[1] = sizeof(ifrx_t);
-      say_f(api, "live ks=% rx=%", v);
-      goto fresh;
-    }
+    g.lastw = w;
+    if (d > STALL_US) /* away near a lap of the ring or more: the laps it didn't see, by the clock */
+      dw += ifrx_udiv(ifrx_udiv(d * (ks >> 4), 1000u) + RSZ / 2 - dw, RSZ) * RSZ;
+    g.produced += dw;
+    a = g.produced - g.consumed;
     if (a > RSZ - L) {
-      /* the ring overran (the receiver too slow): skip what's gone */
-      uint32_t nc = a / L;
+      /* the ring overran (the receiver too slow, or away): skip what's gone */
+      nc = a / L;
       g.consumed += nc * L;
+    }
+    if (nc) {
       lost += nc;
       ifrx_skip(&rx, nc);
       pn.have = 0;
@@ -216,20 +221,27 @@ IFRX_NOINLINE static int run(const k6_api_t *api, const saved_t *sv, uint8_t *rb
     }
     if (a < L) {
       idle += d;
-      continue;
+      if (++kq & 0xFFFF) continue; /* no counts for that long: the checks all the same */
+    } else {
+      if (ifrx_push(&rx, count(rb, g.consumed & (RSZ - 1)))) {
+        uint32_t s = (uint32_t)(rx.sym ^ (rx.sym >> 1)), b;
+        if (rx.gap) pn.have = 0, rx.gap = 0;
+        if (!t_end) t_end = api->ms() + STEP_MS - LEAD_MS;
+        for (b = (uint32_t)rx.k; b--;) pn_bit(&pn, (s >> b) & 1);
+      }
+      g.consumed += L;
+      /* the checks (a key, about 60 us: Aura scans the keypad; the clock; the rate) every 256
+         counts, at a sample a third into a symbol, away from the receiver's bursts half way
+         and at the end (or a little later: no sample may be missed for good) */
+      if (++k < 256 || (rx.i != IFRX_TL / 3 && k < 1024)) continue;
     }
-    if (ifrx_push(&rx, count(rb, g.consumed & (RSZ - 1)))) {
-      uint32_t s = (uint32_t)(rx.sym ^ (rx.sym >> 1)), b;
-      if (rx.gap) pn.have = 0, rx.gap = 0;
-      if (!t_end) t_end = api->ms() + STEP_MS - LEAD_MS;
-      for (b = (uint32_t)rx.k; b--;) pn_bit(&pn, (s >> b) & 1);
-    }
-    g.consumed += L;
-    /* the key check (about 60 us: Aura scans the keypad) and the clock: every 256 counts, at a
-       sample a third into a symbol, away from the receiver's bursts half way and at the end */
-    if (++k < 256 || rx.i != IFRX_TL / 3) continue;
     k = 0;
-    if (api->key_down()) {
+    if (tot - bt >= BLK_US) {
+      /* the rate (its divisions ~25 us: in place of the key check, never on top of it) */
+      ks = ifrx_udiv((g.produced - bp) * 2000u, (tot - bt) >> 3); /* 1/16 kS/s */
+      ifrx_rate(&rx, ks);
+      bp = g.produced, bt = tot;
+    } else if (api->key_down()) {
       r = -2;
       break;
     }
@@ -242,10 +254,10 @@ IFRX_NOINLINE static int run(const k6_api_t *api, const saved_t *sv, uint8_t *rb
     /* the step's end: its line, the next gain, the receiver over */
     stop();
     v[0] = step, v[1] = (int32_t)pn.n, v[2] = (int32_t)pn.err, v[3] = rssi(api);
-    v[4] = rx.dphi_f >> 16, v[5] = rx.state, v[6] = rx.acq_q, v[7] = rx.acq_tries;
-    v[8] = rx.acq_rej, v[9] = (int32_t)lost;
-    v[10] = (int32_t)ifrx_udiv(idle >> 8, (tot >> 16) | 1) * 100 >> 8;
-    say_f(api, "l % b=% e=% r=% f=% s=% q=% w=% j=% L=% i=%", v);
+    v[4] = rx.dphi_f >> 16, v[5] = rx.acq_q, v[6] = rx.acq_rej, v[7] = (int32_t)lost;
+    v[8] = (int32_t)ifrx_udiv(idle >> 8, (tot >> 16) | 1) * 100 >> 8;
+    v[9] = (int32_t)(ks >> 4);
+    say_f(api, "l % b=% e=% r=% f=% q=% j=% L=% i=% k=%", v);
     r = NG;
     if (++step >= NG) break;
     t_end += STEP_MS;
@@ -254,7 +266,7 @@ IFRX_NOINLINE static int run(const k6_api_t *api, const saved_t *sv, uint8_t *rb
     ifrx_init(&rx, IFRX_ONLY, ks);
     ifrx_zero(&pn, sizeof(pn) / 4);
     ifrx_zero(&g, sizeof(g) / 4);
-    lost = idle = tot = 0;
+    lost = idle = tot = bp = bt = 0;
     start(rb);
     c0 = tim();
   }

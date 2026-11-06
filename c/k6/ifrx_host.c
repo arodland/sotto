@@ -21,7 +21,7 @@ int ifrx_run(const int8_t *c, int n, int mode, unsigned ks, int start, int pause
              uint32_t *taus) {
   ifrx_t s;
   int i, ns = 0, j;
-  ifrx_init(&s, mode, ks);
+  ifrx_init(&s, mode, ks * 16);
   ifrx_ntrace = 0;
   if (info[8] == 0x100) s.afc_sh = 0;
   for (i = start; i < n && ns < maxsym; i++) {

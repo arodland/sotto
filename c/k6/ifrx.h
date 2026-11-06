@@ -96,8 +96,12 @@ typedef struct {
   int8_t ring[2 * IFRX_RING]; /* the counts, twice over */
 } ifrx_t;
 
-/* mode IFRX_FFSK or IFRX_4FSK; ks = DMA kS/s as measured (counts = ks * 1000 / 64 a second) */
-void ifrx_init(ifrx_t *s, int mode, uint32_t ks);
+/* mode IFRX_FFSK or IFRX_4FSK; ks16 = the DMA's rate, 1/16 kS/s (counts = ks16 * 62.5 / 64 a
+   second) */
+void ifrx_init(ifrx_t *s, int mode, uint32_t ks16);
+/* the DMA's rate as measured again (it moves with the CPU's load): the symbol clock's and the
+   IF's steps a count */
+void ifrx_rate(ifrx_t *s, uint32_t ks16);
 /* one count; returns 1 when a symbol has been decided (s->sym, s->met), else 0 */
 int ifrx_push(ifrx_t *s, int c);
 /* nskip counts were lost (the ring overran) */
