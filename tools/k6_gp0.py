@@ -3,6 +3,10 @@
 from a K6 serial log and look at the receive IF they hold (docs/k6-fd6818-audio.md).
 
   python3 tools/k6_gp0.py fm  LOG [--png out.png]   gp0fm: FM-demodulate each capture
+  python3 tools/k6_gp0.py wav OUT.wav                stepped tone sweep for gp0sweep (two passes:
+                                                     peak 0.1, then 0.3)
+  python3 tools/k6_gp0.py sweep LOG                  gp0sweep: deviation and REG_6F AF level
+                                                     per tone, in dB re 1 kHz
   python3 tools/k6_gp0.py rate LOG [--tone 1000]     gp0raw: the IF's quality if the raw
                                                      22.9 MS/s stream were sampled k times
                                                      slower (DMA at a lower rate, say)
@@ -136,6 +140,81 @@ def cmd_rate(args):
                   f"            {np.mean(fif) / 1e3:7.3f}   {np.median(fn):8.0f}")
 
 
+SWEEP_HZ = [int(round(150 * (5000 / 150) ** (i / 23))) for i in range(24)]
+STEP_S, GAP_S, LEVELS = 0.6, 0.8, (0.1, 0.3)
+
+
+def cmd_wav(args):
+    """0.5 s silence, then per level: the 24 tones of SWEEP_HZ for STEP_S each, GAP_S silence"""
+    import wave
+    fs = 48000
+    parts = [np.zeros(fs // 2)]
+    for lv in LEVELS:
+        for f in SWEEP_HZ:
+            t = np.arange(int(STEP_S * fs)) / fs
+            ramp = np.minimum(1, np.minimum(t, t[::-1]) / 0.005)
+            parts.append(lv * ramp * np.sin(2 * np.pi * f * t))
+        parts.append(np.zeros(int(GAP_S * fs)))
+    x = (np.concatenate(parts) * 32767).astype("<i2")
+    with wave.open(args.out, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(fs)
+        w.writeframes(x.tobytes())
+    print(f"wrote {args.out}: {len(x) / fs:.1f} s, tones {SWEEP_HZ[0]}..{SWEEP_HZ[-1]} Hz,"
+          f" levels {LEVELS}")
+
+
+def cmd_sweep(args):
+    rows = []
+    for ln in open(args.log, errors="replace"):
+        m = re.search(r"(?:^|say )s (\d+) ((?:\w+=\d+ ?)+)\s*$", ln)
+        if m:
+            rows.append({k: int(v) for k, v in (kv.split("=") for kv in m.group(2).split())})
+    if not rows:
+        sys.exit("no sweep lines in the log")
+    quiet = [r["rms"] for r in rows if r["tone"] == 0 or r["rms"] < 400]
+    noise = float(np.median(quiet)) if quiet else 0.0
+    # steps: runs of blocks whose tone is within 8% of one SWEEP_HZ value; a new pass when the
+    # tone falls back to the low end
+    steps, cur, pas, last = {}, None, 0, 0
+    for r in rows:
+        f = min(SWEEP_HZ, key=lambda h: abs(h - r["tone"]))
+        if r["tone"] == 0 or abs(f - r["tone"]) > 0.08 * f or r["rms"] < 2 * max(noise, 50):
+            cur = None
+            continue
+        if f < last and SWEEP_HZ.index(f) < SWEEP_HZ.index(last) - 3:
+            pas += 1
+        last = f
+        if cur != (pas, f):
+            cur = (pas, f)
+            steps.setdefault(cur, [])
+            skip = 3                            # REG_6F moves every ~120 ms
+        if skip:
+            skip -= 1
+            continue
+        steps[cur].append(r)
+    print(f"{len(rows)} blocks, noise {noise:.0f} Hz rms (quiet blocks)")
+    for p in sorted({p for p, _ in steps}):
+        ref = steps.get((p, 1000)) or steps.get((p, min(SWEEP_HZ, key=lambda h: abs(h - 1000))))
+        def stats(b):
+            rms = np.median([r["rms"] for r in b])
+            dev = np.sqrt(max(rms ** 2 - noise ** 2, 1.0)) * np.sqrt(2)
+            return dev, np.median([r["af"] for r in b])
+        d0, a0 = stats(ref) if ref else (1.0, 0.0)
+        lv = LEVELS[p] if p < len(LEVELS) else "?"
+        print(f"pass {p} (WAV peak {lv}): f Hz, blocks, peak dev Hz, dev dB, AF dB, AF - dev dB"
+              " (re 1 kHz)")
+        for f in SWEEP_HZ:
+            b = steps.get((p, f))
+            if not b:
+                print(f"  {f:5d}     -")
+                continue
+            d, a = stats(b)
+            dd = 20 * np.log10(d / d0)
+            print(f"  {f:5d} {len(b):4d} {d:7.0f} {dd:+6.1f} {a - a0:+6.1f} {a - a0 - dd:+6.1f}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -143,6 +222,12 @@ def main():
     a.add_argument("log")
     a.add_argument("--png")
     a.set_defaults(fn=cmd_fm)
+    a = sub.add_parser("wav")
+    a.add_argument("out")
+    a.set_defaults(fn=cmd_wav)
+    a = sub.add_parser("sweep")
+    a.add_argument("log")
+    a.set_defaults(fn=cmd_sweep)
     a = sub.add_parser("rate")
     a.add_argument("log")
     a.add_argument("--tone", type=float, help="the captures are inside this tone (Hz): FM noise"

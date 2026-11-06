@@ -11,8 +11,8 @@
    around its middle: each rising zero crossing, interpolated, gives a period and a frequency
    (93.75 kHz * 256 / period, Q8), averaged over 4 crossings (about 0.24 ms: -0.9 dB at 1 kHz).
    Per block of BLK outputs it keeps the mean IF (crossings over their time span), the swing
-   (peak deviation), the tone (the swing's crossings of the last block's mean frequency, 200 Hz
-   hysteresis), the ring overruns, and the time the CPU spent waiting on the DMA
+   (peak deviation), the tone (the swing's crossings of the last block's mean IF, or 17 kHz,
+   with 200 Hz hysteresis), the ring overruns, and the time the CPU spent waiting on the DMA
    (idle, against spins timed with the DMA off).
 
    Rates 24, 12, 6, 3 and 1.5 MS/s (TIM17 ARR 3, 7, 15, 31, 63 at 96 MHz). Steps: the upload's
@@ -44,6 +44,17 @@
 #define CODE 13
 #define RING 1024u
 #define FS_Q8 (93750u * 256u)
+#ifdef GP0_SWEEP
+#define TAG "sweep"
+#ifndef BLK
+#define BLK 4688u            /* outputs per block: 50 ms */
+#endif
+#ifndef MAXB
+#define MAXB 1200u           /* blocks: about 70 s */
+#endif
+#else
+#define TAG "dma"
+#endif
 #ifndef BLK
 #define BLK 9375u            /* outputs per block: 100 ms */
 #endif
@@ -98,6 +109,17 @@ static uint32_t udiv(uint32_t n, uint32_t d) {
   return q;
 }
 
+static uint32_t isqrt(uint32_t v) {
+  uint32_t r = 0, bit = 1u << 30;
+  while (bit > v) bit >>= 2;
+  while (bit) {
+    if (v >= r + bit) v -= r + bit, r = (r >> 1) + bit;
+    else r >>= 1;
+    bit >>= 2;
+  }
+  return r;
+}
+
 static int rssi(const k6_api_t *api) { return KM_RSSI_DBM(api->fd_read(0x67)); }
 
 static void say0(const k6_api_t *api, char *line, char *p) {
@@ -106,7 +128,7 @@ static void say0(const k6_api_t *api, char *line, char *p) {
 }
 
 typedef struct {
-  uint32_t ifm, tone, dev, lost, idle;
+  uint32_t ifm, tone, dev, lost, idle, rms;
 } blk_t;
 
 typedef struct {
@@ -115,7 +137,8 @@ typedef struct {
   /* the demodulator */
   int prev, have, state, ref;
   uint32_t n, tlast, f4[4], k4, sum4;
-  uint32_t fsum, nf, fmin, fmax, flips, ncr, tb0, tb1;
+  uint32_t fsum, nf, fmin, fmax, flips, ncr, tb0, tb1, ne, se2;
+  int se, eref;
 } run_t;
 
 static uint32_t poll(run_t *s) {
@@ -133,6 +156,8 @@ static void demod(run_t *s, int x) {
     s->tb1 = t;
     if (s->have) {
       uint32_t f = udiv(FS_Q8, t - s->tlast), fs;
+      int e = ((int)f - s->eref) >> 3; /* one IF cycle's frequency, for the block's rms */
+      s->se += e, s->se2 += (uint32_t)(e * e), s->ne++;
       s->sum4 += f - s->f4[s->k4 & 3];
       s->f4[s->k4++ & 3] = f;
       if (s->k4 >= 4) {
@@ -172,11 +197,12 @@ static void stop(void) {
 
 /* one continuous run of nb blocks at TIM17 ARR arr, L samples an output */
 NOINLINE static uint32_t run(uint8_t *ring, uint32_t arr, uint32_t L, int nb, blk_t *out,
-                             uint32_t per1, uint32_t *lost_total) {
+                             uint32_t per1, uint32_t *lost_total, int ref) {
   run_t s;
   uint32_t *z = (uint32_t *)&s, i;
   int b;
   for (i = 0; i < sizeof s / 4; i++) z[i] = 0;
+  s.ref = ref;
   wr(DMA_CCR1, 0);
   wr(DMA + 0x04, 0xF);
   wr(DMA_CPAR1, GPIOB + 0x10);
@@ -193,7 +219,9 @@ NOINLINE static uint32_t run(uint8_t *ring, uint32_t arr, uint32_t L, int nb, bl
   wr(TIM17 + 0x00, 1);       /* CR1 CEN */
   for (b = 0; b < nb; b++) {
     uint32_t outs = 0, lost = 0;
-    s.fsum = s.nf = s.fmax = s.flips = s.ncr = 0;
+    s.fsum = s.nf = s.fmax = s.flips = s.ncr = s.ne = s.se2 = 0;
+    s.se = 0;
+    s.eref = s.ref ? s.ref : 17000;
     s.fmin = 0xFFFFFFFFu;
     s.spins = 0;
     while (outs < BLK) {
@@ -214,11 +242,18 @@ NOINLINE static uint32_t run(uint8_t *ring, uint32_t arr, uint32_t L, int nb, bl
     }
     /* the mean IF: crossings over their time span (the mean of fsum leans high under FM) */
     out[b].ifm = s.ncr > 1 ? udiv(FS_Q8 << 7, udiv((s.tb1 - s.tb0) << 7, s.ncr - 1)) : 0;
-    s.ref = (int)udiv(s.fsum, s.nf);
+    s.ref = (int)out[b].ifm;
     out[b].dev = s.nf ? (s.fmax - s.fmin) >> 1 : 0;
     out[b].tone = udiv(s.flips * 93750u, 2 * BLK);
     out[b].lost = lost;
     out[b].idle = udiv(s.spins, per1);
+    out[b].rms = 0;
+    if (s.ne > 1) {
+      uint32_t m = (uint32_t)(s.se < 0 ? -s.se : s.se), v;
+      m = udiv(m, s.ne);
+      v = udiv(s.se2, s.ne);
+      out[b].rms = v > m * m ? isqrt(v - m * m) << 3 : 0;
+    }
     *lost_total += lost;
     s.state = 0;
   }
@@ -227,14 +262,15 @@ NOINLINE static uint32_t run(uint8_t *ring, uint32_t arr, uint32_t L, int nb, bl
   return s.produced;
 }
 
-int k6_main(const k6_api_t *api) {
-  static const uint8_t arrs[NRATE] = {3, 7, 15, 31, 63};
-  blk_t blk[NBLK];
-  uint8_t *ring;
-  uint32_t room, t0, ahb, apb2, s0, per1, k;
-  uint16_t r33, r34, c0;
-  int floor, ret, q, b, pass;
-  char line[64], *p;
+typedef struct {
+  uint32_t ahb, apb2;
+  uint16_t r33, r34;
+  int floor;
+} saved_t;
+
+/* the upload's carrier gone, PB1 an input, TIM17 and channel 1 free, GP0 on code 13, clocks on */
+NOINLINE static int setup(const k6_api_t *api, saved_t *sv, uint8_t **ring) {
+  uint32_t room, t0;
   if (api->level < 2) return -3;
   t0 = api->ms();
   while (rssi(api) > -80 && api->ms() - t0 < 30000) {
@@ -242,28 +278,72 @@ int k6_main(const k6_api_t *api) {
     api->delay_us(10000);
   }
   api->delay_us(200000);
-  floor = rssi(api);
-  ring = (uint8_t *)(((uint32_t)api->scratch(&room) + 3) & ~3u);
+  sv->floor = rssi(api);
+  *ring = (uint8_t *)(((uint32_t)api->scratch(&room) + 3) & ~3u);
   if (room < RING + 4) return -8;
   if (rd(GPIOB) & (3u << 2)) {
-    api->say("dma PB1 is not an input: no writes");
+    api->say(TAG " PB1 is not an input: no writes");
     return -4;
   }
-  apb2 = rd(RCC_APB2ENR);
-  ahb = rd(RCC_AHBENR);
-  if ((apb2 & TIM17EN) || (rd(DMA_CCR1) & 1)) {
-    api->say("dma TIM17 or DMA channel 1 busy: no writes");
+  sv->apb2 = rd(RCC_APB2ENR);
+  sv->ahb = rd(RCC_AHBENR);
+  if ((sv->apb2 & TIM17EN) || (rd(DMA_CCR1) & 1)) {
+    api->say(TAG " TIM17 or DMA channel 1 busy: no writes");
     return -7;
   }
-  r33 = api->fd_read(0x33);
-  r34 = api->fd_read(SEL_REG);
-  if ((r33 & 0x0100) && api->fd_write(0x33, (uint16_t)(r33 & ~0x0100)) != 0) {
-    api->say("dma REG_33 refused: needs the PR #68 image");
+  sv->r33 = api->fd_read(0x33);
+  sv->r34 = api->fd_read(SEL_REG);
+  if ((sv->r33 & 0x0100) && api->fd_write(0x33, (uint16_t)(sv->r33 & ~0x0100)) != 0) {
+    api->say(TAG " REG_33 refused: needs the PR #68 image");
     return -5;
   }
-  api->fd_write(SEL_REG, (uint16_t)((r34 & 0xFFF0) | CODE));
-  wr(RCC_AHBENR, ahb | 1u);
-  wr(RCC_APB2ENR, apb2 | TIM17EN);
+  api->fd_write(SEL_REG, (uint16_t)((sv->r34 & 0xFFF0) | CODE));
+  wr(RCC_AHBENR, sv->ahb | 1u);
+  wr(RCC_APB2ENR, sv->apb2 | TIM17EN);
+  return 0;
+}
+
+NOINLINE static void teardown(const k6_api_t *api, const saved_t *sv) {
+  stop();
+  wr(TIM17 + 0x2C, 0xFFFF);
+  wr(TIM17 + 0x28, 0);
+  wr(DMA_CNDTR1, 0);
+  wr(DMA_CPAR1, 0);
+  wr(DMA_CMAR1, 0);
+  wr(RCC_APB2ENR, sv->apb2);
+  wr(RCC_AHBENR, sv->ahb);
+  api->fd_write(SEL_REG, sv->r34);
+  api->fd_write(0x33, sv->r33);
+  api->say(TAG " done");
+}
+
+/* up to 90 s for a carrier 15 dB over the floor: 0, or -2 (a key), -6 */
+static int carrier(const k6_api_t *api, int floor) {
+  uint32_t t0 = api->ms();
+  api->say(TAG " waiting for a carrier");
+  while (rssi(api) < floor + 15) {
+    if (api->key_down()) return -2;
+    if (api->ms() - t0 > 90000) {
+      api->say(TAG " no carrier");
+      return -6;
+    }
+    api->delay_us(5000);
+  }
+  return 0;
+}
+
+#ifndef GP0_SWEEP
+int k6_main(const k6_api_t *api) {
+  static const uint8_t arrs[NRATE] = {3, 7, 15, 31, 63};
+  blk_t blk[NBLK];
+  saved_t sv;
+  uint8_t *ring;
+  uint32_t t0, s0, per1, k;
+  uint16_t c0;
+  int ret, q, b, pass;
+  char line[64], *p;
+  ret = setup(api, &sv, &ring);
+  if (ret) return ret;
   /* idle spins with the DMA off: the same poll the run's wait loop makes */
   {
     run_t s;
@@ -272,35 +352,28 @@ int k6_main(const k6_api_t *api) {
     for (k = 0; k < CAL_SPINS; k++) poll(&s);
     t0 = (uint16_t)((uint16_t)api->ticks() - c0);
     if (!t0) t0 = 1;
-    s0 = udiv(CAL_SPINS, t0);                     /* spins a tick */
+    s0 = udiv(CAL_SPINS, t0);                          /* spins a tick */
     per1 = udiv(s0 * udiv(BLK * 10000u, 93750u), 100); /* spins a block, per cent */
     if (!per1) per1 = 1;
   }
   p = put(line, "dma start floor=");
-  p = sdec(p, floor);
+  p = sdec(p, sv.floor);
   p = kv(p, " ring=", RING);
   p = kv(p, " s0=", s0);
   say0(api, line, p);
   ret = NRATE;
   for (pass = 0; pass < 2; pass++) {
     if (pass) {
-      api->say("dma waiting for a carrier");
-      t0 = api->ms();
-      while (rssi(api) < floor + 15) {
-        if (api->key_down() || api->ms() - t0 > 90000) {
-          ret = api->key_down() ? -2 : -6;
-          api->say("dma no carrier");
-          goto out;
-        }
-        api->delay_us(5000);
-      }
+      ret = carrier(api, sv.floor);
+      if (ret) goto out;
+      ret = NRATE;
       api->delay_us(600000);
     }
     for (q = 0; q < NRATE; q++) {
       uint32_t arr = arrs[q], L = udiv(1024, arr + 1), got, want, lost = 0; /* 93.75 kHz out */
       int nb = pass ? NBLK : 1;
       c0 = (uint16_t)api->ticks();
-      got = run(ring, arr, L, nb, blk, per1, &lost);
+      got = run(ring, arr, L, nb, blk, per1, &lost, 17000);
       t0 = (uint16_t)((uint16_t)api->ticks() - c0);
       want = udiv(9600u * t0, arr + 1); /* 96 MHz / (arr + 1) samples a second, 10^4 ticks */
       want = udiv(want, 1000);
@@ -326,16 +399,48 @@ int k6_main(const k6_api_t *api) {
     }
   }
 out:
-  stop();
-  wr(TIM17 + 0x2C, 0xFFFF);
-  wr(TIM17 + 0x28, 0);
-  wr(DMA_CNDTR1, 0);
-  wr(DMA_CPAR1, 0);
-  wr(DMA_CMAR1, 0);
-  wr(RCC_APB2ENR, apb2);
-  wr(RCC_AHBENR, ahb);
-  api->fd_write(SEL_REG, r34);
-  api->fd_write(0x33, r33);
-  api->say("dma done");
+  teardown(api, &sv);
   return ret;
 }
+#else
+/* the sweep: blocks of BLK outputs at 12 MS/s while the carrier lasts, each with REG_6F */
+int k6_main(const k6_api_t *api) {
+  blk_t blk;
+  saved_t sv;
+  uint8_t *ring;
+  uint32_t lost, k = 0;
+  blk.ifm = 17000;
+  int ret;
+  char line[64], *p;
+  ret = setup(api, &sv, &ring);
+  if (ret) return ret;
+  p = put(line, "sweep start floor=");
+  p = sdec(p, sv.floor);
+  p = kv(p, " blk=", BLK);
+  say0(api, line, p);
+  ret = carrier(api, sv.floor);
+  if (ret) goto out;
+  while (k < MAXB && rssi(api) >= sv.floor + 15) {
+    uint32_t af;
+    lost = 0;
+    run(ring, 7, 128, 1, &blk, 1, &lost, (int)blk.ifm);
+    af = api->fd_read(0x6F) & 0x3F;
+    p = kv(line, "s ", k++);
+    p = kv(p, " tone=", blk.tone);
+    p = kv(p, " rms=", blk.rms);
+    p = kv(p, " dev=", blk.dev);
+    p = kv(p, " af=", af);
+    p = kv(p, " if=", blk.ifm);
+    if (blk.lost) p = kv(p, " lost=", blk.lost);
+    say0(api, line, p);
+    if (api->key_down()) {
+      ret = -2;
+      goto out;
+    }
+  }
+  ret = (int)k;
+out:
+  teardown(api, &sv);
+  return ret;
+}
+#endif

@@ -6,6 +6,11 @@ import sys
 
 import pytest
 
+try:
+    import numpy as np
+except ImportError:  # the dma tests skip without it
+    np = None
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "c", "k6", "mod", "i2sprobe.c")
 CAP = os.path.join(ROOT, "c", "k6", "mod", "i2scap.c")
@@ -358,7 +363,8 @@ def dma_bench(f_if=17000.0, dev=4000.0, f_tone=1000.0, rcc_apb2=0, ccr1=0):
         arr = tim.get(0x2C, 0xFFFF)
         fs = 96e6 / (arr + 1)
         t = sim["t"] + np.arange(n) / fs
-        ph = sim["phase"] + 2 * np.pi * np.cumsum(f_if + dev * np.sin(2 * np.pi * f_tone * t)) / fs
+        ft = f_tone(t) if callable(f_tone) else f_tone
+        ph = sim["phase"] + 2 * np.pi * np.cumsum(f_if + dev * np.sin(2 * np.pi * ft * t)) / fs
         d = 0.5 + 0.3 * np.sin(ph)
         acc = sim["acc"] + np.cumsum(d)
         bits = np.diff(np.floor(np.concatenate(([sim["acc"]], acc)))).astype(np.uint8)
@@ -440,3 +446,26 @@ def test_dma_leaves_a_busy_timer_alone(tmp_path):
         ret, said, regs, writes = run(START, src=dma_build_small(tmp_path), spare=1100, mmio=mmio)
         assert ret == -7 and "busy" in said[-1] and not writes and not tim
         assert rcc[0x18] == apb2 and dma[0x08] == ccr1
+
+
+@need_clang
+def test_sweep_follows_the_tone(tmp_path):
+    """gp0sweep: blocks while the carrier lasts; a tone stepping from 500 to 2000 Hz"""
+    mmio, rcc, tim, dma, sim = dma_bench(f_tone=lambda t: np.where(t < 0.025, 500.0, 2000.0))
+    w = tmp_path / "gp0sweep_small.c"
+    w.write_text(f'#define BLK 940u\n#define MAXB 6u\n#include '
+                 f'"{os.path.join(ROOT, "c", "k6", "mod", "gp0sweep.c")}"\n')
+    regs = {**START, 0x6F: 0x1a63,
+            0x67: lambda us: rssi_reg(-21 if us >= 3_000_000 else -103)}
+    ret, said, regs, writes = run(regs, src=str(w), spare=1100, mmio=mmio)
+    assert ret == 6, said
+    assert said[0] == "sweep start floor=-103 blk=940" and said[1] == "sweep waiting for a carrier"
+    bl = [dict(kv.split("=") for kv in ln.split()[2:]) for ln in said if ln.startswith("s ")]
+    assert len(bl) == 6 and all(b["af"] == "35" and "lost" not in b for b in bl)
+    assert 400 <= int(bl[1]["tone"]) <= 600, bl
+    for b in bl[4:]:
+        assert 1850 <= int(b["tone"]) <= 2150, bl
+        assert 2500 <= int(b["rms"]) <= 3000, bl
+        assert 16800 <= int(b["if"]) <= 17200, bl
+    assert said[-1] == "sweep done" and rcc[0x18] == 0 and dma[0x08] == 0
+    assert regs[0x33] == 0xd300 and regs[0x34] == 0
