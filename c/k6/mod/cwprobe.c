@@ -5,7 +5,8 @@
    key stops it) and tracks two of them, which feed its Morse decoder (cwid.c) by turns, one
    transmission each (the stack has room for one decoder):
 
-     A  REG_6F[6:0], the AF amplitude in dB (BK4819 map; the FD6818 guide's REG_87H)
+     A  REG_6F[5:0], the AF amplitude in dB (BK4819 map, as UV-K5 firmware reads it; the FD6818
+        guide's REG_87H). On air it read 0x23 with a carrier, 0x17 without; bit 6 and up vary
      B  REG_64, the voice amplitude (linear), through cw_db
 
    and sets up the third, the tone detector, in single-tone (SELCALL) mode with 16 tones from
@@ -218,7 +219,7 @@ NOINLINE static int run(const k6_api_t *api, work_t *w) {
       api->fd_write(0x02, 0);                 /* clear, then read: the write latches the causes */
       log_ev(ev, &nev, &lost, t, api->fd_read(0x02), 'i');
     }
-    step(d, t, v[0] & 0x7F, cw_db(v[1]), t - last, stop);
+    step(d, t, v[0] & 0x3F, cw_db(v[1]), t - last, stop);
     last = t;
     /* report between transmissions (a.cw.active would be set again by a new one) */
     if (d->pending && !d->cw.active) {

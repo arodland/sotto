@@ -14,7 +14,7 @@ uses the BK4819 addresses). Three candidates:
 
 | | Register (BK4819 map) | FD6818 guide | What it gives |
 | --- | --- | --- | --- |
-| A | REG_6F[6:0] | REG_87H (cmpd_db_out) | audio amplitude, 1 dB steps |
+| A | REG_6F[5:0] | REG_87H (cmpd_db_out) | audio amplitude, 1 dB steps (on air: 0x23 with a carrier, 0x17 without) |
 | B | REG_64 | (voice amplitude) | audio amplitude, linear |
 | T | REG_24, REG_09, REG_0B, REG_0C | REG_94H, 1050 Hz recipe p. 32 | a tone detector: which of 16 programmed tones is present |
 
@@ -56,7 +56,8 @@ single-tone mode with 16 tones from 600 to 1350 Hz (coefficient 128 cos(2 pi f /
 which fits Aura's DTMF table and the guide's 1050 Hz entry) and logs what it does, since how it
 reports a keyed tone is unknown. It routes the receive audio to the speaker, so the ID is
 audible. 3.9 KB of code (built with -Oz); its decoder state goes in the module store's spare
-RAM (scratch), and it needs about 470 bytes of stack (690 if the scratch is too small).
+RAM (scratch), and it needs about 470 bytes of stack (690 if the scratch is too small). On the
+612fb72 image the module call has 3,504 bytes of stack, so there is plenty.
 
 Serial report (each line `K6 MOD say ...`):
 
@@ -75,7 +76,8 @@ cwprobe end key msgs=2
 ## Bench test (hamlet, 440.850)
 
 1. A K6 image with level 2 (the explorer thread's run flashes it).
-2. Send the module and, right after it, an ID or two:
+2. Send the module and, right after it, an ID or two (on a machine without clang, use the CI
+   artifact's `mod-cwprobe.bin` with `--api-level 2` in place of the source):
 
    ```sh
    python -m modem.k6 mod probe.wav c/k6/mod/cwprobe.c --key-file ~/.config/sotto/k6-mod.key --phy F --payload XL
