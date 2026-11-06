@@ -311,10 +311,13 @@ the bench's RF level: both are strong signals at the antenna.
   while wsprd tolerates a few Hz of linear drift. The slide slowed through the session, so a
   warmed-up pair may do better. It needs a long run (see "WSPR").
 
-**Module uploads lost their first chunks.** In runs 4 and 5, each upload's first packets were
-rejected with r=-1: the K6 kept attributing them to the previous, finished transfer. A resend
-of the missing chunks with `--only N --serial S --xfer X` always completed it, at the cost of a
-second keying. Reported to the module-loader owners.
+**Module uploads lost chunks.** In runs 4 and 5 many of each upload's packets came in with
+`K6 MOD r=-1`, which is `KM_BAD_CRC` (c/k6/k6_mod.h): the packets arrived damaged. The
+`xfer=` on those lines is the last transfer that checked, since a bad packet doesn't change it,
+so it only looked as if the K6 filed them under the old transfer. gp0cap_afc got 6 of 22
+chunks at first and ft8wf 32 of 33 (chunk 2 missing). A resend of the missing chunks with
+`--only N --serial S --xfer X` always completed it, at the cost of a second keying. The
+cause (link margin, or the receive set-up after a GP0 module) is open.
 
 ## Bench steps
 
@@ -330,8 +333,8 @@ write to ttyUSB2, the CW ID keeper runs, and one thread is on the bench at a tim
    pulls the tones toward the IF centre over about 30 s.
 2. **Send the module from CI** (artifact `mod-ft8wf.bin`), with the IC-7100 in FM:
    `python -m modem.k6 mod ft8wf.wav mod-ft8wf.bin --api-level 2 --key-file ~/.config/sotto/k6-mod.key`,
-   then play it as for any module, keeping the serial log. If the log shows the first chunks
-   rejected with r=-1, resend them with `--only N --serial S --xfer X`.
+   then play it as for any module, keeping the serial log. If `K6 MOD r=-1` lines (bad CRC)
+   leave chunks missing, resend them with `--only N --serial S --xfer X`.
 3. **Play FT8 in USB.** When the log says `ft8wf start`, switch the IC-7100 to PKTUSB
    (`rigctl M PKTUSB 0`), key up and play
    `python3 tools/k6_ft8.py wav ft8.wav --f0 <step 1> --repeat 4` (60 s). Then key down and go
