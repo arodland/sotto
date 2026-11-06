@@ -99,6 +99,21 @@ xs l 24 if=18798 n=1731   xs l 0 if=16763
 So REG_3B is not a per-symbol modulator. It is a fine-tuning knob (84.8 Hz steps, set before
 TXON) that the guard could use to trim the K6's carrier against the IC-7100.
 
+## CW ID from the K6 (cwkey)
+
+Jeff asked (2026-11-06) for the K6 to send AG7EW once in true CW: the carrier keyed by the PA
+with the PLL locked. `c/k6/mod/cwkey.c` (level 3, about 1 KB) does it with the level-3 calls
+only: it says `cw key AG7EW 20wpm rx=...`, keys up only if the pager listens on 440.850, asks
+tx_on for the lead-in plus the text plus 1 s (4.42 s for AG7EW), turns the PA off for a 300 ms
+lead-in, keys the text at 20 wpm with tx_pa (60 ms units, 52 for AG7EW), then tx_pa(0) and
+tx_off, and says `cw sent units=52 ms=3420`. It writes no registers. A key press keys down at
+once (-4), and so does the core's time limit (-5). With the PA off between elements a receiver
+hears it as CW in CW or SSB mode; in FM it hears only the squelch opening and closing.
+
+Tests: `tests/test_k6_cwkey.py` decodes the PA keying back to AG7EW on the emulated M0 and
+checks the refusals (wrong frequency, no level 3, tx_on refused) and both ways out. It needs a
+K6 image with module API level 3 (PR #71's `aura-pager-only`; the lean images refuse tx_on).
+
 ## Next
 
 REG_3B turned out to be latched, so MCU-written FSK needs another source. Module API

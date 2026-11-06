@@ -21,20 +21,24 @@ from modem import k6mod  # noqa: E402
 need_clang = pytest.mark.skipif(not (shutil.which("clang") and shutil.which("ld.lld")),
                                 reason="needs clang and ld.lld")
 NAMES = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down",
-         "scratch"]
+         "scratch", "tx_on", "tx_off", "tx_pa"]
 REFUSED = (0x30, 0x33, 0x36, 0x37)
 PERIOD = 400            # samples between modelled DFS edges
 
 
 def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024,
-        mmio=()):
+        mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=()):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
     lets a module change REG_33's GP0 bits (8 and 0); False = an image that refuses REG_33.
     model(sel, reads, regs) -> 0/1 replaces that GP0 model while GP0 drives. spare: the scratch
     RAM the module is given. mmio: (base, size, read(uc, off, size, st), write(uc, off, size,
-    value, st)) for more MCU peripherals.
+    value, st)) for more MCU peripherals. level: the API level the table says. tx: a dict
+    for the level-3 transmitter: tx["on_ret"] is what tx_on returns (default 0), and every
+    tx_on/tx_off/tx_pa call is logged to tx["log"] as (name, arg, us); tx_pa returns -1 from
+    tx["dead_us"] on. rx_hz: what rx_hz says.
+    keys: (from_us, to_us) spans while key_down reads 1.
     Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
@@ -50,7 +54,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     for i in range(len(NAMES)):
         mu.mem_write(stubs + 16 * i, b"\x70\x47")
     mu.mem_write(stop, b"\x00\xbf" * 8)
-    mu.mem_write(api, (1).to_bytes(2, "little") + (2).to_bytes(2, "little")
+    mu.mem_write(api, (1).to_bytes(2, "little") + level.to_bytes(2, "little")
                  + b"".join((stubs + 16 * i | 1).to_bytes(4, "little") for i in range(len(NAMES))))
 
     def gpio_read(uc, off, size, _):
@@ -106,7 +110,16 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
         elif name == "delay_us":
             st["us"] += r0
         elif name == "rx_hz":
-            ret = 440_850_000
+            ret = rx_hz
+        elif name == "key_down":
+            ret = int(any(a <= st["us"] < b for a, b in keys))
+        elif name in ("tx_on", "tx_off", "tx_pa"):
+            assert tx is not None, f"{name} called"
+            tx.setdefault("log", []).append((name, r0, st["us"]))
+            if name == "tx_on":
+                ret = tx.get("on_ret", 0)
+            elif name == "tx_pa" and st["us"] >= tx.get("dead_us", float("inf")):
+                ret = -1                           # the core's time limit keyed down
         elif name == "ms":
             ret = st["us"] // 1000
         elif name == "scratch":
