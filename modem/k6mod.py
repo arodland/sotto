@@ -80,7 +80,8 @@ def build(src, cc="clang", ld="ld.lld", objcopy="llvm-objcopy", nm="llvm-nm"):
     """C source -> (code bytes, entry offset). Refuses code that isn't position-independent."""
     with tempfile.TemporaryDirectory() as d:
         obj = os.path.join(d, "m.o")
-        subprocess.run([cc, *CFLAGS, "-c", src, "-o", obj], check=True)
+        flags = [("-O" + source_opt(src)) if f == "-Os" else f for f in CFLAGS]
+        subprocess.run([cc, *flags, "-c", src, "-o", obj], check=True)
         bins = []
         for base in (0, 0x1000):
             elf = os.path.join(d, f"m{base}.elf")
@@ -101,6 +102,13 @@ def source_level(src):
     """The API level a module's C source declares (#define K6_MODULE_LEVEL n), or 1."""
     m = re.search(r"^\s*#\s*define\s+K6_MODULE_LEVEL\s+(\d+)", open(src).read(), re.M)
     return int(m.group(1)) if m else LEVEL
+
+
+def source_opt(src):
+    """The optimisation a module's C source asks for (#define K6_MODULE_OPT z: clang -Oz, smaller
+    than the default -Os, for a module that wants the store's scratch RAM), or "s"."""
+    m = re.search(r"^\s*#\s*define\s+K6_MODULE_OPT\s+([sz])\b", open(src).read(), re.M)
+    return m.group(1) if m else "s"
 
 
 def image(code, entry, serial, key, level=LEVEL):
