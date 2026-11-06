@@ -37,7 +37,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     value, st)) for more MCU peripherals. level: the API level the table says. tx: a dict
     for the level-3 transmitter: tx["on_ret"] is what tx_on returns (default 0), and every
     tx_on/tx_off/tx_pa call is logged to tx["log"] as (name, arg, us); tx_pa returns -1 from
-    tx["dead_us"] on. rx_hz: what rx_hz says.
+    tx["dead_us"] on, and every fd_write to tx["w"] as (reg, value, us). rx_hz: what rx_hz says.
     keys: (from_us, to_us) spans while key_down reads 1.
     Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
@@ -101,6 +101,8 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
             ret = ret(st["us"]) if callable(ret) else ret
         elif name == "fd_write":
             st["writes"].append((r0, r1))
+            if tx is not None:
+                tx.setdefault("w", []).append((r0, r1, st["us"]))
             if r0 == 0x33 and gp0_gate and not (regs.get(0x33, 0) ^ r1) & ~0x0101 & 0xFFFF:
                 regs[r0] = r1
             elif r0 in REFUSED:

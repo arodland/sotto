@@ -29,11 +29,11 @@ radio today, and what is still waiting on a bench run, a firmware change or a de
   AFC chasing the tones (REG_73 bit 4 only takes hold after RXON). With the AFC off the K6 sits
   145 Hz low at 440.850, so the PC aims the audio at `--f0 1624`. Drift was a few Hz a minute.
   See "Bench run 5".
-- **FT8 transmit:**
-  - Planned as AFSK on FM through the chip's tone oscillator (REG_70/71). A 12.64 s FT8
-    transmission plus a CW ID fits the 20 s limit of the level 3 TX API (PR #71).
-  - Untested: `tx_on`'s REG_30 may not route the tone to the carrier (see "FT8 transmit").
-    The level 3 TX API is on the radio now (the K6 sent its own CW ID at 15:46).
+- **FT8 transmit: `ft8tx` is built and emulated, not yet on air.** The K6 sends one frame as
+  audio FSK on FM from the chip's tone oscillator (REG_70/71, 5 ms GFSK steps), then AG7EW in
+  MCW, in about 17.5 s under the level 3 API's 20 s cap. On the emulated M0 its REG_71 words
+  decode back to `CQ AG7EW CN87`. Open: whether `tx_on`'s REG_30 (0xC1FA, no AF DAC bit) lets
+  the tone reach the carrier (see "FT8 transmit").
 - **WSPR:**
   - Receive is feasible in RAM and CPU.
   - At 440 MHz it hinges on drift over 2 minutes. Run 5 measured 0.05-0.17 Hz/s (K6 and
@@ -362,36 +362,54 @@ are the options, none tried:
 4. **The RAM at 0x20005560-0x20005FFF** (2.7 KB) may be unused by Aura. That is unverified, and
    probing it is risky, since RAM below Aura's region hangs boot.
 
-## FT8 transmit (planned)
+## FT8 transmit: `ft8tx` (built, emulated, not yet on air)
 
-The plan is FT8 as audio FSK on FM, through the FD6818's tone oscillator. REG_71 is the tone's
-frequency word, about 0.097 Hz a step (BK4819: f × 10.32444); REG_70 holds its enable and gain.
-The module would do this:
+`c/k6/mod/ft8tx.c` (1.5 KB, API level 3) makes the K6 send one FT8 frame itself, as audio FSK
+on FM from the FD6818's tone oscillator, then identify. The IC-7100 in FM receives it, and the PC
+decodes the IC-7100's audio. What the module does:
 
-- **Key up.** Call `tx_on(19000)` (level 3 API, PR #71).
-- **Send the 79 tones.** Change REG_71 every 160 ms, stepping it in sub-symbol increments
-  (every 1-2 ms) along WSJT-X's GFSK ramps (BT 2). The host computes the tones from the
-  message and builds them into the module, at 79 bytes.
-- **Identify.** Send AG7EW in CW with `tx_pa`, then key down. 12.64 s of FT8 plus about 4 s of
-  CW at 20 wpm is under 20 s.
-- **Timing.** The K6 has no UTC clock, so the module starts a fixed delay after the upload's
-  carrier drops. The host schedules the upload so that the FT8 starts on a 15 s boundary.
-- **Receiving it.** The IC-7100 in FM gives the PC the audio, and the PC decodes it with
-  `ft8_wav` (or WSJT-X).
+- **Checks first.** It keys up only when the pager listens on 440.850, and only after the
+  channel has been clear (below -90 dBm) for 1 s, so the upload's sender has unkeyed. It gives
+  up after 30 s of a busy channel (-7).
+- **Keys up** with `tx_on` for the frame, the ID and a margin: 300 + 12,640 + 400 + 3,120 +
+  1,000 ms, about 17.5 s, under the core's 20 s cap. FM, low power, no CTCSS, mic ADC off.
+- **The frame.** After a 300 ms lead-in (carrier, no tone) it turns tone 1 on (REG_70 = 0x8000 |
+  60 << 8, Aura's tone gain) and writes REG_71 every 5 ms: tone k at 1,500 + 6.25 k Hz, 160 ms a
+  symbol, with WSJT-X's GFSK (BT 2) transition over the 30 ms either side of each boundary (a
+  six-entry step table). REG_71 is f x 10.32444, so one tone step is 64.53 words and the
+  resolution 0.097 Hz. Timing is the module clock, from the M0's 16 MHz crystal and PLL.
+- **The ID.** 400 ms after the frame it sends AG7EW in MCW at 20 wpm, keying the 800 Hz tone
+  with REG_70, then keys down. A key press stops it at once (-4); if the core's limit keys it
+  down first, it returns -5.
+- **The message** is built in: `c/k6/mod/ft8tx_msg.h`, written by
+  `tools/k6_ft8.py txhdr --text "CQ AG7EW CN87" --out c/k6/mod/ft8tx_msg.h` from the same
+  encoder the receiver tests use. Another message means a rebuild (CI does it).
 
-Prerequisites (from the "Transmit our own FSK from the K6" thread, 2026-11-06). That thread's
-TX module work is on hold, and the REG_71 idea is untested (Insights #8), so these are open:
+`tests/test_k6_ft8tx.py` runs it on the emulated M0: 2,528 REG_71 writes 5 ms apart, a
+12.64 s frame, each symbol's middle on its tone within 0.15 Hz, the MCW reading AG7EW, nothing
+written but REG_70/71 and both left at 0, and every way out keying down. Played back as audio,
+the REG_71 words decode to `CQ AG7EW CN87` at 1,500 Hz with the K6's own receiver.
 
-- **PR #71 on the radio.** Done: the K6 runs keyed-lr-e57af49 and keyed its own CW ID at 15:46.
-- **The tone reaching the carrier.** `tx_on` writes REG_30 = 0xC1FA (mic ADC off, no AF DAC
-  bit). Aura's own tone-TX state is 0xC3FA, so the tone may not reach the carrier as `tx_on`
-  leaves it. REG_30 stays refused to modules. If 0xC1FA carries no tone, `tx_on` needs a tone
-  option that sets that bit (a firmware change).
-- **Phase continuity.** Is the tone's phase continuous across a REG_71 write? And what deviation
-  does each step of REG_70's gain give?
+**What only the air can answer:**
 
-A first test module would key for a few seconds with REG_70/71 stepping between two tones
-while the IC-7100 records FM audio. Once that works, `ft8tx` is a small module, about 1 KB.
+- **Does the tone reach the carrier?** `tx_on` leaves REG_30 at 0xC1FA (Aura's TX state, mic
+  ADC off). Aura's own tone, APRS AFSK and SSTV transmitters use 0xC3FA, which adds bit 9 (the
+  AF DAC). If 0xC1FA carries no tone, the IC-7100 hears a bare carrier for 17 s, with the MCW
+  silent too. Then `tx_on` needs a tone option (a firmware change and a reflash), since modules
+  can't write REG_30.
+- **Deviation.** Tone gain 60 is Aura's; the IC-7100's audio level will say whether it suits.
+- **Phase continuity** across REG_71 writes. The decode would suffer if the oscillator reset
+  its phase on every write.
+
+**Bench steps** (the K6 transmits; the IC-7100 only receives):
+
+1. IC-7100 in FM on 440.850, its USB audio recording (`arecord` at 48 kHz) from before the upload.
+2. Send `mod-ft8tx.bin` from CI: `python -m modem.k6 mod ft8tx.wav mod-ft8tx.bin --api-level 3
+   --key-file ~/.config/sotto/k6-mod.key`, play it on the IC-7100, and unkey. Resend any
+   missing chunks with `--only`.
+3. The K6 waits for the channel to clear, keys up for about 17 s (`K6 MOD tx on`), and says
+   `ft8tx sent sym=79 ms=12640 id=52`.
+4. Decode the recording: `python3 -m sim.k6digi.ft8_wav REC.wav --lo 1300 --hi 1800`.
 
 ## WSPR (planned)
 
@@ -415,8 +433,10 @@ while the IC-7100 records FM audio. Once that works, `ft8tx` is a small module, 
   `tools/gen_ft8_tables.py`.
 - `ft8k_host.c`: the host CLI (`iq`, `wf`, `counts`).
 - `c/k6/mod/gp0rx.h`: the shared IF front end.
-- `c/k6/mod/ft8wf.c`, `c/k6/mod/ft8rx.c`: the two modules.
+- `c/k6/mod/ft8wf.c`, `c/k6/mod/ft8rx.c`: the two receive modules; `gp0cap_afc.c`, the raw-IF
+  capture with the AFC off.
+- `c/k6/mod/ft8tx.c` with `ft8tx_msg.h`: the transmit module and its tones.
 - `sim/k6digi/`: `ft8ref.py` (the encoder, GFSK, unpacking), `gp0.py` with `gp0sdm.c` (the K6
   IF and the 1-bit path), `ft8_wav.py` and `ft8_sweep.py`.
-- `tools/k6_ft8.py`: decode, rows and wav.
-- `tests/test_k6_ft8.py`: the tests.
+- `tools/k6_ft8.py`: decode, rows, wav, tone, tonewav, track and txhdr.
+- `tests/test_k6_ft8.py`, `tests/test_k6_ft8tx.py`: the tests.
