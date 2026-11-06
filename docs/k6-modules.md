@@ -194,12 +194,12 @@ what would settle it.
 1. **Receive audio through the FD6818's I2S port.**
    - From: the CW ID thread, 2026-11-06 ([k6-fd6818-audio.md](k6-fd6818-audio.md)).
    - The guide's MCBSP/I2S port can output FM-demodulated audio on a GPIO, and the K6 wires
-     FD6818 GP0 to MCU PB0 (the CTCSS net). Only one wire, so the MCU would have to recover
+     FD6818 GP0 to MCU PB1 (pin 19, the CTCSS net). Only one wire, so the MCU would have to recover
      the clock itself. The BK4819 map may not have the block.
    - Buys: received audio samples with no hardware change, so a software modem past the chip
      FSK's 2400 baud slips, maybe live sotto 2400. It gives no mic samples.
    - Settled by: the I2S probe thread (a module that puts the frame clock on GP0 and counts
-     PB0 edges).
+     PB1 edges).
 2. **The tone detector as a slow MFSK receiver.**
    - From: the CW ID thread (on air it follows a keyed tone to about 10 ms and says which of
      16 tones it is).
