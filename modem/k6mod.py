@@ -12,6 +12,7 @@ it unless both come out byte for byte the same. Image layout and packet format: 
 docs/k6-modules.md. SPDX-License-Identifier: MIT
 """
 import os
+import re
 import secrets
 import struct
 import subprocess
@@ -94,6 +95,12 @@ def build(src, cc="clang", ld="ld.lld", objcopy="llvm-objcopy", nm="llvm-nm"):
             raise ValueError(f"{src}: not position-independent (linked at 0 and 0x1000 the bytes differ)")
         entry = next(int(ln.split()[0], 16) for ln in syms.splitlines() if ln.split()[-1] == ENTRY)
     return bins[0], entry
+
+
+def source_level(src):
+    """The API level a module's C source declares (#define K6_MODULE_LEVEL n), or 1."""
+    m = re.search(r"^\s*#\s*define\s+K6_MODULE_LEVEL\s+(\d+)", open(src).read(), re.M)
+    return int(m.group(1)) if m else LEVEL
 
 
 def image(code, entry, serial, key, level=LEVEL):

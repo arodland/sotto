@@ -11,7 +11,8 @@
      4  code length        u16, little-endian
      6  entry              u16, byte offset of the entry function in the code (even)
      8  serial             u32, must be newer than the last module this boot accepted
-     12 API level, flags   u8, u8 (flags: 0), then 2 reserved bytes
+     12 API level, flags   u8 (the k6_api_t level it needs, at most KM_LEVEL), u8 (flags: 0),
+                           then 2 reserved bytes
      16 code               position-independent Thumb (clang -fropi), no data or bss
      16 + code length      SipHash-2-4 tag (8 bytes, little-endian) of bytes 0 .. 15 + code length
                            under the 16-byte key the library was built with (KM_KEY)
@@ -35,13 +36,33 @@ extern "C" {
 #define KM_HDR 16
 #define KM_TAG 8
 #define KM_ABI 1
-#define KM_LEVEL 1
+#define KM_LEVEL 2
 
 typedef struct k6_api {
   uint16_t abi, level;              /* KM_ABI, KM_LEVEL */
   void (*say)(const char *s);       /* a serial report line, "K6 MOD say <s>" (up to 60 chars) */
   uint32_t (*ticks)(void);          /* uptime in 100 us ticks, 16 bits: wraps every 6.5536 s */
+  /* level 2: the receiver. Receive only: fd_write refuses the registers that switch the
+     chip's state, power, PA and band GPIOs (0x30 0x33 0x36 0x37) and returns -1; tune is the
+     way to move. After the module returns, the radio goes back to its own frequency and
+     the pager's receive set-up. A module that uses these declares K6_MODULE_LEVEL 2. */
+  uint16_t (*fd_read)(uint8_t reg);             /* FD6818 register */
+  int (*fd_write)(uint8_t reg, uint16_t value); /* 0, or -1 if refused */
+  void (*delay_us)(uint32_t us);                /* busy wait */
+  void (*tune)(uint32_t hz, int wide);          /* receive on hz (band switch, PLL, filter, RX on) */
+  uint32_t (*rx_hz)(void);                      /* the frequency the pager listens on */
+  uint32_t (*ms)(void);                         /* ms since the module started, 32 bits (it sums
+                                                   100 us ticks in ms and delay_us: a module that
+                                                   calls neither for 6.5 s loses time) */
+  int (*key_down)(void);                        /* 1 while any key is held: a long module's way out */
+  void *(*scratch)(uint32_t *bytes);            /* RAM free while the module runs (the rest of the
+                                                   module store, word aligned), its size in *bytes:
+                                                   a module's tables and buffers, since it has no
+                                                   statics and only about 700 B of stack */
 } k6_api_t;
+
+/* REG 0x67 bits 8:1 = RSSI in dB above -174 dBm (as Aura's get_rssi) */
+#define KM_RSSI_DBM(reg67) ((int)(((reg67) & 0x1FF) >> 1) - 174)
 
 /* km_packet results */
 enum {
