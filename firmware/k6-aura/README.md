@@ -26,6 +26,11 @@ and nothing is written to flash per message. The design and the numbers are in
   | `aura-pager-only.bin` | v3.7 | reads it from SPI flash |
   | `aura-pager-lr.bin` | sotto 1200 | reads it from SPI flash |
   | `aura-pager-only-table.bin`, `aura-pager-lr-table.bin` | v3.7, sotto 1200 | in the MCU's flash, as before 2026-11-06 (`TABLE=0` skips them) |
+
+  The install and table images (`-cbi`, `-vlri`, `-only-table`, `-lr-table`) are built `lean` to
+  fit: no PTT calibration transmit, no module transmit, no upload ARQ reports or telemetry, and no
+  calibration writes (docs/k6-modules.md, API level 4). Run modules that need those on
+  `aura-pager-only`, `-lr` or `-vlr`.
 - The GitHub Actions job *K6 pager firmware* runs the same build. Each run keeps the `.bin`, the
   ELF and the size reports as a downloadable artifact.
 

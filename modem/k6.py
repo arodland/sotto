@@ -270,6 +270,21 @@ def main(argv=None):
     m.add_argument("--copies", type=int, default=2,
                    help="send every chunk this many times (default 2: on air 2026-11-05 a burst's first "
                         "packet and one more were lost at level 0.3; repeats cost nothing on the K6)")
+    m.add_argument("--arq", action="store_true",
+                   help="ask for a reply (magic 0xAE): about 2 s after the last packet, on 440.850 only, "
+                        "the K6 sends back a report (the chunks it still lacks, or how the run went) "
+                        "in the same PHY, then its CW ID; decode a recording with `reports`. "
+                        "Images from 2026-11-06 on (API level 4); older ones ignore the packets")
+    m.add_argument("--telemetry", type=int, default=0, metavar="N",
+                   help="with --arq: send back up to N parts (57 characters each, 12 at most) of the "
+                        "module's say lines after it runs, so no serial cable is needed")
+    rp = sub.add_parser("reports", help="a recording of the K6 (the IC-7100's receive audio) -> the "
+                                        "K6's 0xAF reports after an --arq upload")
+    rp.add_argument("input")
+    rp.add_argument("--phy", choices="DF", default="F")
+    rp.add_argument("--baud", type=float, default=1800)
+    rp.add_argument("--invert", action="store_true")
+    rp.add_argument("--json", action="store_true", help="one JSON object per report")
     c2 = sub.add_parser("cw", help="a Morse ID as transmit audio: test signal for the K6 CW ID module "
                                    "(c/k6/mod/cwprobe.c); it identifies the station too")
     c2.add_argument("output")
@@ -409,17 +424,45 @@ def main(argv=None):
             code, entry = k6mod.build(a.source)
             level = a.api_level or k6mod.source_level(a.source)
         serial = a.serial if a.serial is not None else int(time.time())
-        img = k6mod.image(code, entry, serial, k6mod.read_key(a.key_file), level)
+        if a.telemetry and not a.arq:
+            sys.exit("--telemetry comes back with the reply: add --arq")
+        img = k6mod.image(code, entry, serial, k6mod.read_key(a.key_file), level, tlm=a.telemetry)
         pk = k6mod.packets(img, a.xfer if a.xfer is not None else serial & 0xFF,
-                           pager.PROFILES[a.payload].payload)
+                           pager.PROFILES[a.payload].payload, arq=a.arq)
         n = len(pk)
         if a.only:
             pk = [pk[int(i)] for i in a.only.split(",")]
         x = build_audio(pk * a.copies, a, a.rate)
         _write(a.output, x, a.rate)
         log(f"module {a.source}: {len(code)} B code, entry +{entry}, API level {level}, serial {serial}, "
+            f"xfer {a.xfer if a.xfer is not None else serial & 0xFF}, "
             f"{len(img)} B image in {n} {a.payload} chunks; {len(pk) * a.copies} packets, "
-            f"{len(x) / a.rate:.1f} s on air")
+            f"{len(x) / a.rate:.1f} s on air" + ("; reply asked" if a.arq else ""))
+        return 0
+
+    if a.cmd == "reports":
+        import json
+        from . import k6mod
+        x, fs = _read(a.input)
+        reps = k6mod.reports(x, fs, a.phy, a.baud, a.invert)
+        for t, r in reps:
+            if a.json:
+                print(json.dumps(dict(r, t=round(t, 3))))
+            elif r["kind"] == "status":
+                print(f"{t:8.2f} s  report {r['seq']}: xfer {r['xfer']} {r['state']}, "
+                      f"{r['have']}/{r['count']} chunks, r={r['r']} ({k6mod.RESULTS.get(r['r'], '?')})"
+                      + (f", missing {','.join(map(str, r['missing']))}" if r["missing"] else "")
+                      + (f", serial {r['serial']} returned {r['ret']} in {r['ms']} ms, "
+                         f"{r['stack_free']} B stack free" if r["state"] == "ran" else "")
+                      + f" [{r['call']}]")
+            else:
+                print(f"{t:8.2f} s  report {r['seq']} text {r['part']}/{r['parts'] - 1}: {r['text']!r}")
+        st, text = k6mod.collect(reps)
+        if st is None:
+            log("no K6 report in the recording")
+            return 1
+        if text and not a.json:
+            print(text, end="" if text.endswith("\n") else "\n")
         return 0
 
     if a.cmd == "bootdump":

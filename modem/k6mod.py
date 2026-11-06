@@ -18,11 +18,17 @@ import struct
 import subprocess
 import tempfile
 
+import numpy as np
+
 from . import pager
 
 MAGIC = 0xAB
+MAGIC_ARQ = 0xAE         # the same chunk, reply wanted: the K6 answers with 0xAF reports
+MAGIC_REPORT = 0xAF
 ABI = 1
 LEVEL = 1
+TLM_MAX = 12             # telemetry parts a module may ask for
+TLM_PART = 57
 HDR = 16
 TAG = 8
 ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
@@ -111,12 +117,16 @@ def source_opt(src):
     return m.group(1) if m else "s"
 
 
-def image(code, entry, serial, key, level=LEVEL):
-    """Header + code + SipHash tag (k6_mod.h)."""
+def image(code, entry, serial, key, level=LEVEL, tlm=0):
+    """Header + code + SipHash tag (k6_mod.h). tlm: text parts of say lines the K6 sends back
+    after the module runs, when the upload asks for a reply (packets(..., arq=True))."""
     code = bytes(code)
     if entry >= len(code) or entry & 1 or len(code) > 0xFFFF:
         raise ValueError("bad entry offset or code length")
-    hdr = b"K6M" + bytes([ABI]) + struct.pack("<HHIBBH", len(code), entry, serial & 0xFFFFFFFF, level, 0, 0)
+    if not 0 <= tlm <= TLM_MAX:
+        raise ValueError(f"telemetry parts 0..{TLM_MAX}")
+    hdr = b"K6M" + bytes([ABI]) + struct.pack("<HHIBBBB", len(code), entry, serial & 0xFFFFFFFF, level, 0,
+                                              tlm, 0)
     body = hdr + code
     return body + struct.pack("<Q", siphash24(key, body))
 
@@ -125,15 +135,17 @@ def data_bytes(length):
     return length - 6
 
 
-def packets(img, xfer, length=128):
-    """The image as whitened module packets (length 64 = L, 128 = XL), chunk 0 first."""
+def packets(img, xfer, length=128, arq=False):
+    """The image as whitened module packets (length 64 = L, 128 = XL), chunk 0 first. arq: magic
+    0xAE, so the K6 reports back over the air (images from 2026-11-06 on; older ones ignore
+    the packets, as any unknown magic)."""
     dl = data_bytes(length)
     n = -(-len(img) // dl)
     if n > 255:
         raise ValueError(f"{len(img)} bytes is {n} chunks; 255 at most")
     out = []
     for i in range(n):
-        d = bytes([MAGIC, xfer & 0xFF, i, n]) + img[i * dl:(i + 1) * dl].ljust(dl, b"\0")
+        d = bytes([MAGIC_ARQ if arq else MAGIC, xfer & 0xFF, i, n]) + img[i * dl:(i + 1) * dl].ljust(dl, b"\0")
         d += struct.pack(">H", pager.crc16_ccitt(d))
         out.append(pager._whiten(d))
     return out
@@ -142,9 +154,73 @@ def packets(img, xfer, length=128):
 def parse(payload):
     """(transfer id, chunk, count, data) of a whitened module packet, or None."""
     d = pager._whiten(payload)
-    if d[0] != MAGIC or pager.crc16_ccitt(d[:-2]) != struct.unpack(">H", d[-2:])[0]:
+    if d[0] not in (MAGIC, MAGIC_ARQ) or pager.crc16_ccitt(d[:-2]) != struct.unpack(">H", d[-2:])[0]:
         return None
     return d[1], d[2], d[3], d[4:-2]
+
+
+# ---- the K6's reports (k6_mod.h, km_report_status / km_report_text) ----
+
+REP_STATUS, REP_TEXT = 1, 2
+STATES = {0: "partway", 1: "ran", 2: "refused"}
+RESULTS = {1: "chunk", 2: "repeat", 3: "ready", -1: "bad CRC", -2: "bad chunk", -3: "bad header",
+           -4: "wrong key", -5: "no key in the image", -6: "replay (old serial)"}
+
+
+def parse_report(payload):
+    """A whitened 64-byte packet -> the K6's report as a dict, or None if it isn't one.
+    kind "status": xfer, have, count, r, state, serial, missing (chunk numbers), call, ret, ms,
+    stack_free; kind "text": text. Both: seq, part, parts."""
+    if len(payload) != 64:
+        return None
+    d = pager._whiten(bytes(payload))
+    if d[0] != MAGIC_REPORT or pager.crc16_ccitt(d[:62]) != struct.unpack(">H", d[62:64])[0]:
+        return None
+    rep = dict(seq=d[2], part=d[3], parts=d[4])
+    if d[1] == REP_STATUS:
+        count = d[7]
+        bits = int.from_bytes(d[14:46], "little")
+        rep.update(kind="status", xfer=d[5], have=d[6], count=count, r=struct.unpack("b", d[8:9])[0],
+                   state=STATES.get(d[9], str(d[9])), serial=struct.unpack("<I", d[10:14])[0],
+                   missing=[i for i in range(count) if bits >> i & 1],
+                   call=d[46:52].split(b"\0")[0].decode("ascii", "replace"),
+                   ret=struct.unpack("<i", d[52:56])[0], ms=struct.unpack("<I", d[56:60])[0],
+                   stack_free=struct.unpack("<H", d[60:62])[0])
+    elif d[1] == REP_TEXT:
+        rep.update(kind="text", text=d[5:62].split(b"\0")[0].decode("ascii", "replace"))
+    else:
+        return None
+    return rep
+
+
+def reports(x, fs, phy="F", baud=1800, invert=False):
+    """Audio (a recording of the K6, at any rate) -> [(time s, report dict)] for every 0xAF
+    packet whose CRC checks, in order. The demodulator takes either polarity by itself."""
+    from . import fsk
+    d = fsk.Demodulator(phy, baud, fsk.FS, 64)
+    y = fsk.resample(np.asarray(x, dtype=float), fs, fsk.FS)
+    out = []
+    for start, p, _, _ in d.demodulate(-y if invert else y):
+        for q in (p, pager.swap_words(p)):
+            r = parse_report(q)
+            if r is not None:
+                out.append((start / fsk.FS, r))
+                break
+    return out
+
+
+def collect(reps):
+    """Reports -> the newest status (dict, or None) and its telemetry text, its parts joined in
+    order (a part heard once is enough; "[part N lost]" for one never heard)."""
+    st = None
+    for _, r in reps:
+        if r["kind"] == "status":
+            st = r
+    if st is None:
+        return None, ""
+    parts = {r["part"]: r["text"] for _, r in reps if r["kind"] == "text" and r["seq"] == st["seq"]}
+    text = "".join(parts.get(i, f"[part {i} lost]\n") for i in range(1, st["parts"]))
+    return st, text
 
 
 PLACEHOLDER = b"sotto-K6MOD-key!"     # k6_mod.c's key in an image built without K6_MOD_KEY_FILE

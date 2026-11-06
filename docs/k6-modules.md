@@ -33,7 +33,7 @@ De-whitened (PN9, as voice packets), an L or XL module packet is
 
 | Bytes | Field |
 | --- | --- |
-| 0 | `0xAB` |
+| 0 | `0xAB`, or `0xAE` for the same chunk with a reply wanted (upload ARQ, below) |
 | 1 | transfer id |
 | 2 | chunk number, from 0 |
 | 3 | chunk count (1-255) |
@@ -48,7 +48,7 @@ The chunks' data, in order, is the image (the last chunk padded with zeros):
 | 4 | code length, u16 little-endian |
 | 6 | entry offset in the code, u16, even |
 | 8 | serial, u32: must be newer than the last module this boot ran |
-| 12 | API level the module needs (1 or 2; a K6 refuses a newer one), flags (0), 2 reserved bytes |
+| 12 | API level the module needs (1 to 4; a K6 refuses a newer one), flags (0), telemetry parts (0-12, level 4 images; see below), 1 reserved byte |
 | 16 | code: Thumb, position-independent, no writable statics |
 | 16 + code length | SipHash-2-4 tag of bytes 0 .. 15 + code length, u64 little-endian |
 
@@ -74,6 +74,55 @@ firmware puts the radio back on the pager's frequency and sets the FSK receiver 
 whatever the module changed. `KM_RSSI_DBM(fd_read(0x67))` is the RSSI in dBm. A module that
 uses level 2 says so with `#define K6_MODULE_LEVEL 2` before including `k6_mod.h`;
 `modem.k6 mod` reads it and puts it in the header (`--api-level` for a `.bin`).
+
+## API level 4: upload ARQ, telemetry, calibration
+
+Images from 2026-11-06 evening on (`KM_LEVEL` 4) add three calls and two over-air services. Level
+3 (`tx_on`, `tx_pa`, `tx_off`: docs/k6-ft8-wspr.md, PR #71) is unchanged.
+
+| Call | What it does |
+| --- | --- |
+| `key_poll()` | 1 while any key is held, from one GPIO read with all rows driven (a few us; `key_down` scans six rows, about 60 us). The lean images fall back to `key_down` |
+| `cal_read(buf, n)` | the first `n` (up to 64) bytes of the calibration sector, SPI flash 0x10F000; n, or -1 (lean images) |
+| `cal_write(buf, n)` | erases that sector and writes `n` bytes; once per run and never while keyed; n, or -1 |
+
+**Upload ARQ.** A module sent with magic `0xAE` (`modem.k6 mod --arq`) asks for a reply. When
+the transfer stops (2 s after the last packet heard, and the channel below -90 dBm), the K6
+keys up on 440.850 MHz only, at low power, and sends a 64-byte report twice in the pager's PHY
+and baud (F/1800 by default), then an MCW ID (AG7EW at 25 wpm, on the tone oscillator). It
+sends at most 16 reports a transfer and waits up to 30 s for a busy channel, then gives up.
+The serial log shows `K6 ARQ tx ...` and `K6 ARQ sent ...` around each.
+
+| Report byte | Field (de-whitened, CRC-16 of bytes 0-61 at 62-63 as module packets) |
+| --- | --- |
+| 0-4 | `0xAF`, kind (1 status, 2 text), seq, part (0 for the status), parts (1 + text parts) |
+| status 5-13 | transfer id, chunks held, chunk count, last `km_packet` result, state (0 partway, 1 ran, 2 refused), serial (once checked) |
+| status 14-45 | while partway: a bit per chunk still missing, chunk 0 in bit 0 of byte 14 |
+| status 46-61 | call sign (6 bytes), the module's return value (i32), its run time in ms (u32), free stack (u16) |
+| text 5-61 | 57 characters of the module's `say` lines, newline-separated |
+
+A partway report lists the missing chunks, so the sender resends just those with the same
+serial and transfer id. A repeat of a chunk after the run asks for the report again.
+`tools/k6_upload.py` does the whole loop on hamlet: it plays the upload on the IC-7100,
+records the IC-7100's receive audio with `parec`, decodes the reports (`modem.k6 reports
+REC.wav` does the same for any recording), resends what's missing, and stops on "ran" or
+"refused".
+
+**Telemetry.** `--telemetry N` (with `--arq`) puts N in header byte 14: while the module runs,
+the K6 keeps its `say` lines (up to N x 57 bytes, at most 12 parts) in the idle PWM audio ring
+and sends them after the status report. No serial cable is needed, so the speaker stays on.
+
+**Calibration.** `c/k6/mod/ifcal.c` (level 4) measures where a bare carrier on 440.850 lands on
+the GP0 IF with the AFC off and writes a 32-byte record (`c/k6/mod/k6_cal.h`: magic `K6CL`, the
+offset in 0.01 Hz from the nominal 16927.083 Hz, the same in ppb, the frequency, the block count,
+spread, RSSI, and a check word). An IF-tap module can read it with `k6cal_get()` and scale it to its
+own frequency with `k6cal_off_chz()` (none does yet: ft8wf is next). Run it once per radio: within 90 s of `ifcal start`, key
+the IC-7100 on 440.850 in FM with no modulation for about 8 s. It refuses (-9) a carrier that
+wanders more than 30 Hz or fewer than 16 good blocks, and the record stays as it was.
+
+The lean images (`aura-pager-cbi`, `-only-table`, `-lr-table`, `-vlri`) have no room for any
+of this: they take level 4 modules but send no reports, keep no telemetry and refuse
+`cal_write`.
 
 ## Security
 
@@ -361,3 +410,22 @@ what would settle it.
       0.097 Hz resolution and 5 ms steps or finer. Insight 17's FSK question is answered for
       audio FSK.
     - Settled by: run 6; a gain sweep for deviation is still to do.
+21. **K6-to-K6 paging (parked, Jeff 2026-11-06).**
+    - From: the upload ARQ thread. The ARQ reports are the K6 sending a pager packet with its
+      own chip FSK, so one K6 could page another directly: no PC or IC-7100 in the path.
+    - Buys: a two-radio text pager, and a relay or store-and-forward test bed.
+    - Parked by Jeff ("definitely will want that later"). Settled by: the ARQ reports decoding
+      on another K6, not just the IC-7100; then a send-text module on a key.
+22. **gp0dma's IF reading was biased high.**
+    - From: the ifcal thread (2026-11-06), in the emulator. `run()` scaled the IF by
+      `cyc >> 10`, floored, so it read up to 1/1000 high: about 17 Hz at BLK 940, up to 3.4 Hz at
+      the sweep's 4688. It now rounds and scales with 8x the time resolution; ifcal reads a
+      -145.5 Hz offset as -145.1 in the model.
+    - Buys: an IF offset good to about half a Hz, which FT8 (6.25 Hz tones) and WSPR (1.46 Hz)
+      both need. Earlier `if=` readings from gp0dma and gp0sweep are a few Hz high.
+    - Settled by: ifcal on the radio against `tools/k6_ft8.py tone`'s -145 Hz.
+23. **The ARQ report's PHY is untested from the K6.**
+    - The chip's FSK has sent calibration bursts at 1200 baud; the reports go at the pager's
+      F/1800. If the IC-7100 doesn't decode them, try the reports at 1200 (a REG_72 write
+      around the send) before anything else.
+    - Settled by: the first `tools/k6_upload.py` run on the bench.

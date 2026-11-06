@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..d12dcb8
+index 0000000..a6560b5
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3096 @@
+@@ -0,0 +1,3534 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -360,6 +360,8 @@ index 0000000..d12dcb8
 +        pub fn sp_cb_bench(n: u32) -> u32;
 +        pub fn sp_cb_expected() -> u32;
 +        pub fn sp_cb_reads() -> u32;
++        pub fn km_report_status(out: *mut u8, seq: u8, parts: u8, state: u8, call: *const u8, ret: i32, ms: u32, stack_free: u16);
++        pub fn km_report_text(out: *mut u8, seq: u8, part: u8, parts: u8, text: *const u8, n: u32);
 +        pub fn sp_vlr_setup() -> i32;
 +        pub fn sp_vlr_expected() -> u32;
 +    }
@@ -383,6 +385,10 @@ index 0000000..d12dcb8
 +        pub tx_on: unsafe extern "C" fn(u32) -> i32,
 +        pub tx_off: unsafe extern "C" fn(),
 +        pub tx_pa: unsafe extern "C" fn(i32) -> i32,
++        // level 4: a cheap key check, the calibration record
++        pub key_poll: unsafe extern "C" fn() -> i32,
++        pub cal_read: unsafe extern "C" fn(*mut u8, u32) -> i32,
++        pub cal_write: unsafe extern "C" fn(*const u8, u32) -> i32,
 +    }
 +    #[repr(C)]
 +    pub struct KmStatus {
@@ -394,6 +400,10 @@ index 0000000..d12dcb8
 +        pub chunk: u8,
 +        pub code_len: u16,
 +        pub serial: u32,
++        pub reply: u8,
++        pub tlm: u8,
++        pub missing: u8,
++        pub pad: u8,
 +    }
 +}
 +pub use ffi::{SpBiterr, SpStatus};
@@ -405,7 +415,7 @@ index 0000000..d12dcb8
 +/// through MOD_CTX, set only while a module runs.
 +static MOD_API: ffi::K6Api = ffi::K6Api {
 +    abi: 1,
-+    level: 3,
++    level: 4,
 +    say: mod_say,
 +    ticks: mod_ticks,
 +    fd_read: mod_fd_read,
@@ -419,6 +429,9 @@ index 0000000..d12dcb8
 +    tx_on: mod_tx_on,
 +    tx_off: mod_tx_off,
 +    tx_pa: mod_tx_pa,
++    key_poll: mod_key_poll,
++    cal_read: mod_cal_read,
++    cal_write: mod_cal_write,
 +};
 +
 +struct ModCtx {
@@ -431,6 +444,10 @@ index 0000000..d12dcb8
 +    /// while a module transmits: the tick (mod_tick's count) at which the TX ends by itself
 +    tx_until: u32,
 +    tx: bool,
++    /// level 4: the calibration record was written this run (once a run)
++    cal_written: bool,
++    /// bytes of say lines kept for the over-the-air report (0: none)
++    tlm_cap: u16,
 +}
 +static mut MOD_CTX: ModCtx = ModCtx {
 +    app: core::ptr::null_mut(),
@@ -441,6 +458,8 @@ index 0000000..d12dcb8
 +    scratch: 0,
 +    tx_until: 0,
 +    tx: false,
++    cal_written: false,
++    tlm_cap: 0,
 +};
 +
 +/// The registers a module may not write: the chip's TX/RX state, its GPIO lines, the PA and
@@ -540,6 +559,7 @@ index 0000000..d12dcb8
 +    }
 +    let t = core::str::from_utf8(unsafe { core::slice::from_raw_parts(s, n) }).unwrap_or("(not text)");
 +    report_line(format_args!("K6 MOD say {}", t));
++    tlm_add(t.as_bytes());
 +}
 +
 +unsafe extern "C" fn mod_ticks() -> u32 {
@@ -568,6 +588,7 @@ index 0000000..d12dcb8
 +    };
 +    if tx && live && mod_tick().wrapping_sub(until) < 0x8000_0000 {
 +        report_line(format_args!("K6 MOD tx timeout"));
++        tlm_add(b"(tx timeout)");
 +        unsafe { mod_tx_off() };
 +    }
 +}
@@ -610,6 +631,7 @@ index 0000000..d12dcb8
 +    app.radio.set_tx_allowed(BandLock::from_u8(app.settings.band_lock).tx_ranges());
 +    if !ok {
 +        report_line(format_args!("K6 MOD tx refused hz={}", hz));
++        tlm_add(b"(tx refused)");
 +        app.radio.enter_rx(syst);
 +        return -1;
 +    }
@@ -651,6 +673,174 @@ index 0000000..d12dcb8
 +        app.radio.cw_carrier_off(syst);
 +    }
 +    0
++}
++
++// ---- level 4: a cheap key check and the calibration record ----
++
++/// 1 while any key is held, in about 5 us: all five keypad rows driven low at once (Aura's
++/// scan drives one at a time with a 5 us SysTick wait each, ~60 us in all), the four column
++/// inputs read (PC13, PC14, PF6, PB14; the side keys read low with no row driven), rows idle again.
++#[cfg(feature = "lean")]
++unsafe extern "C" fn mod_key_poll() -> i32 {
++    unsafe { mod_key_down() }
++}
++
++#[cfg(not(feature = "lean"))]
++unsafe extern "C" fn mod_key_poll() -> i32 {
++    mod_tx_guard();
++    let gb = unsafe { &*kd32f328_pac::Gpiob::ptr() };
++    let gc = unsafe { &*kd32f328_pac::Gpioc::ptr() };
++    let gf = unsafe { &*kd32f328_pac::Gpiof::ptr() };
++    gb.brr()
++        .write(|w| w.br0().set_bit().br4().set_bit().br9().set_bit().br10().set_bit().br11().set_bit());
++    cortex_m::asm::delay(300); // ~3 us at 96 MHz for the lines to settle
++    let c = gc.idr().read();
++    let any = c.idr13().bit_is_clear()
++        || c.idr14().bit_is_clear()
++        || gf.idr().read().idr6().bit_is_clear()
++        || gb.idr().read().idr14().bit_is_clear();
++    crate::board::set_keypad_rows_idle(gb);
++    any as i32
++}
++
++/// The radio's calibration record (c/k6/mod/k6_cal.h): a 4 KB SPI flash sector of its own,
++/// after sotto's codebooks (0x100000 v3.7, 0x108000 sotto 600 / 400)
++const CAL_ADDR: u32 = 0x10_F000;
++const CAL_BYTES: u32 = 64;
++
++#[cfg(feature = "lean")]
++unsafe extern "C" fn mod_cal_read(_buf: *mut u8, _n: u32) -> i32 {
++    -1
++}
++
++#[cfg(not(feature = "lean"))]
++unsafe extern "C" fn mod_cal_read(buf: *mut u8, n: u32) -> i32 {
++    mod_tx_guard();
++    if buf.is_null() || n > CAL_BYTES {
++        return -1;
++    }
++    let (app, _) = unsafe { mod_ctx() };
++    app.storage
++        .norflash
++        .read_bytes(CAL_ADDR, unsafe { core::slice::from_raw_parts_mut(buf, n as usize) });
++    n as i32
++}
++
++#[cfg(feature = "lean")]
++unsafe extern "C" fn mod_cal_write(_buf: *const u8, _n: u32) -> i32 {
++    -1
++}
++
++/// Erase the sector and write n bytes: once a module run, never while keyed. 0 or -1.
++#[cfg(not(feature = "lean"))]
++unsafe extern "C" fn mod_cal_write(buf: *const u8, n: u32) -> i32 {
++    mod_tx_guard();
++    let c = unsafe { &mut *addr_of_mut!(MOD_CTX) };
++    if buf.is_null() || n == 0 || n > CAL_BYTES || c.tx || c.cal_written || c.app.is_null() {
++        return -1;
++    }
++    c.cal_written = true;
++    let (app, _) = unsafe { mod_ctx() };
++    app.storage.norflash.erase_sector(CAL_ADDR);
++    app.storage
++        .norflash
++        .write_bytes(CAL_ADDR, unsafe { core::slice::from_raw_parts(buf, n as usize) });
++    report_line(format_args!("K6 MOD cal write n={} at {:#x}", n, CAL_ADDR));
++    0
++}
++
++// ---- telemetry: a module's say lines, kept for the over-the-air report ----
++//
++// They go in the PWM audio ring (2,560 bytes), free whenever nothing plays: a playback fills
++// its segments before it starts, which overwrites the "TLM1" mark, so a report sends the text
++// only while the mark is intact. No RAM of its own: the pager's stack has little to spare.
++// The text is a ring of tlm_cap bytes that keeps the newest, written a byte at a time (a
++// memmove would pull in compiler_builtins' mem functions, 1.8 KB of flash).
++
++const TLM_MARK: u32 = u32::from_le_bytes(*b"TLM1");
++/// the mark (u32), bytes held (u16, up to the cap), the write position (u16)
++const TLM_HDR: usize = 8;
++
++#[cfg(not(feature = "lean"))]
++fn tlm_hdr() -> (u32, usize, usize) {
++    let b = pwm_audio::idle_bytes();
++    unsafe {
++        let m = read_volatile(b as *const u32);
++        (m, *b.add(4) as usize | (*b.add(5) as usize) << 8, *b.add(6) as usize | (*b.add(7) as usize) << 8)
++    }
++}
++
++#[cfg(not(feature = "lean"))]
++fn tlm_set(n: usize, w: usize) {
++    let b = pwm_audio::idle_bytes();
++    unsafe {
++        *b.add(4) = n as u8;
++        *b.add(5) = (n >> 8) as u8;
++        *b.add(6) = w as u8;
++        *b.add(7) = (w >> 8) as u8;
++    }
++}
++
++/// Start keeping say lines, at most cap bytes (the newest)
++#[cfg(not(feature = "lean"))]
++fn tlm_start(cap: usize) {
++    unsafe { write_volatile(pwm_audio::idle_bytes() as *mut u32, TLM_MARK) };
++    tlm_set(0, 0);
++    unsafe { (*addr_of_mut!(MOD_CTX)).tlm_cap = cap.min(pwm_audio::RING_BYTES - TLM_HDR) as u16 };
++}
++
++/// A line, '\n' after it
++#[cfg(not(feature = "lean"))]
++fn tlm_add(t: &[u8]) {
++    let cap = unsafe { (*addr_of!(MOD_CTX)).tlm_cap } as usize;
++    let (m, mut n, mut w) = tlm_hdr();
++    if cap == 0 || m != TLM_MARK {
++        return;
++    }
++    let b = pwm_audio::idle_bytes();
++    for &c in t.iter().chain(b"\n".iter()) {
++        unsafe { *b.add(TLM_HDR + w) = c };
++        w += 1;
++        if w == cap {
++            w = 0;
++        }
++        if n < cap {
++            n += 1;
++        }
++    }
++    tlm_set(n, w);
++}
++
++#[cfg(feature = "lean")]
++fn tlm_add(_t: &[u8]) {}
++
++/// The text's length: 0 if a playback overwrote it
++#[cfg(not(feature = "lean"))]
++fn tlm_len() -> usize {
++    let (m, n, _) = tlm_hdr();
++    if m != TLM_MARK || n > pwm_audio::RING_BYTES - TLM_HDR {
++        0
++    } else {
++        n
++    }
++}
++
++/// Bytes k0 .. k0 + out.len() of the text, oldest first (cap: as tlm_start had it)
++#[cfg(not(feature = "lean"))]
++fn tlm_read(k0: usize, out: &mut [u8], cap: usize) -> usize {
++    let (_, n, w) = tlm_hdr();
++    let b = pwm_audio::idle_bytes();
++    let mut i = if n < cap { k0 } else { w + k0 };
++    let mut got = 0;
++    while got < out.len() && k0 + got < n {
++        while i >= cap {
++            i -= cap;
++        }
++        out[got] = unsafe { *b.add(TLM_HDR + i) };
++        i += 1;
++        got += 1;
++    }
++    got
 +}
 +
 +const SP_BAD_MAGIC: i32 = -2;
@@ -1950,6 +2140,11 @@ index 0000000..d12dcb8
 +    // the burst's time isn't idle time (auto-play waits GAP_TICKS after the last packet)
 +    app.pager.last_tick = uptime::now();
 +
++    #[cfg(not(feature = "lean"))]
++    if arq().owe != 0 {
++        arq_poll(app, syst, dt);
++    }
++
 +    if let Some(rec) = app.pager.ctl.take() {
 +        apply_control(app, syst, rec);
 +    } else if let Some(prev) = app.pager.ctl_prev {
@@ -2233,6 +2428,7 @@ index 0000000..d12dcb8
 +    swap_read: bool,
 +    stream: bool,
 +) {
++    arq().wait = 0; // the channel is busy: a report waits for it to go quiet
 +    let n = got.min(16);
 +    app.pager.raw[..n].copy_from_slice(&buf[..n]);
 +    app.pager.raw_len = got.min(255) as u8;
@@ -2254,6 +2450,7 @@ index 0000000..d12dcb8
 +        if unsafe { (*ffi::km_status()).active } != 0 && unsafe { ffi::sp_check(buf.as_ptr(), len as i32) } != 0 {
 +            unsafe { ffi::km_reset() };
 +            report_line(format_args!("K6 MOD dropped: a voice packet came first"));
++            arq().owe = 0;
 +            clear_store(app);
 +        }
 +    }
@@ -2385,19 +2582,46 @@ index 0000000..d12dcb8
 +                scratch,
 +                tx_until: 0,
 +                tx: false,
++                cal_written: false,
++                tlm_cap: 0,
 +            };
++        }
++        // a reply-wanted upload whose header asks for telemetry: keep the say lines
++        #[cfg(not(feature = "lean"))]
++        if st.reply != 0 && st.tlm != 0 {
++            tlm_start(st.tlm as usize * KM_TLM_PART);
 +        }
 +        let ret = unsafe { ffi::km_run(addr_of_mut!(STORE) as *mut u8, &MOD_API) };
 +        unsafe { mod_tx_off() }; // a module that left the transmitter on
 +        let ms = unsafe { mod_ms() };
-+        unsafe { (*addr_of_mut!(MOD_CTX)).app = core::ptr::null_mut() };
++        unsafe {
++            let c = &mut *addr_of_mut!(MOD_CTX);
++            c.app = core::ptr::null_mut();
++            c.tlm_cap = 0;
++        }
 +        // free_ram: the stack never reached since VOICE MSG was entered (painted then)
-+        report_line(format_args!("K6 MOD ret={} ({:#x}) in {} ms stack_free={} B", ret, ret, ms, free_ram()));
++        let sfree = free_ram();
++        report_line(format_args!("K6 MOD ret={} ({:#x}) in {} ms stack_free={} B", ret, ret, ms, sfree));
++        #[cfg(not(feature = "lean"))]
++        if st.reply != 0 {
++            arq_owe(KM_ST_RAN, ret, ms, sfree.min(0xFFFF) as u16);
++        }
 +        // a level 2 module may have moved the radio: back to the pager's frequency and set-up,
 +        // and GP0 as it was
 +        app.radio.fd6818.reg_write(syst, MOD_GPIO, gpio);
 +        app.sync_watching_to_master(syst);
 +        arm(app, syst);
++    }
++    #[cfg(not(feature = "lean"))]
++    if st.reply != 0 && r != KM_READY {
++        if r <= -3 {
++            arq_owe(KM_ST_REFUSED, r, 0, 0);
++        } else if st.active != 0 {
++            arq_owe(KM_ST_PARTWAY, 0, 0, 0); // the gaps, once the sender stops
++        } else if r == 2 && arq().state != KM_ST_PARTWAY {
++            arq().owe = 2; // a repeat of a finished transfer: the sender missed the result
++            arq().wait = 0;
++        }
 +    }
 +    if r == KM_READY || r <= -3 {
 +        clear_store(app); // the transfer is over, run or refused
@@ -3083,6 +3307,220 @@ index 0000000..d12dcb8
 +    arm(app, syst);
 +}
 +
++// ---- ARQ: the K6 answers a reply-wanted upload over the air (k6_mod.h, KM_MAGIC_REPORT) ----
++//
++// An upload whose chunks come as magic 0xAE asks for answers. Two seconds after the sender's
++// last packet, with the channel clear, the K6 keys up on 440.850 MHz (only there: Jeff's
++// bench frequency, AG7EW), low power, and sends a 0xAF status packet twice in the pager's own
++// PHY and baud rate (64 bytes, through the chip's FSK modem as the calibration transmit), then
++// AG7EW in MCW on the tone oscillator. Partway, the status lists the chunks still missing,
++// and the sender resends only those; once the module has run, it carries the module's return,
++// its time and stack_free, followed by its say lines as text packets if the header asked for
++// them. A repeat of a finished transfer's chunk brings the result again. At most ARQ_MAX
++// reports a transfer. Jeff OK'd the K6 answering uploads on 2026-11-06.
++
++/// ARQ state, in .bss rather than PagerState (whose initialiser costs flash a field)
++struct Arq {
++    /// ARQ (uploads sent with magic 0xAE): the report the K6 owes the sender, 0 none, 1 the
++    /// chunks still missing, 2 the result; 100 us ticks since the last packet heard and spent
++    /// waiting for a clear channel; reports sent for this transfer; the report counter; the
++    /// result to send (k6_mod.h KM_ST_*, the module's return, ms, stack_free)
++    owe: u8,
++    wait: u32,
++    busy: u32,
++    sent: u8,
++    seq: u8,
++    state: u8,
++    ret: i32,
++    ms: u32,
++    sfree: u16,
++    /// the transfer they are for (xfer << 8 | count; count >= 1, so 0 = none)
++    xfer: u16,
++}
++
++static mut ARQ: Arq = Arq { owe: 0, wait: 0, busy: 0, sent: 0, seq: 0, state: 0, ret: 0, ms: 0, sfree: 0, xfer: 0 };
++
++fn arq() -> &'static mut Arq {
++    unsafe { &mut *addr_of_mut!(ARQ) }
++}
++
++const KM_ST_PARTWAY: u8 = 0;
++const KM_ST_RAN: u8 = 1;
++const KM_ST_REFUSED: u8 = 2;
++const KM_TLM_PART: usize = 57;
++const KM_TLM_MAX: usize = 12;
++/// the sender's carrier gone and the IC-7100's receive audio back (muted ~1.8 s after its unkey;
++/// the K6's key-up takes ~1.4 s more before the first bit)
++const ARQ_WAIT_TICKS: u32 = 20_000;
++const ARQ_CLEAR_DBM: i32 = -90;
++/// a channel that stays busy this long: no report
++const ARQ_GIVE_UP_TICKS: u32 = 300_000;
++const ARQ_MAX: u8 = 16;
++const ARQ_HZ: u32 = 440_850_000;
++const ARQ_CALL: &[u8] = b"AG7EW\0";
++/// MCW ID: 25 wpm (48 ms a unit), 800 Hz on tone 1 at REG_70 gain 60 (ft8tx's, about -18 dBFS
++/// of tone on the IC-7100's USB audio)
++const MCW_UNIT_MS: u32 = 48;
++const MCW_WORD: u16 = 8260; // 800 Hz x 10.32444
++const MCW_ON: u16 = 0x8000 | 60 << 8;
++/// Morse by code, as c/k6/mod/cwkey.c: start at 1, then 0 a dot and 1 a dash (E = 2, A = 5)
++const MORSE_TAB: &[u8] = b"~~ETIANMSURWDKGOHVF~L~PJBXCYZQ~~54~3~~~2~~+~~~~16=/~~~~~7~~~8~90";
++
++/// The module packets owe the sender a report: the gaps (partway) or the result
++#[cfg(not(feature = "lean"))]
++fn arq_owe(state: u8, ret: i32, ms: u32, sfree: u16) {
++    let st = unsafe { &*ffi::km_status() };
++    let id = (st.xfer as u16) << 8 | st.count as u16;
++    let p = arq();
++    if id != p.xfer {
++        p.xfer = id;
++        p.sent = 0;
++    }
++    p.owe = if state == KM_ST_PARTWAY { 1 } else { 2 };
++    p.wait = 0;
++    p.busy = 0;
++    p.state = state;
++    p.ret = ret;
++    p.ms = ms;
++    p.sfree = sfree;
++}
++
++#[cfg(not(feature = "lean"))]
++fn arq_poll(app: &mut App, syst: &mut SYST, dt: u32) {
++    let p = arq();
++    p.wait = p.wait.saturating_add(dt);
++    if p.wait < ARQ_WAIT_TICKS || app.pager.play_pending || stream_on() {
++        return;
++    }
++    let rssi = ((app.radio.fd6818.reg_read(syst, 0x67) & 0x1FF) >> 1) as i32 - 174;
++    if rssi >= ARQ_CLEAR_DBM {
++        p.busy = p.busy.saturating_add(dt);
++        if p.busy >= ARQ_GIVE_UP_TICKS {
++            p.owe = 0;
++            report_line(format_args!("K6 ARQ gave up: the channel stayed busy ({} dBm)", rssi));
++        }
++        return;
++    }
++    arq_send(app, syst);
++}
++
++#[cfg(not(feature = "lean"))]
++#[inline(never)] // its locals only while it runs, not in main's frame for good
++fn arq_send(app: &mut App, syst: &mut SYST) {
++    let kind = arq().owe;
++    arq().owe = 0;
++    arq().busy = 0;
++    if arq().sent >= ARQ_MAX {
++        report_line(format_args!("K6 ARQ no report: {} sent for this transfer already", ARQ_MAX));
++        return;
++    }
++    let hz = app.master_freq_hz();
++    if hz != ARQ_HZ {
++        report_line(format_args!("K6 ARQ no report: on {} Hz; reports go on 440.850 MHz only", hz));
++        return;
++    }
++    arq().sent += 1;
++    let st = unsafe { &*ffi::km_status() };
++    let state = if kind == 1 { KM_ST_PARTWAY } else { arq().state };
++    let cap = (st.tlm as usize * KM_TLM_PART).min(pwm_audio::RING_BYTES - TLM_HDR);
++    let tlen = if kind == 2 && state == KM_ST_RAN && cap > 0 { tlm_len() } else { 0 };
++    let nparts = ((tlen + KM_TLM_PART - 1) / KM_TLM_PART).min(KM_TLM_MAX);
++    let parts = 1 + nparts as u8;
++    let seq = arq().seq;
++    arq().seq = seq.wrapping_add(1);
++    let (ret, ms, sfree) = (arq().ret, arq().ms, arq().sfree);
++    report_line(format_args!(
++        "K6 ARQ tx seq={} state={} xfer={} have={}/{} r={} parts={}",
++        seq, state, st.xfer, st.have, st.count, st.last, parts
++    ));
++
++    disarm(app, syst);
++    app.radio.set_frequency(hz);
++    app.radio.set_tx_frequency(hz);
++    app.radio.set_power(crate::drivers::fd6818::Power::Low);
++    app.radio.set_subaudio_tx(SubAudio::None);
++    app.radio.set_modulation(Modulation::Fm);
++    app.radio.apply_pa_calibration(&mut app.storage, hz, crate::drivers::fd6818::Power::Low);
++    // the module transmitter's band lock (FCC HAM, Jeff's choice for AG7EW), for this key-up only
++    app.radio.set_tx_allowed(BandLock::Fcc.tx_ranges());
++    let ok = app.radio.enter_tx(syst);
++    app.radio.set_tx_allowed(BandLock::from_u8(app.settings.band_lock).tx_ranges());
++    if !ok {
++        report_line(format_args!("K6 ARQ tx refused hz={}", hz));
++        app.radio.enter_rx(syst);
++        app.sync_watching_to_master(syst);
++        arm(app, syst);
++        return;
++    }
++    let t0 = uptime::now();
++    delay::ms(syst, 300); // carrier lead-in for the IC-7100's AGC and squelch
++    // REG_5D sets the TX length too: 64 bytes, whatever key 2 and key 7 chose
++    let saved = (app.pager.xl, app.pager.len_mode);
++    app.pager.xl = false;
++    app.pager.len_mode = 0;
++    configure(app, syst);
++    let mut pk = [0u8; 64];
++    for _ in 0..2 {
++        unsafe { ffi::km_report_status(pk.as_mut_ptr(), seq, parts, state, ARQ_CALL.as_ptr(), ret, ms, sfree) };
++        tx_bytes(app, syst, &pk);
++        delay::ms(syst, 60);
++    }
++    for i in 0..nparts {
++        let mut part = [0u8; KM_TLM_PART];
++        let n = tlm_read(i * KM_TLM_PART, &mut part, cap);
++        unsafe { ffi::km_report_text(pk.as_mut_ptr(), seq, i as u8 + 1, parts, part.as_ptr(), n as u32) };
++        tx_bytes(app, syst, &pk);
++        delay::ms(syst, 40);
++    }
++    (app.pager.xl, app.pager.len_mode) = saved;
++    disarm(app, syst);
++    mcw_id(app, syst);
++    app.radio.enter_rx(syst); // not end_tx: no roger tone
++    let power = app.sides[app.master].cfg.power;
++    app.radio.set_power(power);
++    let on = uptime::now().wrapping_sub(t0) / 10;
++    report_line(format_args!("K6 ARQ sent seq={} ms={}", seq, on));
++    arq().wait = 0;
++    app.sync_watching_to_master(syst);
++    arm(app, syst);
++}
++
++/// 64 bytes through the chip's FSK modem, low byte of each FIFO word first (as cal_tx)
++#[cfg(not(feature = "lean"))]
++fn tx_bytes(app: &mut App, syst: &mut SYST, b: &[u8; 64]) {
++    let mut words = [0u16; 32];
++    for (i, w) in words.iter_mut().enumerate() {
++        *w = b[2 * i] as u16 | (b[2 * i + 1] as u16) << 8;
++    }
++    tx_packet(app, syst, &words);
++}
++
++/// The station's call in MCW: the 800 Hz tone keyed on tone 1 (REG_70), the mic off
++#[cfg(not(feature = "lean"))]
++fn mcw_id(app: &mut App, syst: &mut SYST) {
++    let fd = &mut app.radio.fd6818;
++    fd.reg_write(syst, 0x30, MOD_TX_STATE);
++    fd.reg_write(syst, REG_TX_GAIN, 0);
++    fd.reg_write(syst, 0x71, MCW_WORD);
++    delay::ms(syst, 200);
++    for &c in &ARQ_CALL[..ARQ_CALL.len() - 1] {
++        let code = MORSE_TAB.iter().position(|&m| m == c && m != b'~').unwrap_or(0) as u32;
++        if code < 2 {
++            continue;
++        }
++        let mut b = 31 - code.leading_zeros(); // below the start bit
++        while b > 0 {
++            b -= 1;
++            let n = if code >> b & 1 != 0 { 3 } else { 1 };
++            fd.reg_write(syst, REG_TX_GAIN, MCW_ON);
++            delay::ms(syst, n * MCW_UNIT_MS);
++            fd.reg_write(syst, REG_TX_GAIN, 0);
++            delay::ms(syst, if b > 0 { MCW_UNIT_MS } else { 3 * MCW_UNIT_MS });
++        }
++    }
++    fd.reg_write(syst, 0x71, 0);
++}
++
 +// ---- serial report (programming cable, radio to PC only) ----
 +//
 +// One text line per event on USART1 TX (PA9; main set it up at 115200 8N1), for
@@ -3358,10 +3796,10 @@ index 57e9999..3717bb7 100644
  pub mod timer;
 diff --git a/src/hal/pwm_audio.rs b/src/hal/pwm_audio.rs
 new file mode 100644
-index 0000000..eb97a85
+index 0000000..25274cb
 --- /dev/null
 +++ b/src/hal/pwm_audio.rs
-@@ -0,0 +1,146 @@
+@@ -0,0 +1,155 @@
 +//! 8 kHz PCM out of the MCU's PWM pin, the path the stock firmware uses for
 +//! its voice prompts: PA11 = TIM1_CH4 (AF2) -> two RC poles (4.7k/3.9n,
 +//! 4.7k/22n) -> 22k -> the speaker amplifier's input, summed with the RF
@@ -3419,8 +3857,17 @@ index 0000000..eb97a85
 +    wr(a, (rd(a) & !clear) | set);
 +}
 +
-+/// The DMA ring. Only `PwmAudio` touches it.
++/// The DMA ring. Only `PwmAudio` touches it, except through `idle_bytes`.
 +static mut RING_BUF: [u16; RING] = [0; RING];
++
++/// The ring's size in bytes
++pub const RING_BYTES: usize = RING * 2;
++
++/// The ring as bytes, for other uses while nothing plays (the pager keeps a module's report
++/// text here). A playback fills it before it starts, which overwrites whatever was there.
++pub fn idle_bytes() -> *mut u8 {
++    core::ptr::addr_of_mut!(RING_BUF) as *mut u8
++}
 +
 +pub struct PwmAudio {
 +    running: bool,

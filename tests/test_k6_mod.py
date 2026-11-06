@@ -31,8 +31,19 @@ def run_host(packets, arena=4096):
     out = subprocess.run([HOST, str(arena)], input=inp, check=True, capture_output=True, text=True).stdout
     lines = out.split("\n")
     rs = [int(ln.split()[0][2:]) for ln in lines if ln.startswith("r=")]
-    tail = [ln for ln in lines if ln.startswith("code_len=")][0].split()
-    return rs, int(tail[0].split("=")[1]), int(tail[1].split("=")[1]), bytes.fromhex(lines[-2])
+    at = next(i for i, ln in enumerate(lines) if ln.startswith("code_len="))
+    tail = lines[at].split()
+    return rs, int(tail[0].split("=")[1]), int(tail[1].split("=")[1]), bytes.fromhex(lines[at + 1])
+
+
+def run_host_reports(packets, arena=4096):
+    """km_host's ARQ view after the packets: {reply, tlm, missing} and its two reports, parsed"""
+    inp = "".join(p.hex() + "\n" for p in packets)
+    lines = subprocess.run([HOST, str(arena)], input=inp, check=True, capture_output=True,
+                           text=True).stdout.split("\n")
+    at = next(i for i, ln in enumerate(lines) if ln.startswith("reply="))
+    st = {k: int(v) for k, v in (kv.split("=") for kv in lines[at].split())}
+    return st, bytes.fromhex(lines[at + 1]), bytes.fromhex(lines[at + 2])
 
 
 def fake_module(n=300, serial=1000, key=KEY):
@@ -204,13 +215,65 @@ SETTLE = os.path.join(K6, "mod", "settle.c")
 
 
 @need_host
-def test_loader_takes_level_3_refuses_4():
+def test_loader_takes_level_4_refuses_5():
     code = bytes(64)
-    for level in (2, 3):
+    for level in (2, 3, 4):
         rs, *_ = run_host(k6mod.packets(k6mod.image(code, 0, 1000 + level, KEY, level=level), 1, 128))
         assert rs[-1] == 3
-    rs, *_ = run_host(k6mod.packets(k6mod.image(code, 0, 1000, KEY, level=4), 1, 128))
+    rs, *_ = run_host(k6mod.packets(k6mod.image(code, 0, 1000, KEY, level=5), 1, 128))
     assert 3 not in rs
+
+
+# ---- upload ARQ: magic 0xAE asks for a reply, the K6's 0xAF reports (k6_mod.h) ----
+
+@need_host
+def test_arq_upload_marks_reply_and_telemetry():
+    img = k6mod.image(bytes(200), 0, 77, KEY, tlm=5)
+    st, *_ = run_host_reports(k6mod.packets(img, 4, 64, arq=True))
+    assert st == {"reply": 1, "tlm": 5, "missing": 0}
+    st, *_ = run_host_reports(k6mod.packets(img, 5, 64))
+    assert st["reply"] == 0
+    # one 0xAE chunk is enough to ask, even among 0xAB ones; the cap is 12 parts
+    pk = k6mod.packets(k6mod.image(bytes(200), 0, 78, KEY, tlm=12), 6, 64)
+    pk[2] = k6mod.packets(k6mod.image(bytes(200), 0, 78, KEY, tlm=12), 6, 64, arq=True)[2]
+    st, *_ = run_host_reports(pk)
+    assert st == {"reply": 1, "tlm": 12, "missing": 0}
+    with pytest.raises(ValueError):
+        k6mod.image(bytes(200), 0, 79, KEY, tlm=13)
+
+
+@need_host
+def test_arq_partway_report_lists_the_missing_chunks():
+    img = fake_module(500)
+    pk = k6mod.packets(img, 9, 64, arq=True)
+    lost = {1, 4, len(pk) - 1}
+    st, status, text = run_host_reports([p for i, p in enumerate(pk) if i not in lost])
+    assert st["missing"] == len(lost)
+    r = k6mod.parse_report(status)
+    assert r["kind"] == "status" and r["state"] == "partway" and r["xfer"] == 9
+    assert r["have"] == len(pk) - len(lost) and r["count"] == len(pk) and r["missing"] == sorted(lost)
+    assert r["serial"] == 0 and r["call"] == "AG7EW" and r["ret"] == -3 and r["ms"] == 1234
+    assert r["stack_free"] == 700 and (r["seq"], r["part"], r["parts"]) == (7, 0, 2)
+    t = k6mod.parse_report(text)
+    assert t == {"kind": "text", "text": "hello\n", "seq": 7, "part": 1, "parts": 2}
+    # the resend of just those chunks completes it
+    rs, *_ = run_host([p for i, p in enumerate(pk) if i not in lost] + [pk[i] for i in sorted(lost)])
+    assert rs[-1] == 3
+
+
+@need_host
+def test_arq_ran_report_and_collect():
+    img = fake_module(300, serial=4242)
+    st, status, text = run_host_reports(k6mod.packets(img, 3, 128, arq=True))
+    r = k6mod.parse_report(status)
+    assert r["state"] == "ran" and r["missing"] == [] and r["serial"] == 4242 and r["r"] == 3
+    # a damaged report is not one; the text joins in order, a lost part marked
+    bad = bytearray(status)
+    bad[20] ^= 1
+    assert k6mod.parse_report(bytes(bad)) is None and k6mod.parse_report(status[:63]) is None
+    t = k6mod.parse_report(text)
+    st2, joined = k6mod.collect([(0.0, dict(r, parts=3)), (0.1, t)])
+    assert st2["state"] == "ran" and joined == "hello\n[part 2 lost]\n"
 
 
 @need_clang

@@ -1,7 +1,9 @@
 /* km_host: the K6 module loader (k6_mod.c) on this machine, for tests/test_k6_mod.py.
    stdin: one whitened packet per line in hex; argv[1]: arena bytes (default 4096).
    stdout: "r=<result> have=<n>/<count> active=<0|1>" per packet, then "code_len=<n> serial=<n>"
-   and the arena's first 64 bytes in hex. Built with the test key 00 01 .. 0f.
+   and the arena's first 64 bytes in hex, then "reply=<0|1> tlm=<n> missing=<n>" and the
+   whitened status report (km_report_status, seq 7, call AG7EW, ret -3, ms 1234, stack_free 700)
+   and a text part ("hello\n", part 1 of 2, the same seq) in hex. Built with the test key 00 01 .. 0f.
    SPDX-License-Identifier: MIT */
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +25,13 @@ int main(int argc, char **argv) {
   }
   printf("code_len=%u serial=%u\n", st->code_len, (unsigned)st->serial);
   for (i = 0; i < 64; i++) printf("%02x", ((uint8_t *)arena)[i]);
+  printf("\n");
+  printf("reply=%u tlm=%u missing=%u\n", st->reply, st->tlm, st->missing);
+  km_report_status(p, 7, 2, st->active ? KM_ST_PARTWAY : KM_ST_RAN, "AG7EW", -3, 1234, 700);
+  for (i = 0; i < 64; i++) printf("%02x", p[i]);
+  printf("\n");
+  km_report_text(p, 7, 1, 2, "hello\n", 6);
+  for (i = 0; i < 64; i++) printf("%02x", p[i]);
   printf("\n");
   return 0;
 }
