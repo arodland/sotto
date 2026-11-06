@@ -81,6 +81,7 @@ On the machine that builds the K6 image and drives the IC-7100:
 python -m modem.k6 modkey ~/.config/sotto/k6-mod.key      # once
 K6_MOD_KEY_FILE=~/.config/sotto/k6-mod.key sh firmware/k6-aura/build.sh
 # flash out/aura-pager-lr.bin (sotto 1200) or out/aura-pager-only.bin, e.g. tools/k6_update.py
+# (out/aura-pager-cbi.bin once first, on a radio without the codebook in SPI flash)
 python -m modem.k6 mod hello.wav c/k6/mod/hello.c --key-file ~/.config/sotto/k6-mod.key \
     --phy F --payload XL
 # key the IC-7100 and play hello.wav as for any other packet WAV
