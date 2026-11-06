@@ -74,6 +74,7 @@ static int check(const uint8_t *a, unsigned have_bytes, unsigned dl) {
   if (serial <= K.serial) return KM_OLD;
   K.serial = serial;
   K.code_len = (uint16_t)code;
+  K.tlm = a[14] > KM_TLM_MAX ? KM_TLM_MAX : a[14];
   ready = 1;
   return KM_READY;
 }
@@ -84,7 +85,7 @@ int km_packet(const uint8_t *payload, int len, void *arena, unsigned arena_bytes
   unsigned dl = (unsigned)len - 6u, off, n, i, idx, cnt;
   if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return KM_NOT_MINE;
   w = sp_pn9();
-  if ((payload[0] ^ w[0]) != KM_MAGIC) return KM_NOT_MINE;
+  if ((payload[0] ^ w[0]) != KM_MAGIC && (payload[0] ^ w[0]) != KM_MAGIC_ARQ) return KM_NOT_MINE;
   for (i = 0; i < (unsigned)len; i++) d[i] = payload[i] ^ w[i];
   K.chunk = d[2];
   if (sp_crc16(d, len - 2) != ((unsigned)d[len - 2] << 8 | d[len - 1])) return K.last = KM_BAD_CRC;
@@ -96,12 +97,15 @@ int km_packet(const uint8_t *payload, int len, void *arena, unsigned arena_bytes
     sp_init(arena, 0);
     for (i = 0; i < sizeof seen; i++) seen[i] = 0;
     K.xfer = d[1], K.count = (uint8_t)cnt, K.have = 0, K.active = 1, ready = 0;
+    K.reply = 0, K.tlm = 0, K.missing = (uint8_t)cnt;
   }
+  if (d[0] == KM_MAGIC_ARQ) K.reply = 1;
   if (seen[idx >> 3] >> (idx & 7) & 1) return K.last = KM_DUP;
   seen[idx >> 3] |= (uint8_t)(1u << (idx & 7));
   n = arena_bytes - off < dl ? arena_bytes - off : dl;
   for (i = 0; i < n; i++) a[off + i] = d[4 + i];
-  if (++K.have < cnt) return K.last = KM_CHUNK;
+  K.missing = (uint8_t)(cnt - ++K.have);
+  if (K.have < cnt) return K.last = KM_CHUNK;
   K.active = 0;
   n = (cnt - 1u) * dl + n;      /* bytes of image held */
   return K.last = (int8_t)check(a, n, dl);
@@ -125,5 +129,42 @@ int km_run(void *arena, const k6_api_t *api) {
 }
 
 void km_reset(void) { K.active = 0, ready = 0; }
+
+static void report_seal(uint8_t *out, uint8_t kind, uint8_t seq, uint8_t part, uint8_t parts) {
+  const uint8_t *w = sp_pn9();
+  unsigned c, i;
+  out[0] = KM_MAGIC_REPORT, out[1] = kind, out[2] = seq, out[3] = part, out[4] = parts;
+  c = sp_crc16(out, 62);
+  out[62] = (uint8_t)(c >> 8), out[63] = (uint8_t)c;
+  for (i = 0; i < 64; i++) out[i] ^= w[i];
+}
+
+static void le32(uint8_t *p, uint32_t v) {
+  p[0] = (uint8_t)v, p[1] = (uint8_t)(v >> 8), p[2] = (uint8_t)(v >> 16), p[3] = (uint8_t)(v >> 24);
+}
+
+void km_report_status(uint8_t out[64], uint8_t seq, uint8_t parts, uint8_t state, const char *call,
+                      int32_t ret, uint32_t ms, uint16_t stack_free) {
+  unsigned i;
+  for (i = 0; i < 64; i++) out[i] = 0;
+  out[5] = K.xfer, out[6] = K.have, out[7] = K.count, out[8] = (uint8_t)K.last, out[9] = state;
+  le32(out + 10, state == KM_ST_PARTWAY ? 0 : K.serial);
+  if (state == KM_ST_PARTWAY)
+    for (i = 0; i < K.count; i++)
+      if (!(seen[i >> 3] >> (i & 7) & 1)) out[14 + (i >> 3)] |= (uint8_t)(1u << (i & 7));
+  for (i = 0; i < 6 && call[i]; i++) out[46 + i] = (uint8_t)call[i];
+  le32(out + 52, (uint32_t)ret);
+  le32(out + 56, ms);
+  out[60] = (uint8_t)stack_free, out[61] = (uint8_t)(stack_free >> 8);
+  report_seal(out, KM_REP_STATUS, seq, 0, parts);
+}
+
+void km_report_text(uint8_t out[64], uint8_t seq, uint8_t part, uint8_t parts, const char *text,
+                    unsigned n) {
+  unsigned i;
+  for (i = 0; i < 64; i++) out[i] = 0;
+  for (i = 0; i < n && i < KM_TLM_PART; i++) out[5 + i] = (uint8_t)text[i];
+  report_seal(out, KM_REP_TEXT, seq, part, parts);
+}
 
 const km_status_t *km_status(void) { return &K; }

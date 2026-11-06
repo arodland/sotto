@@ -5,6 +5,11 @@
 
      0xAB, transfer id, chunk number, chunk count, data (len - 6 bytes), CRC-16 (big-endian)
 
+   Magic 0xAE instead of 0xAB marks the same packet "reply wanted" (ARQ, images from 2026-11-06
+   on): the K6 then answers over the air, on 440.850 MHz only, with 0xAF report packets
+   (km_report_status / km_report_text below): which chunks are still missing, 2 s after the
+   sender's last packet, and once the module has run, its result and its say lines.
+
    and the chunks, in order, make the module image:
 
      0  'K' '6' 'M' 1      magic and ABI major 1
@@ -12,7 +17,9 @@
      6  entry              u16, byte offset of the entry function in the code (even)
      8  serial             u32, must be newer than the last module this boot accepted
      12 API level, flags   u8 (the k6_api_t level it needs, at most KM_LEVEL), u8 (flags: 0),
-                           then 2 reserved bytes
+                           u8 telemetry parts (0-12: with a reply-wanted upload, the K6 sends
+                           this many 0xAF text packets of the module's say lines after it runs),
+                           1 reserved byte
      16 code               position-independent Thumb (clang -fropi), no data or bss
      16 + code length      SipHash-2-4 tag (8 bytes, little-endian) of bytes 0 .. 15 + code length
                            under the 16-byte key the library was built with (KM_KEY)
@@ -33,10 +40,14 @@ extern "C" {
 #endif
 
 #define KM_MAGIC 0xAB
+#define KM_MAGIC_ARQ 0xAE           /* a module chunk, reply wanted */
+#define KM_MAGIC_REPORT 0xAF        /* the K6's answer (L, 64 bytes) */
+#define KM_TLM_MAX 12               /* telemetry parts at most */
+#define KM_TLM_PART 57              /* text bytes a part */
 #define KM_HDR 16
 #define KM_TAG 8
 #define KM_ABI 1
-#define KM_LEVEL 3
+#define KM_LEVEL 4
 
 typedef struct k6_api {
   uint16_t abi, level;              /* KM_ABI, KM_LEVEL */
@@ -70,7 +81,20 @@ typedef struct k6_api {
   void (*tx_off)(void);
   int (*tx_pa)(int on);                         /* PA on/off while keyed (CW keying, PLL locked);
                                                    -1 if not keyed */
+  /* level 4 (2026-11-06): a cheap key check and the radio's calibration record. key_poll drives
+     every keypad row at once and reads the four columns: about 5 us, against key_down's ~60 us
+     (Aura's six-row scan with a 5 us wait a row), so a streaming module can check it in its hot
+     loop. cal_read / cal_write: the calibration record in SPI flash (KM_CAL_ADDR, one 4 KB
+     sector of its own, after sotto's codebooks), up to KM_CAL_BYTES; its format is
+     c/k6/mod/k6_cal.h's. cal_write erases the sector and writes n bytes: once a module run,
+     never while keyed. A module that uses these declares K6_MODULE_LEVEL 4. */
+  int (*key_poll)(void);                        /* 1 while any key is held */
+  int (*cal_read)(void *buf, uint32_t n);       /* n (at most KM_CAL_BYTES), or -1 */
+  int (*cal_write)(const void *buf, uint32_t n);/* 0, or -1 (twice this run, keyed, n too big) */
 } k6_api_t;
+
+#define KM_CAL_ADDR 0x10F000u
+#define KM_CAL_BYTES 64u
 
 /* REG 0x67 bits 8:1 = RSSI in dB above -174 dBm (as Aura's get_rssi) */
 #define KM_RSSI_DBM(reg67) ((int)(((reg67) & 0x1FF) >> 1) - 174)
@@ -95,7 +119,25 @@ typedef struct {
   uint8_t chunk;                       /* the last chunk number seen */
   uint16_t code_len;                   /* from the header, once the module checks */
   uint32_t serial;                     /* of the last module accepted */
+  uint8_t reply;                       /* 1: this transfer's chunks came as 0xAE (reply wanted) */
+  uint8_t tlm;                         /* telemetry parts the module's header asks for */
+  uint8_t missing;                     /* chunks of this transfer not yet held */
+  uint8_t pad;
 } km_status_t;
+
+/* The K6's report packet (KM_MAGIC_REPORT), L: 64 bytes, whitened with PN9 like every packet,
+   CRC-16/CCITT-FALSE of bytes 0..61 in 62..63 (big-endian). De-whitened:
+     0 0xAF   1 kind (KM_REP_*)   2 report seq (counts every report this boot)
+     3 part   4 parts             (status = part 0; text parts 1..parts-1)
+   kind STATUS:
+     5 xfer  6 have  7 count  8 r (the last km_packet result, int8)  9 state (KM_ST_*)
+     10..13 serial (u32 LE, of the module once it checked)
+     14..45 missing chunks: bit i of byte i/8 set = chunk i not held (resend it)
+     46..51 the station's call, ASCII, NUL padded
+     52..55 the module's return value (int32 LE)  56..59 ms it ran  60..61 stack_free (u16 LE)
+   kind TEXT: 5..61 text (KM_TLM_PART bytes, NUL padded): the module's say lines, '\n' after each */
+enum { KM_REP_STATUS = 1, KM_REP_TEXT = 2 };
+enum { KM_ST_PARTWAY = 0, KM_ST_RAN = 1, KM_ST_REFUSED = 2 };
 
 /* payload: the packet as received (whitened), len 64 or 128. arena: the message store. */
 int km_packet(const uint8_t *payload, int len, void *arena, unsigned arena_bytes);
@@ -104,6 +146,12 @@ int km_packet(const uint8_t *payload, int len, void *arena, unsigned arena_bytes
 int km_run(void *arena, const k6_api_t *api);
 void km_reset(void);                  /* drop a transfer partway */
 const km_status_t *km_status(void);
+/* The report packets, whitened and ready for the chip's FIFO (64 bytes). status: from km_status
+   and the chunks held; call: up to 6 characters. text: n bytes of tlm at part (1..parts-1). */
+void km_report_status(uint8_t out[64], uint8_t seq, uint8_t parts, uint8_t state, const char *call,
+                      int32_t ret, uint32_t ms, uint16_t stack_free);
+void km_report_text(uint8_t out[64], uint8_t seq, uint8_t part, uint8_t parts, const char *text,
+                    unsigned n);
 /* SipHash-2-4 (Aumasson and Bernstein), for the tag and the tests */
 uint64_t km_siphash(const uint8_t key[16], const uint8_t *m, unsigned n);
 

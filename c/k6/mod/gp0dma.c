@@ -37,7 +37,9 @@
    (PB1 not an input), -5 (REG_33 refused), -6 (no carrier), -7 (TIM17 or DMA channel 1 in use),
    -8 (scratch under 516 bytes). The ring is 1 KB, or 512 bytes if scratch is short.
    SPDX-License-Identifier: MIT */
+#ifndef K6_MODULE_LEVEL
 #define K6_MODULE_LEVEL 2
+#endif
 #include "../k6_mod.h"
 
 #define GPIOB 0x48000400u
@@ -286,8 +288,12 @@ NOINLINE static uint32_t run(uint8_t *ring, uint32_t rsz, uint32_t L, int nb, bl
     /* scale from units of 1/93750 s to Hz: x BLK outputs / (cyc / 96 MHz) / 93750 */
     k = cyc >> 10;
     if (!k) k = 1;
-    out[b].ifm = s.ncr > 1 ? udiv(FS_Q8 << 7, udiv((s.tb1 - s.tb0) << 7, s.ncr - 1)) : 0;
-    out[b].ifm = udiv(out[b].ifm * BLK, k);
+    /* the IF rounded, with 8x the time resolution (cyc >> 10 alone, floored, read up to
+       1/1000 high: 17 Hz at BLK 940; ifcal needs it to a Hz) */
+    c = s.ncr > 1 ? udiv((s.tb1 - s.tb0) << 7, s.ncr - 1) : 0;
+    c = c ? udiv((FS_Q8 << 7) + (c >> 1), c) : 0;
+    i = (cyc >> 7) ? cyc >> 7 : 1;
+    out[b].ifm = udiv(c * BLK * 8 + (i >> 1), i);
     s.ref = (int)out[b].ifm;
     out[b].dev = s.nf ? udiv(((s.fmax - s.fmin) >> 1) * BLK, k) : 0;
     out[b].tone = udiv(s.flips * 46875u, k);  /* flips / 2 / (cyc / 96 MHz) */

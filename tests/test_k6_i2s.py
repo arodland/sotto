@@ -21,13 +21,13 @@ from modem import k6mod  # noqa: E402
 need_clang = pytest.mark.skipif(not (shutil.which("clang") and shutil.which("ld.lld")),
                                 reason="needs clang and ld.lld")
 NAMES = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down",
-         "scratch", "tx_on", "tx_off", "tx_pa"]
+         "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read", "cal_write"]
 REFUSED = (0x30, 0x33, 0x36, 0x37)
 PERIOD = 400            # samples between modelled DFS edges
 
 
 def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024,
-        mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=()):
+        mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
@@ -38,7 +38,9 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     for the level-3 transmitter: tx["on_ret"] is what tx_on returns (default 0), and every
     tx_on/tx_off/tx_pa call is logged to tx["log"] as (name, arg, us); tx_pa returns -1 from
     tx["dead_us"] on, and every fd_write to tx["w"] as (reg, value, us). rx_hz: what rx_hz says.
-    keys: (from_us, to_us) spans while key_down reads 1.
+    keys: (from_us, to_us) spans while key_down and key_poll read 1. cal: a dict for level 4's
+    calibration record: cal["flash"] (bytes, default 64 x 0xFF) is what cal_read reads, and each
+    cal_write lands there and in cal["writes"] (refused, -1, after the first or while keyed).
     Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
@@ -113,8 +115,22 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
             st["us"] += r0
         elif name == "rx_hz":
             ret = rx_hz
-        elif name == "key_down":
+        elif name in ("key_down", "key_poll"):
             ret = int(any(a <= st["us"] < b for a, b in keys))
+        elif name in ("cal_read", "cal_write"):
+            assert cal is not None, f"{name} called"
+            flash = cal.setdefault("flash", b"\xff" * 64)
+            if r1 > 64:
+                ret = -1
+            elif name == "cal_read":
+                uc.mem_write(r0, flash[:r1])
+                ret = r1
+            elif cal.get("writes") or (tx and tx.get("log") and tx["log"][-1][0] != "tx_off"):
+                ret = -1
+            else:
+                data = bytes(uc.mem_read(r0, r1))
+                cal["flash"] = data + flash[len(data):]
+                cal.setdefault("writes", []).append(data)
         elif name in ("tx_on", "tx_off", "tx_pa"):
             assert tx is not None, f"{name} called"
             tx.setdefault("log", []).append((name, r0, st["us"]))

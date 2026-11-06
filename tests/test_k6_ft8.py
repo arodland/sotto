@@ -63,6 +63,18 @@ def test_decodes_messages_in_order(tmp_path):
 
 
 @need_cc
+def test_wav_tool_lists_every_decode():
+    """sim/k6digi/ft8_wav: a message repeated in later slots is listed each time, in time order,
+    and two overlapping windows hearing one transmission list it once"""
+    texts = ["CQ AG7EW CN87", "CQ AG7EW CN87", "W1AW AG7EW RR73", "CQ AG7EW CN87"]
+    got = ft8_wav.decode_all(audio(texts, snr=-8), FS, lo=1300, hi=1800)
+    assert [t for _, _, _, t in got] == texts, got
+    for i, (dt, f0, snr, _) in enumerate(got):
+        assert abs(dt - (15 * i + 0.7)) < 0.1 and abs(f0 - 1512.0) <= 6.25, got[i]
+    assert ft8_wav.decode_audio(audio(texts[:2], snr=-8), FS, lo=1300, hi=1800).keys() == {texts[0]}
+
+
+@need_cc
 def test_noise_alone_decodes_nothing():
     rng = np.random.default_rng(7)
     x = rng.normal(0, 1, 60 * FS)

@@ -156,7 +156,8 @@ fi
 #                      out/sotto-vlr.bin to the SPI flash if it isn't there yet (once; serial
 #                      `K6 VLR r=2`, then r=1). Flash it once per radio, after aura-pager-cbi
 #   aura-pager-only-table, aura-pager-lr-table   the table in the MCU's flash, as before: no
-#                      SPI flash needed, about 1.5 KB and 0.6 KB free (TABLE=0 skips them)
+#                      SPI flash needed; lean (no module TX, ARQ reports or calibration
+#                      writes), with little flash to spare (TABLE=0 skips them)
 variant aura-pager-only "pager-only image (Aura drivers + VOICE MSG), v3.7, codebook in SPI flash" \
   --features pager-only
 if [ -n "$SOTTO_K6_LIB" ]; then LR=0; INSTALL=0; TABLE=0; VLR=0; fi
@@ -185,7 +186,9 @@ fi
 if [ "${TABLE:-1}" = 1 ]; then
   sh "$ROOT/tools/k6_build.sh"
   lib build
-  variant aura-pager-only-table "pager-only image, v3.7, codebook in MCU flash" --features pager-only
+  # lean too since the ARQ reports and API level 4 (2026-11-06): with the 30 KB table they
+  # didn't fit, and this fallback needs neither
+  variant aura-pager-only-table "pager-only image, v3.7, codebook in MCU flash" --features pager-only,lean
   if [ "${LR:-1}" = 1 ]; then
     K6_CODEC=1200 sh "$ROOT/tools/k6_build.sh"
     lib build-lr
@@ -196,7 +199,8 @@ fi
 [ -f "$OUT/sotto-cb.bin" ] && (cd "$OUT" && sha256sum sotto-cb.bin | tee sotto-cb.bin.sha256)
 [ -f "$OUT/sotto-vlr.bin" ] && (cd "$OUT" && sha256sum sotto-vlr.bin | tee sotto-vlr.bin.sha256)
 
-# The RAM modules' code (docs/k6-modules.md: hello; settle, cwprobe, cwlisten and i2sprobe, level 2 modules), built as
+# The RAM modules' code (docs/k6-modules.md: hello; settle, cwprobe, cwlisten and i2sprobe, level 2; cwkey and
+# ft8tx, level 3; ifcal, level 4), built as
 # modem/k6mod.py builds them, for `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...`
 # (`--api-level 2` for the level 2 ones) on a machine without clang. A module
 # that says #define K6_MODULE_OPT z gets -Oz instead of -Os. Linked at two addresses: the
@@ -204,7 +208,7 @@ fi
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -Werror -I$ROOT/c/k6"
 for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep afsweep gp0cap \
-         iflive iflive_ffsk xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx; do
+         iflive iflive_ffsk xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal; do
   opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
   clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do
