@@ -316,6 +316,29 @@ typedef struct {
   uint32_t rsz;  /* the ring: 1024 bytes, or 512 if scratch is short */
 } saved_t;
 
+static char *hex(char *p, uint32_t v, int digits) {
+  while (digits--) {
+    uint32_t d = (v >> (4 * digits)) & 15;
+    *p++ = (char)(d < 10 ? '0' + d : 'a' + d - 10);
+  }
+  return p;
+}
+
+/* the registers this module touches: RCC APB2ENR AHBENR, TIM17 CR1 DIER, DMA CCR1 CNDTR1
+   CPAR1 CMAR1 */
+NOINLINE static void regs(const k6_api_t *api) {
+  static const uint32_t at[8] = {RCC_APB2ENR, RCC_AHBENR, TIM17,     TIM17 + 0x0C,
+                                 DMA_CCR1,    DMA_CNDTR1, DMA_CPAR1, DMA_CMAR1};
+  char line[64], *p = line;
+  int i;
+  for (i = 0; i < 8; i++) {
+    *p++ = i ? ' ' : 'R';
+    *p = ' ', p += !i;
+    p = hex(p, rd(at[i]), i == 2 || i == 3 || i == 4 || i == 5 ? 4 : 8);
+  }
+  say0(api, line, p);
+}
+
 /* the upload's carrier gone, PB1 an input, TIM17 and channel 1 free, GP0 on code 13, clocks on */
 NOINLINE static int setup(const k6_api_t *api, saved_t *sv, uint8_t **ring) {
   uint32_t room, t0;
@@ -334,6 +357,7 @@ NOINLINE static int setup(const k6_api_t *api, saved_t *sv, uint8_t **ring) {
     api->say(TAG " PB1 is not an input: no writes");
     return -4;
   }
+  regs(api);
   sv->apb2 = rd(RCC_APB2ENR);
   sv->ahb = rd(RCC_AHBENR);
   if ((sv->apb2 & TIM17EN) || (rd(DMA_CCR1) & 1)) {
@@ -363,6 +387,7 @@ NOINLINE static void teardown(const k6_api_t *api, const saved_t *sv) {
   wr(RCC_AHBENR, sv->ahb);
   api->fd_write(SEL_REG, sv->r34);
   api->fd_write(0x33, sv->r33);
+  regs(api);
   api->say(TAG " done");
 }
 
@@ -409,14 +434,14 @@ int k6_main(const k6_api_t *api) {
   p = sdec(p, sv.floor);
   p = kv(p, " ring=", sv.rsz);
   say0(api, line, p);
-  n[0] = probe(ring, sv.rsz, 0xFFFF, 0, 0, 0, 0);
-  n[1] = probe(ring, sv.rsz, 0xFFFF, 0, 1u << 8, 0, 0);
-  n[2] = probe(ring, sv.rsz, 0xFFFF, 0, 1u << 8, 1, 0);
-  n[3] = probe(ring, sv.rsz, 0xFFFF, 0, 1u << 8, 1, 1);
-  n[4] = probe(ring, sv.rsz, 95, 0, 1u << 8, 1, 0);
-  n[5] = probe(ring, sv.rsz, 95, 48, 1u << 9, 1, 0);
   p = put(line, "p");
-  for (i = 0; i < 6; i++) p = kv(p, " ", n[i]);
+  for (i = 0; i < 6; i++) {
+    /* off, UDE, UDE counting, the same clearing SR, UDE at 1 MHz, CC1DE at 1 MHz */
+    static const uint8_t dier[6] = {0, 1, 1, 1, 1, 2}, cen[6] = {0, 0, 1, 1, 1, 1};
+    n[i] = probe(ring, sv.rsz, i < 4 ? 0xFFFF : 95, i == 5 ? 48 : 0, (uint32_t)dier[i] << 8,
+                 cen[i], i == 3);
+    p = kv(p, " ", n[i]);
+  }
   say0(api, line, p);
   ret = 0;
   for (pass = 0; pass < 2; pass++) {

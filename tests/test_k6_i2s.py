@@ -431,6 +431,9 @@ def test_dma_demodulates_on_the_mcu(tmp_path, spare, ring):
     regs = {**START, 0x67: lambda us: rssi_reg(-21 if us >= 3_000_000 else -103)}
     ret, said, regs, writes = run(regs, src=dma_build_small(tmp_path), spare=spare, mmio=mmio)
     assert ret == 3, said
+    rr = [ln for ln in said if ln.startswith("R ")]
+    assert rr == ["R 00000000 00000014 0000 0000 0000 0000 00000000 00000000"] * 2
+    said = [ln for ln in said if ln not in rr]
     assert said[0] == f"dma start floor=-103 ring={ring}"
     pr = said[1].split()
     assert pr[0] == "p" and len(pr) == 7 and pr[1] == pr[2] == "0" and int(pr[3]) > 0, said[1]
@@ -476,6 +479,7 @@ def test_sweep_follows_the_tone(tmp_path):
             0x67: lambda us: rssi_reg(-21 if us >= 3_000_000 else -103)}
     ret, said, regs, writes = run(regs, src=str(w), spare=1100, mmio=mmio)
     assert ret == 6, said
+    said = [ln for ln in said if not ln.startswith("R ")]
     assert said[0] == "sweep start floor=-103 blk=940" and said[1] == "sweep waiting for a carrier"
     bl = [dict(kv.split("=") for kv in ln.split()[2:]) for ln in said if ln.startswith("s ")]
     assert len(bl) == 6 and all(b["af"] == "35" and "lost" not in b for b in bl)
