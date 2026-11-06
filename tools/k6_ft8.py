@@ -194,6 +194,12 @@ def cmd_tone(a):
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     import k6_ifcap
     caps = k6_ifcap.parse(open(a.log, errors="replace").read().splitlines())
+    if a.each:
+        for c in caps:
+            if c["pass_"] in (1, 2) and len(c["x"]):
+                f, snr = tone_peak(c["x"], c["ks"] * 1000.0 / 64)
+                print("pass %d step %d cap %3d  r=%4d  %8.1f Hz  %4.0f dB" % (
+                    c["pass_"], c["gain"], c["k"], c["rssi"], f, snr))
     r = tone_fit(caps, a.hz)
     if "error" in r:
         sys.exit("%s (clear captures per pass: %s)" % (r["error"], r["per"]))
@@ -236,6 +242,7 @@ def main():
     p = sub.add_parser("tone")
     p.add_argument("log")
     p.add_argument("--hz", type=float, nargs=2, default=[1000.0, 2000.0])
+    p.add_argument("--each", action="store_true", help="every capture's peak, in order")
     p = sub.add_parser("tonewav")
     p.add_argument("out")
     p.add_argument("--hz", type=float, required=True)

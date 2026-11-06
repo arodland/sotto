@@ -241,6 +241,24 @@ tones with gp0cap.
 - **Next run:** ft8wf with a 30 s steady tone at 1,490 Hz first (`tools/k6_ft8.py track LOG`
   should show it holding one bin), then FT8 at `--f0 1468`.
 
+## Bench run 4 (2026-11-06): the first FT8 decode on the K6
+
+ft8wf (AFC off, then RXON; start line `afc=4692`) listened for 180 s with `lost=0` and
+`idle=39-40`. From its waterfall the PC decoded **`CQ AG7EW CN87`** at 1475 Hz, s=-23, from
+the third of four strong frames sent at `--f0 1468`. The other strong frames and the three
+weak ones (14 dB down) didn't decode.
+
+The steady 1,490 Hz tone before them didn't sit in bin 14 or 15. At its onset the strongest bin
+was the top edge (b31), then the bottom edge, then it held at bin 2 and then bin 1 (1,406-1,412
+Hz) for 27 s. The window's mean showed a comb of 4-bin period with its deepest null at bin 15.
+The same tone through the simulator, and through ft8wf on the calibrated emulator (a 1-bit
+stream of a 1,490 Hz USB tone), lands cleanly in bin 14, so the cause is on the radio. Two
+candidates: (a) with the AFC truly off, the K6's own offset puts the tone about 100 Hz above
+the window, where it aliases to the bottom edge (the AFC had hidden that offset in runs 1-3);
+(b) the AFC is still pulling. Run 5 settles it with `gp0cap_afc`, gp0cap built with
+`CAP_AFC_OFF` (the same AFC-off and RXON), recording the raw IF of a steady tone in each pass.
+`tools/k6_ft8.py tone LOG --each` prints every capture's peak, so a slide shows.
+
 ## Bench steps
 
 The run needs no keys on the K6 itself. It sends one module and plays FT8 from the IC-7100 in
