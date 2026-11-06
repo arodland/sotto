@@ -9,6 +9,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "c", "k6", "mod", "i2sprobe.c")
 CAP = os.path.join(ROOT, "c", "k6", "mod", "i2scap.c")
+TONE = os.path.join(ROOT, "c", "k6", "mod", "gp0tone.c")
 sys.path.insert(0, ROOT)
 from modem import k6mod  # noqa: E402
 
@@ -53,7 +54,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
             if regs.get(0x33, 0) & 0x0100:
                 st["pin"] = 1
             elif model:
-                st["pin"] = model(sel, st["reads"], regs)
+                st["pin"] = model(sel, st["reads"], regs, st["us"])
             elif sel == 15:
                 st["pin"] ^= 1
             elif sel == 13 and regs.get(i2s_en[0], 0) & i2s_en[1]:
@@ -82,6 +83,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
             assert r0 != 0x5F, "read the FSK FIFO"
             st["us"] += 20
             ret = regs.get(r0, 0)
+            ret = ret(st["us"]) if callable(ret) else ret
         elif name == "fd_write":
             st["writes"].append((r0, r1))
             if r0 == 0x33 and gp0_gate and not (regs.get(0x33, 0) ^ r1) & ~0x0101 & 0xFFFF:
@@ -167,7 +169,7 @@ def test_no_writes_unless_safe():
     assert " e=0 " in base and base.split(" n=")[1].split()[0] == base.split(" h=")[1].split()[0]
 
 
-def cap_model(sel, reads, regs):
+def cap_model(sel, reads, regs, us):
     """12: a clock, 3 samples a half period; 13: one high sample in 32 (a frame pulse); with
     REG_31 bit 0 a 64-sample frame; 14: 5 high, 7 low; 15: every sample; 9: every 20,000"""
     if sel == 12:
@@ -223,3 +225,37 @@ def test_cap_run_lengths():
 def test_cap_refused_on_old_image():
     ret, said, regs, writes = run(START, src=CAP, model=cap_model, spare=1424, gp0_gate=False)
     assert ret == -5 and "PR #68" in said[-1] and regs[0x33] == 0xd300
+
+
+def rssi_reg(dbm):
+    return (dbm + 174) << 1
+
+
+def tone_model(sel, reads, regs, us):
+    """a carrier from 3 s to 8 s: code 11 then toggles every 3650 reads (the sign of a tone);
+    off it, and code 9 always, every 40,000; code 13 is half ones"""
+    if sel == 11 and 3_000_000 <= us < 8_000_000:
+        return (reads // 3650) & 1
+    if sel in (9, 11):
+        return (reads // 40000) & 1
+    if sel == 13:
+        return reads & 1
+    return 0
+
+
+@need_clang
+def test_tone_follows_the_carrier():
+    regs = {**START, 0x67: lambda us: rssi_reg(-50 if 3_000_000 <= us < 8_000_000 else -105)}
+    ret, said, regs, writes = run(regs, src=TONE, model=tone_model, spare=2128)
+    assert said[0] == "tone start floor=-105 words=375"
+    assert "tone waiting for a carrier" in said
+    cyc = [ln for ln in said if ln.startswith("c ") and " 11 e=" in ln]
+    on = [ln for ln in cyc if "rssi=-50" in ln]
+    assert len(cyc) == ret and ret > 4 and len(on) == ret - 2, said
+    g = [ln for ln in said if ln.startswith("c 3 11 g")][0]
+    assert set(g.split()[4:]) == {"3650"}
+    dens = [ln for ln in said if ln.startswith("c 0 13 d")]
+    assert dens and set(" ".join(dens).replace("c 0 13 d", "").split()) == {"128"}
+    assert said[-1] == f"tone done cycles={ret}"
+    assert regs[0x33] == 0xd300 and regs[0x34] == 0
+    assert {r for r, _ in writes} <= {0x34, 0x33}
