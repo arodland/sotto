@@ -13,8 +13,11 @@
    Acquisition needs the sender's lead (tones 0 and M-1 in turn, about 1.5 s): ifrx sweeps its
    symbol clock through IFRX_HYP offsets, pc / IFRX_HYP apart, IFRX_HSYMS symbols each, scoring
    each by how well the lead's pattern fits (the expected tone's metric less the other's, for
-   the parity that makes it positive). The matched filter has side peaks a quarter symbol out,
-   so it takes a sweep whose best offset clears IFRX_ACQ_Q and agrees (to one step) with the
+   the parity that makes it positive). The fit is a plateau about a third of a symbol wide
+   (4FSK) whose late side the timing loop would hold, so the lead's timing is taken at the
+   plateau's leading edge (back from the best while the fit is over half of it). The matched
+   filter also has side peaks a quarter symbol out, so it takes a sweep whose best clears
+   IFRX_ACQ_Q and whose edge agrees (to one step) with the
    sweep before. For the next IFRX_LEAD_SYMS symbols it steers timing and AFC on the lead's
    known tones, faster at first, then on its own decisions. If its decisions miss the lead too
    often in any window of those, the acquisition was wrong: it sweeps again.
@@ -72,7 +75,7 @@ typedef struct {
   int32_t tot;              /* its lead fit so far */
   uint32_t norm;
   uint32_t bfit, bnorm;     /* this sweep's best so far: its fit, and the metrics' sum */
-  int32_t bh, bpar;         /* its offset and parity */
+  int32_t bh;               /* its offset */
   /* results */
   uint32_t slips;           /* symbols passed over after a skip */
   int32_t gap;              /* 1 if symbols were passed over since the caller cleared it */
@@ -83,6 +86,7 @@ typedef struct {
   int32_t lead_err;         /* decisions that missed the lead's symbol */
   int32_t acq_rej;          /* acquisitions the lead check threw out */
   uint32_t met[4];          /* each tone's metric (|corr|), valid when ifrx_push returns 1 */
+  int32_t fit[IFRX_HYP];    /* this sweep's lead fit at each offset, signed by parity */
   int16_t w[IFRX_TL + 2][2];
   int32_t A[IFRX_MAXS][4], A1[IFRX_MAXS][4]; /* each kept template's four sums; at half way */
   int8_t ring[IFRX_RING];

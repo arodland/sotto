@@ -174,36 +174,54 @@ IFRX_NOINLINE static void advance(ifrx_t *s, int32_t adv) {
 
 /* the acquisition's sweep, one symbol: the lead's fit for this offset. At the end of an
    offset's IFRX_HSYMS symbols the clock moves on a step; at the end of a sweep, on to the first
-   offset a symbol later, or (it found the lead) to the best. Only ever forward: a move back
+   offset a symbol later, or (it found the lead) to the lead's timing. Only ever forward: a move back
    would leave the receiver a burst of samples to work through at once, longer than the DMA's
    ring lasts on the K6. Returns the move, Q16 counts. */
+#if IFRX_TL * 2 != IFRX_HYP * 3
+#error sweep() takes its step as 1.5 samples
+#endif
 IFRX_NOINLINE static int32_t sweep(ifrx_t *s) {
-  int32_t m0 = (int32_t)(s->met[0] >> 5), m1 = (int32_t)(s->met[IFRX_MM(s) - 1] >> 5), step;
+  int32_t m0 = (int32_t)(s->met[0] >> 5), m1 = (int32_t)(s->met[IFRX_MM(s) - 1] >> 5), step, h, par;
   uint32_t j;
   s->tot += (s->q & 1) ? m1 - m0 : m0 - m1;
   s->norm += (uint32_t)(m0 + m1);
   if (++s->hk < IFRX_HSYMS) return 0;
-  j = (uint32_t)iabs(s->tot); /* the best by its fit, not its share: a side peak's is high */
-  if (!s->h || j > s->bfit) s->bfit = j, s->bnorm = s->norm, s->bh = s->h, s->bpar = s->tot < 0;
+  s->fit[s->h] = s->tot;
+  j = (uint32_t)iabs(s->tot);
+  if (j > s->bfit) s->bfit = j, s->bnorm = s->norm, s->bh = s->h;
   s->tot = 0, s->norm = 0, s->hk = 0;
-  step = (int32_t)ifrx_udiv(s->pc_q16, IFRX_HYP);
+  step = (int32_t)(s->step_q16 * 3) >> 1; /* pc / IFRX_HYP */
   if (++s->h < IFRX_HYP) return step;
   s->h = 0;
   s->acq_tries++;
   s->acq_q = (int32_t)ifrx_udiv(s->bfit << 8, s->bnorm | 1);
+  /* the fit against the offset is a plateau a third of a symbol wide (4FSK), and noise picks
+     its best anywhere on it; the lead's timing is at its leading edge, and its late side is a
+     side peak the timing loop holds. So back from the best while the fit keeps its sign and half
+     its size (a step back past the first offset is the last a symbol earlier: the other sign).
+     Over 8 runs each at -300 .. 300 Hz and two C/N0s, 4FSK missed 2 of 80 on the best, 0 so;
+     a step later than the edge, 10 */
+  par = s->fit[s->bh] < 0;
+  for (h = s->bh;;) { /* ends by a lap: there the fit is the best's, less */
+    int32_t v = s->fit[h ? h - 1 : IFRX_HYP - 1];
+    if (((par ^ !h) ? -v : v) * 2 <= (int32_t)s->bfit) break;
+    if (!h) h = IFRX_HYP, par ^= 1;
+    h--;
+  }
+  s->bfit = 0;
 #ifdef IFRX_TRACE
-  IFRX_TRACE(s, s->bh);
+  IFRX_TRACE(s, h);
 #endif
-  j = (uint32_t)iabs(s->bh - s->prev);
-  if (s->acq_q >= IFRX_ACQ_Q && (j <= 1 || j == IFRX_HYP - 1)) {
+  j = (uint32_t)iabs(h - s->prev);
+  s->prev = s->acq_q >= IFRX_ACQ_Q ? h : -9;
+  if (s->prev >= 0 && (j <= 1 || j == IFRX_HYP - 1)) {
     s->state = IFRX_LEAD;
-    s->acq_off = s->bh;
-    s->parity = s->bpar ^ 1; /* a symbol on from where it was measured */
+    s->acq_off = h;
+    s->parity = par ^ 1; /* a symbol on from where it was measured */
     s->nsym = 0;
     s->lead_err = s->win_err = s->win_n = 0;
-    return (s->bh + 1) * step;
+    return (h + 1) * step;
   }
-  s->prev = s->acq_q >= IFRX_ACQ_Q ? s->bh : -9;
   return step;
 }
 
@@ -299,7 +317,7 @@ IFRX_NOINLINE static void finish(ifrx_t *s) {
          (the first window strictly: a false start on a bare carrier misses half its symbols) */
       if (s->win_err > (s->nsym <= IFRX_WIN ? IFRX_WIN_BAD : IFRX_WIN / 2)) {
         s->state = IFRX_ACQ;
-        s->h = s->hk = s->tot = 0, s->norm = 0, s->prev = -9;
+        s->prev = -9; /* (the sweep's sums are clear: it cleared them when it took the lead) */
         s->acq_rej++;
       }
       s->win_err = s->win_n = 0;

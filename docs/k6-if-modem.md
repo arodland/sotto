@@ -171,14 +171,19 @@ integers (no division in the per-count path, no statics, so it builds into a mod
   Before lock, a frequency-locked loop on the mean turn between samples. FM of zero-mean audio
   keeps the IF's mean frequency on the carrier, but the tones bias the filtered estimate by
   about -100 Hz on the model. So the loop only runs until a sweep has seen the lead.
-- **Acquisition.** The lead (tones 0 and M-1 in turn) has side peaks a quarter symbol out
-  (4FSK: 94% of the main peak). The symbol clock sweeps 12 offsets, 32 symbols each, scoring
-  the lead's fit. It takes the best offset when its fit clears 48/256 and agrees, to one step,
-  with the sweep before. A bare carrier scores up to 36, random FFSK data now and then more,
-  and the threshold was 20 until the model showed a carrier-then-lead start locking on a side
-  peak. The clock only moves forward: the old wrap, back 11 steps, left the receiver about 300
-  us of samples to catch up at once, longer than the DMA ring lasts. That only showed in the
-  emulated module.
+- **Acquisition.** The symbol clock sweeps 12 offsets, 32 symbols each, scoring the lead's
+  fit (tones 0 and M-1 in turn). For 4FSK the fit against the offset is a plateau about a
+  third of a symbol wide, and noise puts its best anywhere on it. Its late side is a side
+  peak the timing loop holds: locked there, the emulated module ran 0.26 symbol late at 8% BER
+  for the whole step. So the receiver walks back from the best while the fit keeps its sign
+  and half its size, and takes the plateau's leading edge. On live streams with the measured
+  rate one off, taking the best went wrong on 4 to 6 of 18. Taking the edge went wrong on none
+  of 54. It takes a sweep when its best clears 48/256
+  and its edge agrees, to one step, with the sweep before. A bare carrier scores up to 36,
+  random FFSK data now and then more. The threshold was 20 until the model showed a
+  carrier-then-lead start locking on a side peak. The clock only moves forward: the old wrap,
+  back 11 steps, left the receiver about 300 us of samples to catch up at once, longer than
+  the DMA ring lasts. That only showed in the emulated module.
 - **Lead check.** 256 symbols steered on the known lead (AFC gain x4). More than 8 misses in
   the first 32, or 16 in any later 32, means a false start: it sweeps again.
 
@@ -193,13 +198,13 @@ On the model, 1% BER (C/N0 dB-Hz, 0.6 s of bare carrier, then a 1.5 s lead, then
 At 44 dB-Hz and 164 Hz off, 2 of the 4 4FSK runs went wrong: one never locked, and one ran at
 16% BER.
 
-Lock over 16 runs each at -300, -164, 0, 164 and 300 Hz: FFSK missed 1 (at +300), 4FSK 2 (at
-+300). Without the frequency-locked loop, 4FSK missed 23 of 80, and the -300 Hz runs all
+Lock over 16 runs each at -300, -164, 0, 164 and 300 Hz: FFSK missed 1 (at +300), 4FSK none
+(2, at +300, taking the sweep's best; 10 a step past the edge). Without the frequency-locked loop, 4FSK missed 23 of 80, and the -300 Hz runs all
 failed. `tests/test_k6_ifrx.py` checks BER, no lock on a bare carrier, and lost counts passed
 over without losing the clock.
 
-**`iflive`** (`c/k6/mod/iflive.c` for 4FSK, `iflive_ffsk.c` for FFSK; API level 2, 4000 and
-3852 B of the 4072 the store holds) runs the receiver live. It waits for the carrier, times
+**`iflive`** (`c/k6/mod/iflive.c` for 4FSK, `iflive_ffsk.c` for FFSK; API level 2, 4072 and
+3928 B of the 4072 the store holds) runs the receiver live. It waits for the carrier, times
 the DMA (4096 counts on TIM17), then decodes NG = 10 steps of 6 s. Each step is a gain step
 as in `gp0cap`, and each starts the receiver over on a fresh lead. So between steps it can
 print its line (about 5 ms) and set the gain without keeping the count index across the
@@ -213,7 +218,7 @@ Fitting it into 4 KB (from 7.6 KB) took these changes:
 - the conjugate templates;
 - the 4-bit templates;
 - one line per step, and no pause bookkeeping;
-- the sweep's best kept on the fly;
+- the sweep's best kept on the fly, and its step taken from the sample step (no division);
 - a quarter-wave sine table;
 - `-fomit-frame-pointer` for every module (96 B here).
 
