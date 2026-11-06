@@ -2,7 +2,8 @@
    the PLL stays locked (module API level 3, tx_on / tx_pa / tx_off).
 
    Jeff asked for it on 2026-11-06 ("can you do it once from the HT?"). It keys up only when
-   the pager listens on CW_HZ (440.850 MHz, the bench frequency), sends CW_TEXT ("AG7EW") at
+   the pager listens on CW_HZ (440.850 MHz, the bench frequency) and the channel has been clear
+   for CW_CLEAR_MS (the upload's sender has unkeyed), sends CW_TEXT ("AG7EW") at
    CW_WPM, and keys down. The core's own guards stay in force: the pager's frequency only, the
    TX band lock, low power, at most 20 s, key-down when the module returns.
 
@@ -16,7 +17,7 @@
      -1  the image has no level-3 transmitter      -2  not on CW_HZ
      -3  tx_on refused                             -4  a key was pressed (keyed down at once)
      -5  tx_pa failed partway (the core keyed down: time up)
-     -6  a character with no Morse code in CW_TEXT
+     -6  a character with no Morse code in CW_TEXT   -7  the channel stayed busy (CW_WAIT_MS)
 
    Build: python -m modem.k6 mod out.wav c/k6/mod/cwkey.c --api-level 3 --key-file KEY
    SPDX-License-Identifier: MIT */
@@ -34,6 +35,15 @@
 #endif
 #ifndef CW_LEAD_MS
 #define CW_LEAD_MS 300       /* key-up with the PA off before the first element: PLL settles */
+#endif
+#ifndef CW_CLEAR_DBM
+#define CW_CLEAR_DBM -90     /* the channel counts as clear below this (the upload's sender gone) */
+#endif
+#ifndef CW_CLEAR_MS
+#define CW_CLEAR_MS 1000     /* ... for this long, before it keys up */
+#endif
+#ifndef CW_WAIT_MS
+#define CW_WAIT_MS 30000     /* give up (-7) if the channel isn't clear by then */
 #endif
 #define UNIT_US (1200000u / CW_WPM)
 
@@ -95,6 +105,17 @@ int k6_main(const k6_api_t *api) {
   *p = 0;
   api->say(line);
   if (api->rx_hz() != CW_HZ) return -2;
+  /* the module runs as its last chunk lands, while the sender may still be keyed (its own CW
+     ID follows the upload): wait for the channel to stay clear */
+  {
+    uint32_t clear = api->ms();
+    while (api->ms() - clear < CW_CLEAR_MS) {
+      if (KM_RSSI_DBM(api->fd_read(0x67)) >= CW_CLEAR_DBM) clear = api->ms();
+      if (api->ms() > CW_WAIT_MS) return -7;
+      if (api->key_down()) return -4;
+      api->delay_us(10000);
+    }
+  }
   /* the core's limit: the lead-in, the text and a second's margin */
   if (api->tx_on(CW_LEAD_MS + (uint32_t)need * (UNIT_US / 1000u) + 1000u) != 0) return -3;
   t0 = api->ms();
