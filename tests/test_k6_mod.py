@@ -218,7 +218,8 @@ def test_settle_declares_level_2():
 
 
 @need_clang
-def test_settle_measures_a_modelled_receiver():
+@pytest.mark.parametrize("sender_tail_us", [0, 3_000_000])
+def test_settle_measures_a_modelled_receiver(sender_tail_us):
     """The module, run straight from RAM, against a receiver model: a carrier on F that comes
     on 2 s in; after a tune RSSI reads the noise floor until the model's settle time (700 us
     wide, 1500 us narrow) and the true level after; going off F it drops to the floor in
@@ -232,7 +233,9 @@ def test_settle_measures_a_modelled_receiver():
     st = {"us": 0, "f": F, "wide": 1, "t_tune": 0, "said": [], "tunes": 0, "writes": 0}
 
     def level():
-        on = st["us"] >= 2_000_000
+        if st["us"] < sender_tail_us:
+            return -21                               # the sender's module carrier, still up
+        on = st["us"] >= sender_tail_us + 2_000_000
         since = st["us"] - st["t_tune"]
         if st["f"] == F and on:
             return SIG if since >= SETTLE_US[st["wide"]] else NOISE
@@ -293,6 +296,8 @@ def test_settle_measures_a_modelled_receiver():
             assert lines[f"settle {case} {w}"] == f"settle {case} {w} ref {SIG} dBm {SETTLE_US[c]} us"
         assert lines[f"settle off {w}"] == f"settle off {w} ref {NOISE} dBm 400 us"
     assert ret == 1500                               # the worst on-case: narrow
+    if sender_tail_us:
+        assert said.pop(0) == "settle: waiting for the sender's carrier to drop"
     assert said[0] == f"settle: waiting for a carrier on 440.850 MHz, now {NOISE} dBm"
     assert any(ln.startswith("curve 10k W 0:-118 100:-118") for ln in said)
     assert all(len(ln) <= 60 for ln in said)
