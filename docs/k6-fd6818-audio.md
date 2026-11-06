@@ -11,6 +11,12 @@ Some caveats about register numbers:
   work use BK4819 addresses). Below 0x80 the guide mostly agrees with that map (REG_0B, REG_5F,
   REG_64, REG_65 and REG_67 all behaved as the guide says), but not everywhere: the guide calls
   REG_24 reserved, while on the radio it is the DTMF/SelCall set-up.
+- Known mappings from Aura's working driver: the guide's REG_03H (block enables) is REG_30
+  here, REG_25H (GPIO output enable and value) is REG_33, REG_28H (PA) is REG_36, REG_94H (tone
+  detector) is REG_24, and REG_87H (AF level) is REG_6F. Known clashes: REG_26, which the guide
+  calls the GPIO3..0 output select, gets Aura's 0x13A0 distortion setting here; REG_75, the
+  guide's MCBSP set-up, is an RX audio filter coefficient here. So the I2S registers below are
+  probably at other addresses on this chip (the I2S probe thread is testing which).
 - Guide registers above 0x7F (REG_87H, REG_94H, REG_9AH, ...) are reached on the 3-wire bus
   by writing REG_7F = 1 (page 1) and then the low 7 bits. Our code reaches the same functions
   at other page 0 addresses (the tone detector at REG_24, the level at REG_6F).
