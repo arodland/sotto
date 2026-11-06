@@ -173,29 +173,33 @@ def cmd_sweep(args):
             rows.append({k: int(v) for k, v in (kv.split("=") for kv in m.group(2).split())})
     if not rows:
         sys.exit("no sweep lines in the log")
-    quiet = [r["rms"] for r in rows if r["tone"] == 0 or r["rms"] < 400]
-    noise = float(np.median(quiet)) if quiet else 0.0
-    # steps: runs of blocks whose tone is within 8% of one SWEEP_HZ value; a new pass when the
-    # tone falls back to the low end
-    steps, cur, pas, last = {}, None, 0, 0
+    # the floor: the rms of a bare carrier (the quietest fifth of the blocks)
+    noise = float(np.percentile([r["rms"] for r in rows], 20))
+    # steps: blocks whose tone is within 8% (or 25 Hz) of one SWEEP_HZ value and whose rms is
+    # over the floor; a new pass after 8 or more quiet blocks (the gap between passes)
+    steps, cur, pas, quiet, started = {}, None, 0, 0, False
     for r in rows:
-        f = min(SWEEP_HZ, key=lambda h: abs(h - r["tone"]))
-        off = abs(f - r["tone"]) > max(0.08 * f, 25)
-        if r["tone"] == 0 or off or r["rms"] < 2 * max(noise, 50):
+        if r["rms"] < 1.3 * noise:
+            quiet += 1
             cur = None
             continue
-        if f < last and SWEEP_HZ.index(f) < SWEEP_HZ.index(last) - 3:
+        if quiet >= 8 and started:
             pas += 1
-        last = f
+        quiet = 0
+        f = min(SWEEP_HZ, key=lambda h: abs(h - r["tone"]))
+        if abs(f - r["tone"]) > max(0.08 * f, 25):
+            cur = None
+            continue
+        started = True
         if cur != (pas, f):
             cur = (pas, f)
             steps.setdefault(cur, [])
-            skip = 3                            # REG_6F moves every ~120 ms
+            skip = 2                            # the step's edge; REG_6F moves every ~120 ms
         if skip:
             skip -= 1
             continue
         steps[cur].append(r)
-    print(f"{len(rows)} blocks, noise {noise:.0f} Hz rms (quiet blocks)")
+    print(f"{len(rows)} blocks, floor {noise:.0f} Hz rms (a bare carrier)")
     for p in sorted({p for p, _ in steps}):
         ref = steps.get((p, 1000)) or steps.get((p, min(SWEEP_HZ, key=lambda h: abs(h - 1000))))
         def stats(b):

@@ -203,9 +203,10 @@ what would settle it.
      is a 1-bit sigma-delta stream of the receive low IF (about 17 kHz on a carrier, moving
      with the deviation), readable on PB1. Run 5 (`gp0fm`) settled the next question: 28 ms of
      IF decimated on the MCU demodulated on the host to a clean 1000.9 Hz tone at +-4.3 kHz
-     deviation, about 25 dB SINAD. Still open: demodulating on the MCU itself, and whether
-     sampling can leave the CPU free for longer runs (a timer-driven DMA read of GPIOB IDR, if
-     the KD32F328 has one; a lower sample rate per output byte).
+     deviation, about 25 dB SINAD. PR #69 then did it on the MCU: DMA channel 1 reads GPIOB IDR
+     flat out (about 5.5 MS/s; TIM17 can't pace it), and `gp0dma` demodulated a 1 kHz tone on
+     the K6 for 3 s continuously (996-1006 Hz, ±4.1 kHz, nothing lost, 27% of the CPU). Open:
+     a software modem on that path, and whether the always-on DMA hurts the pager's own work.
 2. **The tone detector as a slow MFSK receiver.**
    - From: the CW ID thread (on air it follows a keyed tone to about 10 ms and says which of
      16 tones it is).
