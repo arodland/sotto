@@ -25,7 +25,7 @@ Treat any guide address that hasn't been tried on the radio as a hypothesis.
   speech to send sotto.
 - **Received audio: maybe.** The guide describes an MCBSP/I2S port whose data can be the
   FM-demodulated audio (or IQ), routed to the chip's GPIO pins. On the K6 one of those pins
-  (GP0) is wired to an MCU input (PB0). That could give received audio samples with no
+  (GP0) is wired to an MCU input (PB1). That could give received audio samples with no
   hardware change. It's untested.
 
 ## What the MCU can read (FD6818 guide)
@@ -110,24 +110,25 @@ The K6 schematic (BF_K6_Plus_Open_V1.1, `ht-survey/uv-k6-rf-chip-audio.png` and
 
 | Pin | Goes to |
 | --- | --- |
-| GP0 | R175 (100 ohm), net CTCSS, MCU pin 19 (PB0) |
+| GP0 | R175 (100 ohm), net CTCSS, MCU pin 19 (PB1; pin 18 is PB0, keypad row L0) |
 | GP2 | U3T_EN |
 | GP3 | V3T_EN |
 | GP5 | R_LED |
 | GP4, GP6 | lines off the crop (band or PA switching) |
 | GP1, GP7 | not connected |
 
-The guide's default for REG_26H is 0x0005, so out of reset GP0 carries the CTCSS/DCS code for
-the MCU to decode in software, which is what the net name says. PB0 is the only FD6818 GPIO
-that reaches the MCU.
+The guide's default for REG_26H is 0x0005, so on a 0x6818 GP0 would carry the CTCSS/DCS code
+for the MCU to decode in software, which is what the net name says. On Jeff's radio GP0's
+output is off (REG_33 = 0xd300, see the probe below). PB1 is the only FD6818 GPIO that reaches
+the MCU. (An earlier version of this page said PB0: wrong, PB0 is pin 18.)
 
 So received audio could, in principle, reach the MCU like this:
 
 1. The I2S port in master mode, data = FM demodulated.
-2. DOUT on GP0, read on PB0.
+2. DOUT on GP0, read on PB1.
 
 There is only one wire, though. The MCU would get the data line without the frame or bit
-clock, and would have to recover the timing itself: sample PB0 several times faster than the
+clock, and would have to recover the timing itself: sample PB1 several times faster than the
 bit clock (an 8 kHz, 32-bit frame is 256 kbit/s), find the frames, and track the drift between
 the radio's 26 MHz and the MCU's 16 MHz crystals.
 
@@ -150,8 +151,34 @@ plenty if a register held samples, but none does.
 
 - The BK4819 map may use REG_04, REG_26, REG_75 and REG_76 for other things.
 - A level 2 module could read their reset values, enable the port, put DFS (13) on GP0, and
-  count PB0 edges by reading the MCU's GPIO input register directly. About 8,000 per second
+  count PB1 edges by reading the MCU's GPIO input register directly. About 8,000 per second
   would mean the port is real.
-- API level 2's fd_write refuses only 0x30, 0x33, 0x36 and 0x37, so these writes are allowed.
-- The firmware re-arms its set-up when the module returns, but REG_26 should be put back to
-  0x0005 explicitly.
+- GP0's output has to be switched on first, which is a REG_33 write; level 2 refused REG_33
+  until the image change below.
+
+## The I2S probe (`c/k6/mod/i2sprobe.c`)
+
+The module reads PB1 straight from the MCU's GPIOB input register (0x48000410; it writes no MCU
+register) in a tight loop, about 6.3 million samples a second, and counts edges in 100 ms
+windows. It dumps registers 0x00-0x7F (not 0x5F, whose read pops the FSK FIFO), then:
+
+1. Switches GP0's output on (REG_33 bit 8 clear).
+2. Tries all 16 values of REG_34[3:0]. On the 0x4819 the guide's GPIO block seems to sit
+   0x0E higher (guide 25H = 0x33, 28H = 0x36, as Aura uses them), so guide 26H, the GPIO3..0
+   output select, would be 0x34. Guide code 15 (XTAL/2, 13 MHz) would flood PB1 with edges.
+3. With GP0 on DFS, DCLK and DOUT (13, 14, 12), tries no enable, REG_31 bit 0 and REG_04
+   bit 0 as mcbsp_en, printing the first 32 edge gaps of each window (the raw capture).
+
+It puts every register back and refuses to write unless PB1 is an input.
+
+**Run 1, 2026-11-06 06:02 UTC (image 6473ca7):** ret -5, nothing written. REG_33 = 0xd300:
+enable-bar set for GP0, GP1, GP4, GP6 and GP7, clear for GP2, GP3 (band) and GP5 (LED), which is
+Aura's own set-up. With GP0 not driving, PB1's pull-up (PUPDR 01 on the radio) read high in all
+630,784 samples. Other readings: REG_34 = REG_35 = 0x0000; REG_26 = 0x13a0 (Aura's value, so it
+is not the GPIO select here, as it would break band switching); REG_75 = 0xd42d and REG_76 =
+0xf50b, not the guide's 0x0FB4/0xE307 (on the BK4819 map 0x75 is an RX audio filter), so the
+guide's I2S set-up isn't at those addresses; REG_31 = REG_04 = 0x0000.
+
+**Image change (PR from this thread):** a module may change REG_33 bits 8 and 0 (GP0's enable
+and value) and nothing else in it; the firmware puts REG_33 back when the module returns.
+GP0 only reaches PB1, an MCU input.

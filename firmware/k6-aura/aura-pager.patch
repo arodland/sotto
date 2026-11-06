@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..e36117a
+index 0000000..1af095d
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2937 @@
+@@ -0,0 +1,2951 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -423,8 +423,14 @@ index 0000000..e36117a
 +    ModCtx { app: core::ptr::null_mut(), syst: core::ptr::null_mut(), rx_hz: 0, t_last: 0, ticks: 0, scratch: 0 };
 +
 +/// The registers a module may not write: the chip's TX/RX state, its GPIO lines, the PA and
-+/// the power switches. Receive only; `tune` is the way to move.
++/// the power switches. Receive only; `tune` is the way to move. One exception in REG_33 (GPIO
++/// output enable-bar [15:8], value [7:0]): GP0's two bits, 8 and 0, may change. GP0 is the
++/// line to the MCU's PB1 (net CTCSS, an input), so the I2S probe can drive it; every other
++/// bit (GP2/GP3 band switching, GP5 the TX LED) must be written as it reads. REG_33 is put
++/// back as it was when the module returns.
 +const MOD_NO_WRITE: [u8; 4] = [0x30, 0x33, 0x36, 0x37];
++const MOD_GPIO: u8 = 0x33;
++const MOD_GP0_BITS: u16 = 0x0101;
 +
 +/// The app and SysTick while a module runs (km_run is called with both borrowed, and nothing
 +/// else touches them until it returns).
@@ -439,10 +445,15 @@ index 0000000..e36117a
 +}
 +
 +unsafe extern "C" fn mod_fd_write(reg: u8, value: u16) -> i32 {
-+    if MOD_NO_WRITE.contains(&reg) {
++    let (app, syst) = unsafe { mod_ctx() };
++    if reg == MOD_GPIO {
++        let now = app.radio.fd6818.reg_read(syst, reg);
++        if (now ^ value) & !MOD_GP0_BITS != 0 {
++            return -1;
++        }
++    } else if MOD_NO_WRITE.contains(&reg) {
 +        return -1;
 +    }
-+    let (app, syst) = unsafe { mod_ctx() };
 +    app.radio.fd6818.reg_write(syst, reg, value);
 +    0
 +}
@@ -2220,6 +2231,7 @@ index 0000000..e36117a
 +            room,
 +            addr_of_mut!(STORE) as usize + STORE_BYTES - scratch
 +        ));
++        let gpio = app.radio.fd6818.reg_read(syst, MOD_GPIO);
 +        let t0 = uptime::now();
 +        unsafe {
 +            *addr_of_mut!(MOD_CTX) = ModCtx {
@@ -2236,7 +2248,9 @@ index 0000000..e36117a
 +        unsafe { (*addr_of_mut!(MOD_CTX)).app = core::ptr::null_mut() };
 +        // free_ram: the stack never reached since VOICE MSG was entered (painted then)
 +        report_line(format_args!("K6 MOD ret={} ({:#x}) in {} ms stack_free={} B", ret, ret, ms, free_ram()));
-+        // a level 2 module may have moved the radio: back to the pager's frequency and set-up
++        // a level 2 module may have moved the radio: back to the pager's frequency and set-up,
++        // and GP0 as it was
++        app.radio.fd6818.reg_write(syst, MOD_GPIO, gpio);
 +        app.sync_watching_to_master(syst);
 +        arm(app, syst);
 +    }

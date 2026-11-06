@@ -2,7 +2,8 @@
    reach the MCU? (docs/k6-fd6818-audio.md)
 
    The only FD6818 GPIO wired to the MCU is GP0: R175 (100 ohm), net CTCSS, MCU pin 19, which is
-   PB1 (pin 18 is PB0, keypad row L0; Aura never touches PB1, so it is an input as at reset).
+   PB1 (pin 18 is PB0, keypad row L0). Aura leaves PB1 an input; on the radio it has its
+   pull-up on (PUPDR 01), so it reads high while GP0 doesn't drive it.
    This module reads PB1 straight from the MCU's GPIOB input register (0x48000410, read only:
    it writes no MCU register) and counts its edges in 100 ms windows while it changes what GP0
    outputs:
@@ -23,15 +24,22 @@
         the pin are tried. A frame clock near 8 kHz is about 1,600 edges per window.
 
    Every write is to a register API level 2 allows (0x34, 0x31, 0x04), only the bits named,
-   and each is put back before the next step and at the end. It writes nothing unless PB1 is
-   an input and GP0's output is enabled (REG_33 bit 8 clear: Aura enables only GP2, GP3, GP5,
-   but the chip's reset value may enable all). No TX: level 2 can't.
+   and each is put back before the next step and at the end. GP0's output is off on Aura
+   (REG_33 = 0xd300 on the radio: only GP2, GP3 and GP5 enabled), so the module also clears
+   REG_33 bit 8, GP0's enable-bar. Level 2 refuses REG_33, except in images from 2026-11-06
+   06:30 UTC on, which let a module change bits 8 and 0 (GP0's) and nothing else there, and
+   put REG_33 back when the module returns. It writes nothing unless PB1 is an input.
+   No TX: level 2 can't.
+
+   On air 2026-11-06 06:02 UTC (image 6473ca7): REG_33 d300, REG_34/35 0000, REG_75 d42d,
+   REG_76 f50b (not the guide's 0x0FB4/0xE307: the guide's I2S set-up isn't there on this
+   chip), REG_31 and REG_04 0000; PB1 high in every sample; ret -5 (the old gate).
 
    Lines (K6 MOD say ...), per window: e edges, n samples of PB1, h samples high, t the
    window in 100 us ticks (n/t = samples per tick; edges per second = e * 10000 / t), then
    "d" lines with the first gaps between edges, in samples (the raw capture).
    Returns the most edges seen in a DFS window, or -2 (a key), -3 (old image), -4 (PB1 not an
-   input), -5 (GP0 output disabled).
+   input), -5 (GP0's output is off and this image won't let a module turn it on).
    Build: python -m modem.k6 mod i2s.wav c/k6/mod/i2sprobe.c --key-file KEY --phy F --payload XL
    SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 2
@@ -210,10 +218,16 @@ int k6_main(const k6_api_t *api) {
     api->say("i2s PB1 is not an input: no writes");
     return -4;
   }
-  if (r33 & 0x0100) {
+  if ((r33 & 0x0100) && api->fd_write(0x33, (uint16_t)(r33 & ~0x0100)) != 0) {
     api->say("i2s GP0 output disabled (REG_33 bit 8): no writes");
     return -5;
   }
+  p = put(line, "i2s 33 ");
+  p = hex(p, r33, 4);
+  p = put(p, " -> ");
+  p = hex(p, api->fd_read(0x33), 4);
+  *p = 0;
+  api->say(line);
   for (s = 0; s < 16; s++) {
     char tag[8];
     tag[0] = 's', tag[1] = 'e', tag[2] = 'l', tag[3] = ' ';
@@ -221,6 +235,7 @@ int k6_main(const k6_api_t *api) {
     tag[5] = 0;
     if (one(api, tag, r34, s, &w, 0)) {
       api->fd_write(SEL_REG, r34);
+      api->fd_write(0x33, r33);
       return -2;
     }
   }
@@ -252,15 +267,17 @@ int k6_main(const k6_api_t *api) {
     }
     api->fd_write(SEL_REG, r34);
     if (en_reg[k]) api->fd_write(en_reg[k], orig);
-    if (api->key_down()) return -2;
+    if (api->key_down()) break;
   }
+  api->fd_write(0x33, r33);
+  if (api->key_down()) return -2;
   p = put(line, "i2s done 34=");
   p = hex(p, api->fd_read(SEL_REG), 4);
   p = put(p, " 31=");
   p = hex(p, api->fd_read(0x31), 4);
-  p = put(p, " 04=");
-  p = hex(p, api->fd_read(0x04), 4);
-  p = put(p, " best dfs e=");
+  p = put(p, " 33=");
+  p = hex(p, api->fd_read(0x33), 4);
+  p = put(p, " best=");
   p = dec(p, best);
   *p = 0;
   api->say(line);

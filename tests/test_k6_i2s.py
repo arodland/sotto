@@ -19,9 +19,11 @@ REFUSED = (0x30, 0x33, 0x36, 0x37)
 PERIOD = 400            # samples between modelled DFS edges
 
 
-def run(regs, moder=0, i2s_en=(0x31, 1)):
-    """regs: the chip's registers at the start. GP0 follows REG_34[3:0]: 13 (DFS) toggles every
-    PERIOD reads of PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0.
+def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True):
+    """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
+    (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
+    PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
+    lets a module change REG_33's GP0 bits (8 and 0); False = an image that refuses REG_33.
     Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
@@ -46,7 +48,9 @@ def run(regs, moder=0, i2s_en=(0x31, 1)):
         if off == 0x10:
             st["reads"] += 1
             sel = regs.get(0x34, 0) & 15
-            if sel == 15:
+            if regs.get(0x33, 0) & 0x0100:
+                st["pin"] = 1
+            elif sel == 15:
                 st["pin"] ^= 1
             elif sel == 13 and regs.get(i2s_en[0], 0) & i2s_en[1]:
                 st["pin"] = (st["reads"] // PERIOD) & 1
@@ -76,7 +80,9 @@ def run(regs, moder=0, i2s_en=(0x31, 1)):
             ret = regs.get(r0, 0)
         elif name == "fd_write":
             st["writes"].append((r0, r1))
-            if r0 in REFUSED:
+            if r0 == 0x33 and gp0_gate and not (regs.get(0x33, 0) ^ r1) & ~0x0101 & 0xFFFF:
+                regs[r0] = r1
+            elif r0 in REFUSED:
                 ret = -1
             else:
                 regs[r0] = r1
@@ -99,7 +105,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1)):
     return (r - (1 << 32) if r & 0x80000000 else r), st["said"], regs, st["writes"]
 
 
-START = {0x34: 0x0005, 0x35: 0x3200, 0x33: 0x0000, 0x31: 0x0000, 0x04: 0x0000,
+START = {0x34: 0x0000, 0x35: 0x0000, 0x33: 0xd300, 0x31: 0x0000, 0x04: 0x0000,
          0x67: (174 - 120) << 1}
 
 
@@ -123,9 +129,10 @@ def test_builds_fits_level_2():
 def test_finds_the_frame_clock_and_restores():
     ret, said, regs, writes = run(START)
     assert said[0].startswith("i2s start rssi=-120")
-    assert said[1] == "i2s 31=0000 33=0000 34=0005 35=3200 04=0000"
+    assert said[1] == "i2s 31=0000 33=d300 34=0000 35=0000 04=0000"
     assert said[2] == "i2s 24=0000 25=0000 26=0000 27=0000 28=0000"
-    assert said[3] == "pb moder=00000000 pupdr=00000000 idr=0010"
+    assert said[3] == "pb moder=00000000 pupdr=00000000 idr=0012"
+    assert "i2s 33 d300 -> d200" in said
     assert len([s for s in said if s.startswith("r")]) == 16
     sweep = windows(said, "sel")
     assert len(sweep) == 16
@@ -137,9 +144,10 @@ def test_finds_the_frame_clock_and_restores():
     d = said[said.index(en[0]) + 1]
     assert d.startswith("d ") and set(d.split()[1:]) == {str(PERIOD)}
     assert ret == w["e"]
-    assert said[-1] == f"i2s done 34=0005 31=0000 04=0000 best dfs e={ret}"
-    assert regs[0x34] == 0x0005 and regs[0x31] == 0 and regs[0x04] == 0
-    assert {r for r, _ in writes} <= {0x34, 0x31, 0x04}
+    assert said[-1] == f"i2s done 34=0000 31=0000 33=d300 best={ret}"
+    assert regs[0x34] == 0 and regs[0x31] == 0 and regs[0x04] == 0 and regs[0x33] == 0xd300
+    assert {r for r, _ in writes} <= {0x34, 0x31, 0x04, 0x33}
+    assert {v for r, v in writes if r == 0x33} == {0xd200, 0xd300}
     # only GP0's nibble ever changes
     assert all(v & 0xFFF0 == 0x0000 for r, v in writes if r == 0x34)
 
@@ -148,5 +156,8 @@ def test_finds_the_frame_clock_and_restores():
 def test_no_writes_unless_safe():
     ret, said, regs, writes = run(START, moder=0x4)          # PB1 an output
     assert ret == -4 and writes == [] and "not an input" in said[-1]
-    ret, said, regs, writes = run({**START, 0x33: 0x0100})   # GP0 output disabled
-    assert ret == -5 and writes == [] and "REG_33 bit 8" in said[-1]
+    ret, said, regs, writes = run(START, gp0_gate=False)    # 6473ca7: REG_33 refused
+    assert ret == -5 and writes == [(0x33, 0xd200)] and "REG_33 bit 8" in said[-1]
+    assert regs[0x33] == 0xd300
+    base = [ln for ln in said if ln.startswith("base")][0]   # the pull-up: high, no edges
+    assert " e=0 " in base and base.split(" n=")[1].split()[0] == base.split(" h=")[1].split()[0]
