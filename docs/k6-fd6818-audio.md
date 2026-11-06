@@ -226,3 +226,18 @@ detector outputs. Software FM demodulation of that IF would give the MCU receive
 limit is the CPU: the stream is about 6.5 Mbit/s on one pin with no clock, so the MCU must
 sample it by polling. `gp0fm` decimates while it samples (one byte per 256 samples, about
 89 k a second) so the module store holds about 28 ms of IF for the host to demodulate.
+
+**Run 5, 06:41 UTC (`gp0fm`, CI build afc6744, the IC-7100 sending 0.3 s of carrier then
+1000 Hz):** two captures of 2512 bytes, each 27.8 ms at 90.23 k bytes/s (11.08 us a byte, from
+the calibration: 10 captures in 278.4 ms). On the host: subtract the mean, band-pass 8-26 kHz,
+Hilbert transform, instantaneous frequency, low-pass at 3 kHz.
+
+| Capture | When | IF | Demodulated |
+| --- | --- | --- | --- |
+| 0 | 0.2 s after PTT, bare carrier | 16.919 kHz | flat, 31 Hz rms, no tone |
+| 1 | 2.4 s after PTT, in the tone | 16.907 kHz | a 1000.9 Hz sine, +-4.3 kHz deviation, 171 Hz rms residual (about 25 dB SINAD in 0.3-3 kHz) |
+
+So **GP0 code 13 is a working FM receive path into the MCU**: the decimated density is a
+~16.9 kHz IF that demodulates in software to the transmitted audio, with no hardware change.
+The capture is a busy loop (the CPU does nothing else while it samples), so the limits are CPU
+time and RAM, not the signal. The bytes and plot are on hamlet (`~/k6-logs/gp0fm-20261106T0641*`).

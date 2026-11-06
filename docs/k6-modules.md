@@ -201,8 +201,11 @@ what would settle it.
    - Settled by: the I2S probe thread (`i2sprobe`, a module that puts the frame clock on GP0
      and counts PB1 edges). Result (2026-11-06, PR #68): no I2S port, but GP0 output code 13
      is a 1-bit sigma-delta stream of the receive low IF (about 17 kHz on a carrier, moving
-     with the deviation), readable on PB1. Software FM demodulation from it is the open
-     question: `gp0fm` records about 28 ms of decimated IF for the host to try.
+     with the deviation), readable on PB1. Run 5 (`gp0fm`) settled the next question: 28 ms of
+     IF decimated on the MCU demodulated on the host to a clean 1000.9 Hz tone at +-4.3 kHz
+     deviation, about 25 dB SINAD. Still open: demodulating on the MCU itself, and whether
+     sampling can leave the CPU free for longer runs (a timer-driven DMA read of GPIOB IDR, if
+     the KD32F328 has one; a lower sample rate per output byte).
 2. **The tone detector as a slow MFSK receiver.**
    - From: the CW ID thread (on air it follows a keyed tone to about 10 ms and says which of
      16 tones it is).
