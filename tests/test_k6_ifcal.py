@@ -65,6 +65,12 @@ def test_measures_and_writes_the_offset(tmp_path):
     assert abs(rec["ppb"] - rec["off"] / 100 / 440.85e6 * 1e9) < 2, rec
     assert rec["hz"] == 440_850_000 and rec["blocks"] == 32 and rec["rssi"] == -41
     assert abs(ret + 1455) < 10, ret
+    # every block listed: the first in Hz, then steps; they rebuild the mean it measured
+    vals = []
+    for ln in (ln for ln in said if ln.startswith("ifcal b")):
+        for w in ln.split()[2:]:
+            vals.append(int(w) + (vals[-1] if vals else 0))
+    assert len(vals) == 32 and abs(sum(vals) / 32 - (NOMINAL - 145.5)) < 1.0, vals
     off = next(ln for ln in said if ln.startswith("ifcal off="))
     assert off.startswith("ifcal off=-14") and off.endswith(" wrote"), said
     # put back: AFC as it was, GP0, clocks, the DMA channel
