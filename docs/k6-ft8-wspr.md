@@ -337,13 +337,32 @@ write to ttyUSB2, the CW ID keeper runs, and one thread is on the bench at a tim
 3. **Play FT8 in USB.** When the log says `ft8wf start`, switch the IC-7100 to PKTUSB
    (`rigctl M PKTUSB 0`), key up and play
    `python3 tools/k6_ft8.py wav ft8.wav --f0 <step 1> --repeat 4` (60 s). Then key down and go
-   back to FM. Leave a full 15 s slot between any steady tone and the first frame.
+   back to FM with `rigctl M PKTFM 12000`. A passband of 0 selects the IC-7100's 6 kHz filter,
+   too narrow for the module uploads (found by the softmodem thread, PR #81). Leave a full
+   15 s slot between any steady tone and the first frame.
 4. **Decode:** `python3 tools/k6_ft8.py decode ~/k6-logs/<log>`.
    - If nothing decodes, `rows` dumps the waterfall. A tone outside the window means the offset
      in step 1 is wrong.
    - The `ft8wf gain` line shows whether the noise-filling gain engaged.
 5. **Sweep the level** (optional). Repeat at lower IC-7100 power or MOD level, with the decode
    rate against `s=`.
+
+## The DMA rate moves with the CPU loop (for when FT8 resumes)
+
+The softmodem thread found that DMA channel 1's flat-out rate depends on what the CPU is doing,
+from 5,490 to 5,875 kS/s by loop: the bus is shared. ft8wf and ft8rx handle most of this. The
+mixer phase and the row clock both come from TIM17 time, and `rx_rate` re-measures the
+cycles a transfer (`cps8`) after every row. One thing is fixed at set-up, though.
+
+- `rx_gain` picks the second CIC's decimation `r2` (about 200 Hz out) from the rate measured
+  during the gain loop. The run loop is a different loop, so its rate differs. Run 5 shows
+  `ks=5488` at set-up against 5,561-5,582 while running, +1.5%.
+- So the decimated rate runs 1.5% fast, and the 32-point DFT's bins are 6.34 Hz, not 6.25 Hz.
+  Across FT8's 8 tones that's 0.7 Hz, a tenth of a bin, which run 5 shrugged off. At the
+  softmodem thread's worst case of 7%, tone 7 would sit half a bin off, costing decodes.
+- **Fix when FT8 resumes:** re-pick `r2` (or scale the DFT's bin step) from `cps8` after the
+  first second of the run loop, or measure the set-up rate inside the run loop itself. Check
+  that `ks=` on the `st` lines matches the `gain` line's within 1%.
 
 ## Getting ft8rx onto the radio
 
