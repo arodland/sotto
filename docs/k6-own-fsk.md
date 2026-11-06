@@ -62,7 +62,7 @@ channel 1). With the IC-7100 sending a bare carrier, the module:
 
 AFC is off for the run (REG_73 bit 4); everything is put back afterwards. Tests:
 `tests/test_k6_xtal.py` runs it on the emulated M0 against a chip model with a live register
-(60 us lag) and a latched one.
+(60 us lag) and a latched one (the result on air: latched).
 
 ### Bench run
 
@@ -74,9 +74,38 @@ AFC is off for the run (REG_73 bit 4); everything is put back afterwards. Tests:
    15 s (the run takes about 1.5 s for A and B, and 4.3 s for C).
 4. The log's `xs a`, `xs b`, `xs l` or `c up/dn` lines are the result.
 
+## Result on the air (2026-11-06 10:25 UTC)
+
+Run hands-free on hamlet: image e46e7bd, module from CI (2756 B), 440.850 MHz, the IC-7100's
+bare carrier. Log `~/k6-logs/xtalstep-20261106T102217Z.txt` on hamlet.
+
+```
+xs regs 3b=5880 3c=4f88 38=af1e 39=02a0 73=4682 43=3028
+xs a 0 if=16763   xs a 6 if=16764   xs a -6 if=16765   xs a 24 if=16763   xs a -24 if=16763
+xs a 48 if=16764  xs a -48 if=16764  (n=1544 IF cycles each, ks=5693)
+xs b 100 if=16763   xs b -100 if=16762   xs b 0 if=16763
+xs l 24 if=18798 n=1731   xs l 0 if=16763
+```
+
+- **REG_3B is latched.** Writes of +-6, +-24 and +-48 left the IF within 3 Hz. The chip takes the
+  crystal value only at RXON/TXON.
+- **So is REG_38**: +-1 kHz with no RXON changed nothing, as the guide says.
+- **After RXON the step is exact:** +24 moved the IF by +2035 Hz, 84.8 Hz a step (predicted
+  84.78). A larger REG_3B lowers the LO, and the IF rises.
+- The crystal register reads 26 MHz (0x4F5880). REG_38/39 = 0x02A0AF1E = 440,850,220 Hz: Aura
+  folds a +220 Hz crystal correction into the frequency word. REG_3C's low byte reads 0x88.
+- C (the step response) didn't run, because nothing moved live.
+
+So REG_3B is not a per-symbol modulator. It is a fine-tuning knob (84.8 Hz steps, set before
+TXON) that the guard could use to trim the K6's carrier against the IC-7100.
+
 ## Next
 
-If REG_3B is live: a module transmit API (level 3), then a TX module that sends the existing
-packet format (PHY D framing: preamble, sync, PN9 payload, CRC) by writing REG_3B per symbol,
-received by `modem.k6 rx` on the IC-7100, and then 4FSK. If it is latched: the fallbacks are the
-tone oscillator (REG_70/71, audio FSK only) and the chip's own FSK modem, which already works.
+REG_3B turned out to be latched, so MCU-written FSK needs another source. Module API
+level 3 (a guarded transmitter: tx_on/tx_off/tx_pa on the pager's frequency, low power, at most
+20 s) is in the firmware patch, but not yet on the radio. What's left to try, none tested:
+
+- the tone oscillator (REG_70/71), which is continuous-phase audio FSK on the FM carrier. It is
+  not direct FSK, but the frequency word can change per symbol;
+- the chip's own FSK modem (REG_58/59), which already sends our packets as 2-FSK and FFSK;
+- a latched REG_3B step per TXON, if a whole packet can stay on one frequency (not FSK).
