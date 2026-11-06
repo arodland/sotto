@@ -56,7 +56,8 @@ below.
   VFO, contacts, satellites, FM, logo and SSTV image, but not the calibration. After that the pager
   never writes flash, with one exception. The codebook install image (`aura-pager-cbi.bin`)
   writes sotto's codebook to the SPI flash at 0x100000, once
-  ([`docs/k6-spi-codebook.md`](../../docs/k6-spi-codebook.md)). Aura itself still saves settings and channel state to the SPI flash
+  ([`docs/k6-spi-codebook.md`](../../docs/k6-spi-codebook.md)), and the sotto 600 / 400 install
+  image (`aura-pager-vlri.bin`) writes those codecs' codebooks at 0x108000, once. Aura itself still saves settings and channel state to the SPI flash
   (wear-levelled) when you change them or power off, as it always does.
 
 ## Flashing and backup
@@ -86,7 +87,8 @@ can clone Aura.
 6. **Then flash the image you want:** `aura-pager-only.bin` (v3.7) or `aura-pager-lr.bin` (sotto
    1200). These leave out the 30 KB table and read the codebook the install image wrote. Without
    it, they show `NO CODEBOOK (r)` and play nothing. `tools/k6_update.py` flashes them without the
-   side keys. The `-table` images need no install.
+   side keys. The `-table` images need no install. For sotto 600 / 400 as well as 1200, flash
+   `aura-pager-vlri.bin` once (after step 1's install), then `aura-pager-vlr.bin` (below).
 
 ## Using VOICE MSG
 
@@ -301,6 +303,24 @@ XL packet carries 800 ms of speech (640 ms on air at F/1800 with 12-byte preambl
 time). Both images take both kinds of packet (sync, CRC, bit-error tests); each plays only its own
 codec. M0 emulator, decode plus PWM per 20 ms: 53-61 MHz mean, 75-78 worst of 96 (three clips),
 the same as v3.7; image 119,236 B, 3.6 KB free (sotto_pager.c now at -Os, 0.1 MHz cost).
+
+**sotto 1200 + 600 + 400 image (`out/aura-pager-vlr.bin`, 2026-11-06).** `K6_CODEC=vlr` links
+the sotto 1200 library with the very-low-rate decoder (`-DSP_LR -DSP_VLR`,
+[`docs/sotto-vlr.md`](../../docs/sotto-vlr.md)): it plays magic 0xA9 (sotto 1200), 0xAC (sotto
+600, 80 ms per slot) and 0xAD (sotto 400, 120 ms per slot) messages, sent with `modem.k6 send
+--codec 600` from a `c/sotto_enc -600` .sot. The 640-slot store streams 51 s of sotto 600 or
+77 s of sotto 400, and an XL packet carries 1.6 s or 2.4 s of speech (640 ms on air at F/1800),
+so a long streamed message can run the sender 1.5 groups ahead of playback: about 85 s of sotto
+600 before the ring overruns, unless the sender pauses. Both codebooks come from the SPI flash:
+v3.7's at 0x100000 (the 1200 decoder's) and sotto 600 / 400's 21,280 bytes at 0x108000
+([`c/k6/sp_vlr.h`](../../c/k6/sp_vlr.h)). Flash `out/aura-pager-vlri.bin` once first: it holds
+those codebooks and writes `out/sotto-vlr.bin` there on its first boot (serial `K6 VLR r=2`;
+`r=1` after). It plays everything too, but leaves out the PTT calibration transmit (`lean`). A
+radio without the codebooks still stores the messages; `K6 VLR r=-1` says why they don't play,
+and sotto 1200 keeps playing. M0 emulator (c/k6/bench_k6.py, EARS p020, decode plus PWM per 20
+ms, SPI reads not timed: 6 per 80 ms or 4 per 120 ms, 34 us each): sotto 600 57.9 MHz mean and
+71.5 worst of 96, sotto 400 57.7 and 76.6, sotto 1200 in the same build 57.5 and 75.8. About
+4.3 KB more flash than `aura-pager-lr` and 340 bytes more RAM.
 
 **Codebook in SPI flash (the default since 2026-11-06).** The decoder reads sotto's 30 KB
 codebook from the radio's SPI flash, one 20-byte vector at a time, so the table doesn't need to

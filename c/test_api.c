@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "sotto.h"
+#include "sotto_vlr.h"
 
 #define SECONDS 2
 #define PI 3.14159265358979323846
@@ -78,6 +79,20 @@ int main(void) {
     ok = ok && ok16;
   }
 #endif
+  /* sotto 600 / 400 encoder: one superframe per 4 / 6 frames, most of them before the flush */
+  for (int r = 600; r >= 400; r -= 200) {
+    struct sotto_vlr_enc *ev = sotto_vlr_enc_create(r);
+    int ns = 0, ns_early, want = (N + (r == 600 ? 3 : 5)) / (r == 600 ? 4 : 6);
+    for (int f = 0; f < 2 * N; f++) {
+      sotto_vlr_encode(ev, in + f * SOTTO_SAMPLES_PER_FRAME / 2, 1);
+      while (sotto_vlr_enc_pop(ev, bits[ns])) ns++;
+    }
+    ns_early = ns;
+    while (sotto_vlr_enc_flush(ev, bits[ns])) ns++;
+    sotto_vlr_enc_destroy(ev);
+    printf("sotto %d: superframes %d (%d before flush)\n", r, ns, ns_early);
+    ok = ok && ns == want && ns_early >= want - 3 && !sotto_vlr_enc_create(1200);
+  }
   printf(ok ? "PASS\n" : "FAIL\n");
   return !ok;
 }

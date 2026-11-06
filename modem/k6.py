@@ -27,7 +27,8 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
 
 Make .sot files with c/sotto_enc (8 kHz, 16-bit mono raw in) and play them back with
 c/sotto_dec back.sot out.raw g.u8 (the good-flag file conceals lost frames); for sotto 1200,
-sotto_enc -1200 and sotto_dec -1200 with --codec 1200 here. Packet format:
+sotto_enc -1200 and sotto_dec -1200 with --codec 1200 here; for sotto 600 / 400, sotto_enc -600
+and c/fixed/sotto_vlr_dec_fx 600 with --codec 600. Packet format:
 K6 voice-pager FSK packet format v1 (modem/pager.py). Setup notes: docs/k6-pager.md.
 """
 import argparse
@@ -142,7 +143,8 @@ def _tx_opts(p):
                         "preamble (for the K6's stream mode, key 7; about 20%% less air time)")
     p.add_argument("--codec", choices=tuple(pager.CODECS), default="2400",
                    help="what the .sot holds: 2400 = sotto v3.7 (default), 1200 = sotto 1200 "
-                        "(sotto_enc -1200; magic 0xA9, L or XL)")
+                        "(sotto_enc -1200; magic 0xA9, L or XL), 600 / 400 = sotto 600 / 400 "
+                        "(sotto_enc -600 / -400; magic 0xAC / 0xAD, L or XL; an image built with K6_CODEC=vlr)")
     p.add_argument("--depth", type=int, choices=pager.DEPTHS, default=pager.GROUP,
                    help="packets per interleave group (default 8): a streaming K6 starts playing once "
                         "a group is in, so 4 starts about twice as soon; a lost packet's frames are "
@@ -299,7 +301,7 @@ def main(argv=None):
     r.add_argument("--payload", choices=("L", "XL", "S"), default="L")
     r.add_argument("--stream", action="store_true", help="the packets were sent with --stream")
     r.add_argument("--codec", choices=tuple(pager.CODECS), default="2400",
-                   help="the codec the packets carry (1200: magic 0xA9), as tx")
+                   help="the codec the packets carry (1200: magic 0xA9, 600: 0xAC, 400: 0xAD), as tx")
     r.add_argument("--baud", type=float, default=None, help="default: F 1800, D 1200, as tx")
     r.add_argument("--invert", action="store_true")
     r.add_argument("--tones", type=lambda v: tuple(float(t) for t in v.split(",")), metavar="MARK,SPACE",

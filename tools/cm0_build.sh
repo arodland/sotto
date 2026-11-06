@@ -3,7 +3,8 @@
 # UV-K6 / Quansheng UV-K5 class) with clang and lld, bare metal, for the cycle bench in
 # c/fixed/cm0/run.py: c/fixed/cm0/build/bench.elf. Same as tools/cm4_build.sh, with
 # c/fixed/cm0/rt.c for the division, 64-bit and CLZ helpers ARMv6-M lacks.
-# LR=1 sh ... adds the sotto 1200 decoder (run.py --lr BITS).
+# LR=1 sh ... adds the sotto 1200 decoder (run.py --lr BITS); VLR=1 the sotto 600 / 400
+# decoder (run.py --vlr 600|400 BITS).
 # Usage: sh tools/cm0_build.sh [extra clang options, e.g. -Os]
 #        CM0_OUT=dir sh tools/cm0_build.sh ...
 # VARIANT=v3.6 / v3.8 as for the M4. Needs clang and ld.lld (tested with 18).
@@ -22,6 +23,11 @@ if [ -n "$LR" ]; then
   SRCS="$SRCS sotto_fx_lr"
   SYMS="$SYMS -u sotto_lr_dec_create -u sotto_lr_decode -u sotto_lr_dec_flush -u sotto_lr_decode_half -u sotto_lr_dec_flush_half"
 fi
+# VLR=1: also the very-low-rate decoder (fixed/sotto_fx_vlr.c + ../sotto_vlr_tables.c)
+if [ -n "$VLR" ]; then
+  SRCS="$SRCS sotto_fx_vlr"
+  SYMS="$SYMS -u sotto_vlr_dec_create -u sotto_vlr_decode -u sotto_vlr_dec_flush"
+fi
 if [ "${VARIANT:-v3.7}" = v3.8 ]; then
   SRCS="$SRCS sotto_fx_hiss"
   VFLAGS="$VFLAGS -DSOTTO_V38 -DFX_PCT_MAX=3000"
@@ -37,6 +43,10 @@ for f in $SRCS; do
   $CC $CFLAGS -c "$ROOT/c/fixed/$f.c" -o "$OUT/$f.o"
   OBJS="$OBJS $OUT/$f.o"
 done
+if [ -n "$VLR" ]; then
+  $CC $CFLAGS -c "$ROOT/c/sotto_vlr_tables.c" -o "$OUT/sotto_vlr_tables.o"
+  OBJS="$OBJS $OUT/sotto_vlr_tables.o"
+fi
 $CC $CFLAGS -ffreestanding -fno-builtin -c "$ROOT/c/fixed/cm4/shim.c" -o "$OUT/shim.o"
 $CC $CFLAGS -ffreestanding -fno-builtin -c "$ROOT/c/fixed/cm0/rt.c" -o "$OUT/rt.o"
 $CC --target=thumbv6m-none-eabi -mcpu=cortex-m0 -c "$ROOT/c/fixed/cm0/divmod.s" -o "$OUT/divmod.o"

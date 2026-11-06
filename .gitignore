@@ -36,5 +36,15 @@ c/k6/cb_image
 c/k6/pager_host_cbs
 c/k6/pager_host_lr_cbs
 c/k6/pager_host_cbi
+c/k6/build-vlr/
+c/k6/build-vlr-cbs/
+c/k6/build-vlr-cbi/
+c/k6/host-vlr/
+c/k6/host-vlrcbs/
+c/k6/host-vlrcbi/
+c/k6/vlr_image
+c/k6/pager_host_vlr
+c/k6/pager_host_vlr_cbs
+c/k6/pager_host_vlr_cbi
 firmware/k6-aura/out/
 firmware/k6-aura/lib/

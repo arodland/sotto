@@ -1,0 +1,358 @@
+{
+ "loss": 0.0,
+ "every": 0,
+ "summary": {
+  "600": {
+   "pesq": 2.096,
+   "estoi": 0.69
+  },
+  "400": {
+   "pesq": 1.826,
+   "estoi": 0.637
+  },
+  "lr1200": {
+   "pesq": 2.578,
+   "estoi": 0.762
+  },
+  "c2_700C": {
+   "pesq": 1.909,
+   "estoi": 0.606
+  },
+  "c2_1200": {
+   "pesq": 2.145,
+   "estoi": 0.683
+  }
+ },
+ "per_clip": {
+  "600": {
+   "ears_p020_m": {
+    "pesq": 2.182,
+    "estoi": 0.675
+   },
+   "ears_p025_m": {
+    "pesq": 2.498,
+    "estoi": 0.63
+   },
+   "ears_p047_f": {
+    "pesq": 2.051,
+    "estoi": 0.725
+   },
+   "ears_p051_f": {
+    "pesq": 1.855,
+    "estoi": 0.72
+   },
+   "ears_p070_f": {
+    "pesq": 1.983,
+    "estoi": 0.689
+   },
+   "ears_p095_m": {
+    "pesq": 2.11,
+    "estoi": 0.695
+   },
+   "ears_p100_f": {
+    "pesq": 1.901,
+    "estoi": 0.697
+   },
+   "ears_p107_m": {
+    "pesq": 2.354,
+    "estoi": 0.725
+   },
+   "librispeech_2428_m": {
+    "pesq": 2.405,
+    "estoi": 0.712
+   },
+   "librispeech_251_m": {
+    "pesq": 2.204,
+    "estoi": 0.754
+   },
+   "librispeech_3081_f": {
+    "pesq": 1.837,
+    "estoi": 0.582
+   },
+   "librispeech_3536_f": {
+    "pesq": 1.95,
+    "estoi": 0.706
+   },
+   "librispeech_6313_f": {
+    "pesq": 1.872,
+    "estoi": 0.653
+   },
+   "librispeech_652_m": {
+    "pesq": 2.132,
+    "estoi": 0.695
+   },
+   "librispeech_777_m": {
+    "pesq": 2.275,
+    "estoi": 0.679
+   },
+   "librispeech_8842_f": {
+    "pesq": 1.933,
+    "estoi": 0.707
+   }
+  },
+  "400": {
+   "ears_p020_m": {
+    "pesq": 1.972,
+    "estoi": 0.614
+   },
+   "ears_p025_m": {
+    "pesq": 2.17,
+    "estoi": 0.58
+   },
+   "ears_p047_f": {
+    "pesq": 1.682,
+    "estoi": 0.645
+   },
+   "ears_p051_f": {
+    "pesq": 1.68,
+    "estoi": 0.656
+   },
+   "ears_p070_f": {
+    "pesq": 1.802,
+    "estoi": 0.652
+   },
+   "ears_p095_m": {
+    "pesq": 1.886,
+    "estoi": 0.653
+   },
+   "ears_p100_f": {
+    "pesq": 1.61,
+    "estoi": 0.658
+   },
+   "ears_p107_m": {
+    "pesq": 2.057,
+    "estoi": 0.67
+   },
+   "librispeech_2428_m": {
+    "pesq": 2.103,
+    "estoi": 0.659
+   },
+   "librispeech_251_m": {
+    "pesq": 1.793,
+    "estoi": 0.707
+   },
+   "librispeech_3081_f": {
+    "pesq": 1.514,
+    "estoi": 0.522
+   },
+   "librispeech_3536_f": {
+    "pesq": 1.631,
+    "estoi": 0.656
+   },
+   "librispeech_6313_f": {
+    "pesq": 1.639,
+    "estoi": 0.594
+   },
+   "librispeech_652_m": {
+    "pesq": 1.967,
+    "estoi": 0.647
+   },
+   "librispeech_777_m": {
+    "pesq": 2.022,
+    "estoi": 0.62
+   },
+   "librispeech_8842_f": {
+    "pesq": 1.688,
+    "estoi": 0.659
+   }
+  },
+  "lr1200": {
+   "ears_p020_m": {
+    "pesq": 2.684,
+    "estoi": 0.746
+   },
+   "ears_p025_m": {
+    "pesq": 3.0,
+    "estoi": 0.707
+   },
+   "ears_p047_f": {
+    "pesq": 2.507,
+    "estoi": 0.789
+   },
+   "ears_p051_f": {
+    "pesq": 2.431,
+    "estoi": 0.779
+   },
+   "ears_p070_f": {
+    "pesq": 2.404,
+    "estoi": 0.769
+   },
+   "ears_p095_m": {
+    "pesq": 2.514,
+    "estoi": 0.769
+   },
+   "ears_p100_f": {
+    "pesq": 2.336,
+    "estoi": 0.78
+   },
+   "ears_p107_m": {
+    "pesq": 2.915,
+    "estoi": 0.791
+   },
+   "librispeech_2428_m": {
+    "pesq": 2.902,
+    "estoi": 0.784
+   },
+   "librispeech_251_m": {
+    "pesq": 2.588,
+    "estoi": 0.812
+   },
+   "librispeech_3081_f": {
+    "pesq": 2.292,
+    "estoi": 0.658
+   },
+   "librispeech_3536_f": {
+    "pesq": 2.566,
+    "estoi": 0.773
+   },
+   "librispeech_6313_f": {
+    "pesq": 2.378,
+    "estoi": 0.737
+   },
+   "librispeech_652_m": {
+    "pesq": 2.534,
+    "estoi": 0.758
+   },
+   "librispeech_777_m": {
+    "pesq": 2.8,
+    "estoi": 0.757
+   },
+   "librispeech_8842_f": {
+    "pesq": 2.402,
+    "estoi": 0.785
+   }
+  },
+  "c2_700C": {
+   "ears_p020_m": {
+    "pesq": 1.784,
+    "estoi": 0.551
+   },
+   "ears_p025_m": {
+    "pesq": 2.107,
+    "estoi": 0.549
+   },
+   "ears_p047_f": {
+    "pesq": 1.798,
+    "estoi": 0.612
+   },
+   "ears_p051_f": {
+    "pesq": 1.786,
+    "estoi": 0.625
+   },
+   "ears_p070_f": {
+    "pesq": 1.722,
+    "estoi": 0.595
+   },
+   "ears_p095_m": {
+    "pesq": 1.88,
+    "estoi": 0.621
+   },
+   "ears_p100_f": {
+    "pesq": 1.619,
+    "estoi": 0.59
+   },
+   "ears_p107_m": {
+    "pesq": 2.241,
+    "estoi": 0.61
+   },
+   "librispeech_2428_m": {
+    "pesq": 2.379,
+    "estoi": 0.677
+   },
+   "librispeech_251_m": {
+    "pesq": 1.996,
+    "estoi": 0.656
+   },
+   "librispeech_3081_f": {
+    "pesq": 1.585,
+    "estoi": 0.51
+   },
+   "librispeech_3536_f": {
+    "pesq": 1.846,
+    "estoi": 0.649
+   },
+   "librispeech_6313_f": {
+    "pesq": 1.851,
+    "estoi": 0.611
+   },
+   "librispeech_652_m": {
+    "pesq": 2.072,
+    "estoi": 0.629
+   },
+   "librispeech_777_m": {
+    "pesq": 2.291,
+    "estoi": 0.621
+   },
+   "librispeech_8842_f": {
+    "pesq": 1.581,
+    "estoi": 0.596
+   }
+  },
+  "c2_1200": {
+   "ears_p020_m": {
+    "pesq": 1.923,
+    "estoi": 0.608
+   },
+   "ears_p025_m": {
+    "pesq": 2.386,
+    "estoi": 0.663
+   },
+   "ears_p047_f": {
+    "pesq": 2.035,
+    "estoi": 0.709
+   },
+   "ears_p051_f": {
+    "pesq": 2.126,
+    "estoi": 0.739
+   },
+   "ears_p070_f": {
+    "pesq": 2.029,
+    "estoi": 0.711
+   },
+   "ears_p095_m": {
+    "pesq": 1.907,
+    "estoi": 0.656
+   },
+   "ears_p100_f": {
+    "pesq": 1.834,
+    "estoi": 0.687
+   },
+   "ears_p107_m": {
+    "pesq": 2.52,
+    "estoi": 0.643
+   },
+   "librispeech_2428_m": {
+    "pesq": 2.78,
+    "estoi": 0.673
+   },
+   "librispeech_251_m": {
+    "pesq": 2.281,
+    "estoi": 0.735
+   },
+   "librispeech_3081_f": {
+    "pesq": 1.867,
+    "estoi": 0.579
+   },
+   "librispeech_3536_f": {
+    "pesq": 2.042,
+    "estoi": 0.733
+   },
+   "librispeech_6313_f": {
+    "pesq": 2.058,
+    "estoi": 0.715
+   },
+   "librispeech_652_m": {
+    "pesq": 2.25,
+    "estoi": 0.688
+   },
+   "librispeech_777_m": {
+    "pesq": 2.537,
+    "estoi": 0.703
+   },
+   "librispeech_8842_f": {
+    "pesq": 1.739,
+    "estoi": 0.694
+   }
+  }
+ }
+}

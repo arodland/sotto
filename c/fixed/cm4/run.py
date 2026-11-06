@@ -215,6 +215,43 @@ def lr_decode(m4, a):
         open(a.json, 'w').write(js + '\n')
 
 
+def vlr_decode(m4, a):
+    """sotto 600 / 400 decoder alone (sotto_fx_vlr.c): cycles per superframe (80 or 120 ms),
+    reported as MHz for real time and as ms per 20 ms of output at the K6's 96 MHz."""
+    rate = a.vlr
+    nfr = {600: 4, 400: 6}[rate]
+    bits = open(a.input, 'rb').read()
+    n = min(len(bits) // 6, a.frames)
+    dec, _ = m4.call('sotto_vlr_dec_create', rate)
+    assert dec, 'heap too small'
+    nb = nfr * 320
+    dc, out_pcm = [], []
+    for i in range(n):
+        m4.mu.mem_write(IO + 0x1000, bits[6 * i:6 * i + 6])
+        _, c = m4.call('sotto_vlr_decode', dec, IO + 0x1000, 1, IO + 0x2000)
+        dc.append(c)
+        out_pcm.append(bytes(m4.mu.mem_read(IO + 0x2000, nb)))
+    if a.pcm:                                           # as sotto_vlr_dec_fx writes it
+        while m4.call('sotto_vlr_dec_flush', dec, IO + 0x2000)[0]:
+            out_pcm.append(bytes(m4.mu.mem_read(IO + 0x2000, nb)))
+        open(a.pcm, 'wb').write(b''.join(out_pcm[2:]))  # SOTTO_VLR_DEC_DELAY
+    dc = dc[2:]                                         # the first two calls only store
+    sec = nfr * 0.02
+    def mhz(c):
+        return round(c / sec / 1e6, 2)
+    def ms20(c):
+        return round(c / nfr / 96e6 * 1e3, 2)
+    srt = sorted(dc)
+    out = {'elf': os.path.relpath(a.elf), 'input': os.path.basename(a.input), 'rate': rate, 'superframes': n,
+           'decoder_MHz': {'mean': mhz(sum(dc) / len(dc)), 'p99': mhz(srt[int(0.99 * (len(dc) - 1))]), 'worst': mhz(max(dc))},
+           'decoder_ms_per_20ms_at_96MHz': {'mean': ms20(sum(dc) / len(dc)), 'worst_superframe_mean': ms20(max(dc))},
+           'heap_bytes': m4.u32('heap_used'), 'stack_bytes': m4.stack_used(), 'flash_bytes': len(m4.img)}
+    js = json.dumps(out, indent=1)
+    print(js)
+    if a.json:
+        open(a.json, 'w').write(js + '\n')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('elf')
@@ -229,10 +266,15 @@ def main():
     ap.add_argument('--lr', action='store_true',
                     help='sotto 1200: decode-only, input is a .bit file of 6-byte superframes (40 ms); '
                          'build with LR=1')
+    ap.add_argument('--vlr', type=int, choices=(600, 400),
+                    help='sotto 600 / 400: decode-only, input is a .bit file of 6-byte superframes; '
+                         'build with VLR=1')
     a = ap.parse_args()
     m4 = M4(a.elf)
     if a.lr:
         return lr_decode(m4, a)
+    if a.vlr:
+        return vlr_decode(m4, a)
     fl = FlashModel(m4) if a.flash else None
     sfx, fb = ('16', 640) if a.k16 else ('', 320)       # API suffix, input bytes a frame
     pcm = load_pcm(a.input, 16000 if a.k16 else 8000)

@@ -45,6 +45,8 @@ CB = sotto_codebook
 else
 CB = sotto_codebook_gen
 endif
+# sotto 600 / 400 (very low rate): the float encoder and its tables
+VLR_OBJS = sotto_vlr.o sotto_vlr_tables.o
 PREFIX ?= /usr/local
 LIBDIR ?= $(PREFIX)/lib
 INCDIR ?= $(PREFIX)/include
@@ -72,9 +74,16 @@ FX_ENC_OBJS = fixed/sotto_fx_enc.o fixed/sotto_fx_lr_enc.o
 FX_DEC_OBJS = fixed/sotto_fx_dec.o fixed/sotto_fx_lr.o
 endif
 fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm \
-	fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0
-fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h sotto_lr_tables.h sotto_lr_dec.inc
+	fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0 fixed/sotto_vlr_dec_fx
+fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h sotto_lr_tables.h sotto_lr_dec.inc \
+	sotto_vlr.h sotto_vlr_tables.h
 	$(CC) $(CFLAGS) $(FXFLAGS) -c -o $@ $<
+# very-low-rate sotto (sotto 600 / 400): the fixed-point decoder, on the v3.7 decoder core
+# (the encoder is float, sotto_vlr.c in libsotto)
+fixed/sotto_vlr_tables.o: sotto_vlr_tables.c sotto_vlr_tables.h
+	$(CC) $(CFLAGS) -c -o $@ $<
+fixed/sotto_vlr_dec_fx: fixed/vlr_dec.o fixed/sotto_fx_vlr.o fixed/sotto_vlr_tables.o fixed/sotto_fx_dec.o $(FX_OBJS)
+	$(CC) -o $@ $^
 fixed/sotto_dec_fx: sotto_dec.o $(FX_DEC_OBJS) $(FX_OBJS)
 	$(CC) -o $@ $^
 fixed/sotto_enc_fx: sotto_enc.o $(FX_ENC_OBJS) $(FX_OBJS)
@@ -103,9 +112,10 @@ sotto_codebook_gen.c: ../$(CODEBOOK) ../tools/export_codebook_c.py
 
 # The committed tables, written by the generators into directory $(1) (relative to the repo
 # root). After changing a generator or its .npz data, run make tables and commit the result.
-TABLES = sotto_codebook.c sotto_hiss_tables.c fixed/fx_tables.c
+TABLES = sotto_codebook.c sotto_hiss_tables.c fixed/fx_tables.c sotto_vlr_tables.c
 gen_tables = cd .. && $(PYTHON) tools/export_codebook_c.py --round 8 $(DEFAULT_CODEBOOK) $(1)/sotto_codebook.c \
 	&& $(PYTHON) tools/export_hiss_c.py $(1)/sotto_hiss_tables.c \
+	&& $(PYTHON) tools/export_vlr_c.py --out $(1)/sotto_vlr_tables.c \
 	&& $(PYTHON) tools/gen_fx_tables.py --codebook $(DEFAULT_CODEBOOK) $(1)/fixed/fx_tables.c
 tables:
 	$(call gen_tables,c)
@@ -121,12 +131,14 @@ sotto.o: sotto.c sotto.h sotto_codebook.h sotto_internal.h
 sotto_lr.o: sotto_lr.c sotto.h sotto_codebook.h sotto_internal.h sotto_lr_tables.h sotto_lr_dec.inc
 sotto_hiss.o: sotto_hiss.c sotto.h sotto_internal.h sotto_hiss_tables.h
 sotto_hiss_tables.o: sotto_hiss_tables.c sotto_hiss_tables.h
+sotto_vlr.o: sotto_vlr.c sotto.h sotto_internal.h sotto_vlr.h sotto_vlr_tables.h
+sotto_vlr_tables.o: sotto_vlr_tables.c sotto_vlr_tables.h
 $(CB).o: $(CB).c sotto_codebook.h
 
-libsotto.a: sotto.o sotto_lr.o $(CB).o $(HISS_OBJS)
+libsotto.a: sotto.o sotto_lr.o $(VLR_OBJS) $(CB).o $(HISS_OBJS)
 	$(AR) rcs $@ $^
 
-libsotto.so.$(VERSION): sotto.o sotto_lr.o $(CB).o $(HISS_OBJS)
+libsotto.so.$(VERSION): sotto.o sotto_lr.o $(VLR_OBJS) $(CB).o $(HISS_OBJS)
 	$(CC) -shared -Wl,-soname,$(SONAME) -o $@ $^ $(C2LIBS)
 libsotto.so: libsotto.so.$(VERSION)
 	ln -sf $< $(SONAME)
@@ -156,14 +168,14 @@ install: libsotto.so libsotto.a sotto.pc
 	ln -sf libsotto.so.$(VERSION) $(DESTDIR)$(LIBDIR)/$(SONAME)
 	ln -sf libsotto.so.$(VERSION) $(DESTDIR)$(LIBDIR)/libsotto.so
 	install -m 644 libsotto.a $(DESTDIR)$(LIBDIR)/
-	install -m 644 sotto.h $(DESTDIR)$(INCDIR)/
+	install -m 644 sotto.h sotto_vlr.h $(DESTDIR)$(INCDIR)/
 	install -m 644 sotto.pc $(DESTDIR)$(LIBDIR)/pkgconfig/
 
 clean:
 	rm -f *.o libsotto.a libsotto.so* sotto_enc sotto_dec test_api sotto_codebook_gen.c sotto.pc
 	rm -rf tables.chk
 	rm -f fixed/*.o fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm
-	rm -f fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0
+	rm -f fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0 fixed/sotto_vlr_dec_fx
 	rm -rf fixed/arm fixed/m0
 
 .PHONY: all fixed check install clean tables check-tables
