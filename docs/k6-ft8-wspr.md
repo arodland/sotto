@@ -159,7 +159,7 @@ ft8wf st t=15 lost=0 ks=5492 flo=812 idle=30       (every 15 s; lost = DMA ring 
 ft8wf done rows=3750 lost=180
 ```
 
-- **How long it runs.** It runs 300 s or until a key, and returns the number of rows sent.
+- **How long it runs.** It runs 180 s (FT8_SECONDS) or until a key, and returns the number of rows sent.
 - **The serial rate.** One line every 160 ms is about 350 bytes/s on the report.
 - **Errors it can return:**
   - -2: a key before the start.
@@ -196,11 +196,28 @@ Run on Jeff's bench through hamlet, with FT8 from the IC-7100 in PKTUSB on 440.8
   which is why its calibration held. Run 2's image checks the key once a row (every 40 ms),
   in `ft8wf` and `ft8rx`, and the emulator then shows 0 overruns at 60 us.
 
-## Bench run 2 (next)
+## Bench run 2 (2026-11-06): no overruns, but the tones missed the window
 
-Same steps as below, with `--f0 1468`, and Jeff listening on another radio. The CW ID for the
-run goes as true CW: the 800 Hz `modem.k6 cw` WAV played with the IC-7100 in PKTUSB. Look for
-`lost=0` and `idle=` in the st lines before reading anything into the decode rate.
+Run at 15:20 UTC with Jeff listening on another radio. FT8 went at `--f0 1468`, 60 s strong and
+60 s 14 dB weaker, each followed by a true-CW ID (the 800 Hz `modem.k6 cw` WAV in PKTUSB).
+
+- **The fix held:** `lost=0` in every st line for 300 s, `idle=39-40`, 3,748 rows, 0 lost on
+  the link.
+- **No decodes.** The 8 bins where the tones belong (1468-1512 Hz) were no stronger than in
+  the quiet stretch. Only the window's outermost bins rose, and `flo` went from about 755 to
+  882 while the strong burst was on air (run 1 showed the same 735 -> 853 step).
+- **The suspect: a mirrored IF.** Nothing so far has shown which side of the IF the upper
+  sideband lands on: gp0dma's `if=` reads a bare FM carrier. If it lands below, FT8 at 1468-1512
+  Hz sits near 15,440 Hz, 2,980 Hz from ft8wf's mixer at 18,427 Hz. That is within a few Hz of
+  the second CIC's 15th null (15 x 198.6 Hz), so almost nothing of it reaches the window, while
+  the strong tone still lifts the 1-bit path's floor.
+- **The test that settles it** (next run): gp0cap records the raw IF while the IC-7100 sends a
+  steady 1000 Hz tone in USB (pass 1) and 2000 Hz (pass 2); `tools/k6_ft8.py tone LOG` finds both
+  lines, so the side and the carrier's offset, and names the module (`ft8wf`, or `ft8wf_inv`
+  built with FT8_INV 1) and the `--f0` that centre FT8 on the window. Then FT8 again,
+  slot-aligned to the UTC 15 s boundaries so WSJT-X on another radio can decode it too.
+
+ft8wf now runs 180 s by default (it was 300 s, more than a test needs).
 
 ## Bench steps
 

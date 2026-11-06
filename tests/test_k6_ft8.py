@@ -367,3 +367,37 @@ def test_ft8wf_whole_chain_decodes(tmp_path):
     res = k6_ft8.decode(start, rows)
     assert [d["text"] for d in res] == ["CQ AG7EW CN87"], said[:3]
     assert abs(res[0]["f"] - 1512.0) <= 6.25, res
+
+
+@pytest.mark.parametrize("mirrored", [0, 1])
+def test_tone_finds_the_if_side(tmp_path, mirrored):
+    """tools/k6_ft8.py tone on a gp0cap log made through the GP0 model: a steady USB tone of
+    1000 Hz in pass 1 and 2000 Hz in pass 2, the carrier 11 Hz above nominal, the sideband
+    above or below the IF -> the module and --f0 that centre FT8 on the window"""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import k6_ft8
+    fz, ncap = 48000, 2160
+    lines = ["K6 MOD say cap start floor=-120 ncap=%d r7e=0000 r13=0000" % ncap]
+    k = 0
+    for ps, hz in ((1, 1000.0), (2, 2000.0)):
+        t = np.arange(int(0.05 * fz)) / fz
+        tone = np.exp(2j * np.pi * hz * t)
+        z = gp0.k6_if(np.conj(tone) if mirrored else tone, fz, 30, seed=ps)
+        c = gp0.counts(z, fz, fif=gp0.FIF + 11)[:ncap]
+        for _ in range(3):
+            lines.append("K6 MOD say c %d 1 %d ks=5490 r=-60 t=0 lost=0" % (ps, k))
+            b = c.astype(np.int8).tobytes()
+            for off in range(0, len(b), 36):
+                lines.append("K6 MOD say y %d %04x %s" % (k, off, base64.b64encode(b[off:off + 36])
+                                                         .decode()))
+            k += 1
+    log = tmp_path / "cap.log"
+    log.write_text("\n".join(lines) + "\n")
+    import k6_ifcap
+    caps = k6_ifcap.parse(log.read_text().splitlines())
+    r = k6_ft8.tone_fit(caps, [1000.0, 2000.0])
+    assert r["inv"] == mirrored, r
+    assert abs(r["carrier"] - (k6_ft8.FIF + 11)) < 15, r
+    want = 1500 - 22 + (11 if mirrored else -11)
+    assert abs(r["f0"] - want) < 15, r
+    assert r["module"] == ("ft8wf_inv" if mirrored else "ft8wf")

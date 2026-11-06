@@ -8,6 +8,14 @@
   python3 tools/k6_ft8.py wav OUT.wav [--text "CQ AG7EW CN87"] [--f0 1480] [--repeat 4]
                                                    FT8 audio to send in USB from the IC-7100
                                                    (12 kHz mono, a transmission every 15 s)
+  python3 tools/k6_ft8.py tonewav OUT.wav --hz 1000 [--secs 60]
+                                                   a steady tone to send in USB
+  python3 tools/k6_ft8.py tone LOG --hz 1000 2000  where USB audio lands on the K6's IF: a
+                                                   gp0cap log (c/k6/mod/gp0cap.c) with a steady
+                                                   tone of each --hz in its passes 1 and 2. Says
+                                                   which side of the IF the upper sideband falls
+                                                   on, so which module (ft8wf or ft8wf_inv) and
+                                                   which --f0 put FT8 in the window
 
 The log is the K6's serial output (`K6 MOD say ...` lines or bare module lines). Rows lost on
 the serial link (a gap in the `w` numbers) come back as noise-floor rows, so the times stay
@@ -116,6 +124,71 @@ def cmd_wav(a):
                                                 "".join(map(str, tones))))
 
 
+FIF = 26e6 / 1536                                   # the FD6818's nominal low IF
+
+
+def tone_peak(x, fs, lo=11000.0, hi=23000.0):
+    """-> (Hz, dB over the band's median) of the strongest line in lo..hi"""
+    import numpy as np
+    x = np.asarray(x, float)
+    n = 1 << int(np.ceil(np.log2(len(x) * 8)))
+    X = np.abs(np.fft.rfft((x - x.mean()) * np.hanning(len(x)), n))
+    f = np.arange(len(X)) * fs / n
+    band = (f >= lo) & (f <= hi)
+    i = np.flatnonzero(band)[np.argmax(X[band])]
+    return f[i], 20 * np.log10(X[i] / np.median(X[band]))
+
+
+def tone_fit(caps, hz):
+    """gp0cap captures (tools/k6_ifcap.parse) with a tone of hz[0] in pass 1 and hz[1] in pass 2
+    -> dict: per pass the median peak, slope (+1: the upper sideband is above the IF), the
+    carrier's IF, and the module and --f0 that centre FT8's tones on its window"""
+    import numpy as np
+    per = {}
+    for c in caps:
+        if c["pass_"] in (1, 2) and len(c["x"]):
+            f, snr = tone_peak(c["x"], c["ks"] * 1000.0 / 64)
+            if snr > 15:
+                per.setdefault(c["pass_"], []).append(f)
+    if 1 not in per or 2 not in per:
+        return dict(per={k: len(v) for k, v in per.items()}, error="no clear tone in a pass")
+    ia, ib = float(np.median(per[1])), float(np.median(per[2]))
+    s = (ib - ia) / (hz[1] - hz[0])
+    sign = 1 if s > 0 else -1
+    carrier = ia - sign * hz[0]
+    inv = sign < 0
+    centre = FIF - 1500 if inv else FIF + 1500          # the module's mixer (FT8_AUDIO 1500)
+    fc = hz[0] + (centre - ia) / sign                   # the audio that lands on it
+    return dict(if1=ia, if2=ib, n1=len(per[1]), n2=len(per[2]), slope=s, carrier=carrier,
+                inv=int(inv), module="ft8wf_inv" if inv else "ft8wf",
+                f0=round(fc - 3.5 * 6.25), spread=float(np.std(per[1]) + np.std(per[2])))
+
+
+def cmd_tone(a):
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import k6_ifcap
+    caps = k6_ifcap.parse(open(a.log, errors="replace").read().splitlines())
+    r = tone_fit(caps, a.hz)
+    if "error" in r:
+        sys.exit("%s (clear captures per pass: %s)" % (r["error"], r["per"]))
+    print("pass 1 (%g Hz): IF %.1f Hz over %d captures; pass 2 (%g Hz): IF %.1f Hz over %d"
+          % (a.hz[0], r["if1"], r["n1"], a.hz[1], r["if2"], r["n2"]))
+    print("slope %+.3f: the upper sideband is %s the IF; carrier at IF %.1f Hz (nominal %.1f)"
+          % (r["slope"], "below (mirrored)" if r["inv"] else "above", r["carrier"], FIF))
+    print("FT8: send mod-%s.bin and play tools/k6_ft8.py wav --f0 %d" % (r["module"], r["f0"]))
+
+
+def cmd_tonewav(a):
+    import numpy as np
+    from scipy.io import wavfile
+    fs = 12000
+    t = np.arange(int(a.secs * fs)) / fs
+    env = np.minimum(1, np.minimum(t, t[-1] - t) / 0.01)
+    wavfile.write(a.out, fs, np.round(np.cos(2 * np.pi * a.hz * t) * env * a.peak * 32767)
+                  .astype(np.int16))
+    print("%s: %g Hz, %g s" % (a.out, a.hz, a.secs))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -131,8 +204,17 @@ def main():
     p.add_argument("--f0", type=float, default=1480.0)  # tones 1480-1524: the middle of the window
     p.add_argument("--repeat", type=int, default=4)
     p.add_argument("--peak", type=float, default=0.5)
+    p = sub.add_parser("tone")
+    p.add_argument("log")
+    p.add_argument("--hz", type=float, nargs=2, default=[1000.0, 2000.0])
+    p = sub.add_parser("tonewav")
+    p.add_argument("out")
+    p.add_argument("--hz", type=float, required=True)
+    p.add_argument("--secs", type=float, default=60.0)
+    p.add_argument("--peak", type=float, default=0.5)
     a = ap.parse_args()
-    {"decode": cmd_decode, "rows": cmd_rows, "wav": cmd_wav}[a.cmd](a)
+    {"decode": cmd_decode, "rows": cmd_rows, "wav": cmd_wav, "tone": cmd_tone,
+     "tonewav": cmd_tonewav}[a.cmd](a)
 
 
 if __name__ == "__main__":

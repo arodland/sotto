@@ -15,7 +15,7 @@
      ft8wf st t=15 lost=12 ks=5492 flo=812 idle=60          (every 15 s; idle: % of it spent
                                                             waiting for the DMA)
      ft8wf done rows=3750 lost=180
-   Runs FT8_SECONDS (300) or until a key; returns the rows sent, or ft8rx's errors (not -8:
+   Runs FT8_SECONDS (180) or until a key; returns the rows sent, or ft8rx's errors (not -8:
    the ring is on the stack). Writes what
    ft8rx writes, all put back. Receive only. SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 2
@@ -33,7 +33,7 @@
 #define FT8_INV 0      /* 1: the IF is mirrored (the tone at IF - f) */
 #endif
 #ifndef FT8_SECONDS
-#define FT8_SECONDS 300
+#define FT8_SECONDS 180
 #endif
 #ifndef FT8_STAT
 #define FT8_STAT 375 /* rows between status lines: 15 s */
