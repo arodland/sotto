@@ -11,6 +11,12 @@ Some caveats about register numbers:
   work use BK4819 addresses). Below 0x80 the guide mostly agrees with that map (REG_0B, REG_5F,
   REG_64, REG_65 and REG_67 all behaved as the guide says), but not everywhere: the guide calls
   REG_24 reserved, while on the radio it is the DTMF/SelCall set-up.
+- Known mappings from Aura's working driver: the guide's REG_03H (block enables) is REG_30
+  here, REG_25H (GPIO output enable and value) is REG_33, REG_28H (PA) is REG_36, REG_94H (tone
+  detector) is REG_24, and REG_87H (AF level) is REG_6F. Known clashes: REG_26, which the guide
+  calls the GPIO3..0 output select, gets Aura's 0x13A0 distortion setting here; REG_75, the
+  guide's MCBSP set-up, is an RX audio filter coefficient here. So the I2S registers below are
+  probably at other addresses on this chip (the I2S probe thread is testing which).
 - Guide registers above 0x7F (REG_87H, REG_94H, REG_9AH, ...) are reached on the 3-wire bus
   by writing REG_7F = 1 (page 1) and then the low 7 bits. Our code reaches the same functions
   at other page 0 addresses (the tone detector at REG_24, the level at REG_6F).
@@ -25,7 +31,7 @@ Treat any guide address that hasn't been tried on the radio as a hypothesis.
   speech to send sotto.
 - **Received audio: maybe.** The guide describes an MCBSP/I2S port whose data can be the
   FM-demodulated audio (or IQ), routed to the chip's GPIO pins. On the K6 one of those pins
-  (GP0) is wired to an MCU input (PB0). That could give received audio samples with no
+  (GP0) is wired to an MCU input (PB1). That could give received audio samples with no
   hardware change. It's untested.
 
 ## What the MCU can read (FD6818 guide)
@@ -110,7 +116,7 @@ The K6 schematic (BF_K6_Plus_Open_V1.1, `ht-survey/uv-k6-rf-chip-audio.png` and
 
 | Pin | Goes to |
 | --- | --- |
-| GP0 | R175 (100 ohm), net CTCSS, MCU pin 19 (PB0) |
+| GP0 | R175 (100 ohm), net CTCSS, MCU pin 19 (PB1) |
 | GP2 | U3T_EN |
 | GP3 | V3T_EN |
 | GP5 | R_LED |
@@ -118,16 +124,16 @@ The K6 schematic (BF_K6_Plus_Open_V1.1, `ht-survey/uv-k6-rf-chip-audio.png` and
 | GP1, GP7 | not connected |
 
 The guide's default for REG_26H is 0x0005, so out of reset GP0 carries the CTCSS/DCS code for
-the MCU to decode in software, which is what the net name says. PB0 is the only FD6818 GPIO
+the MCU to decode in software, which is what the net name says. PB1 is the only FD6818 GPIO
 that reaches the MCU.
 
 So received audio could, in principle, reach the MCU like this:
 
 1. The I2S port in master mode, data = FM demodulated.
-2. DOUT on GP0, read on PB0.
+2. DOUT on GP0, read on PB1.
 
 There is only one wire, though. The MCU would get the data line without the frame or bit
-clock, and would have to recover the timing itself: sample PB0 several times faster than the
+clock, and would have to recover the timing itself: sample PB1 several times faster than the
 bit clock (an 8 kHz, 32-bit frame is 256 kbit/s), find the frames, and track the drift between
 the radio's 26 MHz and the MCU's 16 MHz crystals.
 
@@ -150,7 +156,7 @@ plenty if a register held samples, but none does.
 
 - The BK4819 map may use REG_04, REG_26, REG_75 and REG_76 for other things.
 - A level 2 module could read their reset values, enable the port, put DFS (13) on GP0, and
-  count PB0 edges by reading the MCU's GPIO input register directly. About 8,000 per second
+  count PB1 edges by reading the MCU's GPIO input register directly. About 8,000 per second
   would mean the port is real.
 - API level 2's fd_write refuses only 0x30, 0x33, 0x36 and 0x37, so these writes are allowed.
 - The firmware re-arms its set-up when the module returns, but REG_26 should be put back to
