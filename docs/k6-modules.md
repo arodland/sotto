@@ -245,13 +245,85 @@ what would settle it.
    - An RC tap from EARO (or the speaker node) into a free ADC pin gives 8 kHz receive audio.
      It would also let the K6 measure its own audio passband, to put the FFSK tones on the
      flattest part. Jeff has ruled out hardware mods so far.
-9. **FT8 (and WSPR) from the receive IF.**
-   - From: the FT8/WSPR thread, 2026-11-06 ([k6-ft8-wspr.md](k6-ft8-wspr.md)).
-   - Tested in simulation and on the emulated M0, not on air: `ft8wf` (3.7 KB) streams a 4-bit
-     waterfall that the PC decodes; 75% at -16 dB through the modelled GP0 path. The whole
-     decoder `ft8rx` is 7.2 KB and waits for a bigger module arena.
-   - Untested: the K6's IF offset against the IC-7100 (xtalstep read 164 Hz low, gp0fm 8 Hz),
-     which must sit inside the 200 Hz window; the receiver-noise floor that the noise-filling
-     gain assumes; the K6 crystal's drift over 2 minutes, which decides WSPR at 440 MHz.
-   - Buys: a weak-signal mode on the pager's own hardware, and a first user of a bigger arena.
-   - Settled by: the bench run in k6-ft8-wspr.md, and a 10-minute IF log of a bare carrier.
+8. **A softmodem on the GP0 IF instead of the chip's FFSK.**
+   - From: the softmodem thread, 2026-11-06 ([k6-if-modem.md](k6-if-modem.md), simulation only).
+   - A matched filter on the complex IF beats the best FM discriminator by 5-6 dB, because it
+     has no FM threshold. 4FSK at 1200 baud with soft rate-1/2 coding carries sotto 1200 about
+     7.7 dB better than FFSK through a discriminator, and 2400 baud MSK is a dead end on the
+     IC-7100.
+   - Buys: about 2.4x the range for live voice, and no chip bit-clock slips.
+   - Settled by: `gp0cap` with `tools/k6_ifcap.py`, which runs both detectors on the same
+     captures at stepped front-end gain.
+9. **More IF gain against the 1-bit floor.**
+   - From: the same study. GP0's sigma-delta adds its own noise. If the receiver's noise sits
+     only "a few %" above it on GP0, 1.5-4 dB is lost.
+   - Buys: those dB back, by running REG_13 above the AGC table's top entry (for example
+     0x03FF against 0x03BE) while the signal is weak.
+   - Settled by: `gp0cap` pass 0 (the floor at three gains) and steps 1 against 2.
+10. **A weak-signal mode: constant-envelope MFSK on SSB.**
+    - From: Jeff's PSK idea, simulated at equal peak power (`sim/k6if/psk.py`). Differential
+      PSK only ties FM-FSK with the IF detector, because RRC PSK loses 3.4 dB to its peak.
+      16 tones at 100 baud from the IC-7100 in USB gain about 3.8 dB per bit and need no
+      carrier sync. Coherent BPSK with a perfect carrier loop is the stretch goal (+3.7 dB
+      coded).
+    - Buys: beacons, text and control at 200-400 bit/s, several dB below what FFSK can reach.
+    - Settled by: a third `gp0cap` pass with SSB 16FSK, decoded on the host.
+11. **True SSB and a noise reference from the mirror band.**
+    - From: Jeff found the chip's "USB" is DSB. Its USB mode is zero IF, so the sidebands fold.
+      On GP0's 16.9 kHz IF they don't, so the K6 can tell the sidebands apart in software. The
+      empty side also gives a live noise level for soft decisions and squelch.
+    - Settled by: a capture of an SSB voice signal through `gp0cap`, demodulated on the host.
+12. **A faster count loop.**
+    - From: the study's CPU budget. `gp0dma`'s count loop takes 27%, the IF detector about 10-20%,
+      and the sotto decoder 55-63%. A word-at-a-time masked-add loop (about 1 cycle a sample)
+      would bring the counting to about 6%.
+    - Settled by: timing such a loop in a module (TIM17 counts cycles), as `gp0dma` already does.
+13. **Never move a symbol clock backwards in a streaming DMA receiver.**
+    - From: `iflive` in the emulator (2026-11-06). The acquisition sweep wrapped its clock back
+      11 steps (0.92 symbol), and the receiver then had about 300 us of samples to work
+      through at once. The DMA ring lasts 186 us, so 15 counts were lost at each wrap. Moving
+      forward to the same offset a symbol later costs nothing.
+    - Buys: no lost counts. The same applies to any module that re-times a stream (FT8, CW).
+    - Settled: yes, on the emulator (`tests/k6_live_emu.py` reports lost counts).
+14. **Re-acquire per step instead of timing pauses.**
+    - From: `iflive`. It starts the receiver over on a fresh lead every 6 s step, so it can
+      print and change gain between steps without the tick + TIM17 lap reckoning `gp0cap`-style
+      modules need. It saved about 200 B of code, and each run checks acquisition 10 times.
+    - Buys: simpler bench modules wherever the sender can repeat a preamble.
+    - Settled by: the first `iflive` bench run (every step should show `s=2`).
+15. **The IF receiver's CPU.**
+    - From: `iflive` on the emulator at 1.5 cycles an instruction: 4FSK leaves 41% idle and FFSK
+      51%. That is about twice the study's estimate, so it doesn't yet leave room for the sotto
+      decoder (55-63%).
+    - Buys: the live 4FSK voice pager.
+    - Settled by: a per-function profile on the emulator, then the bench's `i=` numbers.
+      Suspects are the per-count loop overhead and the 24-tap filter at 20 samples a symbol.
+16. **Take a preamble's timing at the leading edge of its fit, not at its best.**
+    - From: `iflive` in the emulator (2026-11-06). The 4FSK lead's fit against the clock offset
+      is a plateau a third of a symbol wide. Its best fell anywhere on it, and on the late side
+      the timing loop held a side peak (0.26 symbol late, 8% BER all step). Walking back from
+      the best while the fit stays over half of it found the true timing in every run.
+    - Buys: false locks fell from 4-6 in 18 streams to none, for about 70 B of code. The same applies to any
+      module that sweeps a clock against a known preamble (FT8's Costas arrays, CW's dits).
+    - Settled: yes, on the emulator; the first `iflive` bench run checks it on air.
+17. **FT8 (and WSPR) from the receive IF.**
+    - From: the FT8/WSPR thread, 2026-11-06 ([k6-ft8-wspr.md](k6-ft8-wspr.md)).
+    - Tested in simulation and on the emulated M0: `ft8wf` (3.8 KB) streams a 4-bit waterfall
+      that the PC decodes; 75% at -16 dB through the modelled GP0 path. The whole decoder
+      `ft8rx` is 7.2 KB and waits for a bigger module arena.
+    - Run 1 on air (2026-11-06): the IF offset is +11 Hz, well inside the 200 Hz window. The
+      noise rms reached only 4.1 at the top gain step (the sim assumed 8), so expect the sim's
+      floor-0.06 numbers (-16 dB 42%). No decodes: the ring overran (see 18).
+    - Untested: the K6 crystal's drift over 2 minutes, which decides WSPR at 440 MHz.
+    - Buys: a weak-signal mode on the pager's own hardware, and a first user of a bigger arena.
+    - Settled by: the bench run in k6-ft8-wspr.md, and a 10-minute IF log of a bare carrier.
+18. **Keep API calls out of a streaming module's hot loop.**
+    - From: the FT8/WSPR thread, run 1 (2026-11-06).
+    - `api->key_down()` costs about 60 us on the radio: Aura's `any_pressed` scans six keypad
+      rows with a 5 us SysTick wait each. Called on every drain pass, it overran ft8wf's 93 us
+      ring about 6,450 times a second. `tests/k6_live_emu.py` charges 1 us for it; at 60 us the
+      emulator reproduces the radio's overrun rate (6,140 a second).
+    - Buys: emulator runs that predict the radio, and a rule for module authors: check the key
+      once per row, block or line, never per DMA poll.
+    - Settled by: run 2 of ft8wf (key checked once a row) showing `lost=0` on the radio; then
+      cost key_down at 60 us in the emulator.

@@ -17,10 +17,10 @@ radio today, and what is still waiting on a bench run, a firmware change or a de
   - WSJT-X reaches about -21 dB. The difference is the cost of a fixed-point decoder with 4-bit
     waterfall values and no a-priori passes.
 - **What fits on the radio today:**
-  - `ft8wf` (3.9 KB of code) fits the 4 KB module store. It runs the front end and the waterfall
+  - `ft8wf` (3.8 KB of code) fits the 4 KB module store. It runs the front end and the waterfall
     on the K6 and streams the waterfall over the serial report. `tools/k6_ft8.py decode LOG`
     decodes it on the PC with the same receiver.
-  - `ft8rx`, the whole decoder on the K6, builds at 7.4 KB of code and needs about 4 KB of RAM
+  - `ft8rx`, the whole decoder on the K6, builds at 7.2 KB of code and needs about 4 KB of RAM
     besides. That doesn't fit until the firmware gives modules a bigger arena (see "Getting
     ft8rx onto the radio").
 - **Bench run 1 (2026-11-06): no decodes.** The K6's IF offset is only +11 Hz, but the DMA
@@ -115,8 +115,8 @@ path it reads several dB low: for example, -19 for a -12 dB signal.
 
 | Part | Size |
 | --- | --- |
-| `ft8wf` | 3,930 B of code at -Oz, so the image is 3.9 KB of 4 KB |
-| `ft8rx` | 7,418 B |
+| `ft8wf` | 3,822 B of code at -Oz, so the image is 3.8 KB of 4 KB |
+| `ft8rx` | 7,234 B |
 
 The largest functions in `ft8rx`:
 
