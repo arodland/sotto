@@ -8,6 +8,7 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC = os.path.join(ROOT, "c", "k6", "mod", "i2sprobe.c")
+CAP = os.path.join(ROOT, "c", "k6", "mod", "i2scap.c")
 sys.path.insert(0, ROOT)
 from modem import k6mod  # noqa: E402
 
@@ -19,12 +20,13 @@ REFUSED = (0x30, 0x33, 0x36, 0x37)
 PERIOD = 400            # samples between modelled DFS edges
 
 
-def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True):
+def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
     lets a module change REG_33's GP0 bits (8 and 0); False = an image that refuses REG_33.
-    Returns (ret, said lines, registers at the end, writes)."""
+    model(sel, reads, regs) -> 0/1 replaces that GP0 model while GP0 drives. spare: the scratch
+    RAM the module is given. Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
     st = {"us": 0, "said": [], "writes": [], "reads": 0, "pin": 0}
@@ -34,7 +36,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True):
     ram = 0x20000000
     mu.mem_map(ram, 1 << 20)
     base, api, stubs, stop, sp0 = ram + 0x1000, ram + 0x8000, ram + 0x9000, ram + 0x9F00, ram + 0x7F00
-    code, entry = k6mod.build(SRC)
+    code, entry = k6mod.build(src)
     mu.mem_write(base, code)
     for i in range(len(NAMES)):
         mu.mem_write(stubs + 16 * i, b"\x70\x47")
@@ -50,6 +52,8 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True):
             sel = regs.get(0x34, 0) & 15
             if regs.get(0x33, 0) & 0x0100:
                 st["pin"] = 1
+            elif model:
+                st["pin"] = model(sel, st["reads"], regs)
             elif sel == 15:
                 st["pin"] ^= 1
             elif sel == 13 and regs.get(i2s_en[0], 0) & i2s_en[1]:
@@ -94,7 +98,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True):
             ret = st["us"] // 1000
         elif name == "scratch":
             ret = ram + 0x6000
-            uc.mem_write(r0, (1024).to_bytes(4, "little"))
+            uc.mem_write(r0, spare.to_bytes(4, "little"))
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
     mu.hook_add(unicorn.UC_HOOK_CODE, on_stub, begin=stubs, end=stubs + 16 * len(NAMES))
     mu.reg_write(A.UC_ARM_REG_R0, api)
@@ -161,3 +165,61 @@ def test_no_writes_unless_safe():
     assert regs[0x33] == 0xd300
     base = [ln for ln in said if ln.startswith("base")][0]   # the pull-up: high, no edges
     assert " e=0 " in base and base.split(" n=")[1].split()[0] == base.split(" h=")[1].split()[0]
+
+
+def cap_model(sel, reads, regs):
+    """12: a clock, 3 samples a half period; 13: one high sample in 32 (a frame pulse); with
+    REG_31 bit 0 a 64-sample frame; 14: 5 high, 7 low; 15: every sample; 9: every 20,000"""
+    if sel == 12:
+        return (reads // 3) & 1
+    if sel == 13:
+        return 1 if reads % (64 if regs.get(0x31, 0) & 1 else 32) == 0 else 0
+    if sel == 14:
+        return 1 if reads % 12 < 5 else 0
+    if sel == 15:
+        return reads & 1
+    if sel == 9:
+        return (reads // 20000) & 1
+    return 0
+
+
+@need_clang
+def test_cap_builds_fits_level_2():
+    code, entry = k6mod.build(CAP)
+    assert entry == 0 and k6mod.source_level(CAP) == 2
+    assert 16 + len(code) + 8 + 256 <= 4096, len(code)     # room for a 64-word capture at least
+
+
+@need_clang
+def test_cap_run_lengths():
+    ret, said, regs, writes = run(START, src=CAP, model=cap_model, spare=1424)
+    assert ret == 356, said
+    assert said[0].startswith("cap start 33=d300 words=356 caps=")
+    by = {}
+    tag = None
+    for ln in said[1:]:
+        if ln.startswith("cap ") and " runs=" in ln:
+            tag = ln.split()[1]
+            by[tag] = [ln]
+        elif tag:
+            by[tag].append(ln)
+    assert set(by) >= {"12", "13", "14", "15", "13+"}
+    assert by["12"][1] == " hi 3:" + str(int(by["12"][1].split(":")[1])) and by["12"][2].startswith(" lo 3:")
+    assert by["13"][1].startswith(" hi 1:") and by["13"][2].startswith(" lo 31:")
+    assert by["13+"][2].startswith(" lo 32:")             # 63 low samples count as 32+
+    assert by["14"][1].startswith(" hi 5:") and by["14"][2].startswith(" lo 7:")
+    assert by["15"][1].startswith(" hi 1:") and by["15"][2].startswith(" lo 1:")
+    assert " max=1/31" in by["13"][0]
+    slow = [ln for ln in said if ln.startswith("slow 09")][0]
+    assert " e=" in slow and int(slow.split(" e=")[1].split()[0]) > 2
+    d = said[said.index(slow) + 1]
+    assert set(d.split()[1:]) == {"20000"}
+    assert said[-1] == "cap done 34=0000 31=0000 33=d300"
+    assert regs[0x33] == 0xd300 and regs[0x34] == 0 and regs[0x31] == 0
+    assert {r for r, _ in writes} <= {0x34, 0x31, 0x33}
+
+
+@need_clang
+def test_cap_refused_on_old_image():
+    ret, said, regs, writes = run(START, src=CAP, model=cap_model, spare=1424, gp0_gate=False)
+    assert ret == -5 and "PR #68" in said[-1] and regs[0x33] == 0xd300
