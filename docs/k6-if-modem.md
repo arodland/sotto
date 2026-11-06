@@ -148,6 +148,88 @@ Per step there are about 250 bits (FFSK) or 500 (4FSK), so BER readings below 1%
 Whether the gain steps are clean dB doesn't matter, because the x-axis is the C/N0 measured from
 the captures.
 
+## The receiver on the MCU (`c/k6/ifrx.c`, `c/k6/mod/iflive.c`)
+
+`sim/k6if/mcu.py` is the receiver as the M0 would run it, in float; `c/k6/ifrx.c` is the same in
+integers (no division in the per-count path, no statics, so it builds into a module), and
+`c/k6/ifrx_tables.h` holds its filter and templates, made by `python3 -m sim.k6if.mcu --tables`.
+
+- **Front end.** A 24-tap complex filter (a 7 kHz low-pass turned up to the 16.9 kHz IF) is
+  worked out only at the counts the receiver samples, then turned down by the IF and the AFC
+  (a 17-entry quarter-wave sine table).
+- **Symbol-locked samples.** 18 a symbol at count `tau + round(i * pc / 18)`, `i = -1 .. 18`
+  (the ends are the early and late taps). A fixed decimation by 4 gave 17.87 samples a symbol
+  and lost about 1 dB to the FM's phase drift across the symbol.
+- **Matched filter.** One template per tone and audio start phase (2 phases for FFSK, 4 for
+  these 4FSK tones). The template for a phase half a turn on is the conjugate of the other (to
+  0.999), so only half are kept, and four sums per kept template give both correlations. That
+  halves the table and the multiplies. Templates are 4-bit re and im (-7..7, a byte a sample):
+  about 0.1 dB worse than 8-bit at 1% BER, and 144 B smaller.
+- **Timing.** Early-late on the winning template, `(|L|^2 - |E|^2) / 2|C|^2`, with squares (the
+  approximate magnitude biased the loop), gain 1/64 (1/16 for the first 128 lead symbols).
+- **AFC.** Decision-directed, from the turn between the winning template's two halves.
+  Before lock, a frequency-locked loop on the mean turn between samples. FM of zero-mean audio
+  keeps the IF's mean frequency on the carrier, but the tones bias the filtered estimate by
+  about -100 Hz on the model. So the loop only runs until a sweep has seen the lead.
+- **Acquisition.** The lead (tones 0 and M-1 in turn) has side peaks a quarter symbol out
+  (4FSK: 94% of the main peak). The symbol clock sweeps 12 offsets, 32 symbols each, scoring
+  the lead's fit. It takes the best offset when its fit clears 48/256 and agrees, to one step,
+  with the sweep before. A bare carrier scores up to 36, random FFSK data now and then more,
+  and the threshold was 20 until the model showed a carrier-then-lead start locking on a side
+  peak. The clock only moves forward: the old wrap, back 11 steps, left the receiver about 300
+  us of samples to catch up at once, longer than the DMA ring lasts. That only showed in the
+  emulated module.
+- **Lead check.** 256 symbols steered on the known lead (AFC gain x4). More than 8 misses in
+  the first 32, or 16 in any later 32, means a false start: it sweeps again.
+
+On the model, 1% BER (C/N0 dB-Hz, 0.6 s of bare carrier, then a 1.5 s lead, then data; the
+`ifrx.c` columns are the median of 4 runs at each C/N0, interpolated):
+
+| | study (float) | `mcu.py` | `ifrx.c` | `ifrx.c`, 164 Hz off |
+|---|---|---|---|---|
+| FFSK 1200 | 42.5 | 42.7 | 42.9 | 42.7 |
+| 4FSK 1200 | 45.2 | 45.1 | 45.6 | 45.5 |
+
+At 44 dB-Hz and 164 Hz off, 2 of the 4 4FSK runs went wrong: one never locked, and one ran at
+16% BER.
+
+Lock over 16 runs each at -300, -164, 0, 164 and 300 Hz: FFSK missed 1 (at +300), 4FSK 2 (at
++300). Without the frequency-locked loop, 4FSK missed 23 of 80, and the -300 Hz runs all
+failed. `tests/test_k6_ifrx.py` checks BER, no lock on a bare carrier, and lost counts passed
+over without losing the clock.
+
+**`iflive`** (`c/k6/mod/iflive.c` for 4FSK, `iflive_ffsk.c` for FFSK; API level 2, 4000 and
+3852 B of the 4072 the store holds) runs the receiver live. It waits for the carrier, times
+the DMA (4096 counts on TIM17), then decodes NG = 10 steps of 6 s. Each step is a gain step
+as in `gp0cap`, and each starts the receiver over on a fresh lead. So between steps it can
+print its line (about 5 ms) and set the gain without keeping the count index across the
+pause. The sender's `tools/k6_ifcap.py live 4fsk|ffsk` plays 10 segments of a 1.5 s lead
+plus 4.5 s of PN9 in one 60.5 s transmission, then the CW ID. Each step ends 4.5 s after its
+lock, before the next lead. The bits go through a self-synchronising PN9 check, so BER is about
+check fails / 3 / bits. `livelog LOG` prints the steps as a table.
+
+Fitting it into 4 KB (from 7.6 KB) took these changes:
+
+- the conjugate templates;
+- the 4-bit templates;
+- one line per step, and no pause bookkeeping;
+- the sweep's best kept on the fly;
+- a quarter-wave sine table;
+- `-fomit-frame-pointer` for every module (96 B here).
+
+**Emulated** (`tests/k6_live_emu.py`): the module runs on unicorn's Cortex-M0, at 1.5 cycles an
+instruction. Its DMA ring is filled from the model's sigma-delta bits at the K6's 5.49 MS/s,
+paced by the emulated clock. Over the full 10-step run, 164 Hz off:
+
+- **4FSK at 46 dB-Hz:** every step locked, 9,100 bits a step, BER 0.6-0.9%. Two steps were
+  near 5%: some lock slips mid-step, not yet looked into.
+- **FFSK at 44 dB-Hz:** BER 0.2-0.4% on every step.
+
+Both runs lost no counts, used 2.1 KB of stack (the K6 has 3.5 KB at a module's call), and
+kept 41% (4FSK) and 51% (FFSK) of the CPU idle. That is more CPU than the study's estimate,
+and it is the next thing to profile before the receiver can share the CPU with the sotto
+decoder.
+
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
 Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential

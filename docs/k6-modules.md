@@ -278,3 +278,23 @@ what would settle it.
       and the sotto decoder 55-63%. A word-at-a-time masked-add loop (about 1 cycle a sample)
       would bring the counting to about 6%.
     - Settled by: timing such a loop in a module (TIM17 counts cycles), as `gp0dma` already does.
+13. **Never move a symbol clock backwards in a streaming DMA receiver.**
+    - From: `iflive` in the emulator (2026-11-06). The acquisition sweep wrapped its clock back
+      11 steps (0.92 symbol), and the receiver then had about 300 us of samples to work
+      through at once. The DMA ring lasts 186 us, so 15 counts were lost at each wrap. Moving
+      forward to the same offset a symbol later costs nothing.
+    - Buys: no lost counts. The same applies to any module that re-times a stream (FT8, CW).
+    - Settled: yes, on the emulator (`tests/k6_live_emu.py` reports lost counts).
+14. **Re-acquire per step instead of timing pauses.**
+    - From: `iflive`. It starts the receiver over on a fresh lead every 6 s step, so it can
+      print and change gain between steps without the tick + TIM17 lap reckoning `gp0cap`-style
+      modules need. It saved about 200 B of code, and each run checks acquisition 10 times.
+    - Buys: simpler bench modules wherever the sender can repeat a preamble.
+    - Settled by: the first `iflive` bench run (every step should show `s=2`).
+15. **The IF receiver's CPU.**
+    - From: `iflive` on the emulator at 1.5 cycles an instruction: 4FSK leaves 41% idle and FFSK
+      51%. That is about twice the study's estimate, so it doesn't yet leave room for the sotto
+      decoder (55-63%).
+    - Buys: the live 4FSK voice pager.
+    - Settled by: a per-function profile on the emulator, then the bench's `i=` numbers.
+      Suspects are the per-count loop overhead and the 24-tap filter at 20 samples a symbol.

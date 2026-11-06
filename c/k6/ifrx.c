@@ -1,0 +1,365 @@
+/* ifrx: the K6's IF matched-filter receiver (ifrx.h). SPDX-License-Identifier: MIT */
+#include "ifrx.h"
+#include "ifrx_tables.h"
+
+/* sin(2 pi k / 64), Q14, k = 0..16 (a quarter turn) */
+static const int16_t ifrx_qs[17] = {0,     1606,  3196,  4756,  6270,  7723,  9102,  10394, 11585,
+                                    12665, 13623, 14449, 15137, 15679, 16069, 16305, 16384};
+
+static int32_t ifrx_sin(uint32_t k) {
+  int32_t v = ifrx_qs[(k & 16) ? 16 - (k & 15) : (k & 15)];
+  return (k & 32) ? -v : v;
+}
+
+/* IFRX_ONLY = IFRX_FFSK or IFRX_4FSK builds one mode, with its sizes as constants (smaller:
+   a K6 module); without it both, chosen at ifrx_init.
+   Templates come in pairs: the one for an audio start phase half a turn on is the conjugate
+   of the other (to 0.999 on the model), so only the first P/2 phases are kept, and one set of
+   four sums per kept template (wr tr, wi ti, wi tr, wr ti) gives both correlations. */
+#if defined(IFRX_ONLY) && IFRX_ONLY == IFRX_4FSK
+#define IFRX_MM(s) 4
+#define IFRX_HSH(s) 1
+#elif defined(IFRX_ONLY)
+#define IFRX_MM(s) 2
+#define IFRX_HSH(s) 0
+#else
+#define IFRX_MM(s) ((s)->M)
+#define IFRX_HSH(s) ((s)->hsh)
+#endif
+#define IFRX_NS(s) (IFRX_MM(s) << IFRX_HSH(s)) /* kept templates */
+
+#define IFRX_NOINLINE __attribute__((noinline))
+#define FSH 7 /* filter output scaling: a strong carrier (counts +-32) gives about 2000 */
+
+IFRX_NOINLINE static uint32_t ifrx_udiv(uint32_t n, uint32_t d) {
+  uint32_t q = 0, bit = 1;
+  if (!d) return 0;
+  while (d < n && !(d & 0x80000000u)) d <<= 1, bit <<= 1;
+  while (bit) {
+    if (n >= d) n -= d, q |= bit;
+    d >>= 1, bit >>= 1;
+  }
+  return q;
+}
+
+IFRX_NOINLINE static int32_t ifrx_sdiv(int32_t n, uint32_t d) {
+  return n < 0 ? -(int32_t)ifrx_udiv((uint32_t)-n, d) : (int32_t)ifrx_udiv((uint32_t)n, d);
+}
+
+static int32_t iabs(int32_t v) { return v < 0 ? -v : v; }
+
+/* |c| to within 7% (max + 3/8 min) */
+IFRX_NOINLINE static uint32_t approx_mag(const int32_t c[2]) {
+  uint32_t a = (uint32_t)iabs(c[0]), b = (uint32_t)iabs(c[1]);
+  return a > b ? a + (b >> 2) + (b >> 3) : b + (a >> 2) + (a >> 3);
+}
+
+/* the shift that brings every |v[0..n)| under 2^15, so a sum of two squares fits */
+IFRX_NOINLINE static int sh_of(const int32_t *v, int n) {
+  uint32_t mx = 0;
+  int sh = 0;
+  while (n--) mx |= (uint32_t)iabs(v[n]);
+  while ((mx >> sh) > 32767) sh++;
+  return sh;
+}
+
+IFRX_NOINLINE static int32_t clampi(int32_t v, int32_t lim) {
+  return v > lim ? lim : v < -lim ? -lim : v;
+}
+
+IFRX_NOINLINE static uint32_t sq(const int32_t c[2], int sh) {
+  int32_t a = c[0] >> sh, b = c[1] >> sh;
+  return (uint32_t)(a * a) + (uint32_t)(b * b);
+}
+
+/* n words at p to zero */
+IFRX_NOINLINE static void ifrx_zero(void *p, uint32_t n) {
+  while (n--) ((volatile uint32_t *)p)[n] = 0;
+}
+
+void ifrx_init(ifrx_t *s, int mode, uint32_t ks) {
+  uint32_t q;
+  ifrx_zero(s, sizeof(*s) / 4);
+#ifdef IFRX_ONLY
+  (void)mode;
+#if IFRX_ONLY == IFRX_4FSK
+  s->tm = &ifrx_t_4fsk[0][0][0];
+  s->M = 4, s->hsh = 1, s->k = 2;
+#else
+  s->tm = &ifrx_t_ffsk[0][0][0];
+  s->M = 2, s->hsh = 0, s->k = 1;
+#endif
+#else
+  if (mode == IFRX_4FSK) {
+    s->tm = &ifrx_t_4fsk[0][0][0];
+    s->M = 4, s->hsh = 1, s->k = 2;
+  } else {
+    s->tm = &ifrx_t_ffsk[0][0][0];
+    s->M = 2, s->hsh = 0, s->k = 1;
+  }
+#endif
+  s->gain_sh = 6;  /* 1/64 */
+  s->afc_sh = 5;   /* 1/32 */
+  if (ks < 3400) ks = 3400;
+  s->pc_q16 = ifrx_udiv(ks * 2560u, 3);  /* ks * 1000 / 64 / 1200 counts a symbol */
+  s->pc_q8 = s->pc_q16 >> 8;
+  s->step_q16 = ifrx_udiv(s->pc_q16, IFRX_TL);
+  q = ifrx_udiv(0xFFFFFFFFu, ks);
+  s->dphi_if = ifrx_udiv(q * 3250u, 3);  /* (26e6 / 1536) * 64 / (ks * 1000) turns */
+  s->dphi_max = (int32_t)(q * 96u);      /* 1.5 kHz */
+  s->k_afc = ifrx_udiv(85445660u >> s->afc_sh, s->pc_q8);
+  s->tau = IFRX_NT;
+  s->th_tau = IFRX_NT * s->dphi_if;
+  s->prev = -9;
+  s->i = -1;
+  s->ni = IFRX_NT - 1;
+}
+
+/* the filter's output at count m (in the ring), turned down by phase th */
+IFRX_NOINLINE static void sample(const ifrx_t *s, uint32_t m, uint32_t th, int16_t out[2]) {
+  int32_t re = 0, im = 0, co, si;
+  int k;
+  for (k = 0; k < IFRX_NT; k++) {
+    int c = s->ring[(m - (uint32_t)k) & (IFRX_RING - 1)];
+    re += ifrx_g[k][0] * c;
+    im += ifrx_g[k][1] * c;
+  }
+  re >>= FSH, im >>= FSH;
+  si = ifrx_sin(th >> 26);
+  co = ifrx_sin((th >> 26) + 16);
+  out[0] = (int16_t)((re * co + im * si) >> 14);
+  out[1] = (int16_t)((im * co - re * si) >> 14);
+}
+
+/* a template sample's re and im (4 bits each, -7..7) */
+#define IFRX_TRE(b) ((int32_t)(int8_t)(b) >> 4)
+#define IFRX_TIM(b) ((int32_t)((uint32_t)(b) << 28) >> 28)
+
+/* the four sums over the TL samples w[0..] against template t */
+IFRX_NOINLINE static void corr4(const int16_t (*w)[2], const uint8_t *t, int32_t a[4]) {
+  int i;
+  a[0] = a[1] = a[2] = a[3] = 0;
+  for (i = 0; i < IFRX_TL; i++) {
+    int32_t tr = IFRX_TRE(t[i]), ti = IFRX_TIM(t[i]);
+    a[0] += w[i][0] * tr;
+    a[1] += w[i][1] * ti;
+    a[2] += w[i][1] * tr;
+    a[3] += w[i][0] * ti;
+  }
+}
+
+/* the four sums -> w . conj(t) (cj 0) or w . t, the conjugate template's (cj 1) */
+IFRX_NOINLINE static void cof(const int32_t a[4], int cj, int32_t c[2]) {
+  int32_t r = cj ? a[0] - a[1] : a[0] + a[1], i = cj ? a[2] + a[3] : a[2] - a[3];
+  c[0] = r, c[1] = i;
+}
+
+static uint32_t ni_of(const ifrx_t *s, int i) {
+  return s->tau + (uint32_t)((int32_t)(s->tau_f + 0x8000u + (uint32_t)(i * (int32_t)s->step_q16)) >> 16);
+}
+
+/* move the symbol clock on by adv (Q16 counts) and start the next symbol */
+IFRX_NOINLINE static void advance(ifrx_t *s, int32_t adv) {
+  uint32_t old = s->tau;
+  int j;
+  adv += (int32_t)s->tau_f;
+  s->tau += (uint32_t)(adv >> 16);
+  s->tau_f = (uint32_t)adv & 0xFFFF;
+  s->th_tau += (s->tau - old) * (s->dphi_if + (uint32_t)s->dphi_f);
+  s->q++;
+  s->i = -1;
+  s->ni = ni_of(s, -1);
+  for (j = 0; j < IFRX_NS(s); j++) s->A[j][0] = s->A[j][1] = s->A[j][2] = s->A[j][3] = 0;
+}
+
+/* the acquisition's sweep, one symbol: the lead's fit for this offset. At the end of an
+   offset's IFRX_HSYMS symbols the clock moves on a step; at the end of a sweep, on to the first
+   offset a symbol later, or (it found the lead) to the best. Only ever forward: a move back
+   would leave the receiver a burst of samples to work through at once, longer than the DMA's
+   ring lasts on the K6. Returns the move, Q16 counts. */
+IFRX_NOINLINE static int32_t sweep(ifrx_t *s) {
+  int32_t m0 = (int32_t)(s->met[0] >> 5), m1 = (int32_t)(s->met[IFRX_MM(s) - 1] >> 5), step;
+  uint32_t j;
+  s->tot += (s->q & 1) ? m1 - m0 : m0 - m1;
+  s->norm += (uint32_t)(m0 + m1);
+  if (++s->hk < IFRX_HSYMS) return 0;
+  j = (uint32_t)iabs(s->tot); /* the best by its fit, not its share: a side peak's is high */
+  if (!s->h || j > s->bfit) s->bfit = j, s->bnorm = s->norm, s->bh = s->h, s->bpar = s->tot < 0;
+  s->tot = 0, s->norm = 0, s->hk = 0;
+  step = (int32_t)ifrx_udiv(s->pc_q16, IFRX_HYP);
+  if (++s->h < IFRX_HYP) return step;
+  s->h = 0;
+  s->acq_tries++;
+  s->acq_q = (int32_t)ifrx_udiv(s->bfit << 8, s->bnorm | 1);
+#ifdef IFRX_TRACE
+  IFRX_TRACE(s, s->bh);
+#endif
+  j = (uint32_t)iabs(s->bh - s->prev);
+  if (s->acq_q >= IFRX_ACQ_Q && (j <= 1 || j == IFRX_HYP - 1)) {
+    s->state = IFRX_LEAD;
+    s->acq_off = s->bh;
+    s->parity = s->bpar ^ 1; /* a symbol on from where it was measured */
+    s->nsym = 0;
+    s->lead_err = s->win_err = s->win_n = 0;
+    return (s->bh + 1) * step;
+  }
+  s->prev = s->acq_q >= IFRX_ACQ_Q ? s->bh : -9;
+  return step;
+}
+
+/* the better of a kept template's two correlations: magnitude, and which in *cj */
+IFRX_NOINLINE static uint32_t best2(const int32_t a[4], int *cj) {
+  int32_t c[2];
+  uint32_t m0, m1;
+  cof(a, 0, c);
+  m0 = approx_mag(c);
+  cof(a, 1, c);
+  m1 = approx_mag(c);
+  *cj = m1 > m0;
+  return m1 > m0 ? m1 : m0;
+}
+
+/* the symbol's samples are all in: decide, then move on to the next symbol */
+IFRX_NOINLINE static void finish(ifrx_t *s) {
+  int32_t a[4], X[6], Y[4], dt, im; /* X: early, late, on time; Y: the two halves */
+  uint32_t d;
+  int j, win, wcj, cj, tone, bt[4] = {0, 0, 0, 0}, bc[4] = {0, 0, 0, 0}, sh;
+  int lead = s->state == IFRX_LEAD;
+  const uint8_t *t;
+  /* each tone's best template (of its phases), and the best tone */
+  for (tone = 0; tone < IFRX_MM(s); tone++) s->met[tone] = 0;
+  for (j = 0; j < IFRX_NS(s); j++) {
+    uint32_t v = best2(s->A[j], &cj);
+    tone = j >> IFRX_HSH(s);
+    if (v >= s->met[tone]) s->met[tone] = v, bt[tone] = j, bc[tone] = cj;
+  }
+  for (tone = 0, j = 1; j < IFRX_MM(s); j++)
+    if (s->met[j] > s->met[tone]) tone = j;
+  s->sym = tone;
+  if (s->state == IFRX_ACQ) {
+    /* the carrier's offset, before the timing is known: FM of zero-mean audio keeps the IF's
+       mean frequency on the carrier whatever the tones, so the mean turn between successive
+       samples is the offset (a frequency-locked loop, 1/64 a symbol). Only until a sweep has
+       seen the lead: the tones bias it (about -100 Hz on the model, through the filter's
+       slope), and the decisions' AFC takes over once locked. Over 16 runs each at -300, -164,
+       0, 164 and 300 Hz, 4FSK missed 23 without it, 14 running it throughout, 2 this way */
+    int32_t fr = 0, fi = 0;
+    for (j = 0; j <= IFRX_TL; j++) {
+      int32_t ar = s->w[j][0], ai = s->w[j][1], br = s->w[j + 1][0], bi = s->w[j + 1][1];
+      fr += (br * ar + bi * ai) >> 4;
+      fi += (bi * ar - br * ai) >> 4;
+    }
+    if (fr > 0 && s->afc_sh && s->prev < 0) {
+      while (fr > 0x3FFFF) fr >>= 1, fi >>= 1;
+      fi = ifrx_sdiv(clampi(fi, fr) << 12, (uint32_t)fr); /* radians a sample, Q12 */
+      s->dphi_f = clampi(s->dphi_f + ((fi * (int32_t)s->k_afc * 9) >> 1), s->dphi_max);
+    }
+    advance(s, (int32_t)s->pc_q16 + sweep(s));
+    return;
+  }
+  s->nsym++;
+  if (lead) {
+    /* the lead's symbol is known: steer on its best template */
+    tone = ((s->q + (uint32_t)s->parity) & 1) ? IFRX_MM(s) - 1 : 0;
+    j = s->sym != tone;
+    s->lead_err += j;
+    s->win_err += j;
+    s->win_n++;
+  }
+  win = bt[tone], wcj = bc[tone];
+  /* timing: early (samples -1..TL-2) and late (1..TL) on the winning template,
+     (|L|^2 - |E|^2) / 2|C|^2 ~ (|L| - |E|) / |C| (squares: the approximate magnitude's error
+     depends on the phase, which would bias the loop) */
+  t = s->tm + win * IFRX_TL;
+  corr4((const int16_t (*)[2])s->w, t, a);
+  cof(a, wcj, X);
+  corr4((const int16_t (*)[2])(s->w + 2), t, a);
+  cof(a, wcj, X + 2);
+  cof(s->A[win], wcj, X + 4);
+  sh = sh_of(X, 6);
+  d = sq(X + 4, sh) >> 11;
+  dt = d ? ifrx_sdiv((int32_t)sq(X + 2, sh) - (int32_t)sq(X, sh), d) : 0; /* Q12 */
+  dt = (clampi(dt, 4096) * (int32_t)s->pc_q8) >> 4;                          /* x pc, Q16 */
+  dt >>= (lead && s->nsym < IFRX_LEAD_SYMS / 2) ? s->gain_sh - 2 : s->gain_sh;
+  s->terr = dt;
+  /* the AFC: the turn between the winning template's two halves, Im(c2 c1*) / mean |c|^2 */
+  cof(s->A1[win], wcj, Y);
+  Y[2] = X[4] - Y[0];
+  Y[3] = X[5] - Y[1];
+  sh = sh_of(Y, 4) + 1;
+  im = (Y[3] >> sh) * (Y[0] >> sh) - (Y[2] >> sh) * (Y[1] >> sh);
+  d = (sq(Y, sh) + sq(Y + 2, sh)) >> 13;
+  if (d && s->afc_sh)
+    s->dphi_f = clampi(s->dphi_f + ifrx_sdiv(im, d) * (int32_t)(s->k_afc << (lead << 1)),
+                       s->dphi_max);
+  if (lead) {
+    if (s->nsym >= IFRX_LEAD_SYMS) s->state = IFRX_TRACK;
+    if (s->win_n >= IFRX_WIN) {
+      /* a window of the lead that missed too often: the acquisition was wrong, sweep again
+         (the first window strictly: a false start on a bare carrier misses half its symbols) */
+      if (s->win_err > (s->nsym <= IFRX_WIN ? IFRX_WIN_BAD : IFRX_WIN / 2)) {
+        s->state = IFRX_ACQ;
+        s->h = s->hk = s->tot = 0, s->norm = 0, s->prev = -9;
+        s->acq_rej++;
+      }
+      s->win_err = s->win_n = 0;
+    }
+  }
+  advance(s, (int32_t)s->pc_q16 + dt);
+}
+
+IFRX_NOINLINE static void take(ifrx_t *s) {
+  int16_t *w = s->w[s->i + 1];
+  uint32_t th = s->th_tau + (uint32_t)((int32_t)(s->ni - s->tau) * (int32_t)(s->dphi_if + (uint32_t)s->dphi_f));
+  sample(s, s->ni, th, w);
+  if (s->i >= 0 && s->i < IFRX_TL) {
+    const uint8_t *t = s->tm + s->i;
+    int32_t wr = w[0], wi = w[1];
+    int j;
+    for (j = 0; j < IFRX_NS(s); j++, t += IFRX_TL) {
+      int32_t *a = s->A[j], tr = IFRX_TRE(*t), ti = IFRX_TIM(*t);
+      a[0] += wr * tr;
+      a[1] += wi * ti;
+      a[2] += wi * tr;
+      a[3] += wr * ti;
+    }
+    if (s->i == IFRX_TL / 2 - 1) {
+      int32_t *d = &s->A1[0][0], *e = &s->A[0][0];
+      for (j = 0; j < IFRX_NS(s) * 4; j++) d[j] = e[j];
+    }
+  }
+}
+
+int ifrx_push(ifrx_t *s, int c) {
+  uint32_t last;
+  int done = 0;
+  s->ring[s->n & (IFRX_RING - 1)] = (int8_t)c;
+  last = s->n++;
+  while ((int32_t)(last - s->ni) >= 0) {
+    if (last - s->ni > IFRX_RING - IFRX_NT - 1) {
+      /* this symbol's counts are gone (a skip): pass it over */
+      s->slips++;
+      s->gap = 1;
+      advance(s, (int32_t)s->pc_q16);
+      continue;
+    }
+    take(s);
+    if (s->i == IFRX_TL) {
+      finish(s);
+      done = s->state != IFRX_ACQ;
+    } else {
+      s->i++;
+      s->ni = ni_of(s, s->i);
+    }
+  }
+  return done;
+}
+
+void ifrx_skip(ifrx_t *s, uint32_t nskip) {
+  /* zeros in place of the lost counts: the filter rings down rather than on stale ones */
+  uint32_t k;
+  for (k = 0; k < nskip && k < IFRX_RING; k++) s->ring[(s->n + k) & (IFRX_RING - 1)] = 0;
+  s->n += nskip;
+}
+
+int ifrx_afc_hz(const ifrx_t *s) { return ifrx_sdiv(s->dphi_f, 50069u); }

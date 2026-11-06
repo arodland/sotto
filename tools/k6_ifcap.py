@@ -9,6 +9,10 @@ the IF matched filter, so the two meet the same samples.
   python3 tools/k6_ifcap.py analyze LOG         per pass and gain step: C/N0, BER disc vs IF
   python3 tools/k6_ifcap.py simlog OUT.log      a log as gp0cap would print it, from the study's
                                                 model (sim/k6if) at stepped C/N0: checks analyze
+  python3 tools/k6_ifcap.py live 4fsk|ffsk      key the IC-7100 for the iflive module (c/k6/mod/
+        [--dry-run] [--wav OUT]                 iflive.c, iflive_ffsk.c): 10 segments of 6 s, each
+                                                a 1.5 s lead then PN9, one a gain step
+  python3 tools/k6_ifcap.py livelog LOG         iflive's lines as a table: BER, lock, AFC, CPU
 
 Each pass is 1 s of alternating symbols (the module waits 2 s after the carrier), then the PN9
 sequence (x^9 + x^5 + 1, all-ones seed, period 511) over and over: one bit a symbol in FFSK
@@ -67,6 +71,20 @@ def pass_audio(mode, secs=PASS_S):
     return x
 
 
+LIVE_SEGS, LIVE_SEG_S, LIVE_LEAD_S = 10, 6.0, 1.5   # iflive.c's NG, STEP_MS, LEAD_MS
+
+
+def live_audio(mode, segs=LIVE_SEGS, seg_s=LIVE_SEG_S, lead_s=LIVE_LEAD_S):
+    """iflive's run: segs segments of seg_s, each a lead (tones 0 and M-1 in turn) then PN9, and
+    0.5 s of the last segment's PN9 over (the module's last step ends a little after it)"""
+    nseg, nlead = int(seg_s * mode.baud), int(lead_s * mode.baud) // 2 * 2
+    lead = np.tile([0, mode.M - 1], nlead // 2)
+    seg = np.concatenate([lead, np.resize(pn_symbols(mode), nseg - nlead)])
+    syms = np.concatenate([np.tile(seg, segs), seg[nlead:nlead + int(0.5 * mode.baud)]])
+    x, _ = mode.audio(syms)
+    return x
+
+
 def write(path, x):
     with wave.open(path, "wb") as w:
         w.setnchannels(1)
@@ -106,11 +124,67 @@ def key_and_play(a, path):
         rig(a, "T", 0)
 
 
-def cmd_run(a):
+def rig_setup(a):
     f = rig(a, "f")
     if not a.dry_run and int(f) != a.freq:
         sys.exit(f"IC-7100 on {f} Hz, not {a.freq}: set both radios to the same frequency first")
     rig(a, "M", "PKTFM", 0)
+
+
+def cw_id(a, d):
+    from modem import k6
+    p = os.path.join(d, "id.wav")
+    write(p, k6.cw(a.call + " SOTTO TEST", FSA))
+    print(f"{time.strftime('%H:%M:%S')} CW ID", flush=True)
+    key_and_play(a, p)
+
+
+def cmd_live(a):
+    name = a.mode
+    mode = next(m for n, m in PASSES.values() if n == name)
+    x = live_audio(mode)
+    if a.wav:
+        write(a.wav, x)
+        print("wrote", a.wav, f"({len(x) / FSA:.1f} s)")
+        return
+    rig_setup(a)
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, f"live-{name}.wav")
+        write(p, x)
+        print(f"{time.strftime('%H:%M:%S')} live {name}: {len(x) / FSA:.1f} s", flush=True)
+        key_and_play(a, p)
+        time.sleep(1.0)
+        cw_id(a, d)
+
+
+def parse_live(lines):
+    """iflive's lines -> dict (ks, rx) and a list of step dicts"""
+    head, steps = {}, []
+    for ln in lines:
+        m = re.search(r"say live ks=(\d+) rx=(\d+)", ln)
+        if m:
+            head = dict(ks=int(m.group(1)), rx=int(m.group(2)))
+        m = re.search(r"say l (\d+) ((?:\w=-?\d+ ?)+)\s*$", ln)
+        if m:
+            d = dict(step=int(m.group(1)))
+            d.update({k: int(v) for k, v in re.findall(r"(\w)=(-?\d+)", m.group(2))})
+            steps.append(d)
+    return head, steps
+
+
+def cmd_livelog(a):
+    head, steps = parse_live(open(a.log, errors="replace").read().splitlines())
+    if head:
+        print(f"DMA {head['ks']} kS/s, receiver state {head['rx']} B")
+    print("step  bits    errs   BER        RSSI  AFC Hz  lock  fit  sweeps rej  lost  idle%")
+    for d in steps:
+        ber = d["e"] / 3 / d["b"] if d["b"] else float("nan")
+        print(f"{d['step']:4d} {d['b']:6d} {d['e']:6d}   {ber:9.2e} {d['r']:5d} {d['f'] * 65536 / 50069:7.0f}"
+              f"  {'yes' if d['s'] else 'no ':4s} {d['q']:4d} {d['w']:6d} {d['j']:3d} {d['L']:5d} {d['i']:5d}")
+
+
+def cmd_run(a):
+    rig_setup(a)
     with tempfile.TemporaryDirectory() as d:
         for _, (name, mode) in PASSES.items():
             p = os.path.join(d, f"{name}.wav")
@@ -118,11 +192,7 @@ def cmd_run(a):
             print(f"{time.strftime('%H:%M:%S')} pass {name}: {PASS_S:.0f} s", flush=True)
             key_and_play(a, p)
             time.sleep(4.0)
-        from modem import k6
-        p = os.path.join(d, "id.wav")
-        write(p, k6.cw(a.call + " SOTTO TEST", FSA))
-        print(f"{time.strftime('%H:%M:%S')} CW ID", flush=True)
-        key_and_play(a, p)
+        cw_id(a, d)
 
 
 # ---- the log ----
@@ -360,13 +430,20 @@ def main():
     w = sub.add_parser("wav")
     w.add_argument("outdir")
     w.set_defaults(fn=cmd_wav)
-    r = sub.add_parser("run")
-    r.add_argument("--freq", type=int, default=440850000)
-    r.add_argument("--rigctld", default="localhost:4532")
-    r.add_argument("--device", default="alsa_output.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.analog-stereo")
-    r.add_argument("--call", default="AG7EW")
-    r.add_argument("--dry-run", action="store_true")
-    r.set_defaults(fn=cmd_run)
+    for nm, fn in (("run", cmd_run), ("live", cmd_live)):
+        r = sub.add_parser(nm)
+        if nm == "live":
+            r.add_argument("mode", choices=["4fsk", "ffsk"])
+            r.add_argument("--wav", help="write the audio here instead of sending it")
+        r.add_argument("--freq", type=int, default=440850000)
+        r.add_argument("--rigctld", default="localhost:4532")
+        r.add_argument("--device", default="alsa_output.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.analog-stereo")
+        r.add_argument("--call", default="AG7EW")
+        r.add_argument("--dry-run", action="store_true")
+        r.set_defaults(fn=fn)
+    ll = sub.add_parser("livelog")
+    ll.add_argument("log")
+    ll.set_defaults(fn=cmd_livelog)
     z = sub.add_parser("analyze")
     z.add_argument("log")
     z.add_argument("--ncap", type=int, default=2160)
