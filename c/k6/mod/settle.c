@@ -11,8 +11,9 @@
    from 0 to 20 ms, 4 times each. The reference is the reading after 30 ms. The settle time is
    the first t from which every later reading is within 2 dB of it.
 
-   It waits up to 60 s for the carrier: RSSI 15 dB above the level when it started. Any key
-   stops it. Output, on the serial report (K6 MOD say ...):
+   If it starts on a carrier (above -100 dBm: the sender still repeating the module's chunks),
+   it first waits for that to drop. Then it waits up to 60 s for the test carrier: RSSI 15 dB
+   above that floor. Any key stops it. Output, on the serial report (K6 MOD say ...):
      settle 10k W ref -61 dBm 700 us        one per case
      curve 10k W 0:-118 100:-118 ... 20000:-61   (dBm per t in us, mean of the 4)
      probe on|off 63=.. 64=.. 65=.. 6f=.. 4f=..   noise/glitch/AF registers, carrier on and off
@@ -28,6 +29,7 @@
 #define PARK_US 5000
 #define REF_US 30000
 #define TOL_DB 2
+#define NOISE_MAX_DBM (-100)
 
 static char *put(char *p, const char *s) {
   while (*s) *p++ = *s++;
@@ -167,6 +169,22 @@ int k6_main(const k6_api_t *api) {
   api->tune(f, 1);
   api->delay_us(REF_US);
   base = level(api, 8);
+  /* the sender's own carrier may still be up (it repeats the module's chunks after the last one
+     we needed): a start above -100 dBm is a carrier, not the noise floor. Wait for it to go. */
+  if (base > NOISE_MAX_DBM) {
+    api->say("settle: waiting for the sender's carrier to drop");
+    t0 = api->ms();
+    while (rssi(api) > base - 15) {
+      if (api->key_down()) return -2;
+      if (api->ms() - t0 > 60000) {
+        api->say("settle: the sender's carrier stayed up 60 s");
+        return -1;
+      }
+      api->delay_us(10000);
+    }
+    api->delay_us(200000);
+    base = level(api, 8);
+  }
   p = put(line, "settle: waiting for a carrier on ");
   p = mhz(p, f);
   p = put(p, " MHz, now ");
