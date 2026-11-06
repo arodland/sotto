@@ -80,6 +80,7 @@ int k6_main(const k6_api_t *api) {
   p = kv(put(line, "ft8wf start"), " nb=", FT8_NB);
   p = kv(p, " f=", FT8_AUDIO);
   p = kv(p, " inv=", FT8_INV);
+  p = hex4(put(p, " afc="), api->fd_read(0x73));
   say0(api, line, p);
   p = rx_gain(api, &sv, &r, &r2, put(line, "ft8wf gain"));
   say0(api, line, p);

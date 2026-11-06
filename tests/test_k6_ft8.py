@@ -241,6 +241,8 @@ def emulate(src, regs, sig):
             ret = st["us"] // 1000
         elif name == "rx_hz":
             ret = 440_850_000
+        elif name == "tune":
+            sim.setdefault("tunes", []).append((r0, r1, regs.get(0x73, 0)))
         elif name == "scratch":
             ret = ram + 0x6000
             uc.mem_write(r0, (400).to_bytes(4, "little"))
@@ -299,7 +301,9 @@ def test_ft8wf_streams_a_tone(tmp_path):
     def sig(t, regs):
         return 0.5 + 0.3 * np.cos(2 * np.pi * TONE * t)
     ret, said, regs, writes, stack, (rcc, tim, dma, sim) = emulate(ft8wf_short(tmp_path), START, sig)
-    assert said[0] == "ft8wf start nb=32 f=1520 inv=0", said
+    assert said[0].startswith("ft8wf start nb=32 f=1520 inv=0 afc="), said
+    assert int(said[0].split("afc=")[1], 16) & 0x10, said
+    assert sim["tunes"] == [(440_850_000, 0, 0x4691 | 0x10)], sim.get("tunes")  # RXON, AFC off
     assert said[1].startswith("ft8wf gain rms=") and " g=" not in said[1], said
     f = dict(kv.split("=") for kv in said[1].split()[2:])
     assert f["r2"] in ("27", "28") and 5600 <= int(f["ks"]) <= 5800, f
@@ -401,3 +405,25 @@ def test_tone_finds_the_if_side(tmp_path, mirrored):
     want = 1500 - 22 + (11 if mirrored else -11)
     assert abs(r["f0"] - want) < 15, r
     assert r["module"] == ("ft8wf_inv" if mirrored else "ft8wf")
+
+
+def test_track_finds_a_steady_tone(tmp_path, capsys):
+    """tools/k6_ft8.py track: the strongest bin per second of an ft8wf log"""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import k6_ft8
+    nb = 32
+    row = bytearray([0x44] * (nb // 2))
+    row[21 // 2] = 0xF4                       # bin 21 (odd: the high nibble) at 15
+    lines = ["K6 MOD say ft8wf start nb=32 f=1500 inv=0 afc=4691"]
+    for n in range(0, 50, 2):
+        lines.append("K6 MOD say w %d %s" % (n, base64.b64encode(bytes(row) * 2).decode()))
+    log = tmp_path / "wf.log"
+    log.write_text("\n".join(lines) + "\n")
+
+    class A:
+        pass
+    a = A()
+    a.log, a.every = str(log), 1.0
+    k6_ft8.cmd_track(a)
+    out = capsys.readouterr().out.splitlines()
+    assert out[1].split()[1:3] == ["21", "1531.2"], out

@@ -325,8 +325,10 @@ what would settle it.
     - Run 1 on air (2026-11-06): the IF offset is +11 Hz, well inside the 200 Hz window. The
       noise rms reached only 4.1 at the top gain step (the sim assumed 8), so expect the sim's
       floor-0.06 numbers (-16 dB 42%). No decodes: the ring overran (see 19).
-    - Run 2: no overruns, but no tones in the window; a mirrored IF is the suspect (run 3's
-      tone capture, `tools/k6_ft8.py tone`, settles it).
+    - Run 2: no overruns, but no tones in the window. Run 3's raw-IF capture showed why: the
+      sideband is upright, but the chip's AFC pulls a USB tone toward the IF's centre (time
+      constant about 30 s). REG_73 bit 4 alone didn't stop it; ft8wf now retunes (RXON) after
+      setting it, as REG_38/3B need.
     - Untested: the K6 crystal's drift over 2 minutes, which decides WSPR at 440 MHz.
     - Buys: a weak-signal mode on the pager's own hardware, and a first user of a bigger arena.
     - Settled by: the bench run in k6-ft8-wspr.md, and a 10-minute IF log of a bare carrier.

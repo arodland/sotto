@@ -151,7 +151,7 @@ A decode in `ft8rx` adds a short burst; its pause is zero-filled like any other.
 **Its serial lines:**
 
 ```
-ft8wf start nb=32 f=1500 inv=0
+ft8wf start nb=32 f=1500 inv=0 afc=4691                 (afc = REG_73 after the RXON)
 ft8wf gain rms=4.7 g=03ff rms=9.1 r2=27 ks=5490     (noise rms at the AGC, at the gain chosen)
 w 0 <44 base64 chars>                              (two 80 ms rows of 16 bytes, numbered)
 ft8wf st t=15 lost=0 ks=5492 flo=812 idle=30       (every 15 s; lost = DMA ring overruns,
@@ -218,6 +218,28 @@ Run at 15:20 UTC with Jeff listening on another radio. FT8 went at `--f0 1468`, 
   slot-aligned to the UTC 15 s boundaries so WSJT-X on another radio can decode it too.
 
 ft8wf now runs 180 s by default (it was 300 s, more than a test needs).
+
+## Bench run 3 (2026-11-06): the AFC pulls the tone, the sideband is upright
+
+gp0cap (which leaves the AFC as the pager has it) recorded the raw IF while the IC-7100 sent a
+steady 1000 Hz tone in USB. Pass 2's 2000 Hz tone never ran: the 80 s tone outlasted pass 1's
+100 captures, and pass 2's wait for the carrier to drop timed out (ret -6). Use about 45 s
+tones with gp0cap.
+
+- **Upright.** The first capture, 2.5 s after key-up, put the tone at 17,874 Hz, about
+  16,927 + 1,000. A mirrored IF would have put it near 15,900.
+- **The tone slid toward the nominal IF**: 17,874, 17,639 (8.8 s), 17,398 (22 s), 17,241 (35 s),
+  17,172 Hz (43 s), smoothly across the gain steps. An exponential through those points settles
+  at about 16,968 Hz with a time constant of about 30 s. That is the chip's AFC pulling the
+  strongest signal (here the tone) to the centre of the IF, not either radio drifting.
+- **That explains run 2.** ft8wf set REG_73 bit 4 (the guide's afc_disable), but run 2's FT8
+  left the window within seconds, the way an active AFC would pull it: from +1,490 Hz the tones
+  pass the window's lower edge (-100 Hz) after about 2 s. The chip latches REG_38 and REG_3B
+  until RXON (xtalstep), and the AFC bit evidently too. ft8wf now sets the bit, then retunes to
+  the same frequency (`api->tune`, which does RXON) before it starts, and prints REG_73 as
+  `afc=` on its start line.
+- **Next run:** ft8wf with a 30 s steady tone at 1,490 Hz first (`tools/k6_ft8.py track LOG`
+  should show it holding one bin), then FT8 at `--f0 1468`.
 
 ## Bench steps
 

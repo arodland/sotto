@@ -8,6 +8,8 @@
   python3 tools/k6_ft8.py wav OUT.wav [--text "CQ AG7EW CN87"] [--f0 1480] [--repeat 4]
                                                    FT8 audio to send in USB from the IC-7100
                                                    (12 kHz mono, a transmission every 15 s)
+  python3 tools/k6_ft8.py track LOG [--every 1]     ft8wf: the strongest bin each second (a steady
+                                                   tone should hold still in one bin)
   python3 tools/k6_ft8.py tonewav OUT.wav --hz 1000 [--secs 60]
                                                    a steady tone to send in USB
   python3 tools/k6_ft8.py tone LOG --hz 1000 2000  where USB audio lands on the K6's IF: a
@@ -99,6 +101,30 @@ def cmd_decode(a):
         print("t=%6.2f f=%7.1f s=%3d score=%3d it=%2d  %s" % (d["t"], d["f"], d["snr"],
                                                              d["score"], d["iters"], d["text"]))
     print("%d decodes" % len(res))
+
+
+def unpack(rows, nb):
+    """rows -> list of per-row bin levels (low nibble = even bin)"""
+    rb = nb // 2
+    out = []
+    for i in range(0, len(rows) - rb + 1, rb):
+        r = rows[i:i + rb]
+        out.append([v for b in r for v in (b & 15, b >> 4)])
+    return out
+
+
+def cmd_track(a):
+    start, rows, lost = parse(a.log)
+    nb, f = int(start["nb"]), int(start.get("f", 1500))
+    lv = unpack(rows, nb)
+    per = max(1, int(round(a.every / 0.08)))
+    print("   t   bin    Hz   level  mean")
+    for i in range(0, len(lv) - per + 1, per):
+        blk = lv[i:i + per]
+        tot = [sum(r[b] for r in blk) / per for b in range(nb)]
+        b = max(range(nb), key=lambda j: tot[j])
+        print("%5.1f  %3d  %6.1f  %5.1f  %5.2f" % (i * 0.08, b, f + (b - nb // 2) * 6.25, tot[b],
+                                                  sum(tot) / nb))
 
 
 def cmd_rows(a):
@@ -204,6 +230,9 @@ def main():
     p.add_argument("--f0", type=float, default=1480.0)  # tones 1480-1524: the middle of the window
     p.add_argument("--repeat", type=int, default=4)
     p.add_argument("--peak", type=float, default=0.5)
+    p = sub.add_parser("track")
+    p.add_argument("log")
+    p.add_argument("--every", type=float, default=1.0)
     p = sub.add_parser("tone")
     p.add_argument("log")
     p.add_argument("--hz", type=float, nargs=2, default=[1000.0, 2000.0])
@@ -213,7 +242,7 @@ def main():
     p.add_argument("--secs", type=float, default=60.0)
     p.add_argument("--peak", type=float, default=0.5)
     a = ap.parse_args()
-    {"decode": cmd_decode, "rows": cmd_rows, "wav": cmd_wav, "tone": cmd_tone,
+    {"decode": cmd_decode, "rows": cmd_rows, "wav": cmd_wav, "tone": cmd_tone, "track": cmd_track,
      "tonewav": cmd_tonewav}[a.cmd](a)
 
 

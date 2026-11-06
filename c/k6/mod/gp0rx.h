@@ -268,6 +268,12 @@ static int rx_setup(const k6_api_t *api, saved_t *sv, rx_t *r, uint8_t *ring) {
   }
   api->fd_write(0x34, (uint16_t)((sv->r34 & 0xFFF0) | 13));
   api->fd_write(0x73, (uint16_t)(sv->r73 | 0x0010)); /* AFC off: it would chase the tones */
+  /* and RX on again, for the AFC-off to take hold: run 3 (2026-11-06) saw a steady USB tone's
+     IF slide ~700 Hz in 43 s towards the nominal IF (an AFC's pull, time constant ~30 s), and
+     with the bit set but no RXON (run 2) FT8 still left the window within seconds. The chip
+     latches REG_38/3B the same way (xtalstep). Same frequency and filter (REG_43 = Aura's wide
+     0x3028 or narrow 0x4048) */
+  api->tune(api->rx_hz(), api->fd_read(0x43) == 0x3028);
   wr(RCC_APB2ENR, sv->apb2 | TIM17EN);
   /* TIM17 free-running at 96 MHz with its update request on (the DMA runs flat out anyway) */
   wr(TIM17 + 0x00, 0);
