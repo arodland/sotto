@@ -29,11 +29,10 @@ radio today, and what is still waiting on a bench run, a firmware change or a de
   AFC chasing the tones (REG_73 bit 4 only takes hold after RXON). With the AFC off the K6 sits
   145 Hz low at 440.850, so the PC aims the audio at `--f0 1624`. Drift was a few Hz a minute.
   See "Bench run 5".
-- **FT8 transmit: `ft8tx` is built and emulated, not yet on air.** The K6 sends one frame as
-  audio FSK on FM from the chip's tone oscillator (REG_70/71, 5 ms GFSK steps), then AG7EW in
-  MCW, in about 17.5 s under the level 3 API's 20 s cap. On the emulated M0 its REG_71 words
-  decode back to `CQ AG7EW CN87`. Open: whether `tx_on`'s REG_30 (0xC1FA, no AF DAC bit) lets
-  the tone reach the carrier (see "FT8 transmit").
+- **FT8 transmit works on air (bench run 6, 2026-11-06): the K6 sent `CQ AG7EW CN87` itself and
+  the IC-7100 decoded it at snr -14.** `ft8tx` (1.4 KB) sends one frame as audio FSK on FM from
+  the chip's tone oscillator (REG_70/71, 5 ms GFSK steps), then AG7EW in MCW, in 16.6 s under
+  the level 3 API's 20 s cap. `tx_on`'s REG_30 carries the tone: no firmware change.
 - **WSPR:**
   - Receive is feasible in RAM and CPU.
   - At 440 MHz it hinges on drift over 2 minutes. Run 5 measured 0.05-0.17 Hz/s (K6 and
@@ -362,9 +361,9 @@ are the options, none tried:
 4. **The RAM at 0x20005560-0x20005FFF** (2.7 KB) may be unused by Aura. That is unverified, and
    probing it is risky, since RAM below Aura's region hangs boot.
 
-## FT8 transmit: `ft8tx` (built, emulated, not yet on air)
+## FT8 transmit: `ft8tx` (works on air, bench run 6)
 
-`c/k6/mod/ft8tx.c` (1.5 KB, API level 3) makes the K6 send one FT8 frame itself, as audio FSK
+`c/k6/mod/ft8tx.c` (1.4 KB, API level 3) makes the K6 send one FT8 frame itself, as audio FSK
 on FM from the FD6818's tone oscillator, then identify. The IC-7100 in FM receives it, and the PC
 decodes the IC-7100's audio. What the module does:
 
@@ -390,16 +389,32 @@ decodes the IC-7100's audio. What the module does:
 written but REG_70/71 and both left at 0, and every way out keying down. Played back as audio,
 the REG_71 words decode to `CQ AG7EW CN87` at 1,500 Hz with the K6's own receiver.
 
-**What only the air can answer:**
+**Bench run 6 (2026-11-06, 18:57 UTC): the K6 sent FT8, and the IC-7100 decoded it.** The
+IC-7100 sent the upload (12 chunks, one pass, one r=-1 line), then only listened, in FM-D with
+the squelch open, recording its USB audio at 48 kHz. The K6 waited for the clear channel and
+keyed up for 16.6 s (`K6 MOD tx on hz=440850000 max=17460 ms`, then `ft8tx sent sym=79
+ms=12640 id=52`, `ret=79`).
 
-- **Does the tone reach the carrier?** `tx_on` leaves REG_30 at 0xC1FA (Aura's TX state, mic
-  ADC off). Aura's own tone, APRS AFSK and SSTV transmitters use 0xC3FA, which adds bit 9 (the
-  AF DAC). If 0xC1FA carries no tone, the IC-7100 hears a bare carrier for 17 s, with the MCW
-  silent too. Then `tx_on` needs a tone option (a firmware change and a reflash), since modules
-  can't write REG_30.
-- **Deviation.** Tone gain 60 is Aura's; the IC-7100's audio level will say whether it suits.
-- **Phase continuity** across REG_71 writes. The decode would suffer if the oscillator reset
-  its phase on every write.
+- **Decode:** `python3 -m sim.k6digi.ft8_wav rec6.wav` gave `CQ AG7EW CN87` at 1500 Hz, snr -14,
+  the same over 200-3000 Hz.
+- **Tones:** the strongest peak in each 160 ms symbol reads back all 79 tone indices exactly,
+  1500.0-1543.8 Hz, with the three Costas arrays at symbols 0, 36 and 72.
+- **Levels (dBFS):** frame -15.5 RMS with the tone at -28 and its 2nd harmonic at -61; the
+  300 ms lead-in and the 400 ms gap are carrier quieting only (-36, -67); the MCW ID is 800 Hz
+  at -18, 64 dB over the median, with clean keying.
+- **So the tone reaches the carrier with `tx_on`'s REG_30 = 0xC1FA.** The AF DAC bit (9) that
+  Aura's tone transmitters set isn't needed for TX; it is probably the sidetone to the speaker.
+  No firmware change. Phase continuity across REG_71 writes is good enough for a clean decode.
+- **`tx_on` blocks about 1.4 s** (Aura's `enter_tx`: band switch, PLL, PA): the RF came up 1.4 s
+  after the `tx on` line, and the module's 300 ms lead-in ran after that, as designed, since it
+  times from `tx_on`'s return. The 17.46 s limit held.
+- The IC-7100's USB audio stays muted for about 1.8 s after its own unkey, so a recording
+  misses the K6's first 1.8 s if the K6 keys up sooner. The 1 s clear wait plus `tx_on`'s 1.4 s
+  covers it.
+
+**Still open:** a level sweep (FT8_GAIN against the IC-7100's audio and the decode margin),
+weak-signal reception at a distance, longer messages than CQ (a rebuild each), and timing the
+key-up to a 15 s UTC slot for WSJT-X (the host would schedule the upload).
 
 **Bench steps** (the K6 transmits; the IC-7100 only receives):
 
