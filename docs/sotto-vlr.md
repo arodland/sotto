@@ -3,7 +3,8 @@
 *2026-11-06. Python reference `sim/sotto_vlr.py` (`SottoVLR("600")`, `SottoVLR("400")`), tables
 `sim/data/vlr_tables.npz` from `tools/train_vlr.py`, scores from `tools/vlr_race.py`. Float C
 encoder `c/sotto_vlr.c` (in libsotto, `sotto_enc -600/-400`), fixed-point decoder
-`c/fixed/sotto_fx_vlr.c`. Listening round 20: see below.*
+`c/fixed/sotto_fx_vlr.c`. Listening round 20 (Jeff): sotto 600 beat Codec 2 700C 3-0 and
+Codec 2 1200 2-0; sotto 400 split 1-1 with 700C.*
 
 ## The short answer
 
@@ -234,7 +235,22 @@ https://claude.ai/artifact/HsbfSvv453Dk2hMTywm1v7:
 - a null pair
 
 The page was rendered before the tables' int8 rounding (2.094 rather than 2.097 PESQ for
-sotto 600). Results: pending.
+sotto 600). Jeff, 2026-11-06:
+
+| Pairs | sotto wins | ties | other wins |
+|---|---:|---:|---:|
+| sotto 600 against Codec 2 700C (3) | 3 | 0 | 0 |
+| sotto 600 against Codec 2 1200 (2) | 2 | 0 | 0 |
+| sotto 400 against Codec 2 700C (2) | 1 (ears p025_m) | 0 | 1 (6313_f) |
+| sotto 600 against sotto 400 (1) | 1 (600) | 0 | 0 |
+| sotto 600 against sotto 1200, clean (1) | 0 | 1 (777_m) | 0 |
+| sotto 600 against sotto 1200, 1 XL packet in 8 lost (1) | 0 | 0 | 1 (1200) |
+| null pair | | correct | |
+
+By ear sotto 600 does better than PESQ says: it beat Codec 2 700C every time, beat Codec 2 1200
+at half its rate (PESQ called that level), and tied sotto 1200 on one clean clip. With packet
+loss sotto 1200 is better, as expected: a lost 600 slot takes 80 ms of speech, not 40. sotto
+400 splits with Codec 2 700C, matching PESQ.
 
 ## Use
 
@@ -259,7 +275,6 @@ y = v.decode_audio(bits, good=None)   # good: per-superframe flags
 ## Open
 
 - On air: flash `aura-pager-vlri`, then send a sotto 600 and a sotto 400 message and check `pcm=`.
-- Ears: round 20.
 - References that need an outside build: Codec 2 450, MELPe 600.
 - Not tried: a residual for the interpolated frames (as sotto 1200's B frame), which needs bits
   taken from the anchors; variable anchor positions; the 4-8 kHz hiss band.
