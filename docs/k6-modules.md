@@ -184,3 +184,57 @@ K6 MOD say settle: done in 6328 ms, worst on-case 1500 us
 and AF registers (0x63 0x64 0x65 0x6f 0x4f) and the status (0x0c) with the carrier on and off,
 for the next step, the noise-based quick check. The return value is the worst settle time
 in us of the cases that arrive on the carrier, -1 if no carrier came, -2 if a key stopped it.
+
+## Insights (a living list)
+
+Ideas from the K6 work that might change the plan. None has been tested unless it says so.
+Later threads add to this list: each entry says where it came from, what it would buy, and
+what would settle it.
+
+1. **Receive audio through the FD6818's I2S port.**
+   - From: the CW ID thread, 2026-11-06 ([k6-fd6818-audio.md](k6-fd6818-audio.md)).
+   - The guide's MCBSP/I2S port can output FM-demodulated audio on a GPIO, and the K6 wires
+     FD6818 GP0 to MCU PB0 (the CTCSS net). Only one wire, so the MCU would have to recover
+     the clock itself. The BK4819 map may not have the block.
+   - Buys: received audio samples with no hardware change, so a software modem past the chip
+     FSK's 2400 baud slips, maybe live sotto 2400. It gives no mic samples.
+   - Settled by: the I2S probe thread (a module that puts the frame clock on GP0 and counts
+     PB0 edges).
+2. **The tone detector as a slow MFSK receiver.**
+   - From: the CW ID thread (on air it follows a keyed tone to about 10 ms and says which of
+     16 tones it is).
+   - 16 tones with 30-40 ms symbols is roughly 100-200 bit/s. Plain audio tones should pass
+     any FM repeater and hold on to weaker signals than FFSK.
+   - Buys: a fallback when packets don't get through: control and wake-up packets, short
+     pages, beacons.
+   - Settled by: sweeping signal level and comparing where `cwlisten` stops decoding with
+     where FFSK packets start failing.
+3. **A repeater fingerprint from one kerchunk.**
+   - From: the CW ID thread.
+   - The CW ID gives the call, tone and speed; the chip's CTCSS/DCS scan (REG_68/69 in UV-K5
+     firmware) gives the PL tone.
+   - Buys: one listener module that fills a table entry's call, PL and CW tone/speed. The
+     tone and speed pair identifies a repeater even when the call won't decode (table byte 51
+     has room).
+4. **Repeater tail timing.**
+   - From: the CW ID thread.
+   - Time the courtesy beep and hang time with the tone detector and squelch.
+   - Buys: the pager waits for the tail to drop before sending, instead of doubling with the
+     repeater.
+5. **A per-packet link log.**
+   - From: the CW ID thread (REG_67 RSSI and REG_65 noise read cleanly every 2 ms; on air
+     -91 to -5 dBm and noise 7-80).
+   - Buys: telling fades, false syncs and clock slips apart, which is the data the 2400 baud
+     work lacked. Later it could set the interleave depth automatically.
+6. **A faster module workflow.**
+   - From: the CW ID thread (every module cost a 43 s upload, and modules started while the
+     upload's repeat copies were still on the air, which caused false decodes).
+   - Keep modules in SPI flash and start one with a 2 s "run module N" packet.
+   - Make the loader wait for the carrier to drop before km_run.
+   - Optionally have the K6 acknowledge chunks. That needs the K6 to transmit, which is
+     Jeff's call.
+7. **If a hardware mod is ever acceptable.**
+   - From: the CW ID thread.
+   - An RC tap from EARO (or the speaker node) into a free ADC pin gives 8 kHz receive audio.
+     It would also let the K6 measure its own audio passband, to put the FFSK tones on the
+     flattest part. Jeff has ruled out hardware mods so far.

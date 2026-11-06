@@ -215,7 +215,7 @@ detector may not lock), and whether 50 Hz steps are finer than the detector can 
 
 ## Next
 
-- What else the FD6818 shows the MCU (meters, the I2S lead): [k6-fd6818-audio.md](k6-fd6818-audio.md).
+- What else the FD6818 shows the MCU (meters, the I2S lead): [k6-fd6818-audio.md](k6-fd6818-audio.md). Ideas from this work are in the insights list in [k6-modules.md](k6-modules.md#insights-a-living-list).
 
 - `cwlisten` on a real repeater's ID.
 - The table update: the explorer's `rt_find` / `rt_update_call` once they exist (fill only an
