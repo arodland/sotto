@@ -1,8 +1,12 @@
 #!/bin/sh
 # Build Aura (the open Rust firmware for the Baofeng UV-K6 / K61 family) with the sotto voice
-# pager patched in: firmware/k6-aura/out/aura-pager.bin, ready for Aura's tools/flash.py.
+# pager patched in: images in firmware/k6-aura/out/, ready for Aura's tools/flash.py.
 #
 #   sh firmware/k6-aura/build.sh      ->  out/aura-pager-only.bin (and size reports)
+#
+# The images read sotto's codebook from the radio's SPI flash (docs/k6-spi-codebook.md), so
+# they carry no 30 KB table. A radio needs out/aura-pager-cbi.bin flashed once first, to write
+# the codebook there. TABLE=1 (the default) also builds the -table images, which carry it.
 #
 # Steps: a fresh clone of Aura at the commit the patch was written against (into
 # firmware/k6-aura/build/aura, which this script owns and deletes), git apply
@@ -85,8 +89,8 @@ git -C "$WORK" apply "$HERE/aura-pager.patch"
 if [ -n "$SOTTO_K6_LIB" ]; then
   LIB=$SOTTO_K6_LIB
 else
-  sh "$ROOT/tools/k6_build.sh"
-  LIB="$ROOT/c/k6/build/libsotto_k6.a"
+  K6_CB=spi sh "$ROOT/tools/k6_build.sh"
+  LIB="$ROOT/c/k6/build-cbs/libsotto_k6.a"
 fi
 mkdir -p "$WORK/lib"
 cp "$LIB" "$WORK/lib/libsotto_k6.a"
@@ -118,45 +122,58 @@ variant() {
   fi
 }
 
-# Full Aura with VOICE MSG in its launcher: 58 KB too big at edf3b98, so this is a report only
+# lib NAME: link the library tools/k6_build.sh wrote to c/k6/NAME; the codebook image of each
+# SPI build goes to out/sotto-cb.bin, and they must all be the same (v3.7 and sotto 1200 share it)
+lib() {
+  cp "$ROOT/c/k6/$1/libsotto_k6.a" "$WORK/lib/libsotto_k6.a"
+  [ -f "$ROOT/c/k6/$1/sotto-cb.bin" ] || return 0
+  if [ -f "$OUT/sotto-cb.bin" ]; then cmp "$ROOT/c/k6/$1/sotto-cb.bin" "$OUT/sotto-cb.bin"
+  else cp "$ROOT/c/k6/$1/sotto-cb.bin" "$OUT/sotto-cb.bin"; fi
+}
+rm -f "$OUT/sotto-cb.bin"
+[ -z "$SOTTO_K6_LIB" ] && lib build-cbs
+
+# Full Aura with VOICE MSG in its launcher: too big at edf3b98, so this is a report only
 # (FULL=0 skips it). The image to flash is the pager-only one.
 if [ "${FULL:-1}" = 1 ]; then
   variant aura-pager "Aura + pager (all of Aura)" || echo "(all of Aura + pager doesn't fit: report only)"
 fi
-variant aura-pager-only "pager-only image (Aura drivers + VOICE MSG)" --features pager-only
-
-# The sotto 1200 image (LR=0 skips it): the same pager-only build linked with the sotto 1200
-# library (plays magic 0xA9 messages; c/k6/sotto_pager.h, SP_LR)
-if [ "${LR:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
-  K6_CODEC=1200 sh "$ROOT/tools/k6_build.sh"
-  cp "$ROOT/c/k6/build-lr/libsotto_k6.a" "$WORK/lib/libsotto_k6.a"
-  variant aura-pager-lr "pager-only image, sotto 1200" --features pager-only
+# sotto's codebook in the K6's SPI flash (c/k6/sp_cb.h, docs/k6-spi-codebook.md), the default:
+#   aura-pager-only    v3.7 without the 30 KB table: reads the codebook at SPI flash 0x100000
+#   aura-pager-lr      sotto 1200 without the table (LR=0 skips it)
+#   aura-pager-cbi     v3.7 with the table linked: at power-on it writes out/sotto-cb.bin to the
+#                      SPI flash if it isn't there yet (once), then plays from the flash and
+#                      times 1000 reads (serial `K6 CB ...` lines). Flash this one first, once
+#                      per radio (INSTALL=0 skips it; sotto 1200 with the table and the
+#                      installer is 0.8 KB too big)
+#   aura-pager-only-table, aura-pager-lr-table   the table in the MCU's flash, as before: no
+#                      SPI flash needed, about 1.5 KB and 0.6 KB free (TABLE=0 skips them)
+variant aura-pager-only "pager-only image (Aura drivers + VOICE MSG), v3.7, codebook in SPI flash" \
+  --features pager-only
+if [ -n "$SOTTO_K6_LIB" ]; then LR=0; INSTALL=0; TABLE=0; fi
+if [ "${LR:-1}" = 1 ]; then
+  K6_CODEC=1200 K6_CB=spi sh "$ROOT/tools/k6_build.sh"
+  lib build-lr-cbs
+  variant aura-pager-lr "pager-only image, sotto 1200, codebook in SPI flash" --features pager-only
 fi
-
-# sotto's codebook in the K6's SPI flash (CB=0 skips these; c/k6/sp_cb.h, docs/k6-spi-codebook.md).
-# v3.7 and sotto 1200 share the codebook, so one image (out/sotto-cb.bin) serves both:
-#   aura-pager-cbi     v3.7 with the table linked: at power-on it writes sotto-cb.bin to the SPI
-#                      flash at 0x100000 if it isn't there yet (once), then plays from the flash
-#                      and times 1000 reads (serial `K6 CB ...` lines). Flash this one first.
-#                      (sotto 1200 with the table and the installer is 0.8 KB too big.)
-#   aura-pager-cbs     v3.7 without the 30 KB table: reads the codebook the cbi image wrote
-#   aura-pager-lr-cbs  sotto 1200 without the table
-if [ "${CB:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
-  rm -f "$OUT/sotto-cb.bin"
-  for v in cbi cbs lr-cbs; do
-    case $v in cbi) mode=install ;; *) mode=spi ;; esac
-    case $v in lr-*) codec=1200 ;; *) codec=2400 ;; esac
-    K6_CODEC=$codec K6_CB=$mode sh "$ROOT/tools/k6_build.sh"
-    cp "$ROOT/c/k6/build-$v/libsotto_k6.a" "$WORK/lib/libsotto_k6.a"
-    # the install image also holds the 30 KB table: without the PTT calibration transmit (lean)
-    case $v in cbi) feat=pager-only,lean ;; *) feat=pager-only ;; esac
-    variant aura-pager-$v "pager-only image, $([ $codec = 1200 ] && echo "sotto 1200" || echo v3.7), codebook in SPI flash ($mode)" \
-      --features $feat
-    if [ -f "$OUT/sotto-cb.bin" ]; then cmp "$ROOT/c/k6/build-$v/sotto-cb.bin" "$OUT/sotto-cb.bin"
-    else cp "$ROOT/c/k6/build-$v/sotto-cb.bin" "$OUT/sotto-cb.bin"; fi
-  done
-  (cd "$OUT" && sha256sum sotto-cb.bin | tee sotto-cb.bin.sha256)
+if [ "${INSTALL:-1}" = 1 ]; then
+  K6_CB=install sh "$ROOT/tools/k6_build.sh"
+  lib build-cbi
+  # the install image also holds the 30 KB table: without the PTT calibration transmit (lean)
+  variant aura-pager-cbi "pager-only image, v3.7, codebook install (writes it to SPI flash once)" \
+    --features pager-only,lean
 fi
+if [ "${TABLE:-1}" = 1 ]; then
+  sh "$ROOT/tools/k6_build.sh"
+  lib build
+  variant aura-pager-only-table "pager-only image, v3.7, codebook in MCU flash" --features pager-only
+  if [ "${LR:-1}" = 1 ]; then
+    K6_CODEC=1200 sh "$ROOT/tools/k6_build.sh"
+    lib build-lr
+    variant aura-pager-lr-table "pager-only image, sotto 1200, codebook in MCU flash" --features pager-only
+  fi
+fi
+[ -f "$OUT/sotto-cb.bin" ] && (cd "$OUT" && sha256sum sotto-cb.bin | tee sotto-cb.bin.sha256)
 
 # The hello-world RAM module's code (docs/k6-modules.md), built as modem/k6mod.py builds it, for
 # `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...` on a machine without clang.

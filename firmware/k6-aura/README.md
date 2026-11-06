@@ -16,14 +16,23 @@ and nothing is written to flash per message. The design and the numbers are in
   whole firmware.
 - `build.sh` clones Aura at that commit, applies the patch, and builds sotto's C library
   (`tools/k6_build.sh`, MIT). It then builds stock Aura, Aura with VOICE MSG added, and the
-  pager-only image, and reports each one's flash and RAM use. It writes `out/aura-pager-only.bin`
-  only if it fits.
+  pager-only images, and reports each one's flash and RAM use. It writes each `.bin` only if it
+  fits. The images read sotto's codebook from the radio's SPI flash, and `aura-pager-cbi.bin`
+  writes it there once ([below](#flashing-and-backup)):
+
+  | image | plays | codebook |
+  |---|---|---|
+  | `aura-pager-cbi.bin` | v3.7 | carries it; writes it to SPI flash once. Flash it first |
+  | `aura-pager-only.bin` | v3.7 | reads it from SPI flash |
+  | `aura-pager-lr.bin` | sotto 1200 | reads it from SPI flash |
+  | `aura-pager-only-table.bin`, `aura-pager-lr-table.bin` | v3.7, sotto 1200 | in the MCU's flash, as before 2026-11-06 (`TABLE=0` skips them) |
 - The GitHub Actions job *K6 pager firmware* runs the same build. Each run keeps the `.bin`, the
   ELF and the size reports as a downloadable artifact.
 
 **Why a pager-only image.** Stock Aura uses 115,208 of the 122,880 bytes of application flash,
 and the pager needs 66 KB (30 KB of it is the codebook). All of Aura with VOICE MSG comes out 58 KB
-too big. The pager-only image is 102,228 bytes (20 KB free) with 9,144 bytes of static RAM. It keeps Aura's drivers, its saved settings and VFO, a frequency entry, and the VOICE MSG
+too big. The pager-only image was 102,228 bytes (20 KB free) with 9,144 bytes of static RAM when
+it first ran; with the codebook in SPI flash it is now about 91 KB (30 KB free). It keeps Aura's drivers, its saved settings and VFO, a frequency entry, and the VOICE MSG
 app, and leaves out the rest: the standby screen and menus, scanning, FM broadcast, SSTV, APRS,
 satellites, the spectrum and CHIRP programming. To use the radio normally, flash stock Aura back
 (same UPDATE-mode steps). Each image switch is one erase of the MCU's flash. The SPI flash, which
@@ -56,11 +65,14 @@ You need a Quansheng-K5-style USB-to-TTL programming cable (the Kenwood 2-pin pl
 `pyserial`, and Aura's `tools/` folder. After `build.sh` that folder is at `build/aura/tools/`, or you
 can clone Aura.
 
-1. **Get `aura-pager-only.bin`.** Download it from the *K6 pager firmware* run's artifacts on the pull
-   request, or run `sh firmware/k6-aura/build.sh`. That needs rustup, clang and lld, and llvm-tools.
+1. **Get `aura-pager-cbi.bin`**, the install image. Download it from the *K6 pager firmware* run's
+   artifacts, or run `sh firmware/k6-aura/build.sh`. That needs rustup, clang and lld, and llvm-tools.
+   It is a v3.7 pager that also carries sotto's codebook. When the pager starts, it writes the
+   codebook to the SPI flash at 0x100000 if it isn't there yet (serial `K6 CB r=2`; `r=1` on later
+   boots). A radio needs this once.
 2. **Enter UPDATE mode.** With the radio off, hold **Side Key 1 and Side Key 2** and turn it on. The
    screen shows `UPDATE`.
-3. **Flash it:** `python tools/flash.py aura-pager-only.bin /dev/ttyUSB0` (on Windows, the COM port).
+3. **Flash it:** `python tools/flash.py aura-pager-cbi.bin /dev/ttyUSB0` (on Windows, the COM port).
    On success it prints `succeed!` and the radio reboots. If it doesn't reboot, nothing was written
    (a known Aura bug): power off and repeat from step 2. Pulling the battery mid-flash is safe; just
    flash again.
@@ -71,10 +83,14 @@ can clone Aura.
    You can also save the bootloader with `python tools/dump_bootloader_aura.py`. Then press **MENU**
    to format.
 5. **Check the chip:** Settings → SYSTEM → CHIPID must read `0x4819`.
+6. **Then flash the image you want:** `aura-pager-only.bin` (v3.7) or `aura-pager-lr.bin` (sotto
+   1200). These leave out the 30 KB table and read the codebook the install image wrote. Without
+   it, they show `NO CODEBOOK (r)` and play nothing. `tools/k6_update.py` flashes them without the
+   side keys. The `-table` images need no install.
 
 ## Using VOICE MSG
 
-1. Flash `aura-pager-only.bin` and power on. The radio goes straight to VOICE MSG and listens,
+1. Flash `aura-pager-only.bin` (after the install image, above) and power on. The radio goes straight to VOICE MSG and listens,
    with the speaker muted, on 440.850 MHz (`DEFAULT_FREQ_HZ` in `pager.rs`: WWARA's packet
    simplex sub-band, 440.800-440.900; change it there for another region). The pager-only image
    writes nothing to flash, not even at power-off.
@@ -269,7 +285,7 @@ after the reset line. With `--manual`, start with the K6 off and power it on (no
 Without an answer, the window passes and the pager boots again, so a missed window costs
 nothing. Stop any serial listener first, because the tool needs the port.
 
-**sotto 1200 image (`out/aura-pager-lr.bin`).** build.sh also links the pager with the sotto
+**sotto 1200 image (`out/aura-pager-lr.bin`; with the table, `-lr-table`).** build.sh also links the pager with the sotto
 1200 library (`K6_CODEC=1200 sh tools/k6_build.sh`, `-DSP_LR`): it plays magic 0xA9 messages
 (`modem.k6 send --codec 1200`), 40 ms per stored slot, so the 640-slot store holds 25.6 s and an
 XL packet carries 800 ms of speech (640 ms on air at F/1800 with 12-byte preambles, 0.8x real
@@ -277,15 +293,18 @@ time). Both images take both kinds of packet (sync, CRC, bit-error tests); each 
 codec. M0 emulator, decode plus PWM per 20 ms: 53-61 MHz mean, 75-78 worst of 96 (three clips),
 the same as v3.7; image 119,236 B, 3.6 KB free (sotto_pager.c now at -Os, 0.1 MHz cost).
 
-**Codebook in SPI flash (`out/aura-pager-cbi.bin`, `-cbs`, `-lr-cbs`).** The decoder can read
-sotto's 30 KB codebook from the radio's SPI flash, one 20-byte vector at a time, so the table
-doesn't need to be in the MCU's flash. The images without it have 30 KB free. Flash the install
-image (v3.7) first. On its first boot it writes `out/sotto-cb.bin` to 0x100000, and the serial
-report shows `K6 CB r=2`. The `-cbs` (v3.7) and `-lr-cbs` (sotto 1200) images then read that
-codebook. They show `NO CODEBOOK` and play nothing if it isn't there. The install image, which
-holds the table as well, leaves out the PTT calibration transmit (cargo feature `lean`) to fit.
-The serial lines, the
-result codes and the test plan are in [`docs/k6-spi-codebook.md`](../../docs/k6-spi-codebook.md).
+**Codebook in SPI flash (the default since 2026-11-06).** The decoder reads sotto's 30 KB
+codebook from the radio's SPI flash, one 20-byte vector at a time, so the table doesn't need to
+be in the MCU's flash. The images without it have 30 KB free. Flash the install image
+(`out/aura-pager-cbi.bin`, v3.7) first. On its first boot it writes `out/sotto-cb.bin` to
+0x100000, and the serial report shows `K6 CB r=2`. `aura-pager-only` (v3.7) and `aura-pager-lr`
+(sotto 1200) then read that codebook. (Before 2026-11-06 these two carried the table, and the
+images without it were `-cbs` and `-lr-cbs`. The table images are now `-only-table` and
+`-lr-table`.) On air, one read takes 34 us, so a v3.7 frame's decode is 0.16 ms longer (15.85
+against 15.69 ms mean), and the PCM is bit-exact. The images without the table show
+`NO CODEBOOK` and play nothing if it isn't there. The install image, which holds the table as
+well, leaves out the PTT calibration transmit (cargo feature `lean`) to fit. The serial lines, the result codes and the test
+plan are in [`docs/k6-spi-codebook.md`](../../docs/k6-spi-codebook.md).
 
 **Streaming (sotto 1200 image, on by default).** A sotto 1200 message starts playing as soon as
 its first interleave group is in (8 XL packets, 6.4 s of speech, 5.1 s on air; sent with

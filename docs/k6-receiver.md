@@ -106,7 +106,8 @@ codebook, 8 KB of minimum-phase tables, about 5 KB of other tables, and the deco
 code. Freeing 58 KB takes one of these:
 
 - **A pager-only image built from Aura** (done: the patch's `pager-only` feature, built by
-  `build.sh` as `out/aura-pager-only.bin`). It has Aura's drivers, its saved settings and VFO, a frequency entry (#, RAM only), and
+  `build.sh` as `out/aura-pager-only.bin`; since 2026-11-06 it reads the codebook from SPI flash,
+  [`k6-spi-codebook.md`](k6-spi-codebook.md)). It has Aura's drivers, its saved settings and VFO, a frequency entry (#, RAM only), and
   VOICE MSG, without the rest of Aura's apps and menus. To use the radio normally again, you flash stock Aura back over it.
 - **Keep all of Aura and move the codebook to the SPI flash**: 30 KB, written once at install, like
   Aura's SSTV image import. That still leaves about 28 KB to cut from Aura and from the library
