@@ -223,7 +223,9 @@ Fitting it into 4 KB (from 7.6 KB) took these changes:
 - `-fomit-frame-pointer` for every module (96 B here).
 
 **Emulated** (`tests/k6_live_emu.py`): the module runs on unicorn's Cortex-M0, at 1.5 cycles an
-instruction. Its DMA ring is filled from the model's sigma-delta bits at the K6's 5.49 MS/s,
+instruction. That figure is checked against the K6: `gp0dma`, measured on Jeff's radio at
+72-73% idle with L = 64, runs at 72% here (and at L = 32 and 128 at 40% and 87%, against 56% and
+93% measured, so the emulator errs slow). Its DMA ring is filled from the model's sigma-delta bits at the K6's 5.49 MS/s,
 paced by the emulated clock. Over the full 10-step run, 164 Hz off:
 
 - **4FSK at 46 dB-Hz:** every step locked, 8,350 bits a step, BER 0.6-0.9%. Before the

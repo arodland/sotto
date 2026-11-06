@@ -5,11 +5,17 @@ would write into the module's ring, paced by the emulated CPU's time. tests/test
 uses it; run on its own for the full 10-step run:
 
   python3 tests/k6_live_emu.py [4fsk|ffsk] [--cn0 46] [--off -164] [--steps 10] [--cpi 1.5]
+  python3 tests/k6_live_emu.py --module c/k6/mod/gp0dma.c      (any GP0 module on the same stream)
 
 Time: the module runs in chunks of CHUNK instructions, each CPI cycles of the 96 MHz clock (the
 module runs from RAM, no wait states; the M0 takes 1 to 3 cycles an instruction: 1.5 is a
 middling mix of loads, multiplies and branches); the API's calls cost what the radio's do
 (a line 5 ms, an FD6818 read 20 us). The DMA and TIM17 read the clock at each register read.
+
+Calibration: gp0dma (c/k6/mod/gp0dma.c), measured on Jeff's K6 at 72-73% idle with L = 64
+(docs/k6-fd6818-audio.md, run 8), runs here at CPI 1.5 at 72% (L = 32: 40% here, 56% on the
+K6; L = 128: 87%, 93%): `python3 tests/k6_live_emu.py --module c/k6/mod/gp0dma.c`. So 1.5 is
+right for counting and loop code, and if anything pessimistic.
 SPDX-License-Identifier: MIT"""
 import argparse
 import os
@@ -88,7 +94,8 @@ class Emu:
                                 for i in range(len(self.names))))
         mu.hook_add(unicorn.UC_HOOK_CODE, self.on_stub, begin=self.stubs,
                     end=self.stubs + 16 * len(self.names))
-        for page in (0x48000000, 0x40021000, 0x40014000, 0x40020000):
+        self.scr = ram + 0x40000                    # the API's scratch RAM (4 KB)
+        for page in (0x48000000, 0x40021000, 0x40014000, 0x40020000, 0x40002000):
             mu.mmio_map(page, 0x1000, self.mmio_r, page, self.mmio_w, page)
         mu.reg_write(A.UC_ARM_REG_R0, self.api)
         mu.reg_write(A.UC_ARM_REG_SP, self.sp0)
@@ -127,6 +134,8 @@ class Emu:
             return rsz - self.made % rsz
         if a == 0x40014824:                          # TIM17_CNT at 96 MHz
             return int(self.cyc) & 0xFFFF
+        if a == 0x40002024:                          # TIM14_CNT: Aura's 100 us uptime
+            return int(self.cyc / 9600) & 0xFFFF
         if a == 0x48000400:                          # GPIOB_MODER: PB1 an input
             return 0
         return self.reg.get(a, 0)
@@ -163,6 +172,10 @@ class Emu:
             us = r0
         elif name == "ms":
             ret = int(self.cyc / 96000)
+        elif name == "scratch":
+            if r0:
+                uc.mem_write(r0, (4096).to_bytes(4, "little"))
+            ret = self.scr
         self.cyc += us * 96
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
 
@@ -196,6 +209,16 @@ def run_live(mode="4fsk", cn0=46.0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, 
     return ret, e.said, used, e.writes
 
 
+def run_module(path, cpi=1.5, seconds=14.0):
+    """any level-2 GP0 module on the same stream (a strong 4FSK carrier after 2 s of nothing)
+    -> (return value, its lines)"""
+    code, entry = k6mod.build(path)
+    ib, on_at, fdma = stream("4fsk", 60.0, 0.0, 2, seconds / 2, 1.5, 1, pre_s=2.0)
+    e = Emu(code, entry, ib, on_at, fdma, cpi)
+    r = e.run()
+    return (r[0] if r else None), e.said
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("mode", nargs="?", default="4fsk", choices=["4fsk", "ffsk"])
@@ -205,9 +228,16 @@ def main():
     ap.add_argument("--seg", type=float, default=6.0)
     ap.add_argument("--lead", type=float, default=1.5)
     ap.add_argument("--cpi", type=float, default=1.5)
+    ap.add_argument("--module", help="run this module's source instead (e.g. c/k6/mod/gp0dma.c)")
     a = ap.parse_args()
     if not shutil.which("clang"):
         sys.exit("needs clang and ld.lld")
+    if a.module:
+        ret, said = run_module(a.module, a.cpi)
+        for ln in said:
+            print("K6 MOD say", ln)
+        print(f"ret={ret}")
+        return
     ret, said, used, _ = run_live(a.mode, a.cn0, a.off, a.steps, a.seg, a.lead, a.cpi)
     for ln in said:
         print("K6 MOD say", ln)
