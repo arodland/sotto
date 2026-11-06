@@ -172,7 +172,7 @@ def main():
     f = rig(a, "f")
     if not a.dry_run and int(f) != a.freq:
         sys.exit(f"IC-7100 on {f} Hz, not {a.freq}: set both radios to 440.850 first")
-    rig(a, "M", "PKTFM", 0)
+    rig(a, "M", "PKTFM", 12000)      # the wide FM-D filter: passband 0 picks the 6 kHz one, half the deviation
     serial = int(time.time())
     xfer = serial & 0xFF
     count = chunks_of(a)
