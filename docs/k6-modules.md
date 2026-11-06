@@ -245,3 +245,36 @@ what would settle it.
    - An RC tap from EARO (or the speaker node) into a free ADC pin gives 8 kHz receive audio.
      It would also let the K6 measure its own audio passband, to put the FFSK tones on the
      flattest part. Jeff has ruled out hardware mods so far.
+8. **A softmodem on the GP0 IF instead of the chip's FFSK.**
+   - From: the softmodem thread, 2026-11-06 ([k6-if-modem.md](k6-if-modem.md), simulation only).
+   - A matched filter on the complex IF beats the best FM discriminator by 5-6 dB, because it
+     has no FM threshold. 4FSK at 1200 baud with soft rate-1/2 coding carries sotto 1200 about
+     7.7 dB better than FFSK through a discriminator, and 2400 baud MSK is a dead end on the
+     IC-7100.
+   - Buys: about 2.4x the range for live voice, and no chip bit-clock slips.
+   - Settled by: `gp0cap` with `tools/k6_ifcap.py`, which runs both detectors on the same
+     captures at stepped front-end gain.
+9. **More IF gain against the 1-bit floor.**
+   - From: the same study. GP0's sigma-delta adds its own noise. If the receiver's noise sits
+     only "a few %" above it on GP0, 1.5-4 dB is lost.
+   - Buys: those dB back, by running REG_13 above the AGC table's top entry (for example
+     0x03FF against 0x03BE) while the signal is weak.
+   - Settled by: `gp0cap` pass 0 (the floor at three gains) and steps 1 against 2.
+10. **A weak-signal mode: constant-envelope MFSK on SSB.**
+    - From: Jeff's PSK idea, simulated at equal peak power (`sim/k6if/psk.py`). Differential
+      PSK only ties FM-FSK with the IF detector, because RRC PSK loses 3.4 dB to its peak.
+      16 tones at 100 baud from the IC-7100 in USB gain about 3.8 dB per bit and need no
+      carrier sync. Coherent BPSK with a perfect carrier loop is the stretch goal (+3.7 dB
+      coded).
+    - Buys: beacons, text and control at 200-400 bit/s, several dB below what FFSK can reach.
+    - Settled by: a third `gp0cap` pass with SSB 16FSK, decoded on the host.
+11. **True SSB and a noise reference from the mirror band.**
+    - From: Jeff found the chip's "USB" is DSB. Its USB mode is zero IF, so the sidebands fold.
+      On GP0's 16.9 kHz IF they don't, so the K6 can tell the sidebands apart in software. The
+      empty side also gives a live noise level for soft decisions and squelch.
+    - Settled by: a capture of an SSB voice signal through `gp0cap`, demodulated on the host.
+12. **A faster count loop.**
+    - From: the study's CPU budget. `gp0dma`'s count loop takes 27%, the IF detector about 10-20%,
+      and the sotto decoder 55-63%. A word-at-a-time masked-add loop (about 1 cycle a sample)
+      would bring the counting to about 6%.
+    - Settled by: timing such a loop in a module (TIM17 counts cycles), as `gp0dma` already does.
