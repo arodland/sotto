@@ -55,6 +55,10 @@ typedef struct k6_api {
                                                    100 us ticks in ms and delay_us: a module that
                                                    calls neither for 6.5 s loses time) */
   int (*key_down)(void);                        /* 1 while any key is held: a long module's way out */
+  void *(*scratch)(uint32_t *bytes);            /* RAM free while the module runs (the rest of the
+                                                   module store, word aligned), its size in *bytes:
+                                                   a module's tables and buffers, since it has no
+                                                   statics and only about 700 B of stack */
 } k6_api_t;
 
 /* REG 0x67 bits 8:1 = RSSI in dB above -174 dBm (as Aura's get_rssi) */

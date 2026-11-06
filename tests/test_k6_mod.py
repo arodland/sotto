@@ -246,7 +246,7 @@ def test_settle_measures_a_modelled_receiver():
     mu.mem_map(ram, 1 << 20)
     base, api, stubs, stop = ram + 0x1000, ram + 0x8000, ram + 0x9000, ram + 0x9F00
     mu.mem_write(base, code)
-    names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down"]
+    names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down", "scratch"]
     for i in range(len(names)):
         mu.mem_write(stubs + 16 * i, b"\x70\x47")    # bx lr; the hook does the work
     mu.mem_write(stop, b"\x00\xbf" * 8)
@@ -275,6 +275,10 @@ def test_settle_measures_a_modelled_receiver():
             ret = F
         elif name == "ms":
             ret = st["us"] // 1000
+        elif name == "scratch":
+            ret = ram + 0x6000
+            if r0:
+                uc.mem_write(r0, (1024).to_bytes(4, "little"))
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
     mu.hook_add(unicorn.UC_HOOK_CODE, on_stub, begin=stubs, end=stubs + 16 * len(names))
     mu.reg_write(A.UC_ARM_REG_R0, api)

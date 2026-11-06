@@ -67,6 +67,7 @@ API level 2 (images from 2026-11-06 on) adds the receiver:
 | `rx_hz()` | the frequency the pager listens on |
 | `ms()` | ms since the module started, 32 bits |
 | `key_down()` | 1 while any key is held |
+| `scratch(&bytes)` | RAM free while the module runs: the rest of the 4 KB module store past the code, word aligned, its size in `bytes` |
 
 Level 2 is receive only: there is no way to key the transmitter. After the module returns the
 firmware puts the radio back on the pager's frequency and sets the FSK receiver up again,
@@ -121,10 +122,10 @@ K6 MOD r=1 xfer=.. chunk=0 have=1/4
 K6 MOD r=1 xfer=.. chunk=1 have=2/4
 K6 MOD r=1 xfer=.. chunk=2 have=3/4
 K6 MOD r=3 xfer=.. chunk=3 have=4/4
-K6 MOD run serial=... code=366 B at 0x2000....
+K6 MOD run serial=... code=366 B at 0x2000.... stack=... B scratch=... B
 K6 MOD say hello world from RAM at 0x2000....
 K6 MOD say sum of squares 0x9f31fc58 in 0x.... ticks of 100 us
-K6 MOD ret=107 (0x6b) in .. ms
+K6 MOD ret=107 (0x6b) in .. ms stack_free=... B
 ```
 
 `r` is `km_packet`'s result: 1 a new chunk, 2 a repeat, 3 the module checks and runs, -1 bad
@@ -140,7 +141,10 @@ Copy `c/k6/mod/hello.c`. The rules, which the build checks where it can:
 - No libraries: no `memcpy`, no `printf`. The M0 has no divide instruction, so no `/` or `%`
   on variables either (clang would call a run-time helper the module doesn't have).
 - No writable statics (`.data`, `.bss`): the linker script refuses them. Use the stack, and
-  keep it small: the module runs on the pager's stack, about 1 KB deep at most.
+  keep it small: the module runs on the pager's stack, with about 700 B to spare. Level 2's
+  `scratch()` gives the rest of the module store for tables and buffers (4 KB less the
+  code). `K6 MOD run` reports the stack room at the call (`stack=`) and the scratch size,
+  and `K6 MOD ret` the stack never touched since VOICE MSG started (`stack_free=`).
 - No tables of pointers: they need relocation, and the two-address check refuses them.
 - Return quickly, or give a way out: the pager doesn't receive while the module runs. A
   long level 2 module polls `key_down()` and stops on a key.

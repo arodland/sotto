@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..4419f05
+index 0000000..94b6fa9
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2896 @@
+@@ -0,0 +1,2927 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -376,6 +376,7 @@ index 0000000..4419f05
 +        pub rx_hz: unsafe extern "C" fn() -> u32,
 +        pub ms: unsafe extern "C" fn() -> u32,
 +        pub key_down: unsafe extern "C" fn() -> i32,
++        pub scratch: unsafe extern "C" fn(*mut u32) -> *mut u8,
 +    }
 +    #[repr(C)]
 +    pub struct KmStatus {
@@ -407,6 +408,7 @@ index 0000000..4419f05
 +    rx_hz: mod_rx_hz,
 +    ms: mod_ms,
 +    key_down: mod_key_down,
++    scratch: mod_scratch,
 +};
 +
 +struct ModCtx {
@@ -415,9 +417,10 @@ index 0000000..4419f05
 +    rx_hz: u32,
 +    t_last: u16,
 +    ticks: u32,
++    scratch: usize,
 +}
 +static mut MOD_CTX: ModCtx =
-+    ModCtx { app: core::ptr::null_mut(), syst: core::ptr::null_mut(), rx_hz: 0, t_last: 0, ticks: 0 };
++    ModCtx { app: core::ptr::null_mut(), syst: core::ptr::null_mut(), rx_hz: 0, t_last: 0, ticks: 0, scratch: 0 };
 +
 +/// The registers a module may not write: the chip's TX/RX state, its GPIO lines, the PA and
 +/// the power switches. Receive only; `tune` is the way to move.
@@ -476,6 +479,17 @@ index 0000000..4419f05
 +/// ms since the module started
 +unsafe extern "C" fn mod_ms() -> u32 {
 +    mod_tick() / 10
++}
++
++/// The store past the module's code and tag: free while the module runs (a module has no
++/// statics; this is where its tables and buffers go). Word aligned; its size into *bytes.
++unsafe extern "C" fn mod_scratch(bytes: *mut u32) -> *mut u8 {
++    let at = unsafe { (*addr_of!(MOD_CTX)).scratch };
++    let end = addr_of_mut!(STORE) as usize + STORE_BYTES;
++    if !bytes.is_null() {
++        unsafe { *bytes = (end - at) as u32 };
++    }
++    at as *mut u8
 +}
 +
 +unsafe extern "C" fn mod_key_down() -> i32 {
@@ -2185,16 +2199,33 @@ index 0000000..4419f05
 +    }
 +    if r == KM_READY {
 +        let at = addr_of_mut!(STORE) as usize + 16;
-+        report_line(format_args!("K6 MOD run serial={} code={} B at {:#010x}", st.serial, st.code_len, at));
++        // 8-byte tag after the code, then word aligned
++        let scratch = (at + st.code_len as usize + 8 + 3) & !3;
++        let room = cortex_m::register::msp::read() as usize - ((addr_of!(__sheap) as usize + 3) & !3);
++        report_line(format_args!(
++            "K6 MOD run serial={} code={} B at {:#010x} stack={} B scratch={} B",
++            st.serial,
++            st.code_len,
++            at,
++            room,
++            addr_of_mut!(STORE) as usize + STORE_BYTES - scratch
++        ));
 +        let t0 = uptime::now();
 +        unsafe {
-+            *addr_of_mut!(MOD_CTX) =
-+                ModCtx { app: app as *mut App, syst: syst as *mut SYST, rx_hz: app.master_freq_hz(), t_last: t0, ticks: 0 };
++            *addr_of_mut!(MOD_CTX) = ModCtx {
++                app: app as *mut App,
++                syst: syst as *mut SYST,
++                rx_hz: app.master_freq_hz(),
++                t_last: t0,
++                ticks: 0,
++                scratch,
++            };
 +        }
 +        let ret = unsafe { ffi::km_run(addr_of_mut!(STORE) as *mut u8, &MOD_API) };
 +        let ms = unsafe { mod_ms() };
 +        unsafe { (*addr_of_mut!(MOD_CTX)).app = core::ptr::null_mut() };
-+        report_line(format_args!("K6 MOD ret={} ({:#x}) in {} ms", ret, ret, ms));
++        // free_ram: the stack never reached since VOICE MSG was entered (painted then)
++        report_line(format_args!("K6 MOD ret={} ({:#x}) in {} ms stack_free={} B", ret, ret, ms, free_ram()));
 +        // a level 2 module may have moved the radio: back to the pager's frequency and set-up
 +        app.sync_watching_to_master(syst);
 +        arm(app, syst);
