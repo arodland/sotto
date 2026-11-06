@@ -6,6 +6,7 @@ uses it; run on its own for the full 10-step run:
 
   python3 tests/k6_live_emu.py [4fsk|ffsk] [--cn0 46] [--off -164] [--steps 10] [--cpi 1.5]
   python3 tests/k6_live_emu.py --module c/k6/mod/gp0dma.c      (any GP0 module on the same stream)
+  python3 tests/k6_live_emu.py --module c/k6/mod/iflive.c --profile   (and where its time goes)
 
 Time: the module runs in chunks of CHUNK instructions, each CPI cycles of the 96 MHz clock (the
 module runs from RAM, no wait states; the M0 takes 1 to 3 cycles an instruction: 1.5 is a
@@ -182,15 +183,22 @@ class Emu:
         self.cyc += us * 96
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
 
-    def run(self):
+    def run(self, prof=None):
+        """-> (return value, stack bytes used), or None if it ran past max_s. prof: a Counter
+        that gets the PC (an offset in the code) after each chunk; the chunks' lengths then vary,
+        as a fixed one aliases with a module's per-count loop"""
         A = self.A
         pc = self.pc
+        rng = np.random.default_rng(0)
         while self.cyc < self.max_cyc:
-            self.mu.emu_start(pc, self.stop, count=CHUNK)
+            n = int(rng.integers(CHUNK * 3 // 4, CHUNK * 5 // 4 + 1)) if prof is not None else CHUNK
+            self.mu.emu_start(pc, self.stop, count=n)
             pc = self.mu.reg_read(A.UC_ARM_REG_PC)
-            self.cyc += CHUNK * self.cpi
+            self.cyc += n * self.cpi
             if pc == self.stop:
                 break
+            if prof is not None:
+                prof[pc - self.base] += 1
             pc |= 1
         else:
             return None
@@ -212,14 +220,37 @@ def run_live(mode="4fsk", cn0=46.0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, 
     return ret, e.said, used, e.writes
 
 
-def run_module(path, cpi=1.5, seconds=14.0):
+def symbols(src):
+    """the module's functions: [(offset, size, name)], from the same build k6mod makes"""
+    import subprocess
+    with tempfile.TemporaryDirectory() as d:
+        obj, elf = os.path.join(d, "m.o"), os.path.join(d, "m.elf")
+        flags = [("-O" + k6mod.source_opt(src)) if f == "-Os" else f for f in k6mod.CFLAGS]
+        subprocess.run(["clang", *flags, "-c", src, "-o", obj], check=True)
+        subprocess.run(["ld.lld", "-T", k6mod.LINK, "--defsym", "MODULE_BASE=0", "--gc-sections",
+                        "--no-undefined", obj, "-o", elf], check=True)
+        out = subprocess.run(["llvm-nm", "-S", elf], check=True, capture_output=True, text=True).stdout
+    return [(int(p[0], 16), int(p[1], 16), p[3]) for p in map(str.split, out.splitlines())
+            if len(p) == 4 and p[2] in "tT"]
+
+
+def run_module(path, cpi=1.5, seconds=14.0, profile=False):
     """any level-2 GP0 module on the same stream (a strong 4FSK carrier after 2 s of nothing)
-    -> (return value, its lines)"""
+    -> (return value, its lines), and with profile a third: {function: share of the time}"""
+    import collections
     code, entry = k6mod.build(path)
     ib, on_at, fdma = stream("4fsk", 60.0, 0.0, 2, seconds / 2, 1.5, 1, pre_s=2.0)
     e = Emu(code, entry, ib, on_at, fdma, cpi)
-    r = e.run()
-    return (r[0] if r else None), e.said
+    prof = collections.Counter() if profile else None
+    r = e.run(prof)
+    shares = None
+    if profile:
+        syms, tot = symbols(path), max(sum(prof.values()), 1)
+        shares = collections.Counter()
+        for off, n in prof.items():
+            shares[next((nm for a, sz, nm in syms if a <= off < a + sz), "(API)")] += n / tot
+    ret = r[0] if r else None
+    return (ret, e.said, shares) if profile else (ret, e.said)
 
 
 def main():
@@ -232,14 +263,20 @@ def main():
     ap.add_argument("--lead", type=float, default=1.5)
     ap.add_argument("--cpi", type=float, default=1.5)
     ap.add_argument("--module", help="run this module's source instead (e.g. c/k6/mod/gp0dma.c)")
+    ap.add_argument("--profile", action="store_true", help="with --module: the time in each function "
+                    "(a module's polling loop counts as its own function's time)")
     a = ap.parse_args()
     if not shutil.which("clang"):
         sys.exit("needs clang and ld.lld")
     if a.module:
-        ret, said = run_module(a.module, a.cpi)
+        ret, said, *rest = run_module(a.module, a.cpi, profile=a.profile)
+        shares = rest[0] if rest else None
         for ln in said:
             print("K6 MOD say", ln)
         print(f"ret={ret}")
+        for nm, x in shares.most_common() if shares else ():
+            if x >= 0.001:
+                print(f"{nm:16s} {100 * x:5.1f}%")
         return
     ret, said, used, _ = run_live(a.mode, a.cn0, a.off, a.steps, a.seg, a.lead, a.cpi)
     for ln in said:

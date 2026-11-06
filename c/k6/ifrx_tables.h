@@ -4,14 +4,13 @@
 #define IFRX_TABLES_H
 #include <stdint.h>
 
-/* 24 taps, Q14, re/im: a 7000 Hz low-pass turned up to the IF (16927.1 Hz at 85781 counts/s) */
-static const int16_t ifrx_g[24][2] = {
-  {-6, 0}, {-11, -32}, {66, -51}, {116, 76},
-  {-38, 151}, {-70, 6}, {70, 159}, {-441, 407},
-  {-1032, -556}, {291, -1767}, {2286, -387}, {1255, 2304},
-  {-1771, 1936}, {-2127, -925}, {142, -1785}, {1135, -292},
-  {330, 501}, {-106, 138}, {66, 22}, {1, 155},
-  {-131, 46}, {-52, -66}, {18, -28}, {6, 2},
+/* 24 taps, Q14: a 7000 Hz low-pass turned up to the IF (16927.1 Hz at 85781 counts/s);
+   re in the low 16 bits, im in the high: one load a tap */
+static const uint32_t ifrx_g[24] = {
+  0x0000fffau, 0xffe0fff5u, 0xffcd0042u, 0x004c0074u, 0x0097ffdau, 0x0006ffbau,
+  0x009f0046u, 0x0197fe47u, 0xfdd4fbf8u, 0xf9190123u, 0xfe7d08eeu, 0x090004e7u,
+  0x0790f915u, 0xfc63f7b1u, 0xf907008eu, 0xfedc046fu, 0x01f5014au, 0x008aff96u,
+  0x00160042u, 0x009b0001u, 0x002eff7du, 0xffbeffccu, 0xffe40012u, 0x00020006u,
 };
 
 #if !defined(IFRX_ONLY) || IFRX_ONLY == IFRX_FFSK

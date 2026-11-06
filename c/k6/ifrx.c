@@ -117,13 +117,16 @@ void ifrx_init(ifrx_t *s, int mode, uint32_t ks) {
 
 /* the filter's output at count m (in the ring), turned down by phase th */
 IFRX_NOINLINE static void sample(const ifrx_t *s, uint32_t m, uint32_t th, int16_t out[2]) {
+  /* the ring is kept twice over, so the taps walk back from m without a wrap */
+  const int8_t *p = s->ring + IFRX_RING + (m & (IFRX_RING - 1));
+  const uint32_t *g = ifrx_g, *e = g + IFRX_NT;
   int32_t re = 0, im = 0, co, si;
-  int k;
-  for (k = 0; k < IFRX_NT; k++) {
-    int c = s->ring[(m - (uint32_t)k) & (IFRX_RING - 1)];
-    re += ifrx_g[k][0] * c;
-    im += ifrx_g[k][1] * c;
-  }
+  do {
+    int32_t c = *p--;
+    uint32_t t = *g++;
+    re += (int16_t)t * c;
+    im += ((int32_t)t >> 16) * c;
+  } while (g != e);
   re >>= FSH, im >>= FSH;
   si = ifrx_sin(th >> 26);
   co = ifrx_sin((th >> 26) + 16);
@@ -135,17 +138,24 @@ IFRX_NOINLINE static void sample(const ifrx_t *s, uint32_t m, uint32_t th, int16
 #define IFRX_TRE(b) ((int32_t)(int8_t)(b) >> 4)
 #define IFRX_TIM(b) ((int32_t)((uint32_t)(b) << 28) >> 28)
 
-/* the four sums over the TL samples w[0..] against template t */
-IFRX_NOINLINE static void corr4(const int16_t (*w)[2], const uint8_t *t, int32_t a[4]) {
-  int i;
-  a[0] = a[1] = a[2] = a[3] = 0;
-  for (i = 0; i < IFRX_TL; i++) {
-    int32_t tr = IFRX_TRE(t[i]), ti = IFRX_TIM(t[i]);
-    a[0] += w[i][0] * tr;
-    a[1] += w[i][1] * ti;
-    a[2] += w[i][1] * tr;
-    a[3] += w[i][0] * ti;
-  }
+/* the four sums over n samples w[0..] against template t */
+/* one component of n samples (v, every other int16) against template t: the sums with its re
+   and im parts. A pass a component keeps everything in the M0's eight low registers */
+IFRX_NOINLINE static void corr2(const int16_t *v, const uint8_t *t, int n, int32_t *x, int32_t *y) {
+  int32_t sr = 0, si = 0;
+  const uint8_t *e = t + n;
+  do {
+    int32_t c = *v;
+    sr += c * IFRX_TRE(*t);
+    si += c * IFRX_TIM(*t);
+    v += 2;
+  } while (++t != e);
+  *x = sr, *y = si;
+}
+
+IFRX_NOINLINE static void corr4(const int16_t (*w)[2], const uint8_t *t, int32_t a[4], int n) {
+  corr2(&w[0][0], t, n, &a[0], &a[3]);
+  corr2(&w[0][1], t, n, &a[2], &a[1]);
 }
 
 /* the four sums -> w . conj(t) (cj 0) or w . t, the conjugate template's (cj 1) */
@@ -161,7 +171,6 @@ static uint32_t ni_of(const ifrx_t *s, int i) {
 /* move the symbol clock on by adv (Q16 counts) and start the next symbol */
 IFRX_NOINLINE static void advance(ifrx_t *s, int32_t adv) {
   uint32_t old = s->tau;
-  int j;
   adv += (int32_t)s->tau_f;
   s->tau += (uint32_t)(adv >> 16);
   s->tau_f = (uint32_t)adv & 0xFFFF;
@@ -169,7 +178,6 @@ IFRX_NOINLINE static void advance(ifrx_t *s, int32_t adv) {
   s->q++;
   s->i = -1;
   s->ni = ni_of(s, -1);
-  for (j = 0; j < IFRX_NS(s); j++) s->A[j][0] = s->A[j][1] = s->A[j][2] = s->A[j][3] = 0;
 }
 
 /* the acquisition's sweep, one symbol: the lead's fit for this offset. At the end of an
@@ -216,10 +224,11 @@ IFRX_NOINLINE static int32_t sweep(ifrx_t *s) {
   s->prev = s->acq_q >= IFRX_ACQ_Q ? h : -9;
   if (s->prev >= 0 && (j <= 1 || j == IFRX_HYP - 1)) {
     s->state = IFRX_LEAD;
-    s->acq_off = h;
+    if (IFRX_STATS) s->acq_off = h;
     s->parity = par ^ 1; /* a symbol on from where it was measured */
     s->nsym = 0;
-    s->lead_err = s->win_err = s->win_n = 0;
+    s->win_err = s->win_n = 0;
+    if (IFRX_STATS) s->lead_err = 0;
     return (h + 1) * step;
   }
   return step;
@@ -244,10 +253,17 @@ IFRX_NOINLINE static void finish(ifrx_t *s) {
   int j, win, wcj, cj, tone, bt[4] = {0, 0, 0, 0}, bc[4] = {0, 0, 0, 0}, sh;
   int lead = s->state == IFRX_LEAD;
   const uint8_t *t;
-  /* each tone's best template (of its phases), and the best tone */
+  /* each template's sums over the whole symbol (the first half's were taken half way, for the
+     AFC too); then each tone's best template (of its phases), and the best tone. Summed in
+     registers at those two points, they cost under half what running sums a sample did */
   for (tone = 0; tone < IFRX_MM(s); tone++) s->met[tone] = 0;
   for (j = 0; j < IFRX_NS(s); j++) {
-    uint32_t v = best2(s->A[j], &cj);
+    uint32_t v;
+    int32_t *h = s->A1[j], *f = s->A[j];
+    t = s->tm + j * IFRX_TL;
+    corr4((const int16_t (*)[2])(s->w + 1 + IFRX_TL / 2), t + IFRX_TL / 2, f, IFRX_TL / 2);
+    for (cj = 0; cj < 4; cj++) f[cj] += h[cj];
+    v = best2(s->A[j], &cj);
     tone = j >> IFRX_HSH(s);
     if (v >= s->met[tone]) s->met[tone] = v, bt[tone] = j, bc[tone] = cj;
   }
@@ -280,7 +296,7 @@ IFRX_NOINLINE static void finish(ifrx_t *s) {
     /* the lead's symbol is known: steer on its best template */
     tone = ((s->q + (uint32_t)s->parity) & 1) ? IFRX_MM(s) - 1 : 0;
     j = s->sym != tone;
-    s->lead_err += j;
+    if (IFRX_STATS) s->lead_err += j;
     s->win_err += j;
     s->win_n++;
   }
@@ -289,9 +305,9 @@ IFRX_NOINLINE static void finish(ifrx_t *s) {
      (|L|^2 - |E|^2) / 2|C|^2 ~ (|L| - |E|) / |C| (squares: the approximate magnitude's error
      depends on the phase, which would bias the loop) */
   t = s->tm + win * IFRX_TL;
-  corr4((const int16_t (*)[2])s->w, t, a);
+  corr4((const int16_t (*)[2])s->w, t, a, IFRX_TL);
   cof(a, wcj, X);
-  corr4((const int16_t (*)[2])(s->w + 2), t, a);
+  corr4((const int16_t (*)[2])(s->w + 2), t, a, IFRX_TL);
   cof(a, wcj, X + 2);
   cof(s->A[win], wcj, X + 4);
   sh = sh_of(X, 6);
@@ -299,7 +315,7 @@ IFRX_NOINLINE static void finish(ifrx_t *s) {
   dt = d ? ifrx_sdiv((int32_t)sq(X + 2, sh) - (int32_t)sq(X, sh), d) : 0; /* Q12 */
   dt = (clampi(dt, 4096) * (int32_t)s->pc_q8) >> 4;                          /* x pc, Q16 */
   dt >>= (lead && s->nsym < IFRX_LEAD_SYMS / 2) ? s->gain_sh - 2 : s->gain_sh;
-  s->terr = dt;
+  if (IFRX_STATS) s->terr = dt;
   /* the AFC: the turn between the winning template's two halves, Im(c2 c1*) / mean |c|^2 */
   cof(s->A1[win], wcj, Y);
   Y[2] = X[4] - Y[0];
@@ -330,33 +346,27 @@ IFRX_NOINLINE static void take(ifrx_t *s) {
   int16_t *w = s->w[s->i + 1];
   uint32_t th = s->th_tau + (uint32_t)((int32_t)(s->ni - s->tau) * (int32_t)(s->dphi_if + (uint32_t)s->dphi_f));
   sample(s, s->ni, th, w);
-  if (s->i >= 0 && s->i < IFRX_TL) {
-    const uint8_t *t = s->tm + s->i;
-    int32_t wr = w[0], wi = w[1];
+  if (s->i == IFRX_TL / 2 - 1) { /* the first half's sums now: the symbol's end has the rest */
     int j;
-    for (j = 0; j < IFRX_NS(s); j++, t += IFRX_TL) {
-      int32_t *a = s->A[j], tr = IFRX_TRE(*t), ti = IFRX_TIM(*t);
-      a[0] += wr * tr;
-      a[1] += wi * ti;
-      a[2] += wi * tr;
-      a[3] += wr * ti;
-    }
-    if (s->i == IFRX_TL / 2 - 1) {
-      int32_t *d = &s->A1[0][0], *e = &s->A[0][0];
-      for (j = 0; j < IFRX_NS(s) * 4; j++) d[j] = e[j];
-    }
+    for (j = 0; j < IFRX_NS(s); j++)
+      corr4((const int16_t (*)[2])(s->w + 1), s->tm + j * IFRX_TL, s->A1[j], IFRX_TL / 2);
   }
+}
+
+IFRX_NOINLINE static void put(ifrx_t *s, int c) {
+  int8_t *r = s->ring + (s->n & (IFRX_RING - 1));
+  r[0] = r[IFRX_RING] = (int8_t)c;
 }
 
 int ifrx_push(ifrx_t *s, int c) {
   uint32_t last;
   int done = 0;
-  s->ring[s->n & (IFRX_RING - 1)] = (int8_t)c;
+  put(s, c);
   last = s->n++;
   while ((int32_t)(last - s->ni) >= 0) {
     if (last - s->ni > IFRX_RING - IFRX_NT - 1) {
       /* this symbol's counts are gone (a skip): pass it over */
-      s->slips++;
+      if (IFRX_STATS) s->slips++;
       s->gap = 1;
       advance(s, (int32_t)s->pc_q16);
       continue;
@@ -376,8 +386,8 @@ int ifrx_push(ifrx_t *s, int c) {
 void ifrx_skip(ifrx_t *s, uint32_t nskip) {
   /* zeros in place of the lost counts: the filter rings down rather than on stale ones */
   uint32_t k;
-  for (k = 0; k < nskip && k < IFRX_RING; k++) s->ring[(s->n + k) & (IFRX_RING - 1)] = 0;
-  s->n += nskip;
+  for (k = 0; k < nskip && k < IFRX_RING; k++, s->n++) put(s, 0);
+  s->n += nskip - k;
 }
 
 int ifrx_afc_hz(const ifrx_t *s) { return ifrx_sdiv(s->dphi_f, 50069u); }

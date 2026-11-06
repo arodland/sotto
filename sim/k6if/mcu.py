@@ -200,10 +200,12 @@ def c_tables():
     out = ["/* ifrx_tables.h: made by `python3 -m sim.k6if.mcu --tables` (sim/k6if/mcu.py) from the",
            "   K6 GP0 model: the decimating filter and the IF templates. SPDX-License-Identifier: MIT */",
            "#ifndef IFRX_TABLES_H", "#define IFRX_TABLES_H", "#include <stdint.h>", "",
-           f"/* {NT} taps, Q14, re/im: a {CUT:.0f} Hz low-pass turned up to the IF ({st.fe.FIF:.1f} Hz at"
-           f" {FC:.0f} counts/s) */",
-           f"static const int16_t ifrx_g[{NT}][2] = {{"]
-    out += ["  " + " ".join(f"{{{int(v.real)}, {int(v.imag)}}}," for v in g[i:i + 4]) for i in range(0, NT, 4)]
+           f"/* {NT} taps, Q14: a {CUT:.0f} Hz low-pass turned up to the IF ({st.fe.FIF:.1f} Hz at"
+           f" {FC:.0f} counts/s);",
+           "   re in the low 16 bits, im in the high: one load a tap */",
+           f"static const uint32_t ifrx_g[{NT}] = {{"]
+    out += ["  " + " ".join(f"0x{(int(v.real) & 0xFFFF) | ((int(v.imag) & 0xFFFF) << 16):08x}u," for v in g[i:i + 6])
+            for i in range(0, NT, 6)]
     out += ["};"]
     for name in ("ffsk1200", "4fsk1200"):
         tones, baud, lv = md.MODES[name]
