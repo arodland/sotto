@@ -61,7 +61,7 @@ API level 2 (images from 2026-11-06 on) adds the receiver:
 | Call | What it does |
 | --- | --- |
 | `fd_read(reg)` | an FD6818 register |
-| `fd_write(reg, v)` | writes one, 0; or -1 for the registers it refuses: 0x30 (RX/TX state), 0x33 (GPIO), 0x36 (PA), 0x37 (power) |
+| `fd_write(reg, v)` | writes one, 0; or -1 for the registers it refuses: 0x30 (RX/TX state), 0x33 (GPIO), 0x36 (PA), 0x37 (power). In images from 2026-11-06 06:30 UTC on, a 0x33 write that changes only bits 8 and 0 (GP0, the line to MCU PB1) is allowed, and the firmware puts 0x33 back after the module |
 | `delay_us(us)` | busy wait, any length |
 | `tune(hz, wide)` | receive on `hz`: band switch, PLL, wide or narrow filter, RX on |
 | `rx_hz()` | the frequency the pager listens on |
@@ -194,12 +194,18 @@ what would settle it.
 1. **Receive audio through the FD6818's I2S port.**
    - From: the CW ID thread, 2026-11-06 ([k6-fd6818-audio.md](k6-fd6818-audio.md)).
    - The guide's MCBSP/I2S port can output FM-demodulated audio on a GPIO, and the K6 wires
-     FD6818 GP0 to MCU PB1 (pin 19, the CTCSS net). Only one wire, so the MCU would have to recover
-     the clock itself. The BK4819 map may not have the block.
+     FD6818 GP0 to MCU PB1 (the CTCSS net; pin 19, not PB0). Only one wire, so the MCU would
+     have to recover the clock itself. The BK4819 map may not have the block.
    - Buys: received audio samples with no hardware change, so a software modem past the chip
      FSK's 2400 baud slips, maybe live sotto 2400. It gives no mic samples.
-   - Settled by: the I2S probe thread (a module that puts the frame clock on GP0 and counts
-     PB1 edges).
+   - Settled by: the I2S probe thread (`i2sprobe`, a module that puts the frame clock on GP0
+     and counts PB1 edges). Result (2026-11-06, PR #68): no I2S port, but GP0 output code 13
+     is a 1-bit sigma-delta stream of the receive low IF (about 17 kHz on a carrier, moving
+     with the deviation), readable on PB1. Run 5 (`gp0fm`) settled the next question: 28 ms of
+     IF decimated on the MCU demodulated on the host to a clean 1000.9 Hz tone at +-4.3 kHz
+     deviation, about 25 dB SINAD. Still open: demodulating on the MCU itself, and whether
+     sampling can leave the CPU free for longer runs (a timer-driven DMA read of GPIOB IDR, if
+     the KD32F328 has one; a lower sample rate per output byte).
 2. **The tone detector as a slow MFSK receiver.**
    - From: the CW ID thread (on air it follows a keyed tone to about 10 ms and says which of
      16 tones it is).

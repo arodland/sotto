@@ -116,16 +116,17 @@ The K6 schematic (BF_K6_Plus_Open_V1.1, `ht-survey/uv-k6-rf-chip-audio.png` and
 
 | Pin | Goes to |
 | --- | --- |
-| GP0 | R175 (100 ohm), net CTCSS, MCU pin 19 (PB1) |
+| GP0 | R175 (100 ohm), net CTCSS, MCU pin 19 (PB1; pin 18 is PB0, keypad row L0) |
 | GP2 | U3T_EN |
 | GP3 | V3T_EN |
 | GP5 | R_LED |
 | GP4, GP6 | lines off the crop (band or PA switching) |
 | GP1, GP7 | not connected |
 
-The guide's default for REG_26H is 0x0005, so out of reset GP0 carries the CTCSS/DCS code for
-the MCU to decode in software, which is what the net name says. PB1 is the only FD6818 GPIO
-that reaches the MCU.
+The guide's default for REG_26H is 0x0005, so on a 0x6818 GP0 would carry the CTCSS/DCS code
+for the MCU to decode in software, which is what the net name says. On Jeff's radio GP0's
+output is off (REG_33 = 0xd300, see the probe below). PB1 is the only FD6818 GPIO that reaches
+the MCU. (An earlier version of this page said PB0: wrong, PB0 is pin 18.)
 
 So received audio could, in principle, reach the MCU like this:
 
@@ -158,6 +159,85 @@ plenty if a register held samples, but none does.
 - A level 2 module could read their reset values, enable the port, put DFS (13) on GP0, and
   count PB1 edges by reading the MCU's GPIO input register directly. About 8,000 per second
   would mean the port is real.
-- API level 2's fd_write refuses only 0x30, 0x33, 0x36 and 0x37, so these writes are allowed.
-- The firmware re-arms its set-up when the module returns, but REG_26 should be put back to
-  0x0005 explicitly.
+- GP0's output has to be switched on first, which is a REG_33 write; level 2 refused REG_33
+  until the image change below.
+
+## The I2S probe (`c/k6/mod/i2sprobe.c`)
+
+The module reads PB1 straight from the MCU's GPIOB input register (0x48000410; it writes no MCU
+register) in a tight loop, about 6.3 million samples a second, and counts edges in 100 ms
+windows. It dumps registers 0x00-0x7F (not 0x5F, whose read pops the FSK FIFO), then:
+
+1. Switches GP0's output on (REG_33 bit 8 clear).
+2. Tries all 16 values of REG_34[3:0]. On the 0x4819 the guide's GPIO block seems to sit
+   0x0E higher (guide 25H = 0x33, 28H = 0x36, as Aura uses them), so guide 26H, the GPIO3..0
+   output select, would be 0x34. Guide code 15 (XTAL/2, 13 MHz) would flood PB1 with edges.
+3. With GP0 on DFS, DCLK and DOUT (13, 14, 12), tries no enable, REG_31 bit 0 and REG_04
+   bit 0 as mcbsp_en, printing the first 32 edge gaps of each window (the raw capture).
+
+It puts every register back and refuses to write unless PB1 is an input.
+
+**Run 1, 2026-11-06 06:02 UTC (image 6473ca7):** ret -5, nothing written. REG_33 = 0xd300:
+enable-bar set for GP0, GP1, GP4, GP6 and GP7, clear for GP2, GP3 (band) and GP5 (LED), which is
+Aura's own set-up. With GP0 not driving, PB1's pull-up (PUPDR 01 on the radio) read high in all
+630,784 samples. Other readings: REG_34 = REG_35 = 0x0000; REG_26 = 0x13a0 (Aura's value, so it
+is not the GPIO select here, as it would break band switching); REG_75 = 0xd42d and REG_76 =
+0xf50b, not the guide's 0x0FB4/0xE307 (on the BK4819 map 0x75 is an RX audio filter), so the
+guide's I2S set-up isn't at those addresses; REG_31 = REG_04 = 0x0000.
+
+**Image change (PR from this thread):** a module may change REG_33 bits 8 and 0 (GP0's enable
+and value) and nothing else in it; the firmware puts REG_33 back when the module returns.
+GP0 only reaches PB1, an MCU input.
+
+**Run 2, 06:13 UTC (image e46e7bd, `i2sprobe`):** REG_33 d300 -> d200 put GP0's output on, and
+the sweep showed REG_34[3:0] is GP0's output select (the guide's 26H, moved by 0x0E). With no
+carrier, per 100 ms window at about 6.3 M samples/s:
+
+| Code | PB1 | Code | PB1 |
+| --- | --- | --- | --- |
+| 0 | low (out_val bit 0) | 8 | low |
+| 1 | high | 9 | 20 edges, slow |
+| 2-7 | low | 10 | high |
+| 11 | 93 edges, slow | 12, 13, 14 | about 340,000 edges, 50% high |
+| 15 | 188,000 edges | | |
+
+No window gave the 1,600 edges an 8 kHz frame clock would. REG_31 bit 0 changed nothing and
+REG_04 doesn't hold a write.
+
+**Run 3, 06:21 UTC (`i2scap`, 22.9 M samples/s bursts of 12,000 samples):** codes 12, 13 and 14
+give one and the same signal, also with REG_31 bit 0 set: high and low runs both cluster at 3-4,
+7-8 and 11-12 samples (units of about 160 ns, 26 MHz / 4), never longer, 50% ones. That is a
+bitstream, not a clock or a frame pulse. Code 15 is mostly 1-sample runs (13 MHz, aliased).
+Codes 9 and 11 change only on a 25.39 kHz grid (26 MHz / 1024): every gap between edges is a
+whole multiple of 286 samples (39.4 us) of the slow counter.
+
+**Run 4, 06:34 UTC (`gp0tone`, the IC-7100 sending a carrier, then 1000, 1800 and 600 Hz):**
+the density of code 13 (ones per 256 samples, 11.2 us) is the receiver's low IF:
+
+| Signal | Code 13 density | Codes 11 and 9 |
+| --- | --- | --- |
+| no carrier | flat at 50%, a few % of noise | about 900 and 200 edges/s |
+| bare carrier | a clean sine, 65-195 of 256, at 16.9-17.0 kHz | silent |
+| 600/1000/1800 Hz tones | the same sine at 13.3-20.7 kHz, about 17 kHz plus the deviation | silent |
+
+So the chip has **no I2S port** here, but GP0 code 13 hands the MCU a 1-bit sigma-delta stream
+of the receive IF (17 kHz is 26 MHz / 1536). Codes 9 and 11 behave like noise or squelch
+detector outputs. Software FM demodulation of that IF would give the MCU received audio; the
+limit is the CPU: the stream is about 6.5 Mbit/s on one pin with no clock, so the MCU must
+sample it by polling. `gp0fm` decimates while it samples (one byte per 256 samples, about
+89 k a second) so the module store holds about 28 ms of IF for the host to demodulate.
+
+**Run 5, 06:41 UTC (`gp0fm`, CI build afc6744, the IC-7100 sending 0.3 s of carrier then
+1000 Hz):** two captures of 2512 bytes, each 27.8 ms at 90.23 k bytes/s (11.08 us a byte, from
+the calibration: 10 captures in 278.4 ms). On the host: subtract the mean, band-pass 8-26 kHz,
+Hilbert transform, instantaneous frequency, low-pass at 3 kHz.
+
+| Capture | When | IF | Demodulated |
+| --- | --- | --- | --- |
+| 0 | 0.2 s after PTT, bare carrier | 16.919 kHz | flat, 31 Hz rms, no tone |
+| 1 | 2.4 s after PTT, in the tone | 16.907 kHz | a 1000.9 Hz sine, +-4.3 kHz deviation, 171 Hz rms residual (about 25 dB SINAD in 0.3-3 kHz) |
+
+So **GP0 code 13 is a working FM receive path into the MCU**: the decimated density is a
+~16.9 kHz IF that demodulates in software to the transmitted audio, with no hardware change.
+The capture is a busy loop (the CPU does nothing else while it samples), so the limits are CPU
+time and RAM, not the signal. The bytes and plot are on hamlet (`~/k6-logs/gp0fm-20261106T0641*`).
