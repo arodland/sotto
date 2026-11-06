@@ -501,6 +501,14 @@ class SottoV38(vl.SottoV37):
         return out
 
     # ---------------------------------------------------------------- 16 kHz decoder
+    def _hiss_model(self, bits, good):
+        """The 8 kHz model under the high band (sotto 1200 decodes its superframes here)."""
+        return self.decode(bits, good)
+
+    def _uu_res(self, rows, g):
+        """The coded 4-band correction to the guess for unvoiced frame g (dB)."""
+        return self.cb[index_of(rows[g], self.nb)]
+
     def decode_audio16(self, bits, good=None, n16=None, seed=0):
         bits = np.asarray(bits)
         good = np.ones(len(bits), bool) if good is None else np.asarray(good, bool)
@@ -512,7 +520,7 @@ class SottoV38(vl.SottoV37):
                 last = bits[g].copy()
             elif last is not None:
                 b2[g] = last
-        m = self.decode(bits, good)
+        m = self._hiss_model(bits, good)
         y8 = vl.synthesise(m)[vl.ar.CODEC_DELAY:]
         n8 = n16 // 2 if n16 else len(y8)
         y16 = resample_poly(np.pad(y8, (0, max(0, n8 - len(y8))))[:n8], 2, 1)
@@ -537,7 +545,7 @@ class SottoV38(vl.SottoV37):
             if src is None and v[t] == 0:               # unvoiced half of an edge frame
                 src = next((g for g in (f[t] - 1, f[t] + 1) if 0 <= g < len(code) and code[g] == 0), None)
             if src is not None:
-                p[t] += self.cb[index_of(b2[src], self.nb)]
+                p[t] += self._uu_res(b2, src)
                 mask[t] = 1
             elif self.vowel == "adaptive" and v[t] in (1, 2):
                 o = off[f[t] // WIN_FRAMES][v[t]]
