@@ -108,9 +108,23 @@ https://claude.ai/artifact/WFm87n9rayHeX26mCrntpX, key
 16 kHz, original in every pair. Sotto 1200 hiss against plain sotto 1200: 5 pairs clean, 1 with
 one packet in 8 lost. Sotto 1200 hiss against v3.8 at 2400: 3 pairs. One null pair.
 
+Result (Jeff, 2026-11-06, answer string `sotto-ab-19 1:B 2:A 3:A 4:= 5:B 6:= 7:B 8:= 9:A 10:A`;
+"What I heard was really good"):
+
+| Pairs | sotto 1200 hiss wins | ties | other wins |
+|---|---:|---:|---:|
+| against plain sotto 1200, clean (5) | 5 | 0 | 0 |
+| against plain sotto 1200, 1 packet in 8 lost (1, 2428_m) | 1 | 0 | 0 |
+| against v3.8 at 2400 (3) | 0 | 2 (777_m, 3536_f) | 1 (EARS p020_m, pair 5) |
+| null pair (4) | | correct | |
+
+The hiss band is a clear win over plain sotto 1200. At half the rate it ties v3.8 on two of
+three voices. It loses on p020_m, which among the v3.8 pairs is also the voice where its
+PESQ-NB drops most (2.674 → 2.620).
+
 ## Open
 
-- **C port**, after round 19: the v3.8 layer in `c/sotto_hiss.c` already runs on per-20 ms
+- **C port** (round 19 says it is worth doing): the v3.8 layer in `c/sotto_hiss.c` already runs on per-20 ms
   fields. It needs sotto 1200's superframe packing and B's 2-bit table.
 - **v3.9's hiss ceiling** (unmerged branch, `docs/hiss-ceiling.md`) rides the same side-channel
   bit, so it should stack on this unchanged once v3.9 merges.
