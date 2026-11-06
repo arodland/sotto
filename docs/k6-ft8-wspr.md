@@ -23,17 +23,21 @@ radio today, and what is still waiting on a bench run, a firmware change or a de
   - `ft8rx`, the whole decoder on the K6, builds at 7.2 KB of code and needs about 4 KB of RAM
     besides. That doesn't fit until the firmware gives modules a bigger arena (see "Getting
     ft8rx onto the radio").
-- **Bench run 1 (2026-11-06): no decodes.** The K6's IF offset is only +11 Hz, but the DMA
-  ring overran about 6,450 times a second because the stop-key scan (about 60 us on the radio)
-  ran on every pass of the drain loop. Fixed for run 2; see "Bench run 1".
+- **On the radio (bench run 5, 2026-11-06): the K6 decoded 6 of 7 FT8 frames,** `CQ AG7EW
+  CN87` at s=-16, including all three frames sent 14 dB down. The K6 listened; the IC-7100
+  sent. Runs 1-4 found and fixed a ring overrun (a stop-key scan in the hot loop) and the chip's
+  AFC chasing the tones (REG_73 bit 4 only takes hold after RXON). With the AFC off the K6 sits
+  145 Hz low at 440.850, so the PC aims the audio at `--f0 1624`. Drift was a few Hz a minute.
+  See "Bench run 5".
 - **FT8 transmit:**
   - Planned as AFSK on FM through the chip's tone oscillator (REG_70/71). A 12.64 s FT8
     transmission plus a CW ID fits the 20 s limit of the level 3 TX API (PR #71).
-  - Untested: PR #71 isn't flashed yet, and `tx_on`'s REG_30 may not route the tone to the
-    carrier (see "FT8 transmit").
+  - Untested: `tx_on`'s REG_30 may not route the tone to the carrier (see "FT8 transmit").
+    The level 3 TX API is on the radio now (the K6 sent its own CW ID at 15:46).
 - **WSPR:**
   - Receive is feasible in RAM and CPU.
-  - At 440 MHz it hinges on the K6's crystal drift over 2 minutes, which nobody has measured yet.
+  - At 440 MHz it hinges on drift over 2 minutes. Run 5 measured 0.05-0.17 Hz/s (K6 and
+    IC-7100 together), 5-20 Hz over a WSPR frame, which is marginal. A long run settles it.
   - Transmit needs about 111 s of keying, more than the 20 s TX limit. That is Jeff's call.
 
 ## The receiver
@@ -259,29 +263,79 @@ the window, where it aliases to the bottom edge (the AFC had hidden that offset 
 `CAP_AFC_OFF` (the same AFC-off and RXON), recording the raw IF of a steady tone in each pass.
 `tools/k6_ft8.py tone LOG --each` prints every capture's peak, so a slide shows.
 
+## Bench run 5 (2026-11-06): 6 of 7 frames decoded, and the K6's true offset
+
+The K6 only listened; the IC-7100 sent every tone and frame (USB audio on FM-D's carrier at
+440.850, then the AG7EW CW ID).
+
+**Part A, the raw IF with the AFC off.** `gp0cap_afc` (start line `r73=4692`, bit 0x10 set)
+recorded the IF of a 1,490 Hz tone in pass 1 and a 1,990 Hz tone in pass 2, 90 clear captures
+each. `tools/k6_ft8.py tone LOG --hz 1490 1990 --each` gave:
+
+- Tone IFs 18271.6 Hz and 18767.0 Hz, slope +0.991, so the upper sideband sits above the IF
+  (upright, no mirror).
+- **Carrier at IF 16781.6 Hz, 145 Hz below the nominal 16927.1 Hz** (about -0.33 ppm, the K6
+  and the IC-7100 together). The AFC had hidden this in runs 1-3, which is why run 4's tone
+  landed at the window's edge. It matches the earlier xtalstep reading (-164 Hz).
+- The tool's aim: `--f0 1624`.
+
+**Part B, FT8 at `--f0 1624`.** ft8wf listened 180 s with `lost=0`, `idle=38-40` and
+`afc=4692`. A 20 s tone at 1,646 Hz (f0 + 22) held bin 15 (1,493.8 Hz) for 14 s and then bin 14,
+one bin of drift. The PC decoded six frames from the waterfall (`decode` and `decode --thr 10`
+agreed):
+
+| t (s) | f (Hz) | s (dB) | frame |
+|---|---|---|---|
+| 54.00 | 1462.5 | -16 | strong 2 |
+| 69.04 | 1462.5 | -17 | strong 3 |
+| 84.00 | 1462.5 | -16 | strong 4 |
+| 114.40 | 1462.5 | -16 | weak 1 (14 dB down) |
+| 129.44 | 1456.2 | -16 | weak 2 |
+| 144.40 | 1456.2 | -16 | weak 3 |
+
+All six read `CQ AG7EW CN87`. Strong frame 1 didn't decode. It started 3 s after the steady
+tone ended, and `track` shows the K6's level still recovering then (t = 34.6-36.5 s). A gap of
+a full slot after any steady tone avoids it. The weak frames decoding at the same s=-16 as the
+strong ones says the K6's own path (the 1-bit IF, the 4-bit waterfall) sets that figure, not
+the bench's RF level: both are strong signals at the antenna.
+
+**Stability (the K6 and the IC-7100 together; this bench can't separate them):**
+
+- Pass 1: the 1,490 Hz tone slid from 18277 to 18270 Hz over about 45 s, about 0.17 Hz/s,
+  with ±1.3 Hz capture-to-capture jitter (the 2.6 Hz bin of the capture's FFT).
+- Pass 2, 50 s later: the 1,990 Hz tone moved about 3 Hz over 45 s. The carrier estimate
+  from pass 2 alone is 4.6 Hz below pass 1's.
+- The FT8 run, about 2 minutes later: under about 6 Hz over 90 s (one decoder bin).
+- For FT8 that is ample: a 12.6 s frame sees 1-2 Hz against 6.25 Hz tone spacing.
+- For WSPR (110.6 s, 1.46 Hz spacing) it is marginal: these rates give 5-20 Hz over a frame,
+  while wsprd tolerates a few Hz of linear drift. The slide slowed through the session, so a
+  warmed-up pair may do better. It needs a long run (see "WSPR").
+
+**Module uploads lost their first chunks.** In runs 4 and 5, each upload's first packets were
+rejected with r=-1: the K6 kept attributing them to the previous, finished transfer. A resend
+of the missing chunks with `--only N --serial S --xfer X` always completed it, at the cost of a
+second keying. Reported to the module-loader owners.
+
 ## Bench steps
 
 The run needs no keys on the K6 itself. It sends one module and plays FT8 from the IC-7100 in
 USB on 440.850; Jeff OK'd PKTUSB on 440.850 on 2026-11-06 for the AF sweep. Bench rules: never
 write to ttyUSB2, the CW ID keeper runs, and one thread is on the bench at a time.
 
-1. **Find the K6's frequency offset.**
-   - PR #71's xtalstep run measured a bare carrier at IF 16,763 Hz against the nominal 16,927 Hz.
-     That is 164 Hz low, more than the ±100 Hz window.
-   - The earlier gp0fm run read 16,919 Hz, so the two disagree. Settle it with a carrier and
-     gp0dma's `if=`, or with the first `ft8wf` run below.
-   - Part of the offset is known: Aura folds a +220 Hz crystal correction into REG_38/39 (the
-     word reads 440,850,220 Hz). The rest is the IC-7100's own error; how the total splits
-     between the two, and its sign, are unmeasured.
-   - Then centre the audio on the window: `--f0 = 1480 + (16927 - IF)`, for example
-     `--f0 1644` if the IF really is 16,763.
+1. **Find the K6's frequency offset.** Run 5 settled it: with the AFC off, the carrier sits at
+   IF 16,781.6 Hz, 145 Hz low, which gives `--f0 1624`. To re-measure (another radio, a cold
+   K6), send `gp0cap_afc`, play 48 s tones at 1,490 and 1,990 Hz in PKTUSB, and run
+   `python3 tools/k6_ft8.py tone LOG --hz 1490 1990 --each`. It prints the carrier and the
+   `--f0` to use. The AFC must be off (ft8wf and gp0cap_afc do that, then RXON), or the chip
+   pulls the tones toward the IF centre over about 30 s.
 2. **Send the module from CI** (artifact `mod-ft8wf.bin`), with the IC-7100 in FM:
    `python -m modem.k6 mod ft8wf.wav mod-ft8wf.bin --api-level 2 --key-file ~/.config/sotto/k6-mod.key`,
-   then play it as for any module, keeping the serial log.
+   then play it as for any module, keeping the serial log. If the log shows the first chunks
+   rejected with r=-1, resend them with `--only N --serial S --xfer X`.
 3. **Play FT8 in USB.** When the log says `ft8wf start`, switch the IC-7100 to PKTUSB
    (`rigctl M PKTUSB 0`), key up and play
    `python3 tools/k6_ft8.py wav ft8.wav --f0 <step 1> --repeat 4` (60 s). Then key down and go
-   back to FM.
+   back to FM. Leave a full 15 s slot between any steady tone and the first frame.
 4. **Decode:** `python3 tools/k6_ft8.py decode ~/k6-logs/<log>`.
    - If nothing decodes, `rows` dumps the waterfall. A tone outside the window means the offset
      in step 1 is wrong.
@@ -325,7 +379,7 @@ The module would do this:
 Prerequisites (from the "Transmit our own FSK from the K6" thread, 2026-11-06). That thread's
 TX module work is on hold, and the REG_71 idea is untested (Insights #8), so these are open:
 
-- **PR #71 on the radio.** The level 3 TX API builds, but no image with it is flashed yet.
+- **PR #71 on the radio.** Done: the K6 runs keyed-lr-e57af49 and keyed its own CW ID at 15:46.
 - **The tone reaching the carrier.** `tx_on` writes REG_30 = 0xC1FA (mic ADC off, no AF DAC
   bit). Aura's own tone-TX state is 0xC3FA, so the tone may not reach the carrier as `tx_on`
   leaves it. REG_30 stays refused to modules. If 0xC1FA carries no tone, `tx_on` needs a tone
