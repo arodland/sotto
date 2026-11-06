@@ -307,8 +307,12 @@ With 1 XL packet in 8 lost: 600 hiss 11.38 dB, 400 hiss 15.17 dB.
   superframes (one line in `c/fixed/sotto_fx_vlr.c`, not done).
 
 So the hiss band in sotto 600 is roughly sotto 1200 hiss's "anchors only" variant (6.4 dB)
-or worse, and sotto 400's is weaker again. Whether that is worth having is a question for ears,
-best asked after round 19 says whether sotto 1200's own band is.
+or worse, and sotto 400's is weaker again. Round 19 found sotto 1200's band clearly worth having
+(it won all 6 pairs), so round 21 asks the ears about this one
+(`tools/listening/render_ab21.py`, key `/mnt/project-files/vocoder/listening/ab-21-key.json`,
+https://claude.ai/artifact/4A7QkE4JwYJ5YgbMrqp7wy): sotto 600 hiss against plain sotto 600
+(4 pairs clean, 1 with 1 XL packet in 8 lost), sotto 400 hiss against plain sotto 400 (2),
+sotto 600 hiss against sotto 1200 hiss (2), and a null pair. Results: pending.
 
 ## Use
 
