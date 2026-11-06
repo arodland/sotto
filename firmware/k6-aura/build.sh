@@ -148,8 +148,10 @@ if [ "${CB:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
     case $v in lr-*) codec=1200 ;; *) codec=2400 ;; esac
     K6_CODEC=$codec K6_CB=$mode sh "$ROOT/tools/k6_build.sh"
     cp "$ROOT/c/k6/build-$v/libsotto_k6.a" "$WORK/lib/libsotto_k6.a"
+    # the install image also holds the 30 KB table: without the PTT calibration transmit (lean)
+    case $v in cbi) feat=pager-only,lean ;; *) feat=pager-only ;; esac
     variant aura-pager-$v "pager-only image, $([ $codec = 1200 ] && echo "sotto 1200" || echo v3.7), codebook in SPI flash ($mode)" \
-      --features pager-only
+      --features $feat
     if [ -f "$OUT/sotto-cb.bin" ]; then cmp "$ROOT/c/k6/build-$v/sotto-cb.bin" "$OUT/sotto-cb.bin"
     else cp "$ROOT/c/k6/build-$v/sotto-cb.bin" "$OUT/sotto-cb.bin"; fi
   done

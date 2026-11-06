@@ -199,6 +199,21 @@ RX-done, and after N+1 word times without an interrupt take the words due since 
 (pseudo event `1@ms+n` in `ev`; one word at a time fell behind). They stay in the burst loop
 between packets like the timed reads. When `ev` is full its last entry shows the latest event.
 
+A second almost-full interrupt sometimes comes 1-2 ms after a real one (f548d3e on air, about
+one packet in 25). Its read of an empty FIFO put 3 copies of the last word into the packet,
+which failed its CRC, and left that packet's true last 3 words for the next one, which then
+started a word late and failed too: losses came in pairs, both packets otherwise bit-perfect.
+An almost-full that comes within half of N word times of the last one, or of a read by time, is
+now dropped; the PKT line's `spur=` counts them.
+
+With that fixed (89d0bf2), one packet in 72 still lost 1-2 words or gained one: the read by
+time assumed the FIFO was empty after the last read. When the sync was noticed late, or (at a
+stream's start) a decode held the CPU while a packet came in, words were left behind, the FIFO
+ran full and the almost-full edge stopped coming. The reads by time now take whatever is due
+since the sync (a decoder yield notes when it saw the sync, and each almost-full read that
+finds more words in than the clock says moves that start earlier), and the 30 ms before the
+speaker opens at a stream's start takes the FIFO's words too.
+
 **Interrupt order.** The UV-K5 BK4819 drivers write REG_02 = 0 first and then read REG_02:
 the write latches the pending causes for the read. This firmware has always read first. If the
 chip latches as those drivers assume, every cause it saw was the previous interrupt's, one event
@@ -267,7 +282,9 @@ sotto's 30 KB codebook from the radio's SPI flash, one 20-byte vector at a time,
 doesn't need to be in the MCU's flash. The images without it have 30 KB free. Flash the install
 image (v3.7) first. On its first boot it writes `out/sotto-cb.bin` to 0x100000, and the serial
 report shows `K6 CB r=2`. The `-cbs` (v3.7) and `-lr-cbs` (sotto 1200) images then read that
-codebook. They show `NO CODEBOOK` and play nothing if it isn't there. The serial lines, the
+codebook. They show `NO CODEBOOK` and play nothing if it isn't there. The install image, which
+holds the table as well, leaves out the PTT calibration transmit (cargo feature `lean`) to fit.
+The serial lines, the
 result codes and the test plan are in [`docs/k6-spi-codebook.md`](../../docs/k6-spi-codebook.md).
 
 **Streaming (sotto 1200 image, on by default).** A sotto 1200 message starts playing as soon as
