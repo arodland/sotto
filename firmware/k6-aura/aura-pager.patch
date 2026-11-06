@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..04526e8
+index 0000000..fc6adfb
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3077 @@
+@@ -0,0 +1,3084 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -251,7 +251,7 @@ index 0000000..04526e8
 +use super::{App, ChVfoMode, Mode, VFO_INPUT_DIGITS};
 +use crate::device::keypad::{KeyEvent, KeyEventKind, KeyId};
 +use crate::device::power::Power as PowerSwitch;
-+use crate::device::radio::{Modulation, SubAudio};
++use crate::device::radio::{BandLock, Modulation, SubAudio};
 +use crate::drivers::fd6818::AfOutState;
 +use crate::hal::pwm_audio::{self, PwmAudio};
 +use crate::hal::{delay, uptime};
@@ -599,7 +599,14 @@ index 0000000..04526e8
 +    app.radio.set_subaudio_tx(SubAudio::None);
 +    app.radio.set_modulation(Modulation::Fm);
 +    app.radio.apply_pa_calibration(&mut app.storage, hz, crate::drivers::fd6818::Power::Low);
-+    if !app.radio.enter_tx(syst) {
++    // The module transmitter's own band lock, chosen by Jeff (licensee AG7EW) on 2026-11-06:
++    // the US amateur 2 m and 70 cm bands (FCC HAM, 144-148 and 420-450 MHz), whatever the
++    // radio's FLOCK says, since the pager image has no menu to change it. Only for this
++    // key-up: the radio's own lock is put back straight after.
++    app.radio.set_tx_allowed(BandLock::Fcc.tx_ranges());
++    let ok = app.radio.enter_tx(syst);
++    app.radio.set_tx_allowed(BandLock::from_u8(app.settings.band_lock).tx_ranges());
++    if !ok {
 +        report_line(format_args!("K6 MOD tx refused hz={}", hz));
 +        app.radio.enter_rx(syst);
 +        return -1;

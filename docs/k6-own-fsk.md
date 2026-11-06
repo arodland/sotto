@@ -115,7 +115,15 @@ hears it as CW in CW or SSB mode; in FM it hears only the squelch opening and cl
 Tests: `tests/test_k6_cwkey.py` decodes the PA keying back to AG7EW on the emulated M0 and
 checks the wait for a clear channel, the refusals (wrong frequency, no level 3, tx_on refused,
 a busy channel) and both ways out. It needs a
-K6 image with module API level 3 (PR #71's `aura-pager-only`; the lean images refuse tx_on).
+K6 image with module API level 3 (PR #71's `aura-pager-only` or `aura-pager-lr`; the lean images
+refuse tx_on).
+
+First on-air try (2026-11-06 15:13, image 234298c): the upload and the wait for a clear channel
+worked, then `K6 MOD tx refused hz=440850000`. Aura's enter_tx checks the radio's band lock
+(FLOCK), whose default "CE HAM" allows TX only on 144-146 and 430-440 MHz, and the pager image
+has no menu to change it. Jeff chose to give the module transmitter its own lock: tx_on now
+allows the US amateur 2 m and 70 cm bands (FCC HAM, 144-148 and 420-450 MHz) for its key-up
+only, and puts the radio's FLOCK back straight after.
 
 ## Next
 
