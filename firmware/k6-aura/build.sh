@@ -182,8 +182,9 @@ fi
 # that says #define K6_MODULE_OPT z gets -Oz instead of -Os. Linked at two addresses: the
 # same bytes, or it isn't position-independent.
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
-  -fno-builtin -nostdlib -ffunction-sections -fdata-sections -Wall -Werror -I$ROOT/c/k6"
-for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep; do
+  -fno-builtin -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -Werror -I$ROOT/c/k6"
+for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep afsweep gp0cap \
+         iflive iflive_ffsk; do
   opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
   clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do
@@ -194,4 +195,6 @@ for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0d
   cmp "$HERE/build/$m-0.bin" "$HERE/build/$m-4096.bin"
   cp "$HERE/build/$m-0.bin" "$OUT/mod-$m.bin"
   ls -l "$OUT/mod-$m.bin"
+  # the 4 KB message store holds a 16-byte header, the code and an 8-byte tag
+  [ "$(wc -c < "$OUT/mod-$m.bin")" -le 4072 ] || { echo "mod-$m.bin: over the 4 KB store"; exit 1; }
 done
