@@ -25,8 +25,8 @@ c/k6/pager_host -t                              # the calibration test packet, h
   machine for `tests/test_k6_mod.py` (`make -C c/k6 km_host`, test key 00..0f).
 - `cwid.h/.c` decodes a repeater's Morse ID from one of the FD6818's detectors (an audio level
   in dB, or a tone detector's key state): any speed, the detector's lag taken out, callsign
-  check. `mod/cwprobe.c` is the API level 2 module that tries the detectors on the radio
-  ([`docs/k6-cwid.md`](../../docs/k6-cwid.md), `tests/test_k6_cwid.py`).
+  check. `mod/cwprobe.c` is the API level 2 module that tried the detectors on the radio,
+  `mod/cwlisten.c` the listener built on the one that won, the tone detector ([`docs/k6-cwid.md`](../../docs/k6-cwid.md), `tests/test_k6_cwid.py`).
 - `sp_cb.h/.c` puts sotto's 30 KB codebook in the radio's SPI flash, read a vector at a time
   (`-DFX_CB_SPI`), with a power-on check, a one-time installer and a speed bench
   ([`docs/k6-spi-codebook.md`](../../docs/k6-spi-codebook.md)). `cb_image.c` writes the image,

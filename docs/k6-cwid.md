@@ -2,8 +2,8 @@
 
 A RAM module for the Baofeng UV-K6 that listens on a repeater's channel, decodes its Morse
 ID and (later) fills in the callsign of that repeater's entry in the explorer's repeater table.
-This first step is a probe: it finds out which of the FD6818's detectors can follow CW keying,
-and decodes what it hears so the answer comes with real numbers.
+A probe module first found out on the air which of the FD6818's detectors can follow CW keying
+(the tone detector); the listener module `cwlisten` is built on it.
 
 ## The problem
 
@@ -18,7 +18,7 @@ uses the BK4819 addresses). Three candidates:
 | B | REG_64 | (voice amplitude) | audio amplitude, linear |
 | T | REG_24, REG_09, REG_0B, REG_0C | REG_94H, 1050 Hz recipe p. 32 | a tone detector: which of 16 programmed tones is present |
 
-The bench test is to see which one follows 20 wpm keying cleanly.
+The bench test was to see which one follows 20 wpm keying cleanly (results below: T does).
 
 ## The decoder (`c/k6/cwid.[ch]`, MIT)
 
@@ -49,6 +49,8 @@ Noise alone produces junk transmissions but no callsign.
 
 ## The probe module (`c/k6/mod/cwprobe.c`, API level 2)
 
+Its job is done (on-air results in the next section); it stays as the record of the run.
+
 It needs a K6 image with module API level 2 (PR #59). It listens for up to 10 minutes on the
 pager's channel (any key stops it), runs trackers on A and B, and feeds its one Morse decoder
 from A for one transmission and from B for the next. It sets up the tone detector in
@@ -73,7 +75,7 @@ R 6f 0008..002b                                 each register's range over the r
 cwprobe end key msgs=2
 ```
 
-## Bench test (hamlet, 440.850)
+## Probe bench test (hamlet, 440.850, as run)
 
 1. A K6 image with level 2 (the explorer thread's run flashes it).
 2. Send the module and, right after it, an ID or two (on a machine without clang, use the CI
@@ -88,10 +90,90 @@ cwprobe end key msgs=2
    one decode on A and one on B. Try 13 and 25 wpm, and tones 600 and 1200 Hz.
 3. Stop it with any key on the K6, or wait for the 10 minutes.
 
+## Probe results (hamlet, 2026-11-06 05:09-05:19 UTC)
+
+Image 6473ca7 (level 2), module call stack 3,512 B, scratch 204 B (too small for the probe's
+216 B, so the decoder ran on the stack; 864 B were left). IDs from the IC-7100: 20 wpm at
+800 Hz, 13 wpm at 600 Hz, 25 wpm at 1200 Hz, each sent twice with a 4 s gap.
+
+- **A, REG_6F: too slow.** Only 7 dB between key up and key down (26 and 33 dB), and the
+  marks and spaces it gave for the 20 wpm IDs sit on a lattice of about 120 ms (marks 104-128
+  and 340-356 ms, spaces 132, 240, 360, 472, 600, 724, 852 ms) where a dot is 60 ms: the
+  register updates (or averages) about every 120 ms. The decoder made "3 wpm", text `#`, and
+  took both IDs and their gap as one transmission.
+- **B, REG_64: never moved** (0x000a throughout). It is the TX (mic) amplitude, as UV-K5
+  firmware uses it for VOX. The probe's turn-taking then gave every later transmission to B,
+  so it reported only one.
+- **T, the tone detector: follows the keying.** REG_0B read 0xC006 idle and 0xD006 with the
+  600 Hz tone: bit 12 is set while a programmed tone is present and [11:8] says which (tone 0
+  = 600 Hz; the module upload's FFSK gave tone 15). The 13 wpm ID's first letters, from the
+  event log (times are ms mod 65536, so 8639 is 74.2 s after the start):
+
+  | | on | off | on | gap | on | off | on |
+  | --- | --- | --- | --- | --- | --- | --- | --- |
+  | sent (13 wpm) | 92 | 92 | 277 | 277 | 277 | 92 | 277 |
+  | REG_0B bit 12 | 102 | 82 | 288 | 266 | 286 | 83 | 286 |
+
+  That is A (`.-`) and the start of G (`--.`): every mark about 10 ms long, every space 10 ms
+  short, which the decoder takes out as lag. Each tone-on also raised the interrupt (REG_02
+  cause 0x0800). The event log (12 entries) overflowed during the 20 and 25 wpm IDs, so those
+  aren't confirmed edge by edge, but at 10 ms resolution a 48 ms dot (25 wpm) is easy.
+
+## The listener module (`c/k6/mod/cwlisten.c`, API level 2)
+
+The tone detector set up as the probe set it (16 tones, 600 to 1350 Hz in 50 Hz steps,
+threshold 24), REG_0B bit 12 fed straight to the decoder every 2 ms, and a count of which tone
+was on during the marks. Per transmission, on the serial report (each line `K6 MOD say ...`):
+
+```
+CWID listen rx=440850000 th=24 s=1500                   start: frequency, threshold, time limit
+CWID 20wpm lag=10 tone=800 q=98 n=61                    speed, lag (ms), tone, % of marks on it
+CWID text AG7EW SOTTO TEST
+CWID call=AG7EW fl=0 seen=1                             callsign, flags (1 /P, 2 /M, 4 /R), count
+CWID d +60 -60 +184 ...                                 marks and spaces, ms
+CWID ok AG7EW fl=0 rx=440850000 tone=800 wpm=20         the same call twice in a row
+CWID end ok msgs=2 short=7                              why it stopped (ok, key, time); IDs
+                                                        decoded; bursts of under 5 marks
+```
+
+It stops at the ok line, on any key, or after 25 minutes (two IDs 10 minutes apart and some),
+and returns 1 if it confirmed a call. 3.95 KB (-Oz), 360 B of stack with its 210 B of state in
+scratch, 576 B without (the K6 gives it about 167 B of scratch, so on the radio it's the
+stack, of which there are 3.5 KB). Host tests: 13, 20 and 25 wpm on tones 0, 4 and 12, after
+upload-tail bursts on tone 15 (only counted); two different calls confirm nothing.
+
+To run it (a machine without clang sends the CI artifact's `mod-cwlisten.bin` with
+`--api-level 2`):
+
+```sh
+python -m modem.k6 mod listen.wav c/k6/mod/cwlisten.c --key-file ~/.config/sotto/k6-mod.key --phy F --payload XL
+python -m modem.k6 cw id.wav "AG7EW SOTTO TEST" --wpm 20 --tone 800 --repeat 2 --gap 4
+```
+
+### On air (hamlet, 2026-11-06 05:30-05:35 UTC, image 6473ca7)
+
+One fresh upload per run, then the ID twice with a 4 s gap. Every run confirmed the call on
+the second copy, both copies decoded exactly, q=100, n=61:
+
+| run | ok line | lag | marks heard (dot / dash, ms) | module start to ok |
+| --- | --- | --- | --- | --- |
+| 20 wpm, 800 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=800 wpm=20` | 12 | 68-72 / 188-192 | 48.5 s |
+| 13 wpm, 600 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=600 wpm=13` | 12 | 100-104 / 284-288 | 53.2 s |
+| 25 wpm, 1200 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=1200 wpm=25` | 8 | 52-56 / 148-156 | 45.2 s |
+
+The module starts while the IC-7100 is still sending the upload's repeat copies, and that
+FFSK gave 3-7 junk transmissions per run on tone 15 (1350 Hz): 1-3 marks of 16-52 ms, read
+as `E`, `NE`, `TE E E`. None looked like a call. Since then (commit after 4e055e3) anything
+under 5 marks is only counted (`short=`), so the serial report carries IDs only. Store 164 B
+of scratch, so the state ran on the stack; 864 B of stack were left.
+
+Unknowns for real repeaters: an ID tone outside 600-1350 Hz, an ID sent over voice (the
+detector may not lock), and whether 50 Hz steps are finer than the detector can tell apart
+(the 'tone' field and q will show it).
+
 ## Next
 
-- Pick the detector from the bench result (and the tone detector's behaviour from the T lines).
-- The listener module: one detector, two identical decodes before a callsign counts, then
-  the repeater table's update rule (fill only an empty or CW-sourced call, never a user one;
-  on a mismatch set the mismatch flag) through the explorer's `rt_find` / `rt_update_call`.
-- Until then decodes go out as serial lines only; this module writes no flash.
+- `cwlisten` on a real repeater's ID.
+- The table update: the explorer's `rt_find` / `rt_update_call` once they exist (fill only an
+  empty or CW-sourced call, never a user one; on a mismatch set the mismatch flag; byte 51 gets
+  the tone and speed). Until then the ok line is the result, and this module writes no flash.

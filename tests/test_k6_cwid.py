@@ -21,6 +21,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 K6 = os.path.join(ROOT, "c", "k6")
 PROBE = os.path.join(K6, "mod", "cwprobe.c")
+LISTEN = os.path.join(K6, "mod", "cwlisten.c")
 sys.path.insert(0, ROOT)
 from modem import k6mod  # noqa: E402
 
@@ -242,46 +243,13 @@ def test_probe_builds_fits_level_2():
     assert 16 + len(code) + 8 <= 4096, len(code)          # the K6's 4 KB message store
 
 
-@need_clang
-@pytest.mark.parametrize("scratch", [True, False])
-def test_probe_decodes_two_ids_on_m0(scratch):
-    """The module against a modelled FD6818: an 800 Hz MCW ID at 20 wpm at 2 s and at 13 s.
-    REG_6F follows the tone in dB (12 dB gaps, 40 dB key down, attack 3 ms, release 8 ms, noise),
-    REG_64 the same in linear amplitude, REG_0B shows the tone detector's symbol 4 (800 Hz)
-    with the ready bit while the tone is on. A key press at 25 s ends it. The two registers
-    take turns: A must give the first ID and B the second. With scratch RAM the stack stays under
-    520 bytes; without it (the K6 gives 4096 - 16 - code - 8 bytes, about 200, which may be
-    too few) the decoder goes on the stack, under 760 (the K6 had 3.5 KB on 612fb72)."""
+def run_m0(code, entry, fd_read, key_at_ms, spare, max_ms=None):
+    """Run a module on an emulated Cortex-M0 with an API level 2 table: fd_read(reg, ms) models
+    the FD6818, a key goes down at key_at_ms, spare bytes of scratch RAM. Returns
+    (ret, said, writes, stack bytes, scratch address)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
-    code, entry = k6mod.build(PROBE)
-    rnd = random.Random(4)
-    text = "AG7EW SOTTO TEST"
-    edges, t = [], 2000.0
-    for start in (2000.0, 13000.0):         # an ID is 8.6 s long
-        t = start
-        for k, d in keying(text, 20, jit_ms=1, rnd=rnd):
-            edges.append((t, k))
-            t += d
-    st = {"us": 0, "env": 12.0, "last": 0, "said": [], "writes": {}, "ei": 0}
-
-    def keyed(ms):
-        k = 0
-        for e_t, e_k in edges:
-            if e_t > ms:
-                break
-            k = e_k
-        return k
-
-    def env_now():
-        dt = (st["us"] - st["last"]) / 1000.0
-        if dt > 0:
-            k = keyed(st["us"] / 1000.0)
-            tau = 3.0 if k else 8.0
-            st["env"] += ((40.0 if k else 12.0) - st["env"]) * (1 - math.exp(-dt / tau))
-            st["last"] = st["us"]
-        return st["env"]
-
+    st = {"us": 0, "said": [], "writes": {}}
     mu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_THUMB | unicorn.UC_MODE_MCLASS)
     mu.ctl_set_cpu_model(A.UC_CPU_ARM_CORTEX_M0)
     ram = 0x20000000
@@ -289,7 +257,6 @@ def test_probe_decodes_two_ids_on_m0(scratch):
     base, api, stubs, stop, sp0 = ram + 0x1000, ram + 0x8000, ram + 0x9000, ram + 0x9F00, ram + 0x7F00
     mu.mem_write(base, code)
     names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down", "scratch"]
-    spare = 1024 if scratch else 0
     for i in range(len(names)):
         mu.mem_write(stubs + 16 * i, b"\x70\x47")
     mu.mem_write(stop, b"\x00\xbf" * 8)
@@ -311,15 +278,7 @@ def test_probe_decodes_two_ids_on_m0(scratch):
             st["us"] += 5000                         # 60 characters at 115200 baud
         elif name == "fd_read":
             st["us"] += 20
-            e = env_now()
-            if r0 == 0x6F:
-                ret = max(0, min(127, int(round(e + rnd.gauss(0, 1.0)))))
-            elif r0 == 0x64:
-                ret = int(10 ** ((e + rnd.gauss(0, 1.0)) / 20) * 50)
-            elif r0 == 0x0B:
-                ret = 0x1400 if keyed(st["us"] / 1000.0) else 0
-            elif r0 == 0x67:
-                ret = (-60 + 174) << 1
+            ret = fd_read(r0, st["us"] / 1000.0)
         elif name == "fd_write":
             st["writes"][r0] = r1
         elif name == "delay_us":
@@ -329,7 +288,7 @@ def test_probe_decodes_two_ids_on_m0(scratch):
         elif name == "ms":
             ret = st["us"] // 1000
         elif name == "key_down":
-            ret = 1 if st["us"] >= 25_000_000 else 0
+            ret = 1 if st["us"] >= key_at_ms * 1000 else 0
         elif name == "scratch":
             ret = ram + 0x6000
             uc.mem_write(r0, spare.to_bytes(4, "little"))
@@ -338,9 +297,65 @@ def test_probe_decodes_two_ids_on_m0(scratch):
     mu.reg_write(A.UC_ARM_REG_R0, api)
     mu.reg_write(A.UC_ARM_REG_SP, sp0)
     mu.reg_write(A.UC_ARM_REG_LR, stop | 1)
-    mu.emu_start(base + entry | 1, stop, count=200_000_000)
-    ret = mu.reg_read(A.UC_ARM_REG_R0)
-    said = st["said"]
+    mu.emu_start(base + entry | 1, stop, count=400_000_000)
+    return mu.reg_read(A.UC_ARM_REG_R0), st["said"], st["writes"], sp0 - low[0], ram + 0x6000
+
+
+def edges_of(ids, rnd, lag=0.0):
+    """[(ms, key)] for [(start ms, text, wpm)], each mark lag ms late at its end."""
+    edges = []
+    for start, text, wpm in ids:
+        t = start
+        for k, d in keying(text, wpm, lag=lag, jit_ms=1, rnd=rnd):
+            edges.append((t, k))
+            t += d
+    return edges
+
+
+def key_at(edges, ms):
+    k = 0
+    for e_t, e_k in edges:
+        if e_t > ms:
+            break
+        k = e_k
+    return k
+
+
+@need_clang
+@pytest.mark.parametrize("scratch", [True, False])
+def test_probe_decodes_two_ids_on_m0(scratch):
+    """The module against a modelled FD6818: an 800 Hz MCW ID at 20 wpm at 2 s and at 13 s.
+    REG_6F follows the tone in dB (12 dB gaps, 40 dB key down, attack 3 ms, release 8 ms, noise),
+    REG_64 the same in linear amplitude, REG_0B shows the tone detector's symbol 4 (800 Hz)
+    with the ready bit while the tone is on. A key press at 25 s ends it. The two registers
+    take turns: A must give the first ID and B the second. With scratch RAM the stack stays under
+    520 bytes; without it (the K6 gives 4096 - 16 - code - 8 bytes, about 200, which may be
+    too few) the decoder goes on the stack, under 760 (the K6 had 3.5 KB on 612fb72)."""
+    code, entry = k6mod.build(PROBE)
+    rnd = random.Random(4)
+    text = "AG7EW SOTTO TEST"
+    edges = edges_of([(2000.0, text, 20), (13000.0, text, 20)], rnd)   # an ID is 8.6 s long
+    env = {"v": 12.0, "last": 0.0}
+
+    def fd_read(reg, ms):
+        dt = ms - env["last"]
+        if dt > 0:
+            k = key_at(edges, ms)
+            tau = 3.0 if k else 8.0
+            env["v"] += ((40.0 if k else 12.0) - env["v"]) * (1 - math.exp(-dt / tau))
+            env["last"] = ms
+        e = env["v"]
+        if reg == 0x6F:
+            return max(0, min(127, int(round(e + rnd.gauss(0, 1.0)))))
+        if reg == 0x64:
+            return int(10 ** ((e + rnd.gauss(0, 1.0)) / 20) * 50)
+        if reg == 0x0B:
+            return 0x1400 if key_at(edges, ms) else 0
+        if reg == 0x67:
+            return (-60 + 174) << 1
+        return 0
+    spare = 1024 if scratch else 0
+    ret, said, writes, stack, ram_w = run_m0(code, entry, fd_read, 25_000, spare)
     assert said[0].startswith("cwprobe sp=0x") and said[1].startswith("cwprobe rx=440850000 th=24 ")
     texts = [s for s in said if s[:2] in ("A ", "B ") and "wpm" not in s and " d " not in s]
     assert texts == ["A " + text, "B " + text]          # one ID on each register, by turns
@@ -349,8 +364,73 @@ def test_probe_decodes_two_ids_on_m0(scratch):
     assert any(s.startswith("T ") and "b=1400" in s for s in said)
     assert any(s.startswith("R 6f ") for s in said)
     assert all(len(s) <= 60 for s in said)
-    assert st["writes"][0x24] & 0x10 == 0 and st["writes"][0x3F] == 0x0800
-    print(f"cwprobe stack {sp0 - low[0]} B, code {len(code)} B, scratch {spare} B")
-    assert sp0 - low[0] < (520 if scratch else 760), sp0 - low[0]
+    assert writes[0x24] & 0x10 == 0 and writes[0x3F] == 0x0800
+    print(f"cwprobe stack {stack} B, code {len(code)} B, scratch {spare} B")
+    assert stack < (520 if scratch else 760), stack
     w = int(said[0].split(" w=0x")[1].split()[0], 16)
-    assert (w == ram + 0x6000) == scratch
+    assert (w == ram_w) == scratch
+
+
+# ---- the listener module: the tone detector as the probe run found it ----
+
+def tone_reg(edges, idx, lag_on=10.0, lag_off=10.0, junk=()):
+    """REG_0B as on air: 0xC006, bit 12 while a programmed tone is present (lag_on ms after the
+    key goes down, lag_off after it goes up), [11:8] the tone. junk: (ms, len, idx) blips."""
+    def f(reg, ms):
+        if reg != 0x0B:
+            return 0x0200 if reg == 0x0C else 0
+        for t, n, i in junk:
+            if t <= ms < t + n:
+                return 0xD006 | (i << 8)
+        on = key_at(edges, ms - lag_on) and key_at(edges, ms - lag_off)
+        return (0xD006 | (idx << 8)) if on else (0xC006 | (idx << 8))
+    return f
+
+
+@need_clang
+def test_listener_builds_fits_level_2():
+    code, entry = k6mod.build(LISTEN)
+    assert entry == 0 and k6mod.source_level(LISTEN) == 2
+    assert 16 + len(code) + 8 <= 4096, len(code)
+
+
+@need_clang
+@pytest.mark.parametrize("wpm,idx,scratch", [(20, 4, True), (13, 0, False), (25, 12, False)])
+def test_listener_confirms_call_on_m0(wpm, idx, scratch):
+    """Short bursts on tone 15 at the start, as a module upload's FFSK gave on air (1-3 marks of
+    16-50 ms, a second or two apart), then the ID twice: the bursts are only counted, the second
+    ID confirms the call, with the tone and speed, and the module returns 1."""
+    code, entry = k6mod.build(LISTEN)
+    rnd = random.Random(wpm)
+    text = "AG7EW SOTTO TEST"
+    n = 129 * 1200 / wpm                               # the ID is 129 dots long
+    edges = edges_of([(10000.0, text, wpm), (10000.0 + n + 4000, text, wpm)], rnd)
+    junk = [(200.0 + 1500 * i + 60 * j, 20 + 8 * j, 15) for i in range(5) for j in range(1 + i % 3)]
+    ret, said, writes, stack, _ = run_m0(code, entry, tone_reg(edges, idx, junk=junk), 60_000,
+                                         1024 if scratch else 0)
+    f = 600 + 50 * idx
+    assert said[0] == "CWID listen rx=440850000 th=24 s=1500"
+    assert said.count("CWID text " + text) == 2
+    assert "CWID call=AG7EW fl=0 seen=1" in said and "CWID call=AG7EW fl=0 seen=2" in said
+    ok = [s for s in said if s.startswith("CWID ok ")]
+    assert len(ok) == 1 and ok[0].startswith(f"CWID ok AG7EW fl=0 rx=440850000 tone={f} wpm=")
+    assert abs(int(ok[0].split("wpm=")[1]) - wpm) <= 1
+    head = [s for s in said if s.startswith("CWID ") and "wpm lag=" in s]
+    assert all(f"tone={f} q=100 " in s for s in head[-2:]), head
+    assert ret == 1 and said[-1] == "CWID end ok msgs=2 short=5"
+    assert all(len(s) <= 60 for s in said)
+    assert writes[0x24] & 0x10 == 0 and writes[0x3F] == 0x0800
+    print(f"cwlisten stack {stack} B, code {len(code)} B")
+    assert stack < (400 if scratch else 600), stack
+
+
+@need_clang
+def test_listener_needs_two_identical():
+    """Two different calls, then a key press: nothing confirmed, returns 0."""
+    code, entry = k6mod.build(LISTEN)
+    rnd = random.Random(7)
+    edges = edges_of([(1000.0, "AG7EW", 20), (7000.0, "VE9QRP", 20)], rnd)
+    ret, said, _, _, _ = run_m0(code, entry, tone_reg(edges, 4), 12_000, 1024)
+    assert "CWID call=AG7EW fl=0 seen=1" in said and "CWID call=VE9QRP fl=0 seen=1" in said
+    assert not any(s.startswith("CWID ok") for s in said)
+    assert ret == 0 and said[-1] == "CWID end key msgs=2 short=0"
