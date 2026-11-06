@@ -115,12 +115,82 @@ loop doing a word load and a masked add per 4 samples would be about 1 cycle a s
 Playing sotto 1200 at the same time costs 53-61 MHz mean on the M0. So a live voice pager on
 this path would sit at about 80-90%: tight, but possible once the count loop is fast.
 
-## The bench test
+## The bench test (`c/k6/mod/gp0cap.c`, `tools/k6_ifcap.py`)
 
-On the radio, the two detectors have to be compared on the same captures at falling signal
-levels, and the floor has to be measured. Jeff's rule is no hardware changes. So instead of an
-attenuator, the module will lower the K6's own front-end gain: REG_7E fixed gain, with REG_13's
-LNA, mixer and PGA steps per egzumer's table. It records the GP0 counts at each step and sends
-them to the host, which runs exactly these receivers on them and measures C/N0 from the IF
-itself (the carrier against the empty band beside it). Both detectors see the same captures, so
-the comparison holds even if the gain steps aren't clean dB.
+On the radio, the two detectors have to meet the same captures at falling signal levels, and
+the floor has to be measured. Jeff's rule is no hardware changes, so the module lowers the K6's
+own front-end gain instead of using an attenuator.
+
+**`gp0cap`** (API level 2, 2.5 KB) runs DMA channel 1 on PB1 as `gp0dma` does. It counts 64
+samples at a time and keeps 2,160 outputs (25 ms, 30 symbols) on the stack, then prints them in
+base64 (`c` header and `y` data lines), which takes about 0.45 s at 115200 baud.
+
+- **Pass 0, no carrier:** two captures at each of three gains (the pager's AGC, the highest
+  fixed gain, and the AGC table's top entry). This measures the GP0 noise floor.
+- **Passes 1 and 2:** the IC-7100's FFSK, then its 4FSK. Each waits for the carrier and skips 2
+  s of lead-in, then takes 10 captures at each of 10 gain steps. Step 0 is the pager's AGC. Steps
+  1 to 9 are REG_7E fixed (bit 15, index 3) with REG_13 from 0x03FF (everything at maximum)
+  down to 0x0018 (LNA short and LNA at their lowest).
+
+The module restores every register it touched and doesn't transmit.
+
+**`tools/k6_ifcap.py`:** `run` sends 65 s of PN9 data in FFSK (peak 0.14), then in 4FSK (peak
+0.12), in PKTFM with a CW ID at the end. `analyze LOG` rebuilds each capture and resamples it to
+the study's grid at the rate the module measured. It syncs each capture to the known PN9 with
+the IF metric (the data-aided timing both detectors then use), trains IF templates on the
+strongest step, and prints, per pass and gain step: RSSI, power, a data-aided Es/N0 and C/N0,
+and the bit error rate of the discriminator and the IF detector on the same captures. It also
+prints the noise floor in the study's units. `simlog OUT.log` writes a log from the model, and
+`tests/test_k6_ifcap.py` checks the whole path with it: on a simulated 44 dB-Hz FFSK step the
+IF detector makes far fewer errors than the discriminator, on the same captures.
+
+Per step there are about 250 bits (FFSK) or 500 (4FSK), so BER readings below 1% are coarse.
+Whether the gain steps are clean dB doesn't matter, because the x-axis is the C/N0 measured from
+the captures.
+
+## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
+
+Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential
+BPSK/QPSK with RRC pulses, and the K6 working on the same IF tap. The K6 side needs no mode
+change. Its IF chain ahead of the demodulator is linear, so the FM set-up with REG_3D at 0x2AAB
+is right. The chip's USB mode (REG_3D = 0, zero IF) would fold the sidebands in GP0's real
+stream, and REG_47 only feeds the speaker. Turn AFC off (REG_73 bit 4) so it doesn't chase the
+signal. Freeze the gain with REG_7E bit 15 (fix index 3) and set it with REG_13's fields. REG_49
+holds the RF AGC thresholds.
+
+`sim/k6if/psk.py` models the IC-7100 in USB as a 300-2700 Hz audio filter, then the upper
+sideband, scaled to the transmitter's **peak** power. C/N0 here is relative to a carrier at that
+PEP, the same footing as the FM study, where the carrier is the whole power. Same GP0 model,
+floor 0.05. RRC alpha 0.5 on a 1500 Hz audio carrier, genie timing, and differential detection,
+or coherent detection with the carrier phase known (a bound for a perfect carrier loop).
+
+Eb/N0 relative to PEP (dB) at 1% information BER, lower is better:
+
+| Mode (information rate) | uncoded | + r1/2 |
+| --- | --- | --- |
+| FM: FFSK 1200, IF matched filter (1200 / 600 bit/s) | 11.9 | 10.7 |
+| FM: 4FSK 1200 baud, IF matched filter (2400 / 1200) | 11.6 | 10.3 |
+| SSB: DBPSK 1200 baud, differential (1200 / 600) | 11.4 | 10.5 |
+| SSB: DQPSK 1200 baud, differential (2400 / 1200) | - | 10.7 |
+| SSB: DQPSK 600 baud, differential (1200 / 600) | 11.8 | 10.1 |
+| SSB: BPSK 1200 baud, coherent, ideal carrier (1200 / 600) | 9.6 | **7.0** |
+| SSB: 16FSK 100 baud, tones 100 Hz apart, noncoherent (400 / 200) | **8.1** | 8.4 |
+| SSB: 8FSK 150 baud (450 / 225) | 8.9 | 8.7 |
+| SSB: 4FSK 300 baud (600 / 300) | 10.1 | 9.6 |
+
+- **At equal transmitter peak power, differential PSK only ties the FM modes with the IF
+  detector.** RRC BPSK through the SSB chain averages 3.4 dB below its peak. That cancels
+  coherent PSK's usual 5-7 dB edge over discriminator FSK, because the IF matched filter has
+  already taken that edge.
+- **Coherent BPSK with a perfect carrier loop is the best of them coded:** about 3.7 dB better
+  than coded FFSK on FM. A real loop at 440 MHz on a 2.5 ppm crystal (about 1 kHz to pull in,
+  plus phase noise) would give some of that back.
+- **Constant-envelope MFSK on SSB** (one tone at a time is just a carrier, so the full PEP, as
+  FT8 and JS8 do) gets close without any carrier sync. 16 tones at 100 baud is 3.8 dB better
+  per bit than uncoded FFSK on FM, and it tolerates drift.
+- For a weak-signal mode the larger gains come from the rate. Each halving of the rate buys 3
+  dB of C/N0, on top of the per-bit numbers here.
+
+So the weak-signal mode we'd recommend is SSB MFSK (16 tones, about 100 baud) with soft FEC,
+using the same IF tap and the same host decoder on the bench. Coherent BPSK is the stretch goal
+once the K6's frequency error and phase noise are measured from captures.

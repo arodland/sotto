@@ -5,10 +5,10 @@ on:
   push:
     branches: [main]
     paths: ["c/k6/**", "c/fixed/**", "c/sotto.h", "c/sotto_lr_dec.inc", "c/sotto_lr_tables.h", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
-            "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "tests/test_k6_cb.py", "modem/k6mod.py", ".github/workflows/k6-firmware.yml"]
+            "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "tests/test_k6_cb.py", "modem/k6mod.py", "tools/k6_ifcap.py", "tests/test_k6_ifcap.py", "sim/k6if/**", ".github/workflows/k6-firmware.yml"]
   pull_request:
     paths: ["c/k6/**", "c/fixed/**", "c/sotto.h", "c/sotto_lr_dec.inc", "c/sotto_lr_tables.h", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
-            "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "tests/test_k6_cb.py", "modem/k6mod.py", ".github/workflows/k6-firmware.yml"]
+            "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "tests/test_k6_cb.py", "modem/k6mod.py", "tools/k6_ifcap.py", "tests/test_k6_ifcap.py", "sim/k6if/**", ".github/workflows/k6-firmware.yml"]
 
 jobs:
   host-tests:
@@ -23,7 +23,7 @@ jobs:
         run: |
           make -C c VARIANT=v3.7 fixed PYTHON=false
           make -C c/k6
-          python -m pytest -q tests/test_k6_pager.py tests/test_k6_harness.py tests/test_k6_mod.py tests/test_k6_cb.py tests/test_k6_cwid.py
+          python -m pytest -q tests/test_k6_pager.py tests/test_k6_harness.py tests/test_k6_mod.py tests/test_k6_cb.py tests/test_k6_cwid.py tests/test_k6_ifcap.py
 
   aura-pager:
     runs-on: ubuntu-latest
