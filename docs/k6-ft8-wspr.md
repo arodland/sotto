@@ -26,7 +26,8 @@ radio today, and what is still waiting on a bench run, a firmware change or a de
 - **FT8 transmit:**
   - Planned as AFSK on FM through the chip's tone oscillator (REG_70/71). A 12.64 s FT8
     transmission plus a CW ID fits the 20 s limit of the level 3 TX API (PR #71).
-  - Waiting on the TX thread's REG_71 per-symbol test.
+  - Untested: PR #71 isn't flashed yet, and `tx_on`'s REG_30 may not route the tone to the
+    carrier (see "FT8 transmit").
 - **WSPR:**
   - Receive is feasible in RAM and CPU.
   - At 440 MHz it hinges on the K6's crystal drift over 2 minutes, which nobody has measured yet.
@@ -176,6 +177,9 @@ write to ttyUSB2, the CW ID keeper runs, and one thread is on the bench at a tim
      That is 164 Hz low, more than the ±100 Hz window.
    - The earlier gp0fm run read 16,919 Hz, so the two disagree. Settle it with a carrier and
      gp0dma's `if=`, or with the first `ft8wf` run below.
+   - Part of the offset is known: Aura folds a +220 Hz crystal correction into REG_38/39 (the
+     word reads 440,850,220 Hz). The rest is the IC-7100's own error; how the total splits
+     between the two, and its sign, are unmeasured.
    - Then centre the audio on the window: `--f0 = 1480 + (16927 - IF)`, for example
      `--f0 1644` if the IF really is 16,763.
 2. **Send the module from CI** (artifact `mod-ft8wf.bin`), with the IC-7100 in FM:
@@ -225,14 +229,19 @@ The module would do this:
 - **Receiving it.** The IC-7100 in FM gives the PC the audio, and the PC decodes it with
   `ft8_wav` (or WSJT-X).
 
-Prerequisites, all from the "Transmit our own FSK from the K6" thread:
+Prerequisites (from the "Transmit our own FSK from the K6" thread, 2026-11-06). That thread's
+TX module work is on hold, and the REG_71 idea is untested (Insights #8), so these are open:
 
-- PR #71 on the radio.
-- That thread's planned test of switching REG_71 per symbol while keyed: does the tone
-  oscillator modulate the carrier with REG_30 set as `tx_on` sets it, and is its phase
-  continuous across a REG_71 write?
+- **PR #71 on the radio.** The level 3 TX API builds, but no image with it is flashed yet.
+- **The tone reaching the carrier.** `tx_on` writes REG_30 = 0xC1FA (mic ADC off, no AF DAC
+  bit). Aura's own tone-TX state is 0xC3FA, so the tone may not reach the carrier as `tx_on`
+  leaves it. REG_30 stays refused to modules. If 0xC1FA carries no tone, `tx_on` needs a tone
+  option that sets that bit (a firmware change).
+- **Phase continuity.** Is the tone's phase continuous across a REG_71 write? And what deviation
+  does each step of REG_70's gain give?
 
-Once that answers yes, `ft8tx` is a small module, about 1 KB.
+A first test module would key for a few seconds with REG_70/71 stepping between two tones
+while the IC-7100 records FM audio. Once that works, `ft8tx` is a small module, about 1 KB.
 
 ## WSPR (planned)
 
