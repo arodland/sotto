@@ -16,8 +16,11 @@ and nothing is written to flash per message. The design and the numbers are in
   whole firmware.
 - `build.sh` clones Aura at that commit, applies the patch, and builds sotto's C library
   (`tools/k6_build.sh`, MIT). It then builds stock Aura, Aura with VOICE MSG added, and the
-  pager-only image, and reports each one's flash and RAM use. It writes `out/aura-pager-only.bin`
-  only if it fits.
+  pager-only images, and reports each one's flash and RAM use. It writes each `out/*.bin` only
+  if it fits. **The image to flash is `out/aura-pager-lr-cbs.bin`** (sotto 1200, codebook in the
+  SPI flash, 30 KB free); a radio needs `out/aura-pager-cbi.bin` once first to install the
+  codebook. `aura-pager-only.bin` (v3.7) and `aura-pager-lr.bin` (sotto 1200) link the codebook
+  table and work on any radio: they are the fallback.
 - The GitHub Actions job *K6 pager firmware* runs the same build. Each run keeps the `.bin`, the
   ELF and the size reports as a downloadable artifact.
 
@@ -56,11 +59,14 @@ You need a Quansheng-K5-style USB-to-TTL programming cable (the Kenwood 2-pin pl
 `pyserial`, and Aura's `tools/` folder. After `build.sh` that folder is at `build/aura/tools/`, or you
 can clone Aura.
 
-1. **Get `aura-pager-only.bin`.** Download it from the *K6 pager firmware* run's artifacts on the pull
-   request, or run `sh firmware/k6-aura/build.sh`. That needs rustup, clang and lld, and llvm-tools.
+1. **Get `aura-pager-cbi.bin` and `aura-pager-lr-cbs.bin`.** Download them from the *K6 pager
+   firmware* run's artifacts, or run `sh firmware/k6-aura/build.sh`. That needs rustup, clang and
+   lld, and llvm-tools. On a radio that has run `aura-pager-cbi` once already (the codebook is in
+   its SPI flash), you only need `aura-pager-lr-cbs.bin`.
 2. **Enter UPDATE mode.** With the radio off, hold **Side Key 1 and Side Key 2** and turn it on. The
    screen shows `UPDATE`.
-3. **Flash it:** `python tools/flash.py aura-pager-only.bin /dev/ttyUSB0` (on Windows, the COM port).
+3. **Flash it:** `python tools/flash.py aura-pager-cbi.bin /dev/ttyUSB0` (on Windows, the COM port)
+   the first time, then `aura-pager-lr-cbs.bin` after step 6.
    On success it prints `succeed!` and the radio reboots. If it doesn't reboot, nothing was written
    (a known Aura bug): power off and repeat from step 2. Pulling the battery mid-flash is safe; just
    flash again.
@@ -71,10 +77,14 @@ can clone Aura.
    You can also save the bootloader with `python tools/dump_bootloader_aura.py`. Then press **MENU**
    to format.
 5. **Check the chip:** Settings → SYSTEM → CHIPID must read `0x4819`.
+6. **Install the codebook.** The first boot of `aura-pager-cbi` writes sotto's codebook to the SPI
+   flash at 0x100000 (once, about 0.6 s; serial `K6 CB r=2`; later boots `r=1`, checked only).
+   Then flash `aura-pager-lr-cbs.bin` (steps 2-3, or `tools/k6_update.py` without the side keys).
+   It shows `NO CODEBOOK` and plays nothing if the codebook isn't there.
 
 ## Using VOICE MSG
 
-1. Flash `aura-pager-only.bin` and power on. The radio goes straight to VOICE MSG and listens,
+1. Flash `aura-pager-lr-cbs.bin` (after the codebook install above) and power on. The radio goes straight to VOICE MSG and listens,
    with the speaker muted, on 440.850 MHz (`DEFAULT_FREQ_HZ` in `pager.rs`: WWARA's packet
    simplex sub-band, 440.800-440.900; change it there for another region). The pager-only image
    writes nothing to flash, not even at power-off.

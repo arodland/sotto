@@ -109,7 +109,8 @@ code. Freeing 58 KB takes one of these:
   `build.sh` as `out/aura-pager-only.bin`). It has Aura's drivers, its saved settings and VFO, a frequency entry (#, RAM only), and
   VOICE MSG, without the rest of Aura's apps and menus. To use the radio normally again, you flash stock Aura back over it.
 - **Keep all of Aura and move the codebook to the SPI flash**: 30 KB, written once at install, like
-  Aura's SSTV image import. That still leaves about 28 KB to cut from Aura and from the library
+  Aura's SSTV image import. (The codebook move is done and is now the default pager image,
+  `aura-pager-lr-cbs`: [`k6-spi-codebook.md`](k6-spi-codebook.md).) That still leaves about 28 KB to cut from Aura and from the library
   (for example `-Os`, and dropping apps), and nothing measured yet shows where those bytes would
   come from.
 

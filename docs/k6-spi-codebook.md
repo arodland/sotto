@@ -7,7 +7,9 @@ It can read each vector from the radio's 2 MB SPI flash when the decoder asks fo
 A v3.7 frame takes 4 reads per 20 ms, and a sotto 1200 slot takes 3 reads per 40 ms.
 
 The bytes are the table's, so the decode is bit-exact with the table build, and the pager image
-gets about 30 KB of MCU flash back. v3.7 and sotto 1200 share the codebook, so one image in SPI
+gets about 30 KB of MCU flash back. Since the on-air test (2026-11-06, below), the table-free
+sotto 1200 image `aura-pager-lr-cbs` is the default image to flash; a radio gets
+`aura-pager-cbi` once first to install the codebook. v3.7 and sotto 1200 share the codebook, so one image in SPI
 flash serves both.
 
 ## How it works
@@ -134,6 +136,16 @@ The test plan:
 4. Flash `aura-pager-lr-cbs.bin` and check for `K6 CB r=1 mode=1`. Send sotto 1200 (VE9QRP,
    streamed with `--depth 4`) and check for MATCH. The `DEC` worst time should be within 0.5 ms of
    the table image's 23-24 ms.
+
+**On air, 2026-11-06** (CI image 778ebc8, keyed, flashed with `tools/k6_update.py`):
+
+- install image first boot `K6 CB r=2 mode=2 crc=d5856ecd ms=566.4`; after a reset `r=1 ms=159.9`
+  (it CRCs its linked table too); `aura-pager-lr-cbs` `r=1 mode=1 ms=81.6`
+- bench every boot: `n=1000 ms=34.3 us_per_read=34 sum=9ae62243`
+- v3.7, VE9QRP 10 s, same clip: SPI decode 15.85 ms mean / 23.2 worst, table image 15.69 / 23.1;
+  both pcm MATCH (the SPI run with one packet lost)
+- `aura-pager-lr-cbs`, sotto 1200 streamed at depth 4, 3 sends: all pcm MATCH, decode 16.0 ms
+  mean / 23.7-24.2 worst (the table image: about 16 / 23-24), 0 overruns
 
 To go back, flash any table image. The codebook in SPI flash does no harm there. Aura never
 reads or writes 0x100000.

@@ -1,8 +1,14 @@
 #!/bin/sh
 # Build Aura (the open Rust firmware for the Baofeng UV-K6 / K61 family) with the sotto voice
-# pager patched in: firmware/k6-aura/out/aura-pager.bin, ready for Aura's tools/flash.py.
+# pager patched in: images in firmware/k6-aura/out/, ready for Aura's tools/flash.py.
 #
-#   sh firmware/k6-aura/build.sh      ->  out/aura-pager-only.bin (and size reports)
+#   sh firmware/k6-aura/build.sh      ->  out/aura-pager-lr-cbs.bin, the image to flash (and size reports)
+#
+# The default image is aura-pager-lr-cbs: sotto 1200, with sotto's codebook read from the radio's
+# SPI flash instead of linked in (30 KB of MCU flash free; docs/k6-spi-codebook.md). A radio
+# needs the codebook installed once first: flash out/aura-pager-cbi.bin, boot it (serial
+# `K6 CB r=2`), then flash aura-pager-lr-cbs. The images with the table linked (aura-pager-only,
+# v3.7, and aura-pager-lr, sotto 1200) work on any radio, installed or not: they are the fallback.
 #
 # Steps: a fresh clone of Aura at the commit the patch was written against (into
 # firmware/k6-aura/build/aura, which this script owns and deletes), git apply
@@ -119,15 +125,18 @@ variant() {
 }
 
 # Full Aura with VOICE MSG in its launcher: 58 KB too big at edf3b98, so this is a report only
-# (FULL=0 skips it). The image to flash is the pager-only one.
+# (FULL=0 skips it). The images to flash are the pager-only ones below.
 if [ "${FULL:-1}" = 1 ]; then
   variant aura-pager "Aura + pager (all of Aura)" || echo "(all of Aura + pager doesn't fit: report only)"
 fi
+# Fallback images with the codebook table linked (TABLE=0 skips them): v3.7 ...
+if [ "${TABLE:-1}" = 1 ]; then
 variant aura-pager-only "pager-only image (Aura drivers + VOICE MSG)" --features pager-only
+fi
 
-# The sotto 1200 image (LR=0 skips it): the same pager-only build linked with the sotto 1200
+# ... and sotto 1200 (LR=0 skips it): the same pager-only build linked with the sotto 1200
 # library (plays magic 0xA9 messages; c/k6/sotto_pager.h, SP_LR)
-if [ "${LR:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
+if [ "${TABLE:-1}" = 1 ] && [ "${LR:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
   K6_CODEC=1200 sh "$ROOT/tools/k6_build.sh"
   cp "$ROOT/c/k6/build-lr/libsotto_k6.a" "$WORK/lib/libsotto_k6.a"
   variant aura-pager-lr "pager-only image, sotto 1200" --features pager-only
@@ -140,7 +149,7 @@ fi
 #                      and times 1000 reads (serial `K6 CB ...` lines). Flash this one first.
 #                      (sotto 1200 with the table and the installer is 0.8 KB too big.)
 #   aura-pager-cbs     v3.7 without the 30 KB table: reads the codebook the cbi image wrote
-#   aura-pager-lr-cbs  sotto 1200 without the table
+#   aura-pager-lr-cbs  sotto 1200 without the table: THE DEFAULT IMAGE
 if [ "${CB:-1}" = 1 ] && [ -z "$SOTTO_K6_LIB" ]; then
   rm -f "$OUT/sotto-cb.bin"
   for v in cbi cbs lr-cbs; do

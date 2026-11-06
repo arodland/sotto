@@ -80,7 +80,8 @@ On the machine that builds the K6 image and drives the IC-7100:
 ```sh
 python -m modem.k6 modkey ~/.config/sotto/k6-mod.key      # once
 K6_MOD_KEY_FILE=~/.config/sotto/k6-mod.key sh firmware/k6-aura/build.sh
-# flash out/aura-pager-lr.bin (sotto 1200) or out/aura-pager-only.bin, e.g. tools/k6_update.py
+# flash out/aura-pager-lr-cbs.bin (sotto 1200; out/aura-pager-cbi.bin once first to install the
+# codebook, docs/k6-spi-codebook.md) or a table image (aura-pager-lr, -only), e.g. tools/k6_update.py
 python -m modem.k6 mod hello.wav c/k6/mod/hello.c --key-file ~/.config/sotto/k6-mod.key \
     --phy F --payload XL
 # key the IC-7100 and play hello.wav as for any other packet WAV
@@ -90,8 +91,8 @@ Without a toolchain, use the CI artifact of the *K6 pager firmware* job instead.
 carry a 16-byte placeholder where the key goes, and `mod-hello.bin` is the module's built code:
 
 ```sh
-python -m modem.k6 keyimage aura-pager-lr.bin keyed-lr.bin --key-file ~/.config/sotto/k6-mod.key
-# flash keyed-lr.bin
+python -m modem.k6 keyimage aura-pager-lr-cbs.bin keyed-lr-cbs.bin --key-file ~/.config/sotto/k6-mod.key
+# flash keyed-lr-cbs.bin
 python -m modem.k6 mod hello.wav mod-hello.bin --key-file ~/.config/sotto/k6-mod.key --phy F --payload XL
 ```
 
