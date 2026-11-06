@@ -54,6 +54,7 @@ int k6_main(const k6_api_t *api) {
   k6_cal_t c;
   blk_t blk;
   uint32_t sum = 0, lo = 0xFFFFFFFFu, hi = 0, n = 0, i;
+  uint16_t v[IFCAL_BLOCKS];
   uint16_t r73;
   int32_t ifd, off, ppb;
   int ret, have, rssi0;
@@ -79,6 +80,7 @@ int k6_main(const k6_api_t *api) {
   for (i = 0; i < IFCAL_BLOCKS && rssi(api) >= sv.floor + 15; i++) {
     uint32_t lost = run(ring, sv.rsz, 64, 1, &blk, (int)blk.ifm);
     if (lost || blk.ifm < 15000 || blk.ifm > 19000) continue;
+    v[n] = (uint16_t)blk.ifm;
     sum += blk.ifm, n++;
     if (blk.ifm < lo) lo = blk.ifm;
     if (blk.ifm > hi) hi = blk.ifm;
@@ -86,6 +88,18 @@ int k6_main(const k6_api_t *api) {
       ret = -2;
       goto out;
     }
+  }
+  /* every block, in order: the first in Hz, then each as a step from the one before */
+  for (i = 0; i < n;) {
+    p = put(line, TAG " b");
+    p = dec(p, i);
+    *p++ = ' ';
+    p = i ? sdec(p, (int)v[i] - (int)v[i - 1]) : dec(p, v[0]);
+    for (i++; i < n && p - line < 54; i++) {
+      *p++ = ' ';
+      p = sdec(p, (int)v[i] - (int)v[i - 1]);
+    }
+    say0(api, line, p);
   }
   if (n < IFCAL_BLOCKS / 2 || (hi - lo) * 10 > IFCAL_SPREAD_DHZ) {
     p = kv(line, TAG " refused n=", n);

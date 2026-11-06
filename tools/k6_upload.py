@@ -108,11 +108,15 @@ class Recorder:
             self.p = subprocess.Popen(["parec", f"--device={a.rec_device}", "--format=s16le",
                                        f"--rate={FS}", "--channels=1", "--raw", self.path])
 
-    def audio(self, since_s=0.0):
+    def samples(self):
+        """samples in the file so far: parec writes behind real time, so mark positions by this"""
+        return os.path.getsize(self.path) // 2 if os.path.exists(self.path) else 0
+
+    def audio(self, since=0):
         if not os.path.exists(self.path):
             return np.zeros(0)
         x = np.fromfile(self.path, np.int16).astype(float) / 32768
-        return x[int(since_s * FS):]
+        return x[since:]
 
     def stop(self):
         if self.p:
@@ -120,8 +124,8 @@ class Recorder:
             self.p.wait()
 
 
-def listen(a, rec, since_s, xfer, seconds):
-    """decode the recording after since_s until a report for this transfer is complete
+def listen(a, rec, since, xfer, seconds):
+    """decode the recording from sample `since` on until a report for this transfer is complete
     (status and every text part) or seconds pass -> (status, text, every report seen)"""
     t_end = time.time() + seconds
     st, text, reps = None, "", []
@@ -129,7 +133,10 @@ def listen(a, rec, since_s, xfer, seconds):
         time.sleep(1.0)
         if a.dry_run:
             break
-        reps = [(t + since_s, r) for t, r in k6mod.reports(rec.audio(since_s), FS, a.phy, a.baud)]
+        x = rec.audio(since)
+        if len(x) < FS:              # under a second of new audio yet: nothing to decode
+            continue
+        reps = [(t + since / FS, r) for t, r in k6mod.reports(x, FS, a.phy, a.baud)]
         mine = [(t, r) for t, r in reps if r["kind"] == "text" or r.get("xfer") == xfer]
         st, text = k6mod.collect(mine)
         if st is not None and "lost]" not in text:
@@ -157,6 +164,7 @@ def main():
     ap.add_argument("--device", default=PLAY)
     ap.add_argument("--rec-device", default=REC)
     ap.add_argument("--call", default="AG7EW")
+    ap.add_argument("--keep", metavar="RAW", help="copy the recording here at the end (raw s16le mono 48 kHz)")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     if a.freq != 440_850_000:
@@ -171,14 +179,13 @@ def main():
     todo = list(range(count))
     with tempfile.TemporaryDirectory() as d:
         rec = Recorder(a, d)
-        t0 = time.time()
         try:
             for rnd in range(1, a.rounds + 1):
                 w = os.path.join(d, f"up{rnd}.wav")
                 print(f"{time.strftime('%H:%M:%S')} send {rnd}: {len(todo)} of {count} chunks "
                       f"(serial {serial}, xfer {xfer}); {mod_wav(a, w, serial, xfer, todo)}", flush=True)
                 key_and_play(a, w)
-                since = time.time() - t0
+                since = rec.samples()
                 print(f"{time.strftime('%H:%M:%S')} listening for the K6's report", flush=True)
                 st, text, _ = listen(a, rec, since, xfer, 25.0 + a.run_s)
                 step, arg = next_step(st, count, xfer)
@@ -198,12 +205,16 @@ def main():
                 print(f"gave up after {a.rounds} sends")
         finally:
             rec.stop()
-        from modem import k6
-        p = os.path.join(d, "id.wav")
-        import soundfile as sf
-        sf.write(p, k6.cw(a.call + " SOTTO TEST", FS), FS, subtype="PCM_16")
-        print(f"{time.strftime('%H:%M:%S')} CW ID", flush=True)
-        key_and_play(a, p)
+            if a.keep:
+                import shutil
+                shutil.copy(rec.path, a.keep)
+                print(f"recording (s16le mono {FS} Hz) kept in {a.keep}")
+            from modem import k6
+            p = os.path.join(d, "id.wav")
+            import soundfile as sf
+            sf.write(p, k6.cw(a.call + " SOTTO TEST", FS), FS, subtype="PCM_16")
+            print(f"{time.strftime('%H:%M:%S')} CW ID", flush=True)
+            key_and_play(a, p)
 
 
 if __name__ == "__main__":

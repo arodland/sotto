@@ -99,3 +99,17 @@ def test_reports_ignore_other_packets():
     """voice and module packets on the channel are not reports"""
     pk = k6mod.packets(fake_module(120), 2, 64)
     assert k6mod.reports(air(pk), 48000) == []
+
+
+def test_reports_on_a_scrap_of_audio():
+    """the bench's first decode pass can see only a few samples of a growing recording"""
+    for n in (0, 10, 2000):
+        assert k6mod.reports(np.zeros(n), 48000) == []
+
+
+def test_recorder_marks_by_samples_written(tmp_path):
+    a = types.SimpleNamespace(dry_run=True)
+    rec = k6_upload.Recorder(a, str(tmp_path))
+    assert rec.samples() == 0 and len(rec.audio()) == 0
+    np.arange(48000 * 2, dtype=np.int16).tofile(rec.path)
+    assert rec.samples() == 96000 and len(rec.audio(rec.samples() - 100)) == 100

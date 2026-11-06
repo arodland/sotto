@@ -118,7 +118,10 @@ offset in 0.01 Hz from the nominal 16927.083 Hz, the same in ppb, the frequency,
 spread, RSSI, and a check word). An IF-tap module can read it with `k6cal_get()` and scale it to its
 own frequency with `k6cal_off_chz()` (none does yet: ft8wf is next). Run it once per radio: within 90 s of `ifcal start`, key
 the IC-7100 on 440.850 in FM with no modulation for about 8 s. It refuses (-9) a carrier that
-wanders more than 30 Hz or fewer than 16 good blocks, and the record stays as it was.
+wanders more than 30 Hz or fewer than 16 good blocks, and the record stays as it was. Before
+deciding, it lists every block's IF (`ifcal b0 16763 +1 -2 ...`: the first in Hz, then each
+block's step from the one before), so a refusal shows whether the carrier drifted, jumped or
+was noisy.
 
 The lean images (`aura-pager-cbi`, `-only-table`, `-lr-table`, `-vlri`) have no room for any
 of this: they take level 4 modules but send no reports, keep no telemetry and refuse
