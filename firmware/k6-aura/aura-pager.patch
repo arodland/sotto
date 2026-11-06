@@ -35,6 +35,19 @@ index 34078b1..8a73bcc 100644
      println!("cargo:rustc-env=GIT_VERSION={}", git_version());
      watch_git_dir();
  }
+diff --git a/memory.x b/memory.x
+index 4fe73cb..c6619b0 100644
+--- a/memory.x
++++ b/memory.x
+@@ -7,7 +7,7 @@
+  */
+ MEMORY
+ {
+-  FLASH : ORIGIN = 0x08002000, LENGTH = 120K
++  FLASH : ORIGIN = 0x08002000, LENGTH = 1024K
+   RAM   : ORIGIN = 0x20001028, LENGTH = 17720
+ }
+ 
 diff --git a/src/app/keys.rs b/src/app/keys.rs
 index 28463f8..aebe92f 100644
 --- a/src/app/keys.rs
@@ -210,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..49e524c
+index 0000000..4419f05
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,2784 @@
+@@ -0,0 +1,2896 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -355,6 +368,14 @@ index 0000000..49e524c
 +        pub level: u16,
 +        pub say: unsafe extern "C" fn(*const u8),
 +        pub ticks: unsafe extern "C" fn() -> u32,
++        // level 2: receive only
++        pub fd_read: unsafe extern "C" fn(u8) -> u16,
++        pub fd_write: unsafe extern "C" fn(u8, u16) -> i32,
++        pub delay_us: unsafe extern "C" fn(u32),
++        pub tune: unsafe extern "C" fn(u32, i32),
++        pub rx_hz: unsafe extern "C" fn() -> u32,
++        pub ms: unsafe extern "C" fn() -> u32,
++        pub key_down: unsafe extern "C" fn() -> i32,
 +    }
 +    #[repr(C)]
 +    pub struct KmStatus {
@@ -372,8 +393,95 @@ index 0000000..49e524c
 +
 +const KM_READY: i32 = 3;
 +
-+/// The table a RAM module gets (c/k6/k6_mod.h). It reports over the serial line only.
-+static MOD_API: ffi::K6Api = ffi::K6Api { abi: 1, level: 1, say: mod_say, ticks: mod_ticks };
++/// The table a RAM module gets (c/k6/k6_mod.h): the serial report, and (level 2) the RF chip
++/// for receiving. Level 2 calls reach the app through MOD_CTX, set only while a module runs.
++static MOD_API: ffi::K6Api = ffi::K6Api {
++    abi: 1,
++    level: 2,
++    say: mod_say,
++    ticks: mod_ticks,
++    fd_read: mod_fd_read,
++    fd_write: mod_fd_write,
++    delay_us: mod_delay_us,
++    tune: mod_tune,
++    rx_hz: mod_rx_hz,
++    ms: mod_ms,
++    key_down: mod_key_down,
++};
++
++struct ModCtx {
++    app: *mut App,
++    syst: *mut SYST,
++    rx_hz: u32,
++    t_last: u16,
++    ticks: u32,
++}
++static mut MOD_CTX: ModCtx =
++    ModCtx { app: core::ptr::null_mut(), syst: core::ptr::null_mut(), rx_hz: 0, t_last: 0, ticks: 0 };
++
++/// The registers a module may not write: the chip's TX/RX state, its GPIO lines, the PA and
++/// the power switches. Receive only; `tune` is the way to move.
++const MOD_NO_WRITE: [u8; 4] = [0x30, 0x33, 0x36, 0x37];
++
++/// The app and SysTick while a module runs (km_run is called with both borrowed, and nothing
++/// else touches them until it returns).
++unsafe fn mod_ctx() -> (&'static mut App, &'static mut SYST) {
++    let c = unsafe { &*addr_of!(MOD_CTX) };
++    unsafe { (&mut *c.app, &mut *c.syst) }
++}
++
++unsafe extern "C" fn mod_fd_read(reg: u8) -> u16 {
++    let (app, syst) = unsafe { mod_ctx() };
++    app.radio.fd6818.reg_read(syst, reg)
++}
++
++unsafe extern "C" fn mod_fd_write(reg: u8, value: u16) -> i32 {
++    if MOD_NO_WRITE.contains(&reg) {
++        return -1;
++    }
++    let (app, syst) = unsafe { mod_ctx() };
++    app.radio.fd6818.reg_write(syst, reg, value);
++    0
++}
++
++unsafe extern "C" fn mod_delay_us(mut us: u32) {
++    let (_, syst) = unsafe { mod_ctx() };
++    while us > 0 {
++        let n = us.min(100_000); // SysTick's reload is 24 bits: 174 ms at 96 MHz
++        delay::us(syst, n);
++        us -= n;
++        mod_tick();
++    }
++}
++
++unsafe extern "C" fn mod_tune(hz: u32, wide: i32) {
++    let (app, syst) = unsafe { mod_ctx() };
++    app.radio.retune_rx(syst, hz, wide != 0);
++}
++
++unsafe extern "C" fn mod_rx_hz() -> u32 {
++    unsafe { (*addr_of!(MOD_CTX)).rx_hz }
++}
++
++/// Adds the 100 us ticks since the last call: the counter wraps every 6.5 s, so ms and
++/// delay_us both call this
++fn mod_tick() -> u32 {
++    let c = unsafe { &mut *addr_of_mut!(MOD_CTX) };
++    let now = uptime::now();
++    c.ticks = c.ticks.wrapping_add(now.wrapping_sub(c.t_last) as u32);
++    c.t_last = now;
++    c.ticks
++}
++
++/// ms since the module started
++unsafe extern "C" fn mod_ms() -> u32 {
++    mod_tick() / 10
++}
++
++unsafe extern "C" fn mod_key_down() -> i32 {
++    let (app, syst) = unsafe { mod_ctx() };
++    app.keypad.any_pressed(syst) as i32
++}
 +
 +unsafe extern "C" fn mod_say(s: *const u8) {
 +    let mut n = 0;
@@ -1569,7 +1677,7 @@ index 0000000..49e524c
 +    p.stray_ms = -1;
 +    p.rearm_before = -1;
 +    let swap = p.swap;
-+    take_payload(app, &mut buf, len, len, swap, true);
++    take_payload(app, None, &mut buf, len, len, swap, true);
 +    if app.pager.last_ok {
 +        app.pager.st_live = now;
 +    }
@@ -1931,7 +2039,7 @@ index 0000000..49e524c
 +        };
 +    }
 +    rearm_rx(app, syst);
-+    take_payload(app, &mut buf, got, len, swap_read, false);
++    take_payload(app, Some(syst), &mut buf, got, len, swap_read, false);
 +}
 +
 +/// A payload read in packet or stream mode (`got` of `len` bytes): the raw view, bit errors
@@ -1939,7 +2047,15 @@ index 0000000..49e524c
 +/// (packet mode; in stream mode the sync's polarity already set it, and a wrong byte order
 +/// finds no sync), then the pager, the serial report and auto-play.
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
-+fn take_payload(app: &mut App, buf: &mut [u8; MAX_PAYLOAD], got: usize, len: usize, swap_read: bool, stream: bool) {
++fn take_payload(
++    app: &mut App,
++    syst: Option<&mut SYST>,
++    buf: &mut [u8; MAX_PAYLOAD],
++    got: usize,
++    len: usize,
++    swap_read: bool,
++    stream: bool,
++) {
 +    let n = got.min(16);
 +    app.pager.raw[..n].copy_from_slice(&buf[..n]);
 +    app.pager.raw_len = got.min(255) as u8;
@@ -1951,10 +2067,10 @@ index 0000000..49e524c
 +
 +    // a RAM module packet (magic 0xAB, c/k6/k6_mod.h)? Not while a message plays: the module
 +    // lands in the message store
-+    if !app.pager.play_pending && !stream_on() {
++    if let (false, false, Some(syst)) = (app.pager.play_pending, stream_on(), syst) {
 +        let r = unsafe { ffi::km_packet(buf.as_ptr(), len as i32, addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) };
 +        if r != 0 {
-+            module_packet(app, r);
++            module_packet(app, syst, r);
 +            return;
 +        }
 +        // a good voice packet partway through a module: messages win, the module is dropped
@@ -2055,7 +2171,7 @@ index 0000000..49e524c
 +/// A module packet: report it, and run the module once its last chunk checks. A module
 +/// transfer empties the message store, which is set up again when the transfer is over.
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
-+fn module_packet(app: &mut App, r: i32) {
++fn module_packet(app: &mut App, syst: &mut SYST, r: i32) {
 +    let st = unsafe { &*ffi::km_status() };
 +    report_line(format_args!(
 +        "K6 MOD r={} xfer={} chunk={} have={}/{}",
@@ -2071,9 +2187,17 @@ index 0000000..49e524c
 +        let at = addr_of_mut!(STORE) as usize + 16;
 +        report_line(format_args!("K6 MOD run serial={} code={} B at {:#010x}", st.serial, st.code_len, at));
 +        let t0 = uptime::now();
++        unsafe {
++            *addr_of_mut!(MOD_CTX) =
++                ModCtx { app: app as *mut App, syst: syst as *mut SYST, rx_hz: app.master_freq_hz(), t_last: t0, ticks: 0 };
++        }
 +        let ret = unsafe { ffi::km_run(addr_of_mut!(STORE) as *mut u8, &MOD_API) };
-+        let dt = uptime::now().wrapping_sub(t0);
-+        report_line(format_args!("K6 MOD ret={} ({:#x}) in {}.{} ms", ret, ret, dt / 10, dt % 10));
++        let ms = unsafe { mod_ms() };
++        unsafe { (*addr_of_mut!(MOD_CTX)).app = core::ptr::null_mut() };
++        report_line(format_args!("K6 MOD ret={} ({:#x}) in {} ms", ret, ret, ms));
++        // a level 2 module may have moved the radio: back to the pager's frequency and set-up
++        app.sync_watching_to_master(syst);
++        arm(app, syst);
 +    }
 +    if r == KM_READY || r <= -3 {
 +        clear_store(app); // the transfer is over, run or refused
@@ -2701,7 +2825,8 @@ index 0000000..49e524c
 +/// sends test packet 0 of the spec (profile L) twice in profile D, then twice in F, at the
 +/// baud rate key 5 set (F at 2400: the FFSK 1200/2400 Hz mode, for checking on the IC-7100
 +/// that the chip really sends it at 2400 baud).
-+/// (Not in the `lean` build, the codebook install image, which is flashed once.)
++/// (Not in the `lean` builds: the codebook install image, flashed once, and the sotto 1200
++/// fallback with the table in MCU flash.)
 +#[cfg(feature = "lean")]
 +pub(super) fn cal_tx(app: &mut App, _syst: &mut SYST) {
 +    app.pager.cal_pending = false;

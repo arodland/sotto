@@ -196,3 +196,101 @@ def test_hello_runs_from_ram_on_m0(how):
     assert said == [f"hello world from RAM at 0x{arena + 16 + entry | 1:08x}",
                     f"sum of squares 0x{sq:08x} in 0x0000 ticks of 100 us"]
     assert call("km_run", arena, api) == (-100) & 0xFFFFFFFF   # once only
+
+
+# ---- the settle-time module (c/k6/mod/settle.c, API level 2) on an emulated M0 ----
+
+SETTLE = os.path.join(K6, "mod", "settle.c")
+
+
+@need_host
+def test_loader_takes_level_2_refuses_3():
+    code = bytes(64)
+    rs, *_ = run_host(k6mod.packets(k6mod.image(code, 0, 1000, KEY, level=2), 1, 128))
+    assert rs[-1] == 3
+    rs, *_ = run_host(k6mod.packets(k6mod.image(code, 0, 1000, KEY, level=3), 1, 128))
+    assert 3 not in rs
+
+
+@need_clang
+def test_settle_declares_level_2():
+    assert k6mod.source_level(SETTLE) == 2 and k6mod.source_level(HELLO) == 1
+
+
+@need_clang
+def test_settle_measures_a_modelled_receiver():
+    """The module, run straight from RAM, against a receiver model: a carrier on F that comes
+    on 2 s in; after a tune RSSI reads the noise floor until the model's settle time (700 us
+    wide, 1500 us narrow) and the true level after; going off F it drops to the floor in
+    300 us. The module must report those times (the first t of its grid at or after them)."""
+    unicorn = pytest.importorskip("unicorn")
+    from unicorn import arm_const as A
+    code, entry = k6mod.build(SETTLE)
+    assert entry == 0 and len(code) < 4096
+    F, NOISE, SIG = 440_850_000, -118, -61
+    SETTLE_US = {1: 700, 0: 1500}
+    st = {"us": 0, "f": F, "wide": 1, "t_tune": 0, "said": [], "tunes": 0, "writes": 0}
+
+    def level():
+        on = st["us"] >= 2_000_000
+        since = st["us"] - st["t_tune"]
+        if st["f"] == F and on:
+            return SIG if since >= SETTLE_US[st["wide"]] else NOISE
+        if st["f"] != F and on and since < 300 and st.get("prev") == F:
+            return SIG                               # still reads the carrier just after leaving
+        return NOISE
+
+    mu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_THUMB | unicorn.UC_MODE_MCLASS)
+    mu.ctl_set_cpu_model(A.UC_CPU_ARM_CORTEX_M0)
+    ram = 0x20000000
+    mu.mem_map(ram, 1 << 20)
+    base, api, stubs, stop = ram + 0x1000, ram + 0x8000, ram + 0x9000, ram + 0x9F00
+    mu.mem_write(base, code)
+    names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down"]
+    for i in range(len(names)):
+        mu.mem_write(stubs + 16 * i, b"\x70\x47")    # bx lr; the hook does the work
+    mu.mem_write(stop, b"\x00\xbf" * 8)
+    mu.mem_write(api, (1).to_bytes(2, "little") + (2).to_bytes(2, "little")
+                 + b"".join((stubs + 16 * i | 1).to_bytes(4, "little") for i in range(len(names))))
+
+    def on_stub(uc, addr, size, _):
+        name = names[(addr - stubs) // 16]
+        r0, r1 = uc.reg_read(A.UC_ARM_REG_R0), uc.reg_read(A.UC_ARM_REG_R1)
+        ret = 0
+        if name == "say":
+            st["said"].append(bytes(uc.mem_read(r0, 64)).split(b"\0")[0].decode())
+        elif name == "ticks":
+            ret = (st["us"] // 100) & 0xFFFF
+        elif name == "fd_read":
+            st["us"] += 20                           # an SPI register read
+            ret = ((level() + 174) << 1) if r0 == 0x67 else 0x1234
+        elif name == "fd_write":
+            st["writes"] += 1
+        elif name == "delay_us":
+            st["us"] += r0
+        elif name == "tune":
+            st["prev"], st["f"], st["wide"], st["t_tune"] = st["f"], r0, r1, st["us"]
+            st["tunes"] += 1
+        elif name == "rx_hz":
+            ret = F
+        elif name == "ms":
+            ret = st["us"] // 1000
+        uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
+    mu.hook_add(unicorn.UC_HOOK_CODE, on_stub, begin=stubs, end=stubs + 16 * len(names))
+    mu.reg_write(A.UC_ARM_REG_R0, api)
+    mu.reg_write(A.UC_ARM_REG_SP, ram + 0x7F00)
+    mu.reg_write(A.UC_ARM_REG_LR, stop | 1)
+    mu.emu_start(base + entry | 1, stop, count=20_000_000)
+    ret = mu.reg_read(A.UC_ARM_REG_R0)
+    said = st["said"]
+    lines = {ln.split(" ref")[0]: ln for ln in said if ln.startswith("settle ") and " ref " in ln}
+    for w, c in (("W", 1), ("N", 0)):
+        for case in ("10k", "1M", "band"):
+            assert lines[f"settle {case} {w}"] == f"settle {case} {w} ref {SIG} dBm {SETTLE_US[c]} us"
+        assert lines[f"settle off {w}"] == f"settle off {w} ref {NOISE} dBm 400 us"
+    assert ret == 1500                               # the worst on-case: narrow
+    assert said[0] == f"settle: waiting for a carrier on 440.850 MHz, now {NOISE} dBm"
+    assert any(ln.startswith("curve 10k W 0:-118 100:-118") for ln in said)
+    assert all(len(ln) <= 60 for ln in said)
+    assert st["writes"] == 0 and st["tunes"] > 400
+    assert said[-1].startswith("settle: done in ") and said[-1].endswith("worst on-case 1500 us")
