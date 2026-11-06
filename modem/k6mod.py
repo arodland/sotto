@@ -200,6 +200,8 @@ def reports(x, fs, phy="F", baud=1800, invert=False):
     d = fsk.Demodulator(phy, baud, fsk.FS, 64)
     y = fsk.resample(np.asarray(x, dtype=float), fs, fsk.FS)
     out = []
+    if len(y) < fsk.FS // 2:          # shorter than one report: the filters need more than this
+        return out
     for start, p, _, _ in d.demodulate(-y if invert else y):
         for q in (p, pager.swap_words(p)):
             r = parse_report(q)
