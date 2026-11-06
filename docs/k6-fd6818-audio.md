@@ -135,6 +135,17 @@ What it would be good for: received audio samples would let the K6 run its own s
 modem (faster than the chip's FSK, which slips at 2400 baud) and receive analog audio
 digitally. It still gives no mic samples.
 
+**Against it:**
+
+- The BK4819 datasheets have no MCBSP block.
+- In the BK4819 register headers that UV-K5 firmware uses, 0x75 is an RX audio EQ, not the
+  guide's MCBSP set-up.
+- Jeff's chip follows that map wherever we've checked.
+
+SPI speed would not be the limit. The chip allows an 8 MHz clock, and Aura's bit-banged driver
+at 2 us a bit manages roughly 18,000 register reads a second (an estimate). That would be
+plenty if a register held samples, but none does.
+
 **First test.** Does a 0x4819 chip have the port at all?
 
 - The BK4819 map may use REG_04, REG_26, REG_75 and REG_76 for other things.

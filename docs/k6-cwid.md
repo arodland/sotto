@@ -133,14 +133,14 @@ CWID call=AG7EW fl=0 seen=1                             callsign, flags (1 /P, 2
 CWID d +60 -60 +184 ...                                 marks and spaces, ms
 CWID ok AG7EW fl=0 rx=440850000 tone=800 wpm=20         the same call twice in a row
 CWID end ok msgs=2 short=7                              why it stopped (ok, key, time); IDs
-                                                        decoded; bursts of under 5 marks
+                                                        decoded; short bursts with no call
 ```
 
 It stops at the ok line, on any key, or after 25 minutes (two IDs 10 minutes apart and some),
 and returns 1 if it confirmed a call. 3.95 KB (-Oz), 360 B of stack with its 210 B of state in
 scratch, 576 B without (the K6 gives it about 167 B of scratch, so on the radio it's the
 stack, of which there are 3.5 KB). Host tests: 13, 20 and 25 wpm on tones 0, 4 and 12, after
-upload-tail bursts on tone 15 (only counted); two different calls confirm nothing.
+upload-tail bursts of 1-7 marks on tone 15 (only counted); two different calls confirm nothing.
 
 To run it (a machine without clang sends the CI artifact's `mod-cwlisten.bin` with
 `--api-level 2`):
@@ -152,20 +152,62 @@ python -m modem.k6 cw id.wav "AG7EW SOTTO TEST" --wpm 20 --tone 800 --repeat 2 -
 
 ### On air (hamlet, 2026-11-06 05:30-05:35 UTC, image 6473ca7)
 
-One fresh upload per run, then the ID twice with a 4 s gap. Every run confirmed the call on
-the second copy, both copies decoded exactly, q=100, n=61:
+Three runs on 440.850 MHz, with the IC-7100 at RFPOWER 0. Each run sent a freshly built
+module (with its own serial), then one ID twice with a 4 s gap (`--repeat 2 --gap 4`),
+keyed 3 s after the upload's carrier dropped. The module call had 3,512 B of stack and 164 B
+of scratch, so the state ran on the stack, and 864 B of stack were left at the end of every
+run.
 
-| run | ok line | lag | marks heard (dot / dash, ms) | module start to ok |
-| --- | --- | --- | --- | --- |
-| 20 wpm, 800 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=800 wpm=20` | 12 | 68-72 / 188-192 | 48.5 s |
-| 13 wpm, 600 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=600 wpm=13` | 12 | 100-104 / 284-288 | 53.2 s |
-| 25 wpm, 1200 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=1200 wpm=25` | 8 | 52-56 / 148-156 | 45.2 s |
+| Run | ID | ok line | Lag | ok after PTT off | Run to ret | msgs |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 20 wpm, 800 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=800 wpm=20` | 12 ms | 0.48 s | 48.5 s | 9 |
+| 2 | 13 wpm, 600 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=600 wpm=13` | 12 ms | 0.41 s | 53.2 s | 5 |
+| 3 | 25 wpm, 1200 Hz | `CWID ok AG7EW fl=0 rx=440850000 tone=1200 wpm=25` | 8 ms | 0.52 s | 45.2 s | 8 |
 
-The module starts while the IC-7100 is still sending the upload's repeat copies, and that
-FFSK gave 3-7 junk transmissions per run on tone 15 (1350 Hz): 1-3 marks of 16-52 ms, read
-as `E`, `NE`, `TE E E`. None looked like a call. Since then (commit after 4e055e3) anything
-under 5 marks is only counted (`short=`), so the serial report carries IDs only. Store 164 B
-of scratch, so the state ran on the stack; 864 B of stack were left.
+- All 6 copies decoded exactly as `AG7EW SOTTO TEST`, with n=61, the right tone, and every
+  mark on it (q=100).
+- Every run confirmed on the second copy and returned 1. No ID had to be sent again.
+
+Marks and spaces as reported, in ms (4 ms units). The heard values are min-max over both
+copies; each copy has 14 dots, 17 dashes, 17 element spaces, 11 letter spaces and 2 word
+spaces:
+
+| | Dot | Dash | Element space | Letter space | Word space |
+| --- | --- | --- | --- | --- | --- |
+| 20 wpm sent | 60 | 180 | 60 | 180 | 420 |
+| 20 wpm heard | 68-72 | 188-192 | 48-52 | 168-172 | 408-412 |
+| 13 wpm sent | 92 | 277 | 92 | 277 | 646 |
+| 13 wpm heard | 100-104 | 284-288 | 80-88 | 264-268 | 636 |
+| 25 wpm sent | 48 | 144 | 48 | 144 | 336 |
+| 25 wpm heard | 52-56 | 148-156 | 40-44 | 136-140 | 328 |
+
+Every mark is 8-12 ms long and every space as much short, as in the probe's event log. That is
+the detector's lag, which the decoder measures and takes out. Within each kind the spread is
+one or two 4 ms units, so there's plenty of margin at these speeds.
+
+**False decodes during the upload.** A module starts as soon as its last chunk is in, while
+the sender is still keyed and repeating chunks. Over that FFSK the listener reported short
+transmissions on tone 15 (1350 Hz, the top tone): 7, 3 and 6 per run, of 1-7 marks each (n
+1-13). They read as `E`, `EE E`, `NE`, `TE E E`, `I E EE E` at "23-60 wpm", with q 77-100, and
+they are the extra msgs in the table (msgs = false + 2). None looked like a callsign, none
+came after the carrier dropped, and none came from the quiet channel between IDs.
+
+Since then, a transmission of under 11 marks (n < 21) with no callsign in it is only counted,
+on the end line (`short=`). The shortest call, `K1E`, is 9 marks, and it still gets through
+because it has a call. This filter is tested on the host, not on the air yet.
+
+**Upload.** Runs 1 and 3 got all 33 chunks on the first pass. In run 2, chunk 5 was bad
+(`r=-1 xfer=75 chunk=5 have=5/33`). The sender's second pass filled it (five `r=2` repeats,
+then `r=3` on chunk 5), so no `--only` resend was needed.
+
+**Bench notes.**
+
+- This image boots with frames=L, so a run needs `ctl --set frames=XL` (sent as L) and an
+  `--action none` confirm (sent as XL) before the XL module packets.
+- Send a station ID just before the first module, so the ID keeper doesn't key its own ID
+  during a run.
+- The raw logs are on hamlet: `~/k6-logs/cwprobe-20261106T0506.log` and
+  `cwlisten-20261106T0529.log`.
 
 Unknowns for real repeaters: an ID tone outside 600-1350 Hz, an ID sent over voice (the
 detector may not lock), and whether 50 Hz steps are finer than the detector can tell apart
