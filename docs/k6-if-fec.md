@@ -255,11 +255,13 @@ overhead. Ways to get ahead of it, roughly in order of cost:
   overrun at rate 2/3 showed was needed.
 - **A shorter lead.** The session now starts at the control packet: a 1 s lead (`--g-lead 1.0`)
   locked on air and played 13/14 twice (the first packet failed its CRC each time); try 1.5 s.
-- **Puncture to rate 3/4** on the 600-2400 Hz tones: in the code (this branch), not on air yet.
-  On the model it needs about 2 dB more than rate 2/3 (every packet at 49 dB-Hz 164 Hz off,
-  rate 1/2 at 45 on these tones). The emulated M0 decodes it at the image's timing with no
-  counts lost.
-- **A faster symbol rate**: receiver and live test modules done (see below), not on air yet.
+- **Puncture to rate 3/4** on the 600-2400 Hz tones: done (PR #120), on air 13/14 and 14/14
+  (image 3e72ea7, below). On the model it needs about 2 dB more than rate 2/3 (every packet at
+  49 dB-Hz 164 Hz off, rate 1/2 at 45 on these tones). The emulated M0 decodes it at the
+  image's timing with no counts lost.
+- **A faster symbol rate**: tried on air with live modules (below). 1350 and 1440 baud make
+  2.4-3.9% raw errors where 1200 makes none, so the speed is better bought with the lighter
+  code at 1200 baud. Rate 5/6 (2000 bit/s) would be the next step on that road.
 
 - **Play while receiving** (stream mode), so a long message starts after its first interleave
   group, and its length is no longer limited by the store. That needs the decoder to share the
@@ -334,4 +336,51 @@ templates:
   `iflive_h1350` and `iflive_h1440` (`k6_ifcap.py live 4h1350`, `4h1440`). On the model they need
   41.0 and 41.4 dB-Hz at rate 1/2 (1200 on this grid 40.2), and both lock with no counts lost on
   the emulated M0 (idle 52-54%).
+
+### On air, 2026-11-07 20:54 (1350 and 1440 baud, RAM modules, no flash)
+
+The same bench (K6 receiving on explore 8a8c677, the IC-7100 sending `k6_ifcap.py live`), run
+dir `runs/2026-11-07-4h2`:
+
+| Module, sender | Bit errors | Notes |
+|---|---|---|
+| iflive_h1350, `4h1350` (675-2700 Hz) | 2.5-2.9% on the 5 steps that locked | 3 of 9 steps decoded nothing (no lock, no reject), one rejected (q=9); L=0, idle 72-75% |
+| iflive_h1440, `4h1440` (720-2880 Hz) | 2.4-3.9% | locked every step, fit 86-101; L=0, idle 70-74% |
+
+- Keeping the top tone at 2.7-2.9 kHz halves 1500 baud's errors, but neither rate is clean
+  where 1200 baud on the same grid made none. 1440 is the steadier of the two: 1350 loses its
+  lead on a third of the steps (not chased: the rate's 12% gain is less than rate 3/4's 50% at
+  1200 baud, which has no raw errors to spend).
+- So the faster link is **PHY G at 1200 baud on the 600-2400 Hz tones with a lighter code**, not
+  a faster symbol rate on this radio.
+
+### On air, 2026-11-07 21:00 (PHY G on the new tones, image 3e72ea7)
+
+The pager image aura-pager-lr at 3e72ea7 (PR #120) flashed (the decoder is in the image), the
+IC-7100 sending `lynden11.sot` (14 XL packets, 11 s of sotto 1200) as PHY G, the K6 storing and
+playing; `tools/k6_pcmhash.py --check` on each PLAY. Run dir `runs/2026-11-07-phyg5`:
+
+| Send | On air | `K6 IFP` | Packets | Playback |
+|---|---|---|---|---|
+| rate 1/2 | 24.8 s | `ret=14 fl=0 lost=0 q=55 idle=30 gap=103@1 lag=86 ld=0` | `211111111C1111`, 13/14 | MATCH (packet 9 missing) |
+| rate 2/3 | 21.8 s | `ret=14 fl=1 lost=0 q=59 idle=30 gap=103@1 lag=87 ld=0` | `21111111111113`, 14/14 | MATCH |
+| rate 3/4 | 20.8 s | `ret=14 fl=4 lost=0 q=53 idle=29 gap=103@1 lag=86 ld=0` | `2111111C111111`, 13/14 | MATCH (packet 7 missing) |
+| rate 3/4, 1.5 s lead | 20.3 s | `ret=14 fl=4 lost=0 q=54 idle=29 gap=103@1 lag=86 ld=1` | `21111111111113`, 14/14 | MATCH |
+
+- Every send locked, found all 14 sync words, lost no counts, and the lead was decided with
+  0-1 wrong symbols per mille (`ld`): the raw channel on these tones is clean, as the module
+  runs said. The sync words' wrong symbols (`miss`) were 0-2 of 24.
+- Rate 3/4 works on air, at 29% idle (rate 1/2 30%): the K6 has the CPU for it.
+- Two packets in 56 failed their CRC, one at rate 1/2 and one at rate 3/4, with no raw errors
+  in the lead and lost=0. With one per run at the two ends of the rate range, that is not the
+  code's margin; the earlier 4709d7e runs on the old tones made 0 in 28 at the same two rates.
+  Worth a look if it recurs: a slip in the symbol clock through a long run of one tone, or a
+  burst of interference, would both fit.
+- The 1.5 s lead was fine (ld=1, 14/14), where a 1 s lead had lost the first packet twice on
+  the old tones. The times above include the CW ID (about 7 s); the burst itself with its
+  control packet is 12.9 s at rate 3/4 with the 1.5 s lead, 17.3 s at rate 1/2, and about
+  10 s for the same 14 packets at F/1800 (short last group, trimmed). Rate 3/4 is now within
+  30% of the chip's modem, with soft decoding where F has none.
+- The sender for this is `python3 -m modem.k6 tx CLIP.sot g.wav --phy G --payload XL --codec
+  1200 --g-rate 3/4 [--g-lead 1.5] --msg-id N --cw-id "AG7EW SOTTO TEST"`.
 
