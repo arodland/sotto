@@ -65,6 +65,7 @@ typedef struct {
   int8_t score;
   char grade;                    /* '?' 'R' 'r' 's' */
   char call[10];                 /* from ex_cw, NUL padded */
+  uint8_t listens;               /* times Listen for ID went to it on its own (ex_pick_id) */
 } ex_cand_t;
 
 typedef struct {
@@ -94,6 +95,13 @@ void ex_grade(ex_cand_t *c);
 /* the i-th best (0 first) by score, then most overs, then most recent; 0 past the end. Ignored
    candidates come last. */
 ex_cand_t *ex_rank(ex_t *e, unsigned i);
+/* Which of the frequencies up now (up_hz, n of them: the scan's hot entries that are keyed) the
+   automatic Listen for ID should go to, by Jeff's rule (2026-11-07): only candidates still
+   without a callsign that could be repeaters (not a spur, a skirt, a simplex frequency, an
+   ignored or an 's' one); of those the one listened to fewest times, then the best ranked.
+   Its listens count goes up, so it moves to the back: two repeaters that ID at the same time
+   take turns and neither starves. 0: none to listen to. */
+ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n);
 /* a repeater table record from a candidate, for Save (id 0: rt_put makes it a new entry) */
 void ex_to_rt(const ex_cand_t *c, rt_rec_t *r);
 

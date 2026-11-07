@@ -47,7 +47,7 @@ extern "C" {
 #define KM_HDR 16
 #define KM_TAG 8
 #define KM_ABI 1
-#define KM_LEVEL 4
+#define KM_LEVEL 5
 
 typedef struct k6_api {
   uint16_t abi, level;              /* KM_ABI, KM_LEVEL */
@@ -92,7 +92,23 @@ typedef struct k6_api {
   int (*key_poll)(void);                        /* 1 while any key is held */
   int (*cal_read)(void *buf, uint32_t n);       /* n (at most KM_CAL_BYTES), or -1 */
   int (*cal_write)(const void *buf, uint32_t n);/* 0, or -1 (twice this run, keyed, n too big) */
+  /* level 5 (2026-11-07, Jeff approved): the SPI flash, for the repeater table (c/k6/rt.h).
+     fl_read reads anywhere in 0x0F0000-0x1FFFFF (the table, sotto's codebooks, the calibration
+     record); fl_prog programs up to 256 bytes inside one page and fl_erase erases one 4 KB
+     sector, both inside the table's 64 KB (KM_FL_LO .. KM_FL_HI) only. The firmware refuses,
+     with -1: anything outside those ranges, a program that crosses a page, any write while
+     keyed, and more than KM_FL_ERASES erases in one module run (or one EXPLORE session). The
+     three calls are rt_flash_t's (c/k6/rt.h) without its ctx. A module that uses these declares
+     K6_MODULE_LEVEL 5. */
+  int (*fl_read)(uint32_t addr, void *buf, uint32_t n);        /* 0, or -1 */
+  int (*fl_prog)(uint32_t addr, const void *buf, uint32_t n);  /* 0, or -1 */
+  int (*fl_erase)(uint32_t addr);                              /* 0, or -1 */
 } k6_api_t;
+
+#define KM_FL_LO 0x0F0000u          /* the repeater table: fl_prog and fl_erase */
+#define KM_FL_HI 0x100000u
+#define KM_FL_READ_HI 0x200000u     /* fl_read: KM_FL_LO up to here */
+#define KM_FL_ERASES 32u
 
 #define KM_CAL_ADDR 0x10F000u
 #define KM_CAL_BYTES 64u
