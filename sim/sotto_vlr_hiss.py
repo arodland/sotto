@@ -9,7 +9,8 @@ As in sotto 1200 hiss (sim/sotto_lr_hiss.py) the bits come from pitch fields tha
     one pitched frame                    the slope means nothing (one point has no slope):
                                          its 3 bits = a 2-bit level offset over the neighbours'
                                          quantised hiss + 1 side bit; the pitch is the centre
-    two or more                          no bits: the unvoiced frames take the neighbours' hiss
+    two or more                          no bits: the unvoiced frames take the neighbours' hiss,
+                                         capped at the last coded frame's level (decoder only)
 
 "Pitched" = the decoded voicing pattern's code is not U (V, M or the M-then-U edge). The
 neighbours' hiss is the mean of the nearest explicitly coded frame before and after (within
@@ -40,6 +41,10 @@ class SottoVLRHiss(SottoVLR, hb.SottoV38):
 
     SLOPE_HISS = True
     REACH = 2                                   # superframes either side for the neighbours' hiss
+    # a no-bits frame's hiss: at most CAP_DB over the last coded frame's level, and with no coded
+    # frame before it, a residual of at most RES_CAP (decode_audio16)
+    CAP_DB = 4.0
+    RES_CAP = 4.0
 
     def __init__(self, mode="600", slope_hiss=None, model=VLR_HISS, side=True, **kw):
         super().__init__(mode=mode, **{**V38, **kw})
@@ -87,6 +92,16 @@ class SottoVLRHiss(SottoVLR, hb.SottoV38):
         if raw:
             return (np.mean(xs, 0), True) if xs else (np.zeros(4), False)
         return np.mean(xs, 0) if xs else self.h0.copy()
+
+    def _back(self, F, g):
+        """the nearest unvoiced frame before g, within reach and in an earlier superframe, that
+        has hiss bits (a received kind-0 or kind-1 superframe); None if none"""
+        N = self.N
+        for h in range(g - 1, max(-1, g - self.REACH * N - 1), -1):
+            f = F[h // N]
+            if h // N != g // N and f is not None and self.kind(f) <= 1 and self.vpat[f["v"]][h % N] == 0:
+                return h
+        return None
 
     def _res2(self, q, g, nf):
         """the hiss of a U frame with no bits of its own"""
@@ -223,6 +238,7 @@ class SottoVLRHiss(SottoVLR, hb.SottoV38):
                     q[s * N + k] = self.cb[f["wc"] >> 1] + self.hsl[f["ws"]] * self.t[k]
         self._carr = self._carriers(F, code, self.rebuilt)
         res = np.zeros((nf, 4))
+        self._cap = {}
         for s in range(ns):
             f = F[s]
             k = self.kind(f) if f is not None else 2
@@ -231,10 +247,20 @@ class SottoVLRHiss(SottoVLR, hb.SottoV38):
                     continue
                 if k == 0:
                     res[g] = q[g]
-                elif k == 1:
+                    continue
+                if k == 1:
                     res[g] = self._base(q, g, nf) + self.hoff[f["ws"] >> 1]
-                else:
-                    res[g] = self._res2(q, g, nf)
+                    continue
+                # a frame with no bits: the neighbours' hiss is a residual over this frame's
+                # own guess, which follows the 0-4 kHz band, so where that band jumps (a voiced
+                # onset in steady background hiss) the hiss jumped with it, up to 20 dB too
+                # loud. Its level is capped at the last frame before it that has hiss bits, plus
+                # k2 + CAP_DB; with no such frame its residual is at most RES_CAP + k2.
+                res[g] = self._res2(q, g, nf)
+                h = self._back(F, g)
+                self._cap[g] = (h, self.k2 + self.CAP_DB)
+                if h is None:
+                    res[g] = np.minimum(res[g], self.RES_CAP + self.k2)
             if s in self._carr:
                 side[self._carr[s]] = (f["wc"] if k == 0 else f["ws"]) & 1
         self._res = res
@@ -249,6 +275,9 @@ class SottoVLRHiss(SottoVLR, hb.SottoV38):
 
     def _uu_res(self, rows, g):
         return self._res[g]
+
+    def _uu_cap(self, g):
+        return self._cap.get(g, (None, None))
 
     def _read_pc(self, bits, good):
         if not self.side:
