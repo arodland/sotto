@@ -2,7 +2,7 @@
 
 `c/k6/rt.[ch]` is the explorer's saved-repeater table in the K6's SPI flash, built to the design
 settled with Jeff (the explorer design doc, "Repeater table in SPI flash"). It's MIT C with no
-library calls and no writable statics, 2.8 KB on the M0, so it can go into the EXPLORE core or a
+library calls and no writable statics, 3.0 KB on the M0, so it can go into the EXPLORE core or a
 RAM module. It reaches the flash only through `rt_flash_t` (read, program a page, erase a 4 KB
 sector), so the same code runs here against `rt_host.c` and on the radio against the core's SPI
 driver.
