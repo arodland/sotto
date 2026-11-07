@@ -181,8 +181,8 @@ def cmd_livelog(a):
     print("step  bits    errs   BER        RSSI  AFC Hz  fit  rej  lost  idle%  kS/s")
     for d in steps:
         ber = d["e"] / 3 / d["b"] if d["b"] else float("nan")
-        print(f"{d['step']:4d} {d['b']:6d} {d['e']:6d}   {ber:9.2e} {d['r']:5d} {d['f'] * 65536 / 50069:7.0f}"
-              f"  {d['q']:4d} {d['j']:4d} {d['L']:5d} {d['i']:5d}  {d.get('k', head.get('ks', 0)):5d}")
+        print(f"{d['step']:4d} {d['b']:6d} {d['e']:6d}   {ber:9.2e} {d.get('r', 0):5d} {d['f'] * 65536 / 50069:7.0f}"
+              f"  {d['q']:4d} {d['j']:4d} {d['L']:5d} {d.get('i', 0):5d}  {d.get('k', head.get('ks', 0)):5d}")
 
 
 def cmd_run(a):
