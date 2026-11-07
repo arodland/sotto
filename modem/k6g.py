@@ -12,6 +12,9 @@ A packet's coding: its 128 bytes, MSB first, and 8 zeros (the code's 6 tail bits
 bottom, so bit 0 of it is the newest) -> 2064 coded bits c, c[2n] from 133 and c[2n+1] from 171.
 They go in 24 blocks of 86 bits: symbol i (0..42) of block b carries c[86b + i] as its Gray
 value's high bit and c[86b + 43 + i] as its low bit, so a symbol's two bits are 21 steps apart.
+Rate 2/3 (r23): the same code punctured, c[2n+1] of each odd step n not sent, so 1548 coded bits
+in 18 blocks, 774 symbols a packet (the burst a quarter shorter); the receiver takes 0 for the
+missing bits. The control packet's byte 3 says which (1: 2/3).
 Tones: 900, 1500, 2100, 2700 Hz; tone t's Gray value is t ^ (t >> 1).
 MIT licence."""
 import numpy as np
@@ -31,6 +34,9 @@ STEPS = PAYLOAD * 8 + TAIL_BITS       # 1032
 BLOCK = 86
 NBLK = 2 * STEPS // BLOCK             # 24
 PKT_SYMS = STEPS                      # one symbol per step
+PKT_SYMS23 = STEPS * 3 // 4           # 774: rate 2/3
+_KEEP23 = np.ones(2 * STEPS, bool)
+_KEEP23[3::4] = False                 # c[2n+1], n odd
 G0, G1 = 0o133, 0o171
 SYNC_SYMS = np.array([3 if c == "1" else 0 for c in SYNC])
 GRAY = np.array([0, 1, 3, 2])         # tone -> Gray value
@@ -51,11 +57,19 @@ def conv_encode(bits):
     return np.array(out, np.int8)
 
 
-def packet_symbols(payload):
-    """one packet (128 bytes, as the K6's FIFO would give it: whitened) -> 1032 tones"""
+def pkt_syms(r23=False):
+    return PKT_SYMS23 if r23 else PKT_SYMS
+
+
+def packet_symbols(payload, r23=False):
+    """one packet (128 bytes, as the K6's FIFO would give it: whitened) -> 1032 tones (774 at
+    rate 2/3)"""
     assert len(payload) == PAYLOAD
     bits = np.unpackbits(np.frombuffer(bytes(payload), np.uint8))
-    c = conv_encode(np.concatenate([bits, np.zeros(TAIL_BITS, np.int8)])).reshape(NBLK, BLOCK)
+    c = conv_encode(np.concatenate([bits, np.zeros(TAIL_BITS, np.int8)]))
+    if r23:
+        c = c[_KEEP23]
+    c = c.reshape(-1, BLOCK)
     g = (c[:, :BLOCK // 2] << 1) | c[:, BLOCK // 2:]
     return TONE_OF[g.reshape(-1)]
 
@@ -64,10 +78,10 @@ def lead(n):
     return np.tile([0, 3], (n + 1) // 2)[:n]
 
 
-def burst_symbols(payloads, lead_syms=LEAD_SYMS, tail_syms=TAIL_SYMS):
+def burst_symbols(payloads, lead_syms=LEAD_SYMS, tail_syms=TAIL_SYMS, r23=False):
     parts = [lead(lead_syms)]
     for p in payloads:
-        parts += [SYNC_SYMS, packet_symbols(p)]
+        parts += [SYNC_SYMS, packet_symbols(p, r23)]
     parts.append(lead(tail_syms))
     return np.concatenate(parts)
 
@@ -82,8 +96,8 @@ def audio(syms, fs=48000, level=LEVEL):
     return np.sin(np.concatenate([[0.0], ph[:-1]])) * level
 
 
-def burst_seconds(npackets, lead_syms=LEAD_SYMS):
-    return (lead_syms + npackets * (len(SYNC) + PKT_SYMS) + TAIL_SYMS) / BAUD
+def burst_seconds(npackets, lead_syms=LEAD_SYMS, r23=False):
+    return (lead_syms + npackets * (len(SYNC) + pkt_syms(r23)) + TAIL_SYMS) / BAUD
 
 
 # ---- the receiver's side (c/k6/ifpager.c does the same in integers) ----
@@ -125,15 +139,19 @@ def viterbi(llr2):
     return out
 
 
-def decode_packet(llr):
-    """(PKT_SYMS, 2) LLRs (high bit, low bit) in air order -> the 128 bytes"""
-    l = np.asarray(llr, float).reshape(NBLK, BLOCK // 2, 2)
-    c = np.concatenate([l[:, :, 0], l[:, :, 1]], axis=1).reshape(-1, 2)
-    bits = viterbi(c)[:PAYLOAD * 8]
+def decode_packet(llr, r23=False):
+    """(pkt_syms(r23), 2) LLRs (high bit, low bit) in air order -> the 128 bytes"""
+    l = np.asarray(llr, float).reshape(-1, BLOCK // 2, 2)
+    c = np.concatenate([l[:, :, 0], l[:, :, 1]], axis=1).reshape(-1)
+    if r23:
+        full = np.zeros(2 * STEPS)
+        full[_KEEP23] = c
+        c = full
+    bits = viterbi(c.reshape(-1, 2))[:PAYLOAD * 8]
     return np.packbits(bits).tobytes()
 
 
-def receive(syms, mets, mean_shift=6):
+def receive(syms, mets, mean_shift=6, r23=False):
     """the K6's decisions (tone, 4 metrics per symbol, e.g. from ifrx) -> the packets found, in
     order, as ifpager.c finds them: sync hunt on the hard tones, a running mean of the
     winning metric, the LLRs, Viterbi"""
@@ -145,14 +163,15 @@ def receive(syms, mets, mean_shift=6):
         hist = (hist + [int(syms[i])])[-len(sync):]
         i += 1
         if len(hist) == len(sync) and sum(a != b for a, b in zip(hist, sync)) <= SYNC_MAX_MISS:
-            if i + PKT_SYMS > len(syms):
+            n = pkt_syms(r23)
+            if i + n > len(syms):
                 break
             ll = []
-            for j in range(i, i + PKT_SYMS):
+            for j in range(i, i + n):
                 m = mets[j]
                 mean += (max(m) - mean) / (1 << mean_shift)
                 ll.append(llrs(m, mean))
-            out.append(decode_packet(ll))
-            i += PKT_SYMS
+            out.append(decode_packet(ll, r23))
+            i += n
             hist = []
     return out

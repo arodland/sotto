@@ -66,9 +66,14 @@ def main():
     ap.add_argument('--pcm')
     ap.add_argument('--json')
     ap.add_argument('--codec', choices=('2400', '1200', '600', '400'), default='2400')
+    ap.add_argument('--payload', choices=('L', 'XL'), default='L', help='packet profile (not for 2400)')
     ap.add_argument('--yield-gap', action='store_true',
                     help='with the decoder yield hook set to sp_yield_probe (builds with FX_YIELD_HOOK): '
                          'the longest stretch of work between yields, in us at 96 MHz')
+    ap.add_argument('--packet-yield-gap', action='store_true',
+                    help='with sp_packet\'s yield set to sp_yield_probe (K6_CB=spi builds, SP_PKT_YIELD) and '
+                         'stream mode on, as the coded 4FSK session runs it: the longest stretch of the '
+                         'store\'s work between yields, in us at 96 MHz')
     a = ap.parse_args()
     cm0.WS = a.ws
     m = cm0.M0(a.elf)
@@ -79,7 +84,7 @@ def main():
     if a.codec != '2400':
         sys.path.insert(0, ROOT)
         from modem import pager
-        all_pk = pager.profile('L', a.codec).pack(b''.join(frames), msg_id=0x21)
+        all_pk = pager.profile(a.payload, a.codec).pack(b''.join(frames), msg_id=0x21)
     else:
         all_pk = ref.pack_message(frames, 0x21)
     packets = [p for i, p in enumerate(all_pk) if i not in lose]
@@ -92,12 +97,29 @@ def main():
         assert r > 0, r
         print(f'sotto 600 / 400 tables check: {c / 96e3:.1f} ms')
     nmax, _ = m.call('sp_init', store, a.store)
-    pc = []
+    pc, pgaps, plast = [], [], [0]
+    if a.packet_yield_gap:
+        from unicorn import UC_HOOK_CODE
+        assert 'sp_set_packet_yield' in m.sym, 'build with K6_CB=spi (SP_PKT_YIELD)'
+        probe = m.sym['sp_yield_probe'] & ~1
+
+        def on_pk_yield(uc, addr, size, ud):
+            pgaps.append(m.cyc - plast[0])
+            plast[0] = m.cyc
+        hp = m.mu.hook_add(UC_HOOK_CODE, on_pk_yield, begin=probe, end=probe + 1)
+        m.call('sp_set_stream', 1)
+        m.call('sp_set_packet_yield', m.sym['sp_yield_probe'] | 1, 0)
     for p in packets:
         m.mu.mem_write(pkt, p)
+        plast[0] = 0                              # call() counts cycles from 0
         r, c = m.call('sp_packet', pkt, len(p))
         assert r >= 0, r
         pc.append(c)
+        if a.packet_yield_gap:
+            pgaps.append(m.cyc - plast[0])        # the last yield to the end of the call
+    if a.packet_yield_gap:
+        m.call('sp_set_packet_yield', 0, 0)
+        m.mu.hook_del(hp)
     m.call('sp_play_start')
     fc, out, gaps = [], b'', []
     if a.yield_gap:
@@ -130,6 +152,10 @@ def main():
         'stack_bytes': m.stack_used(), 'flash_bytes': len(m.img),
         'static_ram_bytes': m.call('sp_static_bytes')[0],
     }
+    if a.packet_yield_gap:
+        pgaps.sort()
+        res['packet_yield_gap_us'] = {'max': round(pgaps[-1] / 96, 1),
+                                      'p99': round(pgaps[len(pgaps) * 99 // 100] / 96, 1), 'yields': len(pgaps)}
     if a.yield_gap:
         gaps.sort()
         res['yield_gap_us'] = {'max': round(gaps[-1] / 96, 1), 'p99': round(gaps[len(gaps) * 99 // 100] / 96, 1),
