@@ -197,7 +197,10 @@ def cmd_run(a):
     with tempfile.TemporaryDirectory() as d:
         for _, (name, mode) in PASSES.items():
             p = os.path.join(d, f"{name}.wav")
-            write(p, pass_audio(mode))
+            x = pass_audio(mode)
+            if a.level and mode.M == 4:
+                x = x * (a.level / mode.level)
+            write(p, x)
             print(f"{time.strftime('%H:%M:%S')} pass {name}: {PASS_S:.0f} s", flush=True)
             key_and_play(a, p)
             time.sleep(4.0)
@@ -616,6 +619,9 @@ def main():
     w.set_defaults(fn=cmd_wav)
     for nm, fn in (("run", cmd_run), ("live", cmd_live)):
         r = sub.add_parser(nm)
+        if nm == "run":
+            r.add_argument("--level", type=float, help="the 4FSK pass's tone level (peak; its own "
+                           "is 0.12); the FFSK pass stays at its own")
         if nm == "live":
             r.add_argument("mode", choices=["4fsk", "ffsk"])
             r.add_argument("--wav", help="write the audio here instead of sending it")

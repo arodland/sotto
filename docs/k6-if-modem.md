@@ -452,6 +452,34 @@ sender only, `k6_ifcap.py live 4fsk --levels ...`), or train the templates on th
 captures. **`iflive_g2`** (`c/k6/mod/iflive_g2.c`) is the plain 4FSK receiver at gain step 2
 on every step, for a level sweep from the sender.
 
+### The level sweeps (2026-11-07 03:43 and 03:50, PR #92)
+
+Both runs used `iflive_g2` with IC-7100 USB MOD at 30%, RSSI -61 dBm, the K6 receiving only.
+The levels are the WAV's peak tone level; the mode's own is 0.12.
+
+| level | 0.02-0.045 | 0.065 | 0.10 | 0.12 | 0.14 | 0.16 | 0.18 |
+|---|---|---|---|---|---|---|---|
+| BER | no lock (lead fit 4-53) | 4.15% | 3.2-4.7% | 3.7-4.0% | 3.8-3.9% | 4.2-4.3% | 3.9-4.4% |
+
+The floor doesn't move with level. Off the radio, on the 2026-11-06 captures (`gp0cap` at
+0.12), fitting the IF's instantaneous frequency to the sent tones through a short FIR:
+
+- The residual beyond the FIR's fit is about 600 Hz rms (model 400-500 Hz, the tap's
+  sigma-delta noise). The excess sits at the tones, 1.5-3 kHz: 440 Hz rms there against 245 in
+  the model. Below 600 Hz (phase noise, drift) the two match.
+- Adding the 2nd and 3rd harmonics explains only 0.4-1.4 dB of the residual (model 0.3-0.9), so
+  it isn't plain clipping.
+- Each symbol's deviation, against the fit, varies 14% rms (model 6%), white from symbol to
+  symbol.
+- The model with the IC-7100's lower deviation (x0.73) and no other change gives 0.05% at
+  70 dB-Hz. With narrower chip filters (6th-order, 3-5 kHz) it gives 0-1.4%. Neither makes 4%.
+
+So something adds tone-band distortion that grows with the signal. Lead fit (q) rises with
+level up to 0.10 and is flat above, which hints at a limiter near 0.10 at 30% USB MOD. But the
+BER is the same at 0.065, below that. **`k6_ifcap.py run --level X`** scales the 4FSK capture
+pass, so `gp0cap` at a few levels can measure the deviation and this distortion against level
+directly.
+
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
 Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential
