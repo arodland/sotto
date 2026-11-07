@@ -220,6 +220,14 @@ cut such listens short. The tone detector can't decode at 10 dB anyway, so `xs_u
 anything under 15 dB over its segment's floor (XS_PICK_DB): the sweep still lists it, the automatic
 listener just doesn't go there.
 
+Jeff's two follow-ups (21:48), from the same run's list: off the band plan's channel raster (25
+kHz from 440.000 on 70 cm; `ex_plan_t.raster_khz`, none set on 2 m and 1.25 m yet) a carrier
+needs 10 dB more (25 dB over the floor) before the listener goes there: every 12.5 kHz-offset hit
+on the bench so far was junk, but WWARA has splinter channels, so it's a higher bar, not a ban.
+And skirts are folded into the carrier beside them on the screen (`ex_view`): the run's exit
+dump had four skirts of our -20 dBm ID (440.825 to 440.900) in seven rows. They stay in the
+serial dump (key 7).
+
 ## Bench 4 (2026-11-07 21:07-21:12 UTC, PR #122 head 7a591c0)
 
 The floor fix and the birdie fix worked: 2 m read -92 to -94 every minute, no 2 m phantoms, and

@@ -184,7 +184,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
                         os.path.join(K6, f), "-o", o], check=True)
         und = set(subprocess.run(["llvm-nm", "-u", o], capture_output=True, text=True, check=True).stdout.split())
         und -= {"U"}
-        assert und <= {"ex_over", "ex_spur", "ex_own_clock", "cw_call", "cw_div", "cw_feed", "cw_flush", "cw_init", "cw_utoa"}, und
+        assert und <= {"ex_over", "ex_spur", "ex_own_clock", "ex_on_raster", "cw_call", "cw_div", "cw_feed", "cw_flush", "cw_init", "cw_utoa"}, und
         size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
         text, data, bss = (int(x) for x in size.split()[:3])
         assert data == 0 and bss == 0
@@ -455,6 +455,17 @@ def test_up_list_leaves_out_a_louder_carrier_s_skirts(lib):
     st.sfl[0] = 174 - 85 - 12
     n = L.xs_up(buf, up, 10)
     assert list(up[:n]) == [440_850_000], list(up[:n])
+    # off the 25 kHz raster it takes 10 dB more (Jeff 2026-11-07): 20 dB up on 442.000 is
+    # picked, 20 dB up on 441.0125 isn't
+    radio = Radio(Receiver([(441_012_500, -110, on), (442_000_000, -110, on)]))
+    buf, mem, ex = explorer(L, kxl, [(440_000_000, 12_500, 240, 12_500)], radio)
+    assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+    run_steps(L, buf, radio, 15)
+    XsFloors.from_buffer(buf).sfl[0] = 174 - 110 - 20
+    n = L.xs_up(buf, up, 10)
+    assert list(up[:n]) == [442_000_000], list(up[:n])
+    XsFloors.from_buffer(buf).sfl[0] = 174 - 110 - 27
+    assert sorted(up[:L.xs_up(buf, up, 10)]) == [441_012_500, 442_000_000]
 
 
 class Detector:

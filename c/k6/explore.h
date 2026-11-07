@@ -81,7 +81,8 @@ typedef struct {
 typedef struct {
   uint32_t lo_hz, hi_hz;
   int32_t off_hz;                /* 0 for a simplex row */
-  uint8_t simplex;
+  uint8_t simplex, pad;
+  uint16_t raster_khz;           /* the usual channel raster from lo_hz (0: any) */
 } ex_plan_t;
 
 void ex_init(ex_t *e, ex_cand_t *store, unsigned cap);
@@ -105,6 +106,12 @@ void ex_grade(ex_cand_t *c);
 /* the i-th best (0 first) by score, then most overs, then most recent; 0 past the end. New
    candidates come before known ones (EX_F_KNOWN), and in each group the ignored ones last. */
 ex_cand_t *ex_rank(ex_t *e, unsigned i);
+/* the same, leaving out skirts (every over a louder neighbour's: Jeff 2026-11-07, "lump close
+   together signals together"), for the list on the screen; and how many that leaves */
+ex_cand_t *ex_view(ex_t *e, unsigned i);
+unsigned ex_view_n(const ex_t *e);
+/* on its band plan row's channel raster (within 1 kHz), or on a row without one, or off the plan */
+int ex_on_raster(uint32_t hz);
 /* Which of the frequencies up now (up_hz, n of them: the scan's hot entries that are keyed) the
    automatic Listen for ID should go to, by Jeff's rule (2026-11-07): only candidates still
    without a callsign that could be repeaters (not a spur, a skirt, a simplex frequency, an

@@ -44,7 +44,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
     assert und == [], und
     size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
     text, data, bss = (int(x) for x in size.split()[:3])
-    assert text < 2304 and data == 0 and bss == 0   # 2194 with the known list (2026-11-07)
+    assert text < 2560 and data == 0 and bss == 0   # 2194 with the known list (2026-11-07)
 
 
 def test_a_repeater_output_grades_up_with_its_cw_id(lib):
@@ -217,6 +217,20 @@ def test_a_strong_carrier_s_skirts_are_marked(lib):
         assert "skirt" in kx.row_text(rows[hz])
     assert rows[440_900_000].skirts == 0 and rows[440_900_000].score != -100
     assert x.ranked()[0].hz == 440_850_000
+    # the screen's list folds the skirts into the carrier (Jeff 2026-11-07, bench 5: four
+    # skirts of our -20 dBm ID took four of seven rows)
+    view = []
+    while (p := lib.ex_view(ctypes.byref(x.e), len(view))):
+        view.append(p.contents.hz)
+    assert view == [440_850_000, 440_900_000] and lib.ex_view_n(ctypes.byref(x.e)) == 2, view
+
+
+def test_the_70cm_raster(lib):
+    """WWARA's 25 kHz from 440.000 (Jeff 2026-11-07: off-raster hits want more before a listen)"""
+    on = lib.ex_on_raster
+    assert on(440_725_000) and on(440_850_000) and on(440_850_800)
+    assert not on(440_737_500) and not on(440_862_500) and not on(440_012_500)
+    assert on(146_940_000) and on(146_945_000) and on(300_000_000)   # 2 m has none set; off the plan
 
 
 def test_listen_for_id_takes_turns_and_skips_the_ones_with_a_call(lib):

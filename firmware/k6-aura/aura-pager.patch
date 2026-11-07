@@ -239,7 +239,7 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..677b2f7
+index 0000000..7f6e8e1
 --- /dev/null
 +++ b/src/app/pager.rs
 @@ -0,0 +1,3934 @@
@@ -4179,10 +4179,10 @@ index 0000000..677b2f7
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..9b6ae15
+index 0000000..f60a9fb
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1311 @@
+@@ -0,0 +1,1329 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4377,6 +4377,8 @@ index 0000000..9b6ae15
 +        pub fn ex_known_store(e: *mut Ex, buf: *mut u32, cap: u32);
 +        pub fn ex_know(e: *mut Ex, hz: u32);
 +        pub fn ex_rank(e: *mut Ex, i: u32) -> *mut Cand;
++        pub fn ex_view(e: *mut Ex, i: u32) -> *mut Cand;
++        pub fn ex_view_n(e: *const Ex) -> u32;
 +        pub fn ex_cw(e: *mut Ex, hz: u32, call: *const u8);
 +        pub fn ex_to_rt(c: *const Cand, r: *mut RtRec);
 +        pub fn rt_mount(t: *mut Rt, fl: *const RtFlash, base: u32, force: i32) -> i32;
@@ -4601,6 +4603,17 @@ index 0000000..9b6ae15
 +    }
 +}
 +
++/// the i-th row of the list on the screen: skirts are left out, folded into the louder carrier
++/// beside them (Jeff 2026-11-07: "lump close together signals together")
++fn shown(i: u32) -> Option<&'static mut Cand> {
++    let p = unsafe { ffi::ex_view(&mut st().ex, i) };
++    if p.is_null() {
++        None
++    } else {
++        Some(unsafe { &mut *p })
++    }
++}
++
 +/// set the sweep up on band set b (the candidates stay)
 +fn start_band(b: u8) {
 +    let t = st();
@@ -4728,6 +4741,11 @@ index 0000000..9b6ae15
 +            }
 +            let key = unsafe { ffi::xs_step(t.xs) } == XS_KEY;
 +            ctx_off();
++            // a row can fold away (it turned out a skirt): keep the selection on the list
++            let n = unsafe { ffi::ex_view_n(&t.ex) };
++            if n > 0 && t.sel as u32 >= n {
++                t.sel = (n - 1) as _;
++            }
 +            if !key && t.auto && now_ms().wrapping_sub(t.auto_end_ms) >= AUTO_GAP_MS {
 +                auto_pick(app, syst);
 +            }
@@ -4815,7 +4833,7 @@ index 0000000..9b6ae15
 +        View::List => match ev.key {
 +            KeyId::Up => t.sel = t.sel.saturating_sub(1),
 +            KeyId::Down => {
-+                if (t.sel as u16) + 1 < t.ex.n {
++                if shown(t.sel as u32 + 1).is_some() {
 +                    t.sel += 1;
 +                }
 +            }
@@ -4823,7 +4841,7 @@ index 0000000..9b6ae15
 +            KeyId::Digit0 => listen_start(app, syst),
 +            KeyId::Digit5 => save(app, syst),
 +            KeyId::Asterisk => {
-+                if let Some(c) = cand(t.sel as u32) {
++                if let Some(c) = shown(t.sel as u32) {
 +                    c.flags ^= EX_F_IGNORED;
 +                    note(if c.flags & EX_F_IGNORED != 0 { "IGNORED" } else { "UNIGNORED" });
 +                }
@@ -4865,7 +4883,7 @@ index 0000000..9b6ae15
 +
 +fn try_start(app: &mut App, syst: &mut SYST) {
 +    let t = st();
-+    let Some(c) = cand(t.sel as u32) else { return };
++    let Some(c) = shown(t.sel as u32) else { return };
 +    c.flags |= EX_F_TRIED;
 +    t.hz = c.hz;
 +    t.off = c.off_hz;
@@ -4878,7 +4896,7 @@ index 0000000..9b6ae15
 +fn listen_start(app: &mut App, syst: &mut SYST) {
 +    let t = st();
 +    if t.view != View::Try {
-+        let Some(c) = cand(t.sel as u32) else { return };
++        let Some(c) = shown(t.sel as u32) else { return };
 +        t.hz = c.hz;
 +        t.off = c.off_hz;
 +        pause_sweep(app, syst);
@@ -5057,7 +5075,7 @@ index 0000000..9b6ae15
 +        }
 +        found
 +    } else {
-+        cand(t.sel as u32)
++        shown(t.sel as u32)
 +    };
 +    let Some(c) = c else { return };
 +    let mut r: RtRec = unsafe { core::mem::zeroed() };
@@ -5208,9 +5226,9 @@ index 0000000..9b6ae15
 +    // new repeaters above a rule, known (saved) ones below it (Jeff 2026-11-07): the
 +    // rows under it move down 2 px, which the 4 px above the footer leave room for
 +    let mut shift = 0;
-+    let mut was_new = top > 0 && cand(top - 1).is_some_and(|c| c.flags & EX_F_KNOWN == 0);
++    let mut was_new = top > 0 && shown(top - 1).is_some_and(|c| c.flags & EX_F_KNOWN == 0);
 +    for k in 0..ROWS as u32 {
-+        let Some(c) = cand(top + k) else { break };
++        let Some(c) = shown(top + k) else { break };
 +        let known = c.flags & EX_F_KNOWN != 0;
 +        let ruled = known && was_new && shift == 0;
 +        if ruled {
@@ -5391,12 +5409,12 @@ index 0000000..9b6ae15
 +                // sweep time doesn't matter to a person)
 +                fill(lcd, 0, 10, BinaryColor::On);
 +                eyes(lcd, now_ms() / 1000 % 2 == 1);
-+                write!(b, "{}  {} found", BANDS[t.band as usize].0, t.ex.n).ok();
++                write!(b, "{}  {} found", BANDS[t.band as usize].0, unsafe { ffi::ex_view_n(&t.ex) }).ok();
 +                head_text(lcd, 19, b.as_str());
 +            }
 +            list_rows(lcd, t, 0);
 +            let mut b: TextBuf<32> = TextBuf::new();
-+            if let Some(c) = cand(t.sel as u32) {
++            if let Some(c) = shown(t.sel as u32) {
 +                if c.flags & EX_F_SPUR != 0 {
 +                    write!(b, "{} dBm  birdie, not a station", c.hi).ok();
 +                } else {
