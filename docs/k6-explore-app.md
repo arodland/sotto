@@ -90,7 +90,8 @@ under the rule move down 2 px. The selected row is drawn inverted, dark on a lit
 idea: no '>' column). Grades: R likely a repeater (score 6 or more), r maybe one, ? not seen
 enough yet, s simplex or a louder signal's skirt, x ignored with *. A spur (a birdie, or a carrier
 that never moves) shows a little gull in place of the grade, and its footer says "birdie, not a
-station". The level bar
+station". A row with a confirmed call shows a check mark in place of the grade (Jeff's pick
+"B", 2026-11-07, mock-ups in /mnt/project-files/k6-explore/explore-check-marks.png). The level bar
 (Jeff's "4 revised", 2026-11-07) is 2 px of loudest level, 5 dB a pixel from -120 dBm (21 px
 full), over a dotted line for the score (10 points full).
 

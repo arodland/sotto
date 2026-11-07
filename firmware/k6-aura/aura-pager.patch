@@ -4179,10 +4179,10 @@ index 0000000..7f6e8e1
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..2c97159
+index 0000000..0a6169c
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1449 @@
+@@ -0,0 +1,1461 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -5358,7 +5358,9 @@ index 0000000..2c97159
 +        let mut b: TextBuf<32> = TextBuf::new();
 +        let ign = c.flags & EX_F_IGNORED != 0;
 +        let bird = !ign && c.flags & EX_F_SPUR != 0;
-+        let g = if ign { 'x' } else if bird { ' ' } else { c.grade as char };
++        // a confirmed call: a check mark for the grade (Jeff's pick "B", 2026-11-07 22:54)
++        let checked = !ign && !bird && c.call[0] != 0;
++        let g = if ign { 'x' } else if bird || checked { ' ' } else { c.grade as char };
 +        write!(b, "{} ", g).ok();
 +        mhz(&mut b, c.hz);
 +        write!(b, " ").ok();
@@ -5376,6 +5378,16 @@ index 0000000..2c97159
 +        let ink = if sel { BinaryColor::Off } else { BinaryColor::On };
 +        let st = MonoTextStyle::new(&FONT_4X6, ink);
 +        Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
++        if checked {
++            const CHECK: [u8; 4] = [0x01, 0x02, 0x14, 0x08];
++            for (r, &m) in CHECK.iter().enumerate() {
++                for c in 0..5 {
++                    if m & (0x10 >> c) != 0 {
++                        Pixel(Point::new(c, y + 1 + r as i32), ink).draw(lcd).ok();
++                    }
++                }
++            }
++        }
 +        if bird {
 +            // a birdie or other spur: a gull in the grade column and the space after it
 +            // Jeff's pick "A" (2026-11-07): 5 wide, 2 high
