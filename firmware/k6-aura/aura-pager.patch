@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 785c441..f783b78 100644
+index 785c441..0a1e4f7 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -21,6 +21,14 @@ st7565 = "0.6"
+@@ -21,6 +21,18 @@ st7565 = "0.6"
  embedded-graphics = "0.8"
  profont = "0.7"
  
@@ -13,6 +13,10 @@ index 785c441..f783b78 100644
 +# with pager-only: no PTT calibration transmit, for the codebook install image (flashed once),
 +# which holds sotto's 30 KB codebook in MCU flash as well
 +lean = []
++# EXPLORE, the K6 signal explorer (src/app/pager/explore.rs), as the pager-only image's start
++# screen. sotto's build links it with a library that has no voice decoder (K6_VOICE=0), the
++# room the explorer needs: VOICE MSG keeps its packets, modules and control, but plays nothing
++explore = ["pager-only"]
 +
  [profile.release]
  opt-level = "z"
@@ -122,7 +126,7 @@ index 55f04b6..b5a34d0 100644
      }
  }
 diff --git a/src/app/mod.rs b/src/app/mod.rs
-index 5f006e4..69607f8 100644
+index 5f006e4..97c80b9 100644
 --- a/src/app/mod.rs
 +++ b/src/app/mod.rs
 @@ -9,6 +9,7 @@ mod input;
@@ -159,7 +163,7 @@ index 5f006e4..69607f8 100644
          }
      }
  
-@@ -1436,6 +1442,61 @@ impl App {
+@@ -1436,6 +1442,73 @@ impl App {
      pub fn poll_spectrum(&mut self, syst: &mut SYST) {
          spectrum::poll(self, syst);
      }
@@ -167,6 +171,18 @@ index 5f006e4..69607f8 100644
 +    // voice pager (pager.rs)
 +    pub fn poll_pager(&mut self, syst: &mut SYST) {
 +        pager::poll(self, syst);
++    }
++    /// EXPLORE (pager/explore.rs) is on: the main loop runs its steps instead of the pager's
++    pub fn exploring(&self) -> bool {
++        pager::explore_on()
++    }
++    pub fn poll_explore(&mut self, syst: &mut SYST) -> bool {
++        pager::explore_poll(self, syst)
++    }
++    /// The explore image starts in EXPLORE
++    #[cfg(feature = "explore")]
++    pub fn enter_explore(&mut self, syst: &mut SYST) {
++        pager::explore_enter(self, syst);
 +    }
 +    pub fn note_pager_draw(&mut self, ticks: u16) {
 +        pager::note_draw(self, ticks);
@@ -223,10 +239,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..1c60746
+index 0000000..7b98ac3
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3692 @@
+@@ -0,0 +1,3834 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -273,6 +289,47 @@ index 0000000..1c60746
 +/// The commit part of `BUILD`, for the screen.
 +pub fn build_short() -> &'static str {
 +    BUILD.get(..7).unwrap_or(BUILD)
++}
++
++/// EXPLORE, the signal explorer's list of likely repeaters (pager/explore.rs): the explore
++/// image (feature "explore": pager-only, no voice decoder) starts in it; EXIT from VOICE MSG
++/// goes back
++#[cfg(feature = "explore")]
++mod explore;
++
++#[cfg(feature = "explore")]
++pub fn explore_on() -> bool {
++    explore::on()
++}
++#[cfg(feature = "explore")]
++pub fn explore_enter(app: &mut App, syst: &mut SYST) {
++    explore::enter(app, syst)
++}
++#[cfg(not(feature = "explore"))]
++pub fn explore_on() -> bool {
++    false
++}
++/// EXPLORE's turn in the main loop: true when the screen wants drawing
++#[cfg(feature = "explore")]
++pub fn explore_poll(app: &mut App, syst: &mut SYST) -> bool {
++    explore::poll(app, syst)
++}
++#[cfg(not(feature = "explore"))]
++pub fn explore_poll(_app: &mut App, _syst: &mut SYST) -> bool {
++    false
++}
++#[cfg(feature = "explore")]
++pub fn explore_draw<D>(lcd: &mut D, app: &App)
++where
++    D: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::BinaryColor>,
++{
++    explore::draw(lcd, app)
++}
++#[cfg(not(feature = "explore"))]
++pub fn explore_draw<D>(_lcd: &mut D, _app: &App)
++where
++    D: embedded_graphics::prelude::DrawTarget<Color = embedded_graphics::pixelcolor::BinaryColor>,
++{
 +}
 +
 +const STORE_BYTES: usize = 4096;
@@ -414,6 +471,10 @@ index 0000000..1c60746
 +        pub key_poll: unsafe extern "C" fn() -> i32,
 +        pub cal_read: unsafe extern "C" fn(*mut u8, u32) -> i32,
 +        pub cal_write: unsafe extern "C" fn(*const u8, u32) -> i32,
++        // level 5: the SPI flash, for the repeater table (program and erase in its 64 KB only)
++        pub fl_read: unsafe extern "C" fn(u32, *mut u8, u32) -> i32,
++        pub fl_prog: unsafe extern "C" fn(u32, *const u8, u32) -> i32,
++        pub fl_erase: unsafe extern "C" fn(u32) -> i32,
 +    }
 +    #[repr(C)]
 +    pub struct KmStatus {
@@ -440,7 +501,7 @@ index 0000000..1c60746
 +/// through MOD_CTX, set only while a module runs.
 +static MOD_API: ffi::K6Api = ffi::K6Api {
 +    abi: 1,
-+    level: 4,
++    level: 5,
 +    say: mod_say,
 +    ticks: mod_ticks,
 +    fd_read: mod_fd_read,
@@ -457,6 +518,9 @@ index 0000000..1c60746
 +    key_poll: mod_key_poll,
 +    cal_read: mod_cal_read,
 +    cal_write: mod_cal_write,
++    fl_read: mod_fl_read,
++    fl_prog: mod_fl_prog,
++    fl_erase: mod_fl_erase,
 +};
 +
 +struct ModCtx {
@@ -471,6 +535,8 @@ index 0000000..1c60746
 +    tx: bool,
 +    /// level 4: the calibration record was written this run (once a run)
 +    cal_written: bool,
++    /// level 5: sector erases this module run or EXPLORE session (at most FL_ERASES)
++    fl_erases: u8,
 +    /// bytes of say lines kept for the over-the-air report (0: none)
 +    tlm_cap: u16,
 +}
@@ -484,6 +550,7 @@ index 0000000..1c60746
 +    tx_until: 0,
 +    tx: false,
 +    cal_written: false,
++    fl_erases: 0,
 +    tlm_cap: 0,
 +};
 +
@@ -771,6 +838,84 @@ index 0000000..1c60746
 +        .norflash
 +        .write_bytes(CAL_ADDR, unsafe { core::slice::from_raw_parts(buf, n as usize) });
 +    report_line(format_args!("K6 MOD cal write n={} at {:#x}", n, CAL_ADDR));
++    0
++}
++
++// ---- level 5: the SPI flash, for the repeater table (Jeff approved it, 2026-11-07) ----
++//
++// fl_read reads anywhere in 0x0F0000-0x1FFFFF (the table, sotto's codebooks, the calibration
++// record). fl_prog (up to 256 bytes inside one page) and fl_erase (one 4 KB sector) work in the
++// table's 64 KB only, 0x0F0000-0x0FFFFF: Aura's own data ends at 0xED200, sotto's codebooks
++// start at 0x100000. Neither works while keyed, and a module run (or an EXPLORE session) gets
++// at most FL_ERASES erases: a compaction takes one, a mount repair two, so 32 stops a runaway
++// loop long before it wears a sector (about 100,000 erases each). The same three calls are the
++// EXPLORE app's rt_flash_t (explore.rs), so the app and a module go through one set of checks.
++
++const FL_LO: u32 = 0x0F_0000;
++const FL_HI: u32 = 0x10_0000;
++const FL_READ_HI: u32 = 0x20_0000;
++const FL_PAGE: u32 = 256;
++const FL_SECTOR: u32 = 4096;
++const FL_ERASES: u8 = 32;
++
++#[cfg(feature = "lean")]
++unsafe extern "C" fn mod_fl_read(_addr: u32, _buf: *mut u8, _n: u32) -> i32 {
++    -1
++}
++#[cfg(feature = "lean")]
++unsafe extern "C" fn mod_fl_prog(_addr: u32, _buf: *const u8, _n: u32) -> i32 {
++    -1
++}
++#[cfg(feature = "lean")]
++unsafe extern "C" fn mod_fl_erase(_addr: u32) -> i32 {
++    -1
++}
++
++#[cfg(not(feature = "lean"))]
++unsafe extern "C" fn mod_fl_read(addr: u32, buf: *mut u8, n: u32) -> i32 {
++    mod_tx_guard();
++    let live = unsafe { !(*addr_of!(MOD_CTX)).app.is_null() };
++    if buf.is_null() || !live || addr < FL_LO || addr >= FL_READ_HI || n > FL_READ_HI - addr {
++        return -1;
++    }
++    let (app, _) = unsafe { mod_ctx() };
++    app.storage
++        .norflash
++        .read_bytes(addr, unsafe { core::slice::from_raw_parts_mut(buf, n as usize) });
++    0
++}
++
++/// Program n bytes (1-256) inside one page of the table: 0, or -1
++#[cfg(not(feature = "lean"))]
++unsafe extern "C" fn mod_fl_prog(addr: u32, buf: *const u8, n: u32) -> i32 {
++    mod_tx_guard();
++    let c = unsafe { &*addr_of!(MOD_CTX) };
++    if buf.is_null() || c.app.is_null() || c.tx || n == 0 || n > FL_PAGE || addr < FL_LO || addr >= FL_HI
++        || (addr % FL_PAGE) + n > FL_PAGE
++    {
++        return -1;
++    }
++    let (app, _) = unsafe { mod_ctx() };
++    app.storage
++        .norflash
++        .write_bytes(addr, unsafe { core::slice::from_raw_parts(buf, n as usize) });
++    0
++}
++
++/// Erase the table's 4 KB sector at addr: 0, or -1
++#[cfg(not(feature = "lean"))]
++unsafe extern "C" fn mod_fl_erase(addr: u32) -> i32 {
++    mod_tx_guard();
++    let c = unsafe { &mut *addr_of_mut!(MOD_CTX) };
++    if c.app.is_null() || c.tx || addr < FL_LO || addr >= FL_HI || addr % FL_SECTOR != 0 || c.fl_erases >= FL_ERASES {
++        report_line(format_args!("K6 FL erase {:#x} refused (n={})", addr, c.fl_erases));
++        return -1;
++    }
++    c.fl_erases += 1;
++    let n = c.fl_erases;
++    let (app, _) = unsafe { mod_ctx() };
++    app.storage.norflash.erase_sector(addr);
++    report_line(format_args!("K6 FL erase {:#x} n={}", addr, n));
 +    0
 +}
 +
@@ -2638,6 +2783,7 @@ index 0000000..1c60746
 +                tx_until: 0,
 +                tx: false,
 +                cal_written: false,
++                fl_erases: 0,
 +                tlm_cap: 0,
 +            };
 +        }
@@ -2728,6 +2874,7 @@ index 0000000..1c60746
 +            tx_until: 0,
 +            tx: false,
 +            cal_written: true, // no calibration writes
++            fl_erases: FL_ERASES, // and no flash writes
 +            tlm_cap: 0,
 +        };
 +    }
@@ -2780,6 +2927,11 @@ index 0000000..1c60746
 +
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn dispatch(app: &mut App, syst: &mut SYST, ev: KeyEvent) {
++    #[cfg(feature = "explore")]
++    if explore::on() {
++        explore::dispatch(app, syst, ev);
++        return;
++    }
 +    if !matches!(ev.kind, KeyEventKind::Single | KeyEventKind::Repeat) {
 +        return;
 +    }
@@ -2807,6 +2959,12 @@ index 0000000..1c60746
 +        #[cfg(not(feature = "pager-only"))]
 +        KeyId::Exit => {
 +            exit(app, syst);
++            return;
++        }
++        // the explore image: EXIT opens EXPLORE again (EXIT twice there comes back here)
++        #[cfg(feature = "explore")]
++        KeyId::Exit => {
++            explore::enter(app, syst);
 +            return;
 +        }
 +        KeyId::Menu => {
@@ -3919,6 +4077,1097 @@ index 0000000..1c60746
 +    core::mem::size_of::<crate::device::radio::Radio>() as u32,
 +    core::mem::size_of::<crate::device::keypad::Keypad>() as u32,
 +];
+diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
+new file mode 100644
+index 0000000..0285080
+--- /dev/null
++++ b/src/app/pager/explore.rs
+@@ -0,0 +1,1085 @@
++//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
++//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
++//!
++//! The radio only listens. It sweeps the bands a block of bins at a time (c/k6/xscan.c, the
++//! scan module's sweep), turns every transmission it follows into a candidate (c/k6/explore.c:
++//! same level every time, the band plan, an ID rhythm, a CW ID) and ranks them:
++//!
++//! ```text
++//! EX ALL 11 2.3s -93
++//! >R 146.940 -0.6  -80
++//!  r 443.100 +5.0  -85
++//!  ? 440.850 +5.0  -22
++//!  s 146.520  S    -70
++//! n4 sc8 W7ABC/R
++//! ```
++//!
++//! Keys: UP/DOWN pick a row; MENU Try (listen to it: the sweep stops, the speaker opens);
++//! 0 Listen for ID (the CW ID decoder, c/k6/xlisten.c, up to 25 minutes, any key stops);
++//! 5 Save (the repeater table in SPI flash, c/k6/rt.c, through module API level 5's checks);
++//! * ignore; # the next band set; 7 the list and the table on the serial report (K6 CAND,
++//! K6 RT lines); EXIT twice back to VOICE MSG (the list is in RAM only and goes with it).
++//!
++//! RAM: none of its own beyond this file's statics. While EXPLORE runs it borrows the message
++//! store (the sweep state and 64 candidates) and the PWM ring (the floors, the waterfall row
++//! and Listen for ID's state), the way a RAM module or the 4FSK session does; leaving clears
++//! the store for messages again.
++
++use super::{arm, clear_store, disarm, ffi as pffi, mod_tick, report_line, stream_on, MOD_API, MOD_CTX};
++use super::{FL_ERASES, STORE, STORE_BYTES};
++use crate::app::App;
++use crate::device::keypad::{KeyEvent, KeyEventKind, KeyId};
++use crate::drivers::fd6818::AfOutState;
++use crate::device::radio::Modulation;
++use crate::hal::{pwm_audio, uptime};
++use crate::ui::TextBuf;
++use core::fmt::Write as _;
++use core::ptr::{addr_of, addr_of_mut, null_mut};
++use cortex_m::peripheral::SYST;
++use embedded_graphics::mono_font::{ascii::FONT_6X10, MonoTextStyle};
++use embedded_graphics::pixelcolor::BinaryColor;
++use embedded_graphics::prelude::*;
++use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
++use embedded_graphics::text::Text;
++
++mod ffi {
++    use super::pffi::K6Api;
++    /// c/k6/explore.h ex_cand_t (48 bytes)
++    #[repr(C)]
++    #[derive(Clone, Copy)]
++    pub struct Cand {
++        pub hz: u32,
++        pub first_ms: u32,
++        pub last_ms: u32,
++        pub on_ms: u32,
++        pub off_hz: i32,
++        pub overs: u16,
++        pub tone: u16,
++        pub lo: i16,
++        pub hi: i16,
++        pub prev_start: u32,
++        pub ids: u8,
++        pub skirts: u8,
++        pub flags: u8,
++        pub score: i8,
++        pub grade: u8,
++        pub call: [u8; 10],
++        pub listens: u8,
++    }
++    #[repr(C)]
++    pub struct Ex {
++        pub c: *mut Cand,
++        pub n: u16,
++        pub cap: u16,
++        pub tol_hz: u32,
++    }
++    /// c/k6/rt.h rt_rec_t (64 bytes)
++    #[repr(C)]
++    #[derive(Clone, Copy)]
++    pub struct RtRec {
++        pub state: u16,
++        pub seq: u16,
++        pub rx_hz: u32,
++        pub tx_off: i32,
++        pub rx_tone: u16,
++        pub tx_tone: u16,
++        pub flags: u16,
++        pub best_rssi: u8,
++        pub score: u8,
++        pub last_heard: u32,
++        pub name: [u8; 16],
++        pub call: [u8; 10],
++        pub call_flags: u8,
++        pub cw: u8,
++        pub group: u8,
++        pub spare0: u8,
++        pub id: u16,
++        pub wseq: u32,
++        pub crc: u32,
++    }
++    #[repr(C)]
++    pub struct RtFlash {
++        pub read: unsafe extern "C" fn(*mut u8, u32, *mut u8, u32) -> i32,
++        pub write: unsafe extern "C" fn(*mut u8, u32, *const u8, u32) -> i32,
++        pub erase: unsafe extern "C" fn(*mut u8, u32) -> i32,
++        pub ctx: usize, // void *ctx (unused here; usize keeps the static Sync)
++    }
++    #[repr(C)]
++    pub struct Rt {
++        pub fl: *const RtFlash,
++        pub base: u32,
++        pub live: u16,
++        pub dead: u16,
++        pub free: u16,
++        pub max_id: u16,
++        pub wseq: u32,
++        pub spare: u8,
++        pub gcs: u8,
++        pub repairs: u8,
++    }
++    #[repr(C)]
++    #[derive(Clone, Copy)]
++    pub struct Seg {
++        pub lo_hz: u32,
++        pub step_hz: u32,
++        pub nbins: u16,
++        pub snap_hz: u16,
++    }
++    /// the settings at the start of c/k6/xscan.h's xs_t
++    #[repr(C)]
++    pub struct XsHead {
++        pub nseg: u8,
++        pub wide: u8,
++        pub noise_db: u8,
++        pub hit_db: u8,
++        pub refine: u8,
++        pub say_rows: u8,
++        pub quiet: u8,
++        pub refloor_s: u8,
++        pub quick_us: u16,
++        pub confirm_us: u16,
++        pub hot_ms: u16,
++        pub spur_s: u16,
++        pub seg: [Seg; 4],
++    }
++    #[repr(C)]
++    pub struct XsInfo {
++        pub sweeps: u32,
++        pub bins: u32,
++        pub ms: u32,
++        pub last_ms: u16,
++        pub g: u8,
++        pub phase: u8,
++        pub floor_dbm: [i16; 4],
++        pub hot: u8,
++        pub up: u8,
++        pub pad: [u8; 2],
++    }
++    #[repr(C)]
++    pub struct XlInfo {
++        pub ms: u32,
++        pub msgs: u16,
++        pub junk: u16,
++        pub keyed: u8,
++        pub seen: u8,
++        pub fl: u8,
++        pub wpm: u8,
++        pub tone_hz: u16,
++        pub call: [u8; 11],
++        pub text: [u8; 21],
++    }
++    extern "C" {
++        pub fn xs_defaults(s: *mut u8);
++        pub fn xs_state_bytes() -> u32;
++        pub fn xs_mem_bytes(s: *const u8) -> u32;
++        pub fn xs_init(s: *mut u8, api: *const K6Api, ex: *mut Ex, mem: *mut u8, bytes: u32) -> i32;
++        pub fn xs_step(s: *mut u8) -> i32;
++        pub fn xs_close(s: *mut u8);
++        pub fn xs_summary(s: *mut u8);
++        pub fn xs_info(s: *const u8, out: *mut XsInfo);
++        pub fn xs_up(s: *const u8, out: *mut u32, max: u32) -> u32;
++        pub fn ex_pick_id(e: *mut Ex, up_hz: *const u32, n: u32) -> *mut Cand;
++        pub fn xl_state_bytes() -> u32;
++        pub fn xl_start(x: *mut u8, api: *const K6Api, rx_hz: u32, max_s: u32);
++        pub fn xl_step(x: *mut u8) -> i32;
++        pub fn xl_stop(x: *mut u8, why: i32);
++        pub fn xl_info(x: *const u8, out: *mut XlInfo);
++        pub fn ex_init(e: *mut Ex, store: *mut Cand, cap: u32);
++        pub fn ex_rank(e: *mut Ex, i: u32) -> *mut Cand;
++        pub fn ex_cw(e: *mut Ex, hz: u32, call: *const u8);
++        pub fn ex_to_rt(c: *const Cand, r: *mut RtRec);
++        pub fn rt_mount(t: *mut Rt, fl: *const RtFlash, base: u32, force: i32) -> i32;
++        pub fn rt_find(t: *mut Rt, id: u16, rx_hz: u32, tol: u32, out: *mut RtRec) -> i32;
++        pub fn rt_next(t: *mut Rt, slot: i32, out: *mut RtRec) -> i32;
++        pub fn rt_put(t: *mut Rt, r: *mut RtRec) -> i32;
++        pub fn rt_cw_check(t: *mut Rt, rx_hz: u32, tol: u32, call: *const u8, out: *mut RtRec) -> i32;
++        pub fn rt_cw_apply(
++            t: *mut Rt,
++            rx_hz: u32,
++            tol: u32,
++            call: *const u8,
++            call_flags: u8,
++            tone_hz: i32,
++            wpm: i32,
++            confirmed: i32,
++            out: *mut RtRec,
++        ) -> i32;
++    }
++}
++use ffi::{Cand, Ex, Rt, RtFlash, RtRec, Seg, XsHead, XsInfo, XlInfo};
++
++const CAP: usize = 64;
++const RT_BASE: u32 = 0x0F_0000;
++const RT_TOL_HZ: u32 = 5_000;
++const LISTEN_S: u32 = 1500;
++/// the automatic Listen for ID (Jeff's rule, 2026-11-07): it goes to a candidate with no call
++/// when it keys up, the one listened to fewest times first (ex_pick_id); it stays while the
++/// carrier is up, then AUTO_TAIL_MS more, AUTO_MAX_S at most, and leaves AUTO_GAP_MS of sweep
++/// before the next. A call needs two decodes alike, on one listen or two.
++const AUTO_MAX_S: u32 = 120;
++const AUTO_TAIL_MS: u32 = 3000;
++const AUTO_GAP_MS: u32 = 5000;
++const AUTO_DROP_DB: i16 = 15;
++const XL_MSG: i32 = 3;
++const EX_F_IGNORED: u8 = 0x01;
++const EX_F_TRIED: u8 = 0x02;
++const EX_F_OFF_HEARD: u8 = 0x04;
++const EX_F_SIMPLEX: u8 = 0x08;
++const RT_F_CALL_USER: u16 = 0x0010;
++const RT_F_NAME_USER: u16 = 0x0008;
++const RT_C_FROM_CW: u8 = 0x08;
++const RT_C_TWICE: u8 = 0x10;
++/// xs_step / xl_step results
++const XS_KEY: i32 = 2;
++const XL_OK: i32 = 1;
++const XL_TIME: i32 = 2;
++/// redraw at most this often while sweeping (100 us ticks): a draw takes 30-50 ms
++const DRAW_TICKS: u16 = 4000;
++const ROWS: usize = 4;
++
++/// The band sets, # cycles them: (name, segments (lo, step, bins, snap)). Each set's floors and
++/// row fit the PWM ring with Listen for ID's state (tests/test_k6_xscan.py).
++const BANDS: [(&str, &[(u32, u32, u16, u16)]); 4] = [
++    ("ALL", &[(144_000_000, 10_000, 400, 5_000), (223_800_000, 20_000, 60, 20_000), (440_000_000, 12_500, 400, 12_500)]),
++    ("2M", &[(144_000_000, 10_000, 400, 5_000)]),
++    ("70CM", &[(440_000_000, 12_500, 400, 12_500), (445_000_000, 12_500, 400, 12_500)]),
++    ("1.25M", &[(222_000_000, 20_000, 150, 20_000)]),
++];
++
++#[derive(Clone, Copy, PartialEq, Eq)]
++enum View {
++    List,
++    Try,
++    Listen,
++    Ask,
++}
++
++struct State {
++    on: bool,
++    view: View,
++    sel: u8,
++    band: u8,
++    leave_armed: bool,
++    dirty: bool,
++    last_draw: u16,
++    msg: [u8; 21],
++    msg_len: u8,
++    msg_t: u16,
++    xs: *mut u8,
++    xl: *mut u8,
++    ring: *mut u8,
++    ring_bytes: u32,
++    ex: Ex,
++    rt: Rt,
++    rt_res: i32,
++    /// the candidate Try or Listen is on
++    hz: u32,
++    off: i32,
++    /// Listen for ID's confirmed call, waiting on a key (Ask)
++    ask: RtRec,
++    heard: [u8; 11],
++    heard_fl: u8,
++    heard_tone: u16,
++    heard_wpm: u8,
++    level: i16,
++    /// automatic Listen for ID: on (key 1), this listen is one, its carrier last seen (ms),
++    /// the level that counts as up, when the last one ended; calls heard once (hz, call)
++    auto: bool,
++    auto_now: bool,
++    auto_seen_ms: u32,
++    auto_lvl: i16,
++    auto_end_ms: u32,
++    once: [(u32, [u8; 11]); 6],
++    once_i: u8,
++}
++
++static mut S: State = State {
++    on: false,
++    view: View::List,
++    sel: 0,
++    band: 0,
++    leave_armed: false,
++    dirty: true,
++    last_draw: 0,
++    msg: [0; 21],
++    msg_len: 0,
++    msg_t: 0,
++    xs: null_mut(),
++    xl: null_mut(),
++    ring: null_mut(),
++    ring_bytes: 0,
++    ex: Ex { c: null_mut(), n: 0, cap: 0, tol_hz: 0 },
++    rt: Rt { fl: core::ptr::null(), base: 0, live: 0, dead: 0, free: 0, max_id: 0, wseq: 0, spare: 0, gcs: 0, repairs: 0 },
++    rt_res: 0,
++    hz: 0,
++    off: 0,
++    ask: RtRec {
++        state: 0, seq: 0, rx_hz: 0, tx_off: 0, rx_tone: 0, tx_tone: 0, flags: 0, best_rssi: 0, score: 0,
++        last_heard: 0, name: [0; 16], call: [0; 10], call_flags: 0, cw: 0, group: 0, spare0: 0, id: 0, wseq: 0, crc: 0,
++    },
++    heard: [0; 11],
++    heard_fl: 0,
++    heard_tone: 0,
++    heard_wpm: 0,
++    level: 0,
++    auto: true,
++    auto_now: false,
++    auto_seen_ms: 0,
++    auto_lvl: 0,
++    auto_end_ms: 0,
++    once: [(0, [0; 11]); 6],
++    once_i: 0,
++};
++
++/// the C side's ms (module API time), kept by mod_tick
++fn now_ms() -> u32 {
++    mod_tick() / 10
++}
++
++fn rssi_dbm(app: &mut App, syst: &mut SYST) -> i16 {
++    let v = app.radio.fd6818.reg_read(syst, 0x67);
++    (((v & 0x1FF) >> 1) as i16) - 174
++}
++
++fn st() -> &'static mut State {
++    unsafe { &mut *addr_of_mut!(S) }
++}
++
++pub fn on() -> bool {
++    unsafe { (*addr_of!(S)).on }
++}
++
++// ---- the flash, through module API level 5's checks ----
++
++unsafe extern "C" fn rt_read(_c: *mut u8, addr: u32, buf: *mut u8, n: u32) -> i32 {
++    unsafe { (MOD_API.fl_read)(addr, buf, n) }
++}
++unsafe extern "C" fn rt_write(_c: *mut u8, addr: u32, buf: *const u8, n: u32) -> i32 {
++    unsafe { (MOD_API.fl_prog)(addr, buf, n) }
++}
++unsafe extern "C" fn rt_erase(_c: *mut u8, addr: u32) -> i32 {
++    unsafe { (MOD_API.fl_erase)(addr) }
++}
++static RT_FLASH: RtFlash = RtFlash { read: rt_read, write: rt_write, erase: rt_erase, ctx: 0 };
++
++/// The module API's context for the C calls: the app and SysTick while a call runs (they're
++/// borrowed for it and nothing else touches them until it returns), the time kept between.
++fn ctx_on(app: &mut App, syst: &mut SYST) {
++    unsafe {
++        let c = &mut *addr_of_mut!(MOD_CTX);
++        c.app = app as *mut App;
++        c.syst = syst as *mut SYST;
++    }
++}
++fn ctx_off() {
++    unsafe { (*addr_of_mut!(MOD_CTX)).app = null_mut() };
++}
++
++fn say(args: core::fmt::Arguments) {
++    report_line(args);
++}
++
++fn note(s: &str) {
++    let t = st();
++    let n = s.len().min(t.msg.len());
++    t.msg[..n].copy_from_slice(&s.as_bytes()[..n]);
++    t.msg_len = n as u8;
++    t.msg_t = uptime::now();
++    t.dirty = true;
++}
++
++fn cstr(b: &[u8]) -> &str {
++    let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
++    core::str::from_utf8(&b[..n]).unwrap_or("?")
++}
++
++fn cand(i: u32) -> Option<&'static mut Cand> {
++    let p = unsafe { ffi::ex_rank(&mut st().ex, i) };
++    if p.is_null() {
++        None
++    } else {
++        Some(unsafe { &mut *p })
++    }
++}
++
++/// set the sweep up on band set b (the candidates stay)
++fn start_band(b: u8) {
++    let t = st();
++    t.band = b % BANDS.len() as u8;
++    let (_, segs) = BANDS[t.band as usize];
++    unsafe {
++        ffi::xs_defaults(t.xs);
++        let h = &mut *(t.xs as *mut XsHead);
++        h.nseg = segs.len() as u8;
++        for (i, &(lo, step, n, snap)) in segs.iter().enumerate() {
++            h.seg[i] = Seg { lo_hz: lo, step_hz: step, nbins: n, snap_hz: snap };
++        }
++        let need = (ffi::xs_mem_bytes(t.xs) + 3) & !3;
++        t.xl = t.ring.add(need as usize);
++        let r = ffi::xs_init(t.xs, &MOD_API, &mut t.ex, t.ring, need);
++        say(format_args!("K6 EX band {} bins={} r={}", BANDS[t.band as usize].0, need, r));
++    }
++}
++
++/// From VOICE MSG (EXIT): the receiver off packets, the store and the ring borrowed.
++pub(super) fn enter(app: &mut App, syst: &mut SYST) {
++    if stream_on() || app.pager.play_pending {
++        return;
++    }
++    disarm(app, syst);
++    app.radio.set_speaker(false);
++    unsafe { pffi::km_reset() };
++    unsafe {
++        *addr_of_mut!(MOD_CTX) = super::ModCtx {
++            app: null_mut(),
++            syst: null_mut(),
++            rx_hz: app.master_freq_hz(),
++            t_last: uptime::now(),
++            ticks: 0,
++            scratch: addr_of_mut!(STORE) as usize + STORE_BYTES,
++            tx_until: 0,
++            tx: false,
++            cal_written: true,
++            fl_erases: 0,
++            tlm_cap: 0,
++        };
++    }
++    let t = st();
++    let store = addr_of_mut!(STORE) as *mut u8;
++    let xs_bytes = (unsafe { ffi::xs_state_bytes() } as usize + 3) & !3;
++    t.xs = store;
++    let cands = unsafe { store.add(xs_bytes) } as *mut Cand;
++    let cap = ((STORE_BYTES - xs_bytes) / core::mem::size_of::<Cand>()).min(CAP);
++    unsafe { ffi::ex_init(&mut t.ex, cands, cap as u32) };
++    t.ring = ((pwm_audio::idle_bytes() as usize + 3) & !3) as *mut u8;
++    t.ring_bytes = (pwm_audio::RING_BYTES - 4) as u32;
++    t.on = true;
++    t.view = View::List;
++    t.sel = 0;
++    t.leave_armed = false;
++    t.msg_len = 0;
++    ctx_on(app, syst);
++    t.rt_res = unsafe { ffi::rt_mount(&mut t.rt, &RT_FLASH, RT_BASE, 0) };
++    start_band(t.band);
++    ctx_off();
++    say(format_args!(
++        "K6 EX enter cap={} rt={} live={} repairs={} xl={}",
++        cap, t.rt_res, t.rt.live, t.rt.repairs, unsafe { ffi::xl_state_bytes() }
++    ));
++    if t.rt_res < 0 {
++        note(if t.rt_res == -5 { "TABLE AREA NOT BLANK" } else { "TABLE READ FAILED" });
++    }
++    t.dirty = true;
++}
++
++fn leave(app: &mut App, syst: &mut SYST) {
++    let t = st();
++    ctx_on(app, syst);
++    unsafe {
++        ffi::xs_close(t.xs);
++        ffi::xs_summary(t.xs);
++    }
++    ctx_off();
++    dump();
++    t.on = false;
++    monitor_off(app, syst);
++    clear_store(app);
++    app.sync_watching_to_master(syst);
++    arm(app, syst);
++    say(format_args!("K6 EX leave"));
++}
++
++fn monitor_on(app: &mut App, syst: &mut SYST, hz: u32) {
++    app.radio.retune_rx(syst, hz, true);
++    app.radio.fd6818.set_af_out(syst, AfOutState::RxAudio, true, Modulation::Fm);
++    app.radio.set_speaker(true);
++}
++
++fn monitor_off(app: &mut App, syst: &mut SYST) {
++    app.radio.set_speaker(false);
++    app.radio.fd6818.set_af_out(syst, AfOutState::Mute, true, Modulation::Fm);
++}
++
++/// The main loop's turn: one sweep step, or the listener's, or Try's level. true: redraw now.
++pub fn poll(app: &mut App, syst: &mut SYST) -> bool {
++    let t = st();
++    mod_tick(); // the C side's ms, kept across the gaps
++    match t.view {
++        View::List => {
++            ctx_on(app, syst);
++            let key = unsafe { ffi::xs_step(t.xs) } == XS_KEY;
++            ctx_off();
++            if !key && t.auto && now_ms().wrapping_sub(t.auto_end_ms) >= AUTO_GAP_MS {
++                auto_pick(app, syst);
++            }
++        }
++        View::Listen => {
++            ctx_on(app, syst);
++            let r = unsafe { ffi::xl_step(t.xl) };
++            ctx_off();
++            if r == XL_OK || r == XL_TIME {
++                listen_end(app, syst, r);
++            } else if t.auto_now {
++                auto_check(app, syst, r);
++            } else if r != 0 {
++                t.dirty = true;
++            }
++        }
++        View::Try => {
++            if uptime::now().wrapping_sub(t.last_draw) >= DRAW_TICKS {
++                t.level = rssi_dbm(app, syst);
++            }
++        }
++        View::Ask => {}
++    }
++    if t.msg_len != 0 && uptime::now().wrapping_sub(t.msg_t) > 25_000 {
++        t.msg_len = 0;
++        t.dirty = true;
++    }
++    if t.dirty || uptime::now().wrapping_sub(t.last_draw) >= DRAW_TICKS {
++        t.dirty = false;
++        t.last_draw = uptime::now();
++        return true;
++    }
++    false
++}
++
++// ---- keys ----
++
++pub(super) fn dispatch(app: &mut App, syst: &mut SYST, ev: KeyEvent) {
++    if !matches!(ev.kind, KeyEventKind::Single | KeyEventKind::Repeat) {
++        return;
++    }
++    let t = st();
++    t.dirty = true;
++    if ev.key != KeyId::Exit {
++        t.leave_armed = false;
++    }
++    match t.view {
++        View::Listen => {
++            // any key ends the listen
++            ctx_on(app, syst);
++            unsafe { ffi::xl_stop(t.xl, 3) };
++            ctx_off();
++            monitor_off(app, syst);
++            if core::mem::take(&mut t.auto_now) {
++                t.auto_end_ms = now_ms();
++            }
++            note("LISTEN STOPPED");
++            t.view = View::List;
++        }
++        View::Ask => match ev.key {
++            KeyId::Menu => {
++                ask_write(app, syst);
++                t.view = View::List;
++            }
++            KeyId::Exit => {
++                note("KEPT SAVED CALL");
++                t.view = View::List;
++            }
++            _ => {}
++        },
++        View::Try => match ev.key {
++            KeyId::Menu | KeyId::Exit => {
++                monitor_off(app, syst);
++                t.view = View::List;
++            }
++            KeyId::Digit0 => listen_start(app, syst),
++            KeyId::Digit5 => save(app, syst),
++            _ => {}
++        },
++        View::List => match ev.key {
++            KeyId::Up => t.sel = t.sel.saturating_sub(1),
++            KeyId::Down => {
++                if (t.sel as u16) + 1 < t.ex.n {
++                    t.sel += 1;
++                }
++            }
++            KeyId::Menu => try_start(app, syst),
++            KeyId::Digit0 => listen_start(app, syst),
++            KeyId::Digit5 => save(app, syst),
++            KeyId::Asterisk => {
++                if let Some(c) = cand(t.sel as u32) {
++                    c.flags ^= EX_F_IGNORED;
++                    note(if c.flags & EX_F_IGNORED != 0 { "IGNORED" } else { "UNIGNORED" });
++                }
++            }
++            KeyId::Pound => {
++                ctx_on(app, syst);
++                unsafe { ffi::xs_close(t.xs) };
++                start_band(t.band + 1);
++                ctx_off();
++            }
++            KeyId::Digit7 => {
++                dump();
++                note("LIST SENT ON SERIAL");
++            }
++            KeyId::Digit1 => {
++                t.auto = !t.auto;
++                note(if t.auto { "AUTO ID ON" } else { "AUTO ID OFF" });
++            }
++            KeyId::Exit => {
++                if t.leave_armed {
++                    leave(app, syst);
++                    return;
++                }
++                t.leave_armed = true;
++                note("EXIT AGAIN: LEAVE");
++            }
++            _ => {}
++        },
++    }
++}
++
++/// stop the sweep for a while: every over that's up ends now, so its H line is honest
++fn pause_sweep(app: &mut App, syst: &mut SYST) {
++    ctx_on(app, syst);
++    unsafe { ffi::xs_close(st().xs) };
++    ctx_off();
++}
++
++fn try_start(app: &mut App, syst: &mut SYST) {
++    let t = st();
++    let Some(c) = cand(t.sel as u32) else { return };
++    c.flags |= EX_F_TRIED;
++    t.hz = c.hz;
++    t.off = c.off_hz;
++    pause_sweep(app, syst);
++    monitor_on(app, syst, t.hz);
++    say(format_args!("K6 EX try {} off={}", t.hz, t.off));
++    t.view = View::Try;
++}
++
++fn listen_start(app: &mut App, syst: &mut SYST) {
++    let t = st();
++    if t.view != View::Try {
++        let Some(c) = cand(t.sel as u32) else { return };
++        t.hz = c.hz;
++        t.off = c.off_hz;
++        pause_sweep(app, syst);
++        monitor_on(app, syst, t.hz);
++    }
++    t.auto_now = false;
++    ctx_on(app, syst);
++    unsafe { ffi::xl_start(t.xl, &MOD_API, t.hz, LISTEN_S) };
++    ctx_off();
++    t.view = View::Listen;
++}
++
++/// A candidate with no call keyed up: go and listen (the sweep's hot list stays as it is, so the
++/// over goes on being followed when the sweep comes back). Quietly: the speaker stays off.
++fn auto_pick(app: &mut App, syst: &mut SYST) {
++    let t = st();
++    let mut up = [0u32; 10];
++    let n = unsafe { ffi::xs_up(t.xs, up.as_mut_ptr(), up.len() as u32) };
++    if n == 0 {
++        return;
++    }
++    let p = unsafe { ffi::ex_pick_id(&mut t.ex, up.as_ptr(), n) };
++    if p.is_null() {
++        return;
++    }
++    let c = unsafe { &*p };
++    t.hz = c.hz;
++    t.off = c.off_hz;
++    t.auto_now = true;
++    t.auto_lvl = c.hi - AUTO_DROP_DB;
++    t.auto_seen_ms = now_ms();
++    app.radio.retune_rx(syst, t.hz, true);
++    ctx_on(app, syst);
++    unsafe { ffi::xl_start(t.xl, &MOD_API, t.hz, AUTO_MAX_S) };
++    ctx_off();
++    say(format_args!("K6 EX auto {} listens={}", t.hz, c.listens));
++    t.view = View::Listen;
++    t.dirty = true;
++}
++
++/// An automatic listen, between steps: a call decoded once is kept, a second time alike (on this
++/// listen or a later one) it's confirmed; the listen ends AUTO_TAIL_MS after the carrier drops.
++fn auto_check(app: &mut App, syst: &mut SYST, r: i32) {
++    let t = st();
++    let now = now_ms();
++    if rssi_dbm(app, syst) >= t.auto_lvl {
++        t.auto_seen_ms = now;
++    }
++    if r == XL_MSG {
++        t.dirty = true;
++        let mut info: XlInfo = unsafe { core::mem::zeroed() };
++        unsafe { ffi::xl_info(t.xl, &mut info) };
++        if info.call[0] != 0 {
++            let same = t.once.iter().any(|(hz, call)| *hz == t.hz && call[..] == info.call[..]);
++            if same {
++                listen_end(app, syst, XL_OK);
++                return;
++            }
++            let i = t.once_i as usize % t.once.len();
++            t.once[i] = (t.hz, info.call);
++            t.once_i = t.once_i.wrapping_add(1);
++        }
++    }
++    if now.wrapping_sub(t.auto_seen_ms) >= AUTO_TAIL_MS {
++        listen_end(app, syst, XL_TIME);
++    }
++}
++
++/// A listen ended: a confirmed call goes on the candidate, and into the table by Jeff's rule
++/// (2026-11-07): a saved entry with no call takes it at once, a different saved call waits for
++/// MENU, no saved entry keeps it in RAM until Save.
++fn listen_end(app: &mut App, syst: &mut SYST, r: i32) {
++    let t = st();
++    let mut info: XlInfo = unsafe { core::mem::zeroed() };
++    ctx_on(app, syst);
++    unsafe {
++        ffi::xl_info(t.xl, &mut info);
++        ffi::xl_stop(t.xl, r);
++    }
++    let auto = core::mem::take(&mut t.auto_now);
++    if auto {
++        t.auto_end_ms = now_ms();
++    } else {
++        monitor_off(app, syst);
++    }
++    t.view = View::List;
++    if r != XL_OK {
++        ctx_off();
++        if !auto {
++            note("NO ID HEARD");
++        }
++        return;
++    }
++    t.heard = info.call;
++    t.heard_fl = info.fl;
++    t.heard_tone = info.tone_hz;
++    t.heard_wpm = info.wpm;
++    unsafe { ffi::ex_cw(&mut t.ex, t.hz, info.call.as_ptr()) };
++    let mut rec: RtRec = unsafe { core::mem::zeroed() };
++    let k = if t.rt_res >= 0 {
++        unsafe { ffi::rt_cw_check(&mut t.rt, t.hz, RT_TOL_HZ, info.call.as_ptr(), &mut rec) }
++    } else {
++        0
++    };
++    let fl = cw_flags(info.fl);
++    let mut out = 0;
++    if k == 2 {
++        out = unsafe {
++            ffi::rt_cw_apply(&mut t.rt, t.hz, RT_TOL_HZ, info.call.as_ptr(), fl, info.tone_hz as i32, info.wpm as i32, 0, &mut rec)
++        };
++    }
++    ctx_off();
++    say(format_args!("K6 EX cw {} call={} check={} apply={} id={}", t.hz, cstr(&info.call), k, out, rec.id));
++    match k {
++        1 => note("ID SAME AS SAVED"),
++        2 => note("CALL SAVED"),
++        3 => {
++            t.ask = rec;
++            t.view = View::Ask;
++        }
++        _ => note("ID HEARD (NOT SAVED)"),
++    }
++}
++
++/// CW_CALL_P/M/R (cwid.h) to the table's call flags, from a CW decode heard twice alike
++fn cw_flags(f: u8) -> u8 {
++    (f & 0x07) | RT_C_FROM_CW | RT_C_TWICE
++}
++
++fn ask_write(app: &mut App, syst: &mut SYST) {
++    let t = st();
++    let mut rec: RtRec = unsafe { core::mem::zeroed() };
++    ctx_on(app, syst);
++    let r = unsafe {
++        ffi::rt_cw_apply(
++            &mut t.rt,
++            t.hz,
++            RT_TOL_HZ,
++            t.heard.as_ptr(),
++            cw_flags(t.heard_fl),
++            t.heard_tone as i32,
++            t.heard_wpm as i32,
++            1,
++            &mut rec,
++        )
++    };
++    ctx_off();
++    say(format_args!("K6 EX cw write {} call={} r={} id={}", t.hz, cstr(&t.heard), r, rec.id));
++    note(if r == 4 { "CALL UPDATED" } else { "WRITE FAILED" });
++}
++
++/// Save the selected candidate (or Try's): a new entry, or a new version of the saved one on
++/// its frequency, keeping a typed name and call
++fn save(app: &mut App, syst: &mut SYST) {
++    let t = st();
++    if t.rt_res < 0 {
++        note("NO TABLE");
++        return;
++    }
++    let c = if t.view == View::Try {
++        let mut found = None;
++        let mut i = 0;
++        while let Some(c) = cand(i) {
++            if c.hz == t.hz {
++                found = Some(c);
++                break;
++            }
++            i += 1;
++        }
++        found
++    } else {
++        cand(t.sel as u32)
++    };
++    let Some(c) = c else { return };
++    let mut r: RtRec = unsafe { core::mem::zeroed() };
++    let mut old: RtRec = unsafe { core::mem::zeroed() };
++    unsafe { ffi::ex_to_rt(c, &mut r) };
++    ctx_on(app, syst);
++    if unsafe { ffi::rt_find(&mut t.rt, 0, c.hz, RT_TOL_HZ, &mut old) } >= 0 {
++        r.id = old.id;
++        r.group = old.group;
++        if old.flags & RT_F_NAME_USER != 0 {
++            r.name = old.name;
++            r.flags |= RT_F_NAME_USER;
++        }
++        if old.flags & RT_F_CALL_USER != 0 || (r.call[0] == 0 && old.call[0] != 0) {
++            r.call = old.call;
++            r.call_flags = old.call_flags;
++            r.cw = old.cw;
++            r.flags |= old.flags & RT_F_CALL_USER;
++        }
++    }
++    let slot = unsafe { ffi::rt_put(&mut t.rt, &mut r) };
++    let erases = unsafe { (*addr_of!(MOD_CTX)).fl_erases };
++    ctx_off();
++    say(format_args!(
++        "K6 EX save {} id={} slot={} live={} erases={}/{}",
++        c.hz, r.id, slot, t.rt.live, erases, FL_ERASES
++    ));
++    let mut b: TextBuf<21> = TextBuf::new();
++    if slot >= 0 {
++        write!(b, "SAVED #{} ({} in table)", r.id, t.rt.live).ok();
++    } else {
++        write!(b, "SAVE FAILED {}", slot).ok();
++    }
++    note(b.as_str());
++}
++
++/// The list and the table on the serial report: K6 CAND and K6 RT lines (tools/k6_explore.py
++/// score reads them)
++fn dump() {
++    let t = st();
++    let mut info: XsInfo = unsafe { core::mem::zeroed() };
++    unsafe { ffi::xs_info(t.xs, &mut info) };
++    say(format_args!(
++        "K6 CAND band={} n={} sweeps={} bins={} ms={}",
++        BANDS[t.band as usize].0,
++        t.ex.n,
++        info.sweeps,
++        info.bins,
++        info.ms
++    ));
++    let mut i = 0;
++    while let Some(c) = cand(i) {
++        say(format_args!(
++            "K6 CAND {} {} {} off={} tone={} call={} score={} overs={} on={} hi={} lo={} ids={} skirts={} fl={}",
++            i,
++            c.grade as char,
++            c.hz,
++            c.off_hz,
++            c.tone,
++            cstr(&c.call),
++            c.score,
++            c.overs,
++            c.on_ms / 1000,
++            c.hi,
++            c.lo,
++            c.ids,
++            c.skirts,
++            c.flags
++        ));
++        i += 1;
++    }
++    if t.rt_res >= 0 {
++        let mut r: RtRec = unsafe { core::mem::zeroed() };
++        let mut slot = -1;
++        loop {
++            slot = unsafe { ffi::rt_next(&mut t.rt, slot, &mut r) };
++            if slot < 0 {
++                break;
++            }
++            say(format_args!(
++                "K6 RT {} {} off={} tone={} call={} score={} rssi={} fl={}",
++                r.id,
++                r.rx_hz,
++                r.tx_off,
++                r.tx_tone,
++                cstr(&r.call),
++                r.score as char,
++                r.best_rssi as i32 - 200,
++                r.flags
++            ));
++        }
++    }
++}
++
++// ---- the screen ----
++
++fn line<D>(lcd: &mut D, y: i32, t: &str)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    Text::new(t, Point::new(1, y), MonoTextStyle::new(&FONT_6X10, BinaryColor::On)).draw(lcd).ok();
++}
++
++/// MHz with 3 decimals, as 146.940
++fn mhz(b: &mut TextBuf<24>, hz: u32) {
++    let k = hz / 1000;
++    write!(b, "{}.{:03}", k / 1000, k % 1000).ok();
++}
++
++fn off_text(b: &mut TextBuf<24>, c: &Cand) {
++    if c.flags & EX_F_SIMPLEX != 0 || c.off_hz == 0 {
++        write!(b, "  S ").ok();
++    } else {
++        let a = c.off_hz.unsigned_abs() / 100_000;
++        write!(b, "{}{}.{}", if c.off_hz < 0 { '-' } else { '+' }, a / 10, a % 10).ok();
++    }
++}
++
++pub fn draw<D>(lcd: &mut D, app: &App)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    let _ = app;
++    Rectangle::new(Point::new(0, 0), Size::new(128, 64))
++        .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
++        .draw(lcd)
++        .ok();
++    let t = st();
++    let mut b: TextBuf<24> = TextBuf::new();
++    // the top line: a message for 2.5 s, else the view's own
++    let msg = t.msg_len != 0;
++    if msg {
++        write!(b, "{}", core::str::from_utf8(&t.msg[..t.msg_len as usize]).unwrap_or("")).ok();
++    }
++    match t.view {
++        View::List => {
++            if !msg {
++                let mut info: XsInfo = unsafe { core::mem::zeroed() };
++                unsafe { ffi::xs_info(t.xs, &mut info) };
++                let pass = info.last_ms as u32 * BANDS[t.band as usize].1.len() as u32;
++                write!(
++                    b,
++                    "EX {} {} {}.{}s {}",
++                    BANDS[t.band as usize].0,
++                    t.ex.n,
++                    pass / 1000,
++                    (pass / 100) % 10,
++                    if info.phase == 0 { "floor" } else if info.up > 0 { "UP" } else { "" }
++                )
++                .ok();
++            }
++            line(lcd, 9, b.as_str());
++            // keep the selected row on screen
++            let top = (t.sel as usize).saturating_sub(ROWS - 1) as u32;
++            for k in 0..ROWS as u32 {
++                let Some(c) = cand(top + k) else { break };
++                let mut b: TextBuf<24> = TextBuf::new();
++                let mark = if top + k == t.sel as u32 { '>' } else { ' ' };
++                let g = if c.flags & EX_F_IGNORED != 0 { 'x' } else { c.grade as char };
++                write!(b, "{}{} ", mark, g).ok();
++                mhz(&mut b, c.hz);
++                write!(b, " ").ok();
++                off_text(&mut b, c);
++                write!(b, " {:>4}", c.hi).ok();
++                line(lcd, 19 + 10 * k as i32, b.as_str());
++            }
++            let mut b: TextBuf<24> = TextBuf::new();
++            if let Some(c) = cand(t.sel as u32) {
++                write!(b, "n{} sc{} ", c.overs, c.score).ok();
++                if c.call[0] != 0 {
++                    write!(b, "{}", cstr(&c.call)).ok();
++                } else if c.ids > 0 {
++                    write!(b, "ids{}", c.ids).ok();
++                }
++            } else {
++                write!(b, "listening...").ok();
++            }
++            line(lcd, 60, b.as_str());
++        }
++        View::Try => {
++            if !msg {
++                write!(b, "TRY ").ok();
++                mhz(&mut b, t.hz);
++                if t.off != 0 {
++                    let a = t.off.unsigned_abs() / 100_000;
++                    write!(b, " {}{}.{}", if t.off < 0 { '-' } else { '+' }, a / 10, a % 10).ok();
++                }
++            }
++            line(lcd, 9, b.as_str());
++            let mut b: TextBuf<24> = TextBuf::new();
++            write!(b, "now {} dBm", t.level).ok();
++            line(lcd, 19, b.as_str());
++            let mut i = 0;
++            while let Some(c) = cand(i) {
++                if c.hz == t.hz {
++                    let mut b: TextBuf<24> = TextBuf::new();
++                    write!(b, "{} sc{} n{} {}s", c.grade as char, c.score, c.overs, c.on_ms / 1000).ok();
++                    line(lcd, 29, b.as_str());
++                    let mut b: TextBuf<24> = TextBuf::new();
++                    if c.call[0] != 0 {
++                        write!(b, "{}", cstr(&c.call)).ok();
++                    } else {
++                        write!(b, "no call yet").ok();
++                    }
++                    if c.flags & EX_F_OFF_HEARD != 0 {
++                        write!(b, " in heard").ok();
++                    }
++                    line(lcd, 39, b.as_str());
++                    if c.tone != 0 {
++                        let mut b: TextBuf<24> = TextBuf::new();
++                        write!(b, "tone {}.{}", c.tone / 10, c.tone % 10).ok();
++                        line(lcd, 49, b.as_str());
++                    }
++                    break;
++                }
++                i += 1;
++            }
++            line(lcd, 60, "MENU back 0 ID 5 save");
++        }
++        View::Listen => {
++            let mut info: XlInfo = unsafe { core::mem::zeroed() };
++            unsafe { ffi::xl_info(t.xl, &mut info) };
++            if !msg {
++                write!(b, "{} ", if t.auto_now { "AUTO" } else { "ID?" }).ok();
++                mhz(&mut b, t.hz);
++                let s = info.ms / 1000;
++                write!(b, " {}:{:02}", s / 60, s % 60).ok();
++            }
++            line(lcd, 9, b.as_str());
++            let mut b: TextBuf<24> = TextBuf::new();
++            write!(b, "tone {} heard {}", if info.keyed != 0 { "ON " } else { "off" }, info.msgs).ok();
++            line(lcd, 19, b.as_str());
++            line(lcd, 29, cstr(&info.text));
++            if info.call[0] != 0 {
++                let mut b: TextBuf<24> = TextBuf::new();
++                write!(b, "{} x{}", cstr(&info.call), info.seen).ok();
++                line(lcd, 39, b.as_str());
++            }
++            line(lcd, 60, "any key stops");
++        }
++        View::Ask => {
++            if !msg {
++                write!(b, "NEW CALL ").ok();
++                mhz(&mut b, t.hz);
++            }
++            line(lcd, 9, b.as_str());
++            let mut b: TextBuf<24> = TextBuf::new();
++            write!(b, "heard {}", cstr(&t.heard)).ok();
++            line(lcd, 19, b.as_str());
++            let mut b: TextBuf<24> = TextBuf::new();
++            write!(b, "saved {}", cstr(&t.ask.call)).ok();
++            line(lcd, 29, b.as_str());
++            line(lcd, 49, "MENU write new call");
++            line(lcd, 60, "EXIT keep saved");
++        }
++    }
++}
 diff --git a/src/drivers/fd6818.rs b/src/drivers/fd6818.rs
 index a4f1729..1b8d400 100644
 --- a/src/drivers/fd6818.rs
@@ -4114,7 +5363,7 @@ index 0000000..25274cb
 +    }
 +}
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..e4c3c51 100644
+index 9d2b0c0..394045b 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -14,7 +14,7 @@ mod ui;
@@ -4219,7 +5468,7 @@ index 9d2b0c0..e4c3c51 100644
              display.flush();
          }
          _ => {}
-@@ -301,6 +347,48 @@ fn main() -> ! {
+@@ -301,6 +347,63 @@ fn main() -> ! {
      )
      .ok();
  
@@ -4228,9 +5477,24 @@ index 9d2b0c0..e4c3c51 100644
 +    #[cfg(feature = "pager-only")]
 +    {
 +        app.enter_pager(&mut cp.SYST);
++        #[cfg(feature = "explore")]
++        app.enter_explore(&mut cp.SYST);
 +        let mut scheduler = scheduler::Scheduler::new();
 +        loop {
 +            let due = scheduler.tick();
++            // EXPLORE (app/pager/explore.rs): its sweep a block at a time, the keys between, the
++            // screen when it asks; the pager's receiver is off meanwhile
++            if app.exploring() {
++                app.poll_pager_keys(&mut cp.SYST);
++                if app.poll_explore(&mut cp.SYST) {
++                    ui::draw_pager_only(&mut display, &app);
++                }
++                if power.debounced_off(&mut cp.SYST) {
++                    app.radio_mut().rf_off(&mut cp.SYST);
++                    power.shutdown(&mut cp.SYST);
++                }
++                continue;
++            }
 +            app.poll_pager_keys(&mut cp.SYST);
 +            app.poll_pager(&mut cp.SYST);
 +            app.service_pager_stream(&mut cp.SYST);
@@ -4268,7 +5532,7 @@ index 9d2b0c0..e4c3c51 100644
      // scheduler + main loop
      let mut scheduler = scheduler::Scheduler::new();
      let mut applied_contrast: u8 = u8::MAX;
-@@ -329,6 +417,19 @@ fn main() -> ! {
+@@ -329,6 +432,19 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -4288,7 +5552,7 @@ index 9d2b0c0..e4c3c51 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +502,8 @@ fn main() -> ! {
+@@ -401,6 +517,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -4297,7 +5561,7 @@ index 9d2b0c0..e4c3c51 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +568,13 @@ fn main() -> ! {
+@@ -465,9 +583,13 @@ fn main() -> ! {
              }
          }
  
@@ -4315,7 +5579,7 @@ index 9d2b0c0..e4c3c51 100644
                  app.poll_squelch(&mut cp.SYST, 3);
                  app.poll_dual_standby(&mut cp.SYST, app.rssi_open());
 diff --git a/src/ui/mod.rs b/src/ui/mod.rs
-index cdfa0f7..6ca5a70 100644
+index cdfa0f7..e95cdd0 100644
 --- a/src/ui/mod.rs
 +++ b/src/ui/mod.rs
 @@ -6,6 +6,7 @@ mod fm;
@@ -4334,21 +5598,25 @@ index cdfa0f7..6ca5a70 100644
  use satellite::draw_satellite;
  use sstv::draw_sstv;
  use scan::draw_scan;
-@@ -62,6 +64,13 @@ impl<const N: usize> core::fmt::Write for TextBuf<N> {
+@@ -62,6 +64,17 @@ impl<const N: usize> core::fmt::Write for TextBuf<N> {
      }
  }
  
 +/// Pager-only image: just the VOICE MSG screen, so the other screens aren't linked.
 +#[cfg(feature = "pager-only")]
 +pub fn draw_pager_only<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &app::App) {
-+    draw_pager(display.as_draw_target(), app);
++    if app.exploring() {
++        app::pager::explore_draw(display.as_draw_target(), app);
++    } else {
++        draw_pager(display.as_draw_target(), app);
++    }
 +    display.flush();
 +}
 +
  pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut app::App) {
      match app.mode() {
          app::Mode::AppMenu => draw_app_menu(display.as_draw_target(), &*app),
-@@ -77,6 +86,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
+@@ -77,6 +90,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
              draw_satellite(display.as_draw_target(), app);
          }
          app::Mode::Sstv => draw_sstv(display.as_draw_target(), app),

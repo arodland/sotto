@@ -111,13 +111,27 @@ class Recorder:
     def audio(self, since=0):
         if not os.path.exists(self.path):
             return np.zeros(0)
-        x = np.fromfile(self.path, np.int16).astype(float) / 32768
-        return x[since:]
+        return np.fromfile(self.path, np.int16, offset=2 * since).astype(float) / 32768
 
     def stop(self):
         if self.p:
             self.p.terminate()
             self.p.wait()
+
+
+TAIL_S = 60       # listen() decodes the last minute of the recording each pass: a report is ~10 s
+
+
+def tail_reports(a, rec, since, reps):
+    """reps (every report seen so far, [(s, report)]) with the recording's last TAIL_S decoded
+    again: the reports that start before that window are kept, the window's are decoded fresh.
+    Decoding all of a 30-minute recording each second was too slow to reach the report before
+    the listen ran out (explorer-scan-6, 2026-11-07)."""
+    w = max(since, rec.samples() - TAIL_S * FS)
+    x = rec.audio(w)
+    if len(x) < FS:              # under a second of new audio yet: nothing to decode
+        return reps
+    return [(t, r) for t, r in reps if t < w / FS] + [(t + w / FS, r) for t, r in k6mod.reports(x, FS, a.phy, a.baud)]
 
 
 def listen(a, rec, since, xfer, seconds):
@@ -129,10 +143,7 @@ def listen(a, rec, since, xfer, seconds):
         time.sleep(1.0)
         if a.dry_run:
             break
-        x = rec.audio(since)
-        if len(x) < FS:              # under a second of new audio yet: nothing to decode
-            continue
-        reps = [(t + since / FS, r) for t, r in k6mod.reports(x, FS, a.phy, a.baud)]
+        reps = tail_reports(a, rec, since, reps)
         mine = [(t, r) for t, r in reps if r["kind"] == "text" or r.get("xfer") == xfer]
         st, text = k6mod.collect(mine)
         if st is not None and "lost]" not in text:

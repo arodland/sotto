@@ -180,6 +180,20 @@ ex_cand_t *ex_rank(ex_t *e, unsigned i) {
   return prev;
 }
 
+ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n) {
+  ex_cand_t *best = 0;
+  unsigned i;
+  for (i = 0; i < n; i++) {
+    ex_cand_t *c = ex_find(e, up_hz[i]);
+    if (!c || c->call[0] || c->grade == 's' || (c->flags & (EX_F_SPUR | EX_F_IGNORED | EX_F_SIMPLEX)) ||
+        (c->overs && c->skirts >= c->overs))
+      continue;
+    if (!best || c->listens < best->listens || (c->listens == best->listens && before(c, best))) best = c;
+  }
+  if (best && best->listens < 255) best->listens++;
+  return best;
+}
+
 void ex_to_rt(const ex_cand_t *c, rt_rec_t *r) {
   int i, lvl = c->hi;
   zero(r, sizeof *r);

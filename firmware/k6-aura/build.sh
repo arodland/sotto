@@ -174,11 +174,20 @@ fi
 #                      writes), with little flash to spare (TABLE=0 skips them)
 variant aura-pager-only "pager-only image (Aura drivers + VOICE MSG), v3.7, codebook in SPI flash" \
   --features pager-only
-if [ -n "$SOTTO_K6_LIB" ]; then LR=0; INSTALL=0; TABLE=0; VLR=0; fi
+if [ -n "$SOTTO_K6_LIB" ]; then LR=0; INSTALL=0; TABLE=0; VLR=0; EXPLORE=0; fi
 if [ "${LR:-1}" = 1 ]; then
   K6_CODEC=1200 K6_CB=spi sh "$ROOT/tools/k6_build.sh"
   lib build-lr-cbs
   variant aura-pager-lr "pager-only image, sotto 1200, codebook in SPI flash" --features pager-only
+fi
+# aura-explore: EXPLORE, the K6 signal explorer (docs/k6-explore-app.md), as the start screen of
+# a pager-only image whose library has no voice decoder (K6_VOICE=0, c/k6/sp_novoice.c): the
+# pager's packets, RAM modules (API level 5) and control stay, the voice doesn't play. The
+# explorer and its 13 KB of C don't fit beside the decoder (EXPLORE=0 skips it)
+if [ "${EXPLORE:-1}" = 1 ]; then
+  K6_VOICE=0 K6_CB=spi sh "$ROOT/tools/k6_build.sh"
+  lib build-explore
+  variant aura-explore "EXPLORE image: the signal explorer, pager packets and modules, no voice" --features explore
 fi
 if [ "${VLR:-1}" = 1 ]; then
   K6_CODEC=vlr K6_CB=spi sh "$ROOT/tools/k6_build.sh"
@@ -227,7 +236,7 @@ fi
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -Werror -I$ROOT/c/k6"
 for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep afsweep gp0cap \
-         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe; do
+         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls; do
   opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
   clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do
