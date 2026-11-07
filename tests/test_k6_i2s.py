@@ -27,7 +27,7 @@ PERIOD = 400            # samples between modelled DFS edges
 
 
 def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024,
-        mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None):
+        mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None, tune=None, count=200_000_000, code=None):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
@@ -41,7 +41,8 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     keys: (from_us, to_us) spans while key_down and key_poll read 1. cal: a dict for level 4's
     calibration record: cal["flash"] (bytes, default 64 x 0xFF) is what cal_read reads, and each
     cal_write lands there and in cal["writes"] (refused, -1, after the first or while keyed).
-    Returns (ret, said lines, registers at the end, writes)."""
+    tune(hz, wide, us): called on every api->tune (a receiver model's way to follow the module);
+    count: the emulator's instruction limit; code: (bytes, entry) to run instead of building src. Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
     st = {"us": 0, "said": [], "writes": [], "reads": 0, "pin": 0}
@@ -51,7 +52,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     ram = 0x20000000
     mu.mem_map(ram, 1 << 20)
     base, api, stubs, stop, sp0 = ram + 0x1000, ram + 0x8000, ram + 0x9000, ram + 0x9F00, ram + 0x7F00
-    code, entry = k6mod.build(src)
+    code, entry = code or k6mod.build(src)
     mu.mem_write(base, code)
     for i in range(len(NAMES)):
         mu.mem_write(stubs + 16 * i, b"\x70\x47")
@@ -113,6 +114,9 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
                 regs[r0] = r1
         elif name == "delay_us":
             st["us"] += r0
+        elif name == "tune" and tune is not None:
+            tune(r0, r1, st["us"])
+            st["us"] += 400                        # band GPIOs, frequency, filter, RX on: ~6 SPI writes
         elif name == "rx_hz":
             ret = rx_hz
         elif name in ("key_down", "key_poll"):
@@ -148,7 +152,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     mu.reg_write(A.UC_ARM_REG_R0, api)
     mu.reg_write(A.UC_ARM_REG_SP, sp0)
     mu.reg_write(A.UC_ARM_REG_LR, stop | 1)
-    mu.emu_start(base + entry | 1, stop, count=200_000_000)
+    mu.emu_start(base + entry | 1, stop, count=count)
     r = mu.reg_read(A.UC_ARM_REG_R0)
     return (r - (1 << 32) if r & 0x80000000 else r), st["said"], regs, st["writes"]
 
