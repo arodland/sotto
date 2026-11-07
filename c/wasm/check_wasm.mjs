@@ -3,8 +3,9 @@
 // c/sotto_dec -16, and compares the samples; then encodes every *__original16.flac with both
 // encoders (python3 with soundfile turns the FLAC into raw 16-bit; skipped without it) and
 // compares the frames. Then the rate comparison (docs/samples/rates, tools/render_page_rates.py):
-// each <voice>__<rate>.bit decoded by both (600 / 400: the native v3.7 fixed-point
-// build/c37/fixed/sotto_vlr_dec_fx), and the original encoded at each rate by both.
+// each <voice>__<rate>.bit decoded by both, and the original encoded at each rate by both; for
+// 600 / 400 also the plain (K6) codec: the native v3.7 fixed-point decoder
+// build/c37/fixed/sotto_vlr_dec_fx and `c/sotto_enc -600|-400`.
 // Run from the repository root after `make` and `make -C c/wasm install` (or `make -C c/wasm
 // check`): node c/wasm/check_wasm.mjs [SOTTO_WASM [SOTTO_VLR_WASM]]
 // SPDX-License-Identifier: MIT
@@ -89,43 +90,58 @@ for (const f of readdirSync(dir).filter(f => f.endsWith("__original16.flac")).so
   if (w.length !== c.length || same < 0.97 * nf) bad++;
   console.log(`${f}: encoder ${w.length / 6} vs ${c.length / 6} frames, ${same} identical`);
 }
-// the four rates. The decoders are deterministic (the 600 / 400 one is integer only), so the
-// samples must match closely; the encoders get the same 97% rule as above.
+// the four rates. The decoders are deterministic, so the samples must match closely (the plain
+// 600 / 400 one is integer only: exactly); the encoders get the same 97% rule as above. The
+// page's 600 / 400 are the hiss modes (sotto_dec -16 -600|-400); the plain ones (the K6's) are
+// checked too: the plain decoder on the same hiss streams (it plays them at 8 kHz), and the
+// plain encoder on down2's 8 kHz against `sotto_enc -600|-400`.
 const rdir = "docs/samples/rates";
 const voices = [...new Set(readdirSync(rdir).filter(f => f.endsWith(".bit")).map(f => f.split("__")[0]))].sort();
+const py = (code, ...args) => execFileSync(process.env.PYTHON || "python3", ["-c", code, ...args]);
 for (const v of voices) {
-  const raw = join(tmp, "in.raw");
+  const raw = join(tmp, "in.raw"), p8 = join(tmp, "x8.raw");
   try {
-    execFileSync(process.env.PYTHON || "python3", ["-c",
-      "import sys, numpy as np, soundfile as sf; x = sf.read(sys.argv[1], dtype='int16')[0]; x = x[:len(x) // 640 * 640]; x.astype('<i2').tofile(sys.argv[2])",
-      join(dir, `${v}__original16.flac`), raw]);
+    py("import sys, numpy as np, soundfile as sf; x = sf.read(sys.argv[1], dtype='int16')[0]; x = x[:len(x) // 640 * 640]; x.astype('<i2').tofile(sys.argv[2])",
+       join(dir, `${v}__original16.flac`), raw);
   } catch { console.log(`${v}: rate encoders skipped (needs python3 with numpy and soundfile)`); }
   const x16 = existsSync(raw) ? asI16(readFileSync(raw)) : null;
+  let x8 = null;
+  if (x16) {     // the plain 600 / 400 encoders' 8 kHz input: sotto_wasm_down2 against scipy
+    py("import sys, numpy as np; from scipy.signal import resample_poly; x = np.fromfile(sys.argv[1], '<i2'); np.clip(np.rint(resample_poly(x.astype(float), 1, 2)), -32768, 32767).astype('<i2').tofile(sys.argv[2])",
+       raw, p8);
+    x8 = sotto.down2(x16);
+    const r = compare(`${v} 16 to 8 kHz`, x8, asI16(readFileSync(p8)), 80);
+    if (!r.ok) bad++;
+  }
   for (const rate of [2400, 1200, 600, 400]) {
     const bit = join(rdir, `${v}__${rate}.bit`), out = join(tmp, "out.raw");
     const frames = new Uint8Array(readFileSync(bit));
     const w = sotto.decode(rate, frames).pcm;
-    if (rate >= 1200) execFileSync("c/sotto_dec", ["-16", ...(rate === 1200 ? ["-1200"] : []), bit, out]);
-    else if (existsSync(VLR_DEC)) execFileSync(VLR_DEC, [String(rate), bit, out]);
-    else { console.log(`${v}__${rate}.bit: decoder skipped (no ${VLR_DEC}; make -C c/wasm check builds it)`); }
-    const r = !existsSync(out) ? { snr: Infinity, ok: true } : compare(`${v}__${rate}.bit`, w, asI16(readFileSync(out)), rate >= 1200 ? 60 : Infinity);
+    execFileSync("c/sotto_dec", ["-16", ...(rate !== 2400 ? [`-${rate}`] : []), bit, out]);
+    let r = compare(`${v}__${rate}.bit`, w, asI16(readFileSync(out)), 60);
     worst = Math.min(worst, r.snr);
     if (!r.ok) bad++;
-    if (existsSync(out)) rmSync(out);
+    rmSync(out);
+    if (rate <= 600 && existsSync(VLR_DEC)) {
+      execFileSync(VLR_DEC, [String(rate), bit, out]);
+      r = compare(`${v}__${rate}.bit, plain decoder`, sotto.decodePlain(rate, frames).pcm, asI16(readFileSync(out)), Infinity);
+      if (!r.ok) bad++;
+      rmSync(out);
+    } else if (rate <= 600) console.log(`${v}__${rate}.bit: plain decoder skipped (no ${VLR_DEC}; make -C c/wasm check builds it)`);
     if (!x16) continue;
     const e = sotto.encode(rate, x16), { same, nf } = sameFrames(e, frames);
     if (e.length !== frames.length || same < 0.97 * nf) bad++;
     console.log(`${v} at ${rate}: encoder ${e.length / 6} vs ${frames.length / 6} frames, ${same} identical`);
+    if (rate <= 600) {
+      const pb = join(tmp, "plain.bit");
+      execFileSync("c/sotto_enc", [`-${rate}`, p8, pb]);
+      const c = new Uint8Array(readFileSync(pb)), ep = sotto.encodePlain(rate, x16), sp = sameFrames(ep, c);
+      if (ep.length !== c.length || sp.same < 0.97 * sp.nf) bad++;
+      console.log(`${v} at plain ${rate}: encoder ${ep.length / 6} vs ${c.length / 6} frames, ${sp.same} identical`);
+      rmSync(pb);
+    }
   }
-  if (x16) {     // the 600 / 400 encoders' 8 kHz input: sotto_wasm_down2 against scipy
-    const d8 = sotto.down2(x16), p8 = join(tmp, "x8.raw");
-    execFileSync(process.env.PYTHON || "python3", ["-c",
-      "import sys, numpy as np; from scipy.signal import resample_poly; x = np.fromfile(sys.argv[1], '<i2'); np.clip(np.rint(resample_poly(x.astype(float), 1, 2)), -32768, 32767).astype('<i2').tofile(sys.argv[2])",
-      raw, p8]);
-    const r = compare(`${v} 16 to 8 kHz`, d8, asI16(readFileSync(p8)), 80);
-    if (!r.ok) bad++;
-    rmSync(raw);
-  }
+  if (x16) rmSync(raw), rmSync(p8);
 }
 rmSync(tmp, { recursive: true });
 console.log(bad ? `FAIL: ${bad} clips differ (worst decoder SNR ${worst.toFixed(1)} dB)` : "OK");

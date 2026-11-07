@@ -4,9 +4,11 @@
  * removed). Three modules are built from this file:
  *   sotto.wasm      (float, v3.8)  2400: sotto_wasm_encode16 / sotto_wasm_decode16, 16 kHz
  *                                  1200 hiss: sotto_wasm_encode_lr16 / sotto_wasm_decode_lr16, 16 kHz
- *                                  600 / 400: sotto_wasm_encode_vlr (8 kHz in), sotto_wasm_down2
+ *                                  600 / 400 hiss: sotto_wasm_encode_vlr16 / sotto_wasm_decode_vlr16,
+ *                                  16 kHz (the page's 600 and 400)
+ *                                  plain 600 / 400: sotto_wasm_encode_vlr (8 kHz in), sotto_wasm_down2
  *   sotto_vlr.wasm  (SOTTO_WASM_VLR: fixed point on the v3.7 core, as on the K6)
- *                                  600 / 400: sotto_wasm_decode_vlr, 8 kHz out
+ *                                  plain 600 / 400: sotto_wasm_decode_vlr, 8 kHz out
  *   sotto_fx.wasm   (SOTTO_FX: the fixed-point v3.8 codec behind the 2400 entry points)
  * SPDX-License-Identifier: MIT */
 #include <math.h>
@@ -150,7 +152,55 @@ EXPORT(sotto_wasm_decode_lr16) int sotto_wasm_decode_lr16(const unsigned char *b
   return w;
 }
 
-/* ---- sotto 600 / 400 encoder (float, c/sotto_vlr.c; 8 kHz in) ---------------------------- */
+/* ---- sotto 600 / 400 hiss (48 bits per 80 / 120 ms, 16 kHz in and out; c/sotto_hiss.c) -- */
+EXPORT(sotto_wasm_max_frames_vlr16) int sotto_wasm_max_frames_vlr16(int rate, int n) {
+  return n / ((rate == 400 ? 6 : 4) * SOTTO_SAMPLES_PER_FRAME_16K) + 16;
+}
+
+/* rate 600 or 400; speech: n samples at 16 kHz (padded with silence to whole 10 ms blocks);
+ * out: sotto_wasm_max_frames_vlr16(rate, n) * 6 bytes, as `sotto_enc -16 -600|-400` writes
+ * them. Returns the superframes written. */
+EXPORT(sotto_wasm_encode_vlr16) int sotto_wasm_encode_vlr16(int rate, const short *speech, int n, unsigned char *out) {
+  c2_next = 1;
+  struct sotto_vlr_enc16 *e = sotto_vlr_enc16_create(rate);
+  if (!e) return -1;
+  short x[160];
+  int nf = 0, max = sotto_wasm_max_frames_vlr16(rate, n);
+  for (int i = 0; i < n; i += 160) {
+    for (int k = 0; k < 160; k++) x[k] = i + k < n ? speech[i + k] : 0;
+    sotto_vlr_encode16(e, x, 1);
+    while (nf < max && sotto_vlr_enc16_pop(e, out + SOTTO_BYTES_PER_FRAME * nf)) nf++;
+  }
+  while (nf < max && sotto_vlr_enc16_flush(e, out + SOTTO_BYTES_PER_FRAME * nf)) nf++;
+  sotto_vlr_enc16_destroy(e);
+  return nf;
+}
+
+EXPORT(sotto_wasm_vlr_out_len16) int sotto_wasm_vlr_out_len16(int rate, int n) {
+  return (n + 1) * (rate == 400 ? 6 : 4) * SOTTO_SAMPLES_PER_FRAME_16K;
+}
+
+/* bits: n superframes; good: n bytes (0 = lost) or NULL; out: sotto_wasm_vlr_out_len16(rate, n)
+ * samples at 16 kHz, as `sotto_dec -16 -600|-400` writes them. Returns the samples written. */
+EXPORT(sotto_wasm_decode_vlr16) int sotto_wasm_decode_vlr16(int rate, const unsigned char *bits,
+                                                            const unsigned char *good, int n, short *out) {
+  c2_next = 1;
+  struct sotto_vlr_dec16 *d = sotto_vlr_dec16_create(rate);
+  if (!d) return -1;
+  int ns = sotto_vlr_samples16(d), w = 0, max = sotto_wasm_vlr_out_len16(rate, n);
+  short y[SOTTO_VLR_MAX_SAMPLES16];
+  for (int i = 0; i < n; i++) {
+    sotto_vlr_decode16(d, bits + SOTTO_BYTES_PER_FRAME * i, good ? good[i] != 0 : 1, y);
+    if (i >= SOTTO_VLR_DEC16_DELAY(rate) && w + ns <= max)
+      for (int k = 0; k < ns; k++) out[w++] = y[k];
+  }
+  while (w + ns <= max && sotto_vlr_dec16_flush(d, y))
+    for (int k = 0; k < ns; k++) out[w++] = y[k];
+  sotto_vlr_dec16_destroy(d);
+  return w;
+}
+
+/* ---- plain sotto 600 / 400 encoder (float, c/sotto_vlr.c; 8 kHz in) ---------------------------- */
 #include "sotto_hiss_tables.h"
 /* 16 kHz to 8 kHz as scipy.signal.resample_poly(x, 1, 2) does it (the v3.8 encoder's own
  * decimator, sotto_hiss.c down2), rounded: y[m] = sum_j h[j] x[2m + 20 - j], zero outside.
