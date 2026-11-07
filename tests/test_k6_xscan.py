@@ -436,7 +436,8 @@ def test_an_over_carries_its_level_after_the_transmitter_comes_up(lib):
 
 def test_up_list_leaves_out_a_louder_carrier_s_skirts(lib):
     """the EXPLORE bench run (17:57): the -24 dBm ID showed at 440.900 too (-81), and the
-    automatic listener went there; xs_up now leaves out what's 20 dB under one up within 100 kHz"""
+    automatic listener went there; xs_up now leaves out what's 20 dB under one up within 100 kHz,
+    and what's under 15 dB over its floor"""
     L, kxl = lib
     L.xs_up.argtypes = [ctypes.c_void_p, ctypes.POINTER(U32), ctypes.c_uint]
     L.xs_up.restype = ctypes.c_uint
@@ -448,6 +449,12 @@ def test_up_list_leaves_out_a_louder_carrier_s_skirts(lib):
     up = (U32 * 10)()
     n = L.xs_up(buf, up, 10)
     assert sorted(up[:n]) == [440_850_000, 442_000_000], list(up[:n])
+    # bench 5 sat 2 minutes on a steady carrier only 10 dB over its floor: with 442.000 (-85)
+    # judged against a floor read 12 dB under it, it isn't picked
+    st = XsFloors.from_buffer(buf)
+    st.sfl[0] = 174 - 85 - 12
+    n = L.xs_up(buf, up, 10)
+    assert list(up[:n]) == [440_850_000], list(up[:n])
 
 
 class Detector:

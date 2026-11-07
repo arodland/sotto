@@ -211,6 +211,15 @@ was -93 (the first F0 line, at 20:27:14). Three faults locked together, all fixe
   1/8-segment hop between floor points. The quick read now comes one bin over a settled full
   read, as in the sweep.
 
+## Bench 5 (2026-11-07 21:35-21:40 UTC, main 32cd262)
+
+The auto listen now stays up for a whole ID and ends 2-3 s after the carrier drops, and no floor
+was held. But at 21:37:17 it went to 440.7375, a steady carrier only 10 dB over the floor (-103,
+fl-113), sat the full 2 minutes on it (no CW), and missed the keeper's ID. Before, the 3 s bug had
+cut such listens short. The tone detector can't decode at 10 dB anyway, so `xs_up` now leaves out
+anything under 15 dB over its segment's floor (XS_PICK_DB): the sweep still lists it, the automatic
+listener just doesn't go there.
+
 ## Bench 4 (2026-11-07 21:07-21:12 UTC, PR #122 head 7a591c0)
 
 The floor fix and the birdie fix worked: 2 m read -92 to -94 every minute, no 2 m phantoms, and

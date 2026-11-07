@@ -484,14 +484,25 @@ void xs_info(const xs_t *s, xs_info_t *o) {
 }
 
 /* up now, not a spur, and not within XS_SKIRT_HZ of one up XS_SKIRT_DB louder: the bench's
-   -24 dBm ID showed up at 440.900 too (-81), and that's where the automatic listener went */
+   -24 dBm ID showed up at 440.900 too (-81), and that's where the automatic listener went. And
+   XS_PICK_DB over its segment's floor: bench 5 (21:37) sat 2 minutes on a steady 440.7375 only
+   10 dB up (-103, fl-113), too weak for the tone detector anyway, and missed the keeper's ID */
 #define XS_SKIRT_HZ 100000u
 #define XS_SKIRT_DB 20
+#define XS_PICK_DB 15
+static int floor_of(const xs_t *s, uint32_t hz) {
+  int g;
+  for (g = 0; g < s->nseg; g++)
+    if (hz >= s->seg[g].lo_hz && hz - s->seg[g].lo_hz < (uint32_t)s->seg[g].nbins * s->seg[g].step_hz)
+      return s->sfl[g];
+  return 0;
+}
+
 unsigned xs_up(const xs_t *s, uint32_t *out, unsigned max) {
   unsigned i, j, n = 0;
   for (i = 0; i < XS_HOT && n < max; i++) {
     const xs_hot_t *h = &s->hot[i], *o;
-    if (!h->hz || !h->up || h->spur) continue;
+    if (!h->hz || !h->up || h->spur || h->lvl < floor_of(s, h->hz) + XS_PICK_DB) continue;
     for (j = 0, o = s->hot; j < XS_HOT; j++, o++)
       if (o != h && o->hz && o->up && (o->hz > h->hz ? o->hz - h->hz : h->hz - o->hz) <= XS_SKIRT_HZ &&
           o->lvl >= h->lvl + XS_SKIRT_DB)
