@@ -18,8 +18,9 @@
    Returns the offset in 0.1 Hz (-1455 for -145.5 Hz), or gp0dma's errors (-2 key, -3 image
    below level 4, -4 PB1, -5 REG_33, -6 no carrier, -7 TIM17 / DMA busy, -8 scratch), -9 too
    few blocks or a spread over IFCAL_SPREAD_DHZ (the carrier wandered or dropped: nothing
-   written), -10 the write refused. Writes what gp0dma writes and REG_73, all put back, and one
-   4 KB SPI flash sector (KM_CAL_ADDR). Receive only. SPDX-License-Identifier: MIT */
+   written), -10 the write refused, -11 the sector is neither blank nor a K6CL record (something
+   else uses it: nothing measured or written). Writes what gp0dma writes and REG_73, all put
+   back, and one 4 KB SPI flash sector (KM_CAL_ADDR). Receive only. SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 4
 #define K6_MODULE_OPT z /* the DMA ring needs 516 B of the store past the code */
 #define GP0_SWEEP 1
@@ -61,6 +62,18 @@ int k6_main(const k6_api_t *api) {
   char line[64], *p;
   if (api->level < 4) return -3;
   have = k6cal_get(api, &c) == 0;
+  /* the sector is the record's alone: blank, or a record of ours (even a bad one). Anything
+     else is someone else's data, and cal_write would erase it */
+  if (!have) {
+    const uint32_t *w = (const uint32_t *)&c;
+    uint32_t a = w[0];
+    if (a != K6CAL_MAGIC) {
+      for (i = 1; i < sizeof c / 4; i++) a &= w[i];
+      if (a != 0xFFFFFFFFu) {
+        return -11;
+      }
+    }
+  }
   ret = setup(api, &sv, &ring);
   if (ret) return ret;
   r73 = api->fd_read(0x73);

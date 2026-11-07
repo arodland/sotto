@@ -126,7 +126,7 @@ def test_tool_decodes_a_log_with_lost_lines(tmp_path):
 # --- the modules on an emulated M0 ----------------------------------------------------------
 
 NAMES = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down",
-         "scratch"]
+         "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read", "cal_write"]
 
 
 def k6_bench(sig, regs, fdma=5.71e6, step=128):
@@ -204,8 +204,10 @@ def k6_bench(sig, regs, fdma=5.71e6, step=128):
     return mmio, rcc, tim, dma, sim
 
 
-def emulate(src, regs, sig):
-    """run module src on an emulated M0. Returns (ret, said, regs, writes, stack bytes, bench)"""
+def emulate(src, regs, sig, level=2, cal=None):
+    """run module src on an emulated M0. level: the API level the table says; cal: what level 4's
+    cal_read reads (the calibration record's bytes; default a blank sector). Returns (ret, said,
+    regs, writes, stack bytes, bench)"""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
     sys.path.insert(0, ROOT)
@@ -225,7 +227,7 @@ def emulate(src, regs, sig):
     for i in range(len(NAMES)):
         mu.mem_write(stubs + 16 * i, b"\x70\x47")
     mu.mem_write(stop, b"\x00\xbf" * 8)
-    mu.mem_write(api, (1).to_bytes(2, "little") + (2).to_bytes(2, "little")
+    mu.mem_write(api, (1).to_bytes(2, "little") + level.to_bytes(2, "little")
                  + b"".join((stubs + 16 * i | 1).to_bytes(4, "little") for i in range(len(NAMES))))
     for b, r, w in mmio:
         mu.mmio_map(b, 0x400, r, st, w, st)
@@ -258,6 +260,12 @@ def emulate(src, regs, sig):
         elif name == "scratch":
             ret = ram + 0x6000
             uc.mem_write(r0, (400).to_bytes(4, "little"))
+        elif name == "cal_read":
+            assert level >= 4 and r1 <= 64, (level, r1)
+            uc.mem_write(r0, ((cal or b"") + b"\xff" * 64)[:r1])
+            ret = r1
+        elif name in ("tx_on", "tx_off", "tx_pa", "cal_write"):
+            raise AssertionError(name + " called")
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
     mu.hook_add(unicorn.UC_HOOK_CODE, on_stub, begin=stubs, end=stubs + 16 * len(NAMES))
     mu.reg_write(A.UC_ARM_REG_R0, api)
@@ -314,7 +322,8 @@ def test_ft8wf_streams_a_tone(tmp_path):
         return 0.5 + 0.3 * np.cos(2 * np.pi * TONE * t)
     ret, said, regs, writes, stack, (rcc, tim, dma, sim) = emulate(ft8wf_short(tmp_path), START, sig)
     assert said[0].startswith("ft8wf start nb=32 f=1520 inv=0 afc="), said
-    assert int(said[0].split("afc=")[1], 16) & 0x10, said
+    start = dict(kv.split("=") for kv in said[0].split()[2:])
+    assert int(start["afc"], 16) & 0x10 and start["cal"] == "0", said     # a level 2 image: no record
     assert sim["tunes"] == [(440_850_000, 0, 0x4691 | 0x10)], sim.get("tunes")  # RXON, AFC off
     assert said[1].startswith("ft8wf gain rms=") and " g=" not in said[1], said
     f = dict(kv.split("=") for kv in said[1].split()[2:])
@@ -332,6 +341,43 @@ def test_ft8wf_streams_a_tone(tmp_path):
     assert all(regs[r] == v for r, v in START.items()), regs
     assert {r for r, _ in writes} <= {0x33, 0x34, 0x73, 0x7E, 0x13}
     assert (0x34, 13) in writes and (0x73, 0x4691 | 0x10) in writes
+
+
+def cal_record(off_chz, hz=440_850_000, flags=1, check_ok=True):
+    """k6_cal.h's 32-byte record, as ifcal writes it"""
+    import struct
+    ppb = round(off_chz / 100 / hz * 1e9)
+    b = struct.pack("<4sHHiiIHHhH", b"K6CL", 1, flags, off_chz, ppb, hz, 32, 20, -41, 0)
+    check = (0x6B36 + sum(struct.unpack("<14H", b))) & 0xFFFF
+    return b + struct.pack("<HH", check ^ (0 if check_ok else 1), 0)
+
+
+@need_clang
+@pytest.mark.parametrize("case", ["good", "bad_check", "level3"])
+def test_ft8wf_follows_the_calibration(tmp_path, case):
+    """a K6 whose IF sits 145.5 Hz low (run 5, 2026-11-06): with its calibration record (API
+    level 4) the mixer moves with it, so the tone sent 25 Hz above the window's centre still
+    lands in bin 20 and the start line says cal=-14565 (k6cal_off_chz's 0.12%). A record with a bad check word, or an
+    image below level 4, leaves the mixer at the nominal IF: the tone falls 23 bins lower, out
+    of the window, and cal=0"""
+    pytest.importorskip("unicorn")
+    off = -14550
+
+    def sig(t, regs):
+        return 0.5 + 0.3 * np.cos(2 * np.pi * (TONE + off / 100) * t)
+    level = 3 if case == "level3" else 4
+    ret, said, regs, writes, stack, _ = emulate(ft8wf_short(tmp_path, 2), START, sig, level=level,
+                                                cal=cal_record(off, check_ok=case != "bad_check"))
+    start = dict(kv.split("=") for kv in said[0].split()[2:])
+    w = rows_of(said)[4:]
+    assert len(w) >= 8, said
+    if case == "good":
+        assert abs(int(start["cal"]) - off) <= 30, said[0]
+        assert (w.argmax(axis=1) == 20).all() and (w[:, 20] >= 12).all(), w
+    else:
+        assert start["cal"] == "0", said[0]
+        assert not (w.argmax(axis=1) == 20).any() and w[:, 20].max() <= 6, w
+    assert said[-1].startswith("ft8wf done") and len(said[0]) <= 60
 
 
 @need_clang

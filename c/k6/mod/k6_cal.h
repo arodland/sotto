@@ -1,5 +1,5 @@
 /* k6_cal.h: the radio's calibration record, in SPI flash at KM_CAL_ADDR (module API level 4:
-   cal_read / cal_write; docs/k6-modules.md "The calibration record").
+   cal_read / cal_write; docs/k6-modules.md "Calibration").
 
    One record of 32 bytes, written by the ifcal module (c/k6/mod/ifcal.c) and read by any
    module that taps the receive IF (gp0rx.h with GP0_CAL):
@@ -24,6 +24,7 @@
 
 #define K6CAL_BYTES 32u
 #define K6CAL_NOMINAL_CHZ 1692708 /* 26 MHz / 1536 in 0.01 Hz */
+#define K6CAL_MAGIC 0x4C43364Bu  /* "K6CL" as a little-endian word */
 
 typedef struct {
   uint8_t magic[4];
@@ -46,19 +47,19 @@ static inline uint16_t k6cal_sum(const k6_cal_t *c) {
 /* 0 and *c filled if the radio has a good record (API level 4 and the check), else -1 */
 static inline int k6cal_get(const k6_api_t *api, k6_cal_t *c) {
   if (api->level < 4 || api->cal_read(c, K6CAL_BYTES) != (int)K6CAL_BYTES) return -1;
-  if (c->magic[0] != 'K' || c->magic[1] != '6' || c->magic[2] != 'C' || c->magic[3] != 'L' ||
-      c->version != 1 || !(c->flags & 1) || c->check != k6cal_sum(c))
+  const uint32_t *w = (const uint32_t *)c;
+  /* "K6CL", then version 1 and flags bit 0 (the IF offset is good) as one word */
+  if (w[0] != K6CAL_MAGIC || (w[1] & 0x1FFFFu) != 0x10001u || c->check != k6cal_sum(c))
     return -1;
   return 0;
 }
 
-/* The IF offset at hz, 0.01 Hz: the measured one on its own frequency, else scaled by ppb
-   (hz in 16384 Hz steps; within 0.4%, 0.6 Hz at 145 Hz) */
+/* The IF offset at hz, 0.01 Hz, from ppb (hz in 16384 Hz steps): 0.12% high, 0.2 Hz at 165 Hz,
+   so no case for the frequency it was measured on. |ppb| up to 4500 (2 kHz at 440 MHz) and hz
+   up to 450 MHz stay inside 32 bits */
 static inline int32_t k6cal_off_chz(const k6_cal_t *c, uint32_t hz) {
-  int32_t f14 = (int32_t)(hz >> 14), v;
-  if (hz == c->hz) return c->off_chz;
-  v = (c->ppb * f14) >> 6;
-  return (v * 107) >> 10; /* x 16384 / 1e7 */
+  int32_t v = (c->ppb * (int32_t)(hz >> 14)) >> 6;
+  return (v * 215) >> 11; /* x 16384 x 64 / 1e7, as x 215 / 2048 */
 }
 
 /* the offset as a step of a mixer that turns 2^32 a cycle of 96 MHz (gp0rx.h's KMIX units):

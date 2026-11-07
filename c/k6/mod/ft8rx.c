@@ -18,7 +18,8 @@
    takes the highest REG_13 gain whose noise is under FT8_RMS_HI.
 
    Lines:
-     ft8 start r2=27 ks=5490 rms=4.7 g=0 03ff rms=9.1     (DMA kS/s; noise rms at each gain)
+     ft8 start cal=-16580 rms=4.7 g=03ff rms=9.1 r2=27 ks=5490  (the IF offset the mixer
+                                                  follows, 0.01 Hz, 0 for none; noise rms; DMA kS/s)
      ft8 CQ AG7EW CN87 f=1503 s=-12 t=12.4                 (tone 0 Hz, SNR dB, start s)
      ft8 st t=15 rows=375 lost=2 ks=5492 dec=1 idle=88     (every 15 s)
    Runs FT8_SECONDS (300) or until a key, and returns the decodes; or -2 (a key before the
@@ -75,7 +76,7 @@ int k6_main(const k6_api_t *api) {
   work = (uint8_t *)sc + ((2 * FK_SC_WORDS(FT8_NB) + 3) & ~3u);
   ret = rx_setup(api, &sv, &r, ring);
   if (ret) return ret;
-  p = rx_gain(api, &sv, &r, &r2, put(line, "ft8 start"));
+  p = rx_gain(api, &sv, &r, &r2, sdec(put(line, "ft8 start cal="), r.cal));
   say0(api, line, p);
   fk_init(k, FT8_NB, (int)r2, wf, sc, work);
   RX_FK(k);

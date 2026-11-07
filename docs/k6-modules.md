@@ -116,7 +116,16 @@ and sends them after the status report. No serial cable is needed, so the speake
 the GP0 IF with the AFC off and writes a 32-byte record (`c/k6/mod/k6_cal.h`: magic `K6CL`, the
 offset in 0.01 Hz from the nominal 16927.083 Hz, the same in ppb, the frequency, the block count,
 spread, RSSI, and a check word). An IF-tap module can read it with `k6cal_get()` and scale it to its
-own frequency with `k6cal_off_chz()` (none does yet: ft8wf is next). Run it once per radio: within 90 s of `ifcal start`, key
+own frequency with `k6cal_off_chz()`. The FT8 front end does (`gp0rx.h`: ft8wf, ft8wf_inv,
+ft8rx, which print `cal=` in 0.01 Hz on their start line, 0 for none), so FT8 goes at its true
+audio frequency instead of an `--f0` aimed by hand. iflive finds the offset itself with its
+sweep and AFC; the softmodem thread will seed it from the record later. A module that reads the
+record still declares the level it needs otherwise: `k6cal_get()` checks `api->level` first,
+so on an older image it just mixes at the nominal IF. Where it lives: 0x10F000 is a 4 KB sector
+of its own, after the v3.7 codebook (0x100000-0x107820) and sotto 600 / 400's (0x108000-0x10D320),
+outside the repeater table (0x0F0000-0x0FFFFF) and above everything Aura uses (to ~0xED200).
+`ifcal` writes it only if it is blank or already holds a `K6CL` record (else -11, nothing
+measured or written). Run it once per radio: within 90 s of `ifcal start`, key
 the IC-7100 on 440.850 in FM with no modulation for about 8 s. It refuses (-9) a carrier that
 wanders more than 30 Hz or fewer than 16 good blocks, and the record stays as it was. Before
 deciding, it lists every block's IF (`ifcal b0 16763 +1 -2 ...`: the first in Hz, then each
