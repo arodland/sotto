@@ -51,12 +51,14 @@ def mode_of(name):
     return md.Mode(tones, baud, lv)
 
 
-def run(L, c, m, ks=5490, start=0, pause=0, every=0, maxsym=20000):
-    """-> symbols, gap flags, next symbol starts (counts), info"""
+def run(L, c, m, ks=5490, start=0, pause=0, every=0, maxsym=20000, noise=(0, 0)):
+    """-> symbols, gap flags, next symbol starts (counts), info. noise: Gaussian noise (Q12
+    rms) on the timing and AFC detectors' outputs"""
     c = np.ascontiguousarray(np.clip(c, -127, 127).astype(np.int8))
     sym, met = np.zeros(maxsym, np.uint8), np.zeros(maxsym * 4, np.uint32)
     afc, gap = np.zeros(maxsym, np.int32), np.zeros(maxsym, np.uint8)
     info, taus = np.zeros(10, np.int32), np.zeros(maxsym, np.uint32)
+    info[9] = (noise[0] << 16) | noise[1]
     n = L.ifrx_run(c.ctypes.data, len(c), 1 if m.M == 4 else 0, ks, start, pause, every,
                    sym.ctypes.data, met.ctypes.data, afc.ctypes.data, gap.ctypes.data, maxsym,
                    info.ctypes.data, taus.ctypes.data)
@@ -101,6 +103,34 @@ def test_ber_on_the_model(lib, name, cn0, off, limit):
     sym, gap, taus, info = run(lib, lk.counts(cn0, seed=5), m, start=int(0.02 * mcu.FC))
     assert info[5] == 2 and info[3] == 0, info          # tracking, no acquisition thrown out
     assert ber(lk, sym) < limit
+
+
+# the detectors' noise on Jeff's K6 (tests/data/k6/gp0cap-20261106.log.gz, steps 1-8, at the
+# data-aided timing and IF): timing (|L|^2-|E|^2)/|C|^2 sd 0.76 FFSK, 0.45 4FSK; AFC
+# Im(c2 c1*)/mean |c|^2 sd 0.36, 0.45. The model's at 70 dB-Hz: 0.06-0.12. White a symbol, and
+# not the pattern's; the decisions there are clean (FFSK 0 errors, 4FSK 0.4%)
+K6_NOISE = {"ffsk1200": (3100, 1460), "4fsk1200": (1840, 1840)}
+
+
+@pytest.mark.parametrize("name", ["ffsk1200", "4fsk1200"])
+def test_loops_through_the_k6s_detector_noise(lib, name):
+    """with that noise on the detectors, the loops hold: no false lock (the lead's timing loop
+    once ran at 4x, past stable: FFSK then locked half a symbol off in 2 of 4 runs, as it did on
+    the K6 on 2026-11-07), and narrow enough tracking keeps the jitter down (it was 0.50
+    half-samples and 21 Hz rms for 4FSK at the old gains; worth ~1.3% BER on the captures)"""
+    m = mode_of(name)
+    pc = mcu.FC / m.baud
+    for seed in (3, 4):
+        lk = mcu.Link(m, 3000, lead=1800, pre=0.3, seed=seed)
+        start = int(0.02 * mcu.FC)
+        sym, gap, taus, info = run(lib, lk.counts(70, seed=seed + 7), m, start=start,
+                                   noise=K6_NOISE[name])
+        assert info[5] == 2 and info[3] == 0, info
+        assert ber(lk, sym) < 0.001
+        k = ((taus + start - pc) / mcu.FC - lk.t0) * m.baud
+        fr = (k - np.round(k))[1800:]
+        fr = (fr - np.angle(np.mean(np.exp(2j * np.pi * fr))) / (2 * np.pi) + 0.5) % 1 - 0.5
+        assert fr.std() * 2 * mcu.TL < 0.4               # half-samples rms
 
 
 @pytest.mark.parametrize("name", ["ffsk1200", "4fsk1200"])

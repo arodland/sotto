@@ -30,6 +30,20 @@ static int32_t ifrx_sin(uint32_t k) {
 
 #define IFRX_NOINLINE __attribute__((noinline))
 #define FSH 7 /* filter output scaling: a strong carrier (counts +-32) gives about 2000 */
+/* the loops' gains once tracking: the timing's error a symbol over 2^IFRX_T_SH, the AFC's over
+   2^IFRX_F_SH (on k_afc) */
+#ifndef IFRX_T_SH
+#define IFRX_T_SH 8
+#endif
+#ifndef IFRX_F_SH
+#define IFRX_F_SH 2
+#endif
+
+/* tests only: noise added to the timing and AFC detectors' outputs (Q12) */
+#ifndef IFRX_DT_NOISE
+#define IFRX_DT_NOISE(s) 0
+#define IFRX_DF_NOISE(s) 0
+#endif
 
 IFRX_NOINLINE static uint32_t ifrx_udiv(uint32_t n, uint32_t d) {
   uint32_t q = 0, bit = 1;
@@ -253,6 +267,7 @@ IFRX_NOINLINE static uint32_t best2(const int32_t a[4], int *cj) {
 /* the symbol's samples are all in: decide, then move on to the next symbol */
 IFRX_NOINLINE static void finish(ifrx_t *s) {
   int32_t a[4], X[6], Y[4], dt, im; /* X: early, late, on time; Y: the two halves */
+  int ph;
   uint32_t d;
   int j, win, wcj, cj, tone, bt[4] = {0, 0, 0, 0}, bc[4] = {0, 0, 0, 0}, sh;
   int lead = s->state == IFRX_LEAD;
@@ -316,9 +331,10 @@ IFRX_NOINLINE static void finish(ifrx_t *s) {
   cof(s->A[win], wcj, X + 4);
   sh = sh_of(X, 6);
   d = sq(X + 4, sh) >> 11;
-  dt = d ? ifrx_sdiv((int32_t)sq(X + 2, sh) - (int32_t)sq(X, sh), d) : 0; /* Q12 */
+  dt = d ? ifrx_sdiv((int32_t)sq(X + 2, sh) - (int32_t)sq(X, sh), d) + IFRX_DT_NOISE(s) : 0; /* Q12 */
   dt = (clampi(dt, 4096) * (int32_t)s->pc_q8) >> 4;                          /* x pc, Q16 */
-  dt >>= (lead && s->nsym < IFRX_LEAD_SYMS / 2) ? s->gain_sh - 2 : s->gain_sh;
+  ph = lead ? s->nsym >= IFRX_LEAD_SYMS / 2 : 2; /* the lead's halves, then tracking */
+  dt >>= ph == 2 ? IFRX_T_SH : s->gain_sh;
   if (IFRX_STATS) s->terr = dt;
   /* the AFC: the turn between the winning template's two halves, Im(c2 c1*) / mean |c|^2 */
   cof(s->A1[win], wcj, Y);
@@ -328,7 +344,8 @@ IFRX_NOINLINE static void finish(ifrx_t *s) {
   im = (Y[3] >> sh) * (Y[0] >> sh) - (Y[2] >> sh) * (Y[1] >> sh);
   d = (sq(Y, sh) + sq(Y + 2, sh)) >> 13;
   if (d && s->afc_sh)
-    s->dphi_f = clampi(s->dphi_f + ifrx_sdiv(im, d) * (int32_t)(s->k_afc << (lead << 1)),
+    s->dphi_f = clampi(s->dphi_f + (((ifrx_sdiv(im, d) + IFRX_DF_NOISE(s)) * (int32_t)s->k_afc)
+                                     * 4 >> (ph ? ph == 2 ? 2 + IFRX_F_SH : 2 : 0)),
                        s->dphi_max);
   if (lead) {
     if (s->nsym >= IFRX_LEAD_SYMS) s->state = IFRX_TRACK;

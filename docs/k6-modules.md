@@ -449,8 +449,10 @@ what would settle it.
     - Buys: a receiver that acquires (it needs the rate to 0.05%) and a ring index that
       survives a stall. Any other DMA module (gp0dma, gp0cap, ft8rx, ft8wf) that measures its
       rate once has the same exposure.
-    - Settled by: the `k=` column of the next iflive run, step by step, and whether it moves
-      between acquisition and tracking.
+    - Settled (2026-11-07, 01:56 UTC rerun): `k=` read 5566 on every step of both modes,
+      5563-5564 on steps with no lock, though the CPU sat 60% idle in 4FSK and 76% in FFSK. So
+      while decoding, the rate is steady and barely depends on the load; 5875 was a polling-only
+      loop. Measuring it as it runs is still what made the receiver lock.
 25. **The REG_63 noise indicator as a sensitivity meter.**
     - From: the coverage thread (2026-11-06, [k6-rxmap.md](k6-rxmap.md)). Phase 0 read 0x0000
       on a strong carrier and 0x002a on an empty channel. If REG_63 rises smoothly as a carrier
@@ -464,3 +466,17 @@ what would settle it.
       channels in a bin, then re-reads the winner at 30 ms. If a weak signal (-110 dBm) ramps
       slower than the empty channel next to it, the quick pass ranks it below the noise.
     - Settled by: a map run with `--quick-us 12000` over the same segment, compared bin by bin.
+27. **Where does the K6's extra detector noise come from?**
+    - From: the softmodem thread (2026-11-07). On the gp0cap captures the timing and AFC
+      detectors are 3-10 times noisier than on the model at 70 dB-Hz (their variance 0.13-0.57
+      against 0.004-0.015), while the decisions stay clean (FFSK no errors down to -72 dBm).
+      The noise is white from one symbol to the next and doesn't depend on the symbol pattern.
+      FM noise added on the model (to 200 Hz rms) moves the AFC detector but hardly the timing
+      one, so it isn't simply LO phase noise. Candidates: the sigma-delta's real behaviour on
+      code 13, sample-time jitter in the DMA, or the IC-7100's audio chain.
+    - Buys: whatever it is caps 4FSK. Narrower loops (iflive, 2026-11-07) only shrink its
+      effect, and the detectors' biases on real signals (timing -0.3 half-samples, AFC +15 Hz
+      from the best) may be the same thing.
+    - Settled by: a gp0cap pass on an unmodulated carrier (the IC-7100's FM-D with no audio):
+      the turn between half symbols should be flat. If it's as noisy, it's the K6's IF chain,
+      not the sender.
