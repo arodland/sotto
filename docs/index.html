@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sotto: listen</title>
-<meta name="description" content="Open 2400 bps digital voice for FM radios. Compare sotto against Fusion-style protection over a simulated mobile radio channel.">
+<meta name="description" content="Open 2400 bps digital voice for FM radios, with 1200, 600 and 400 bps modes. Compare the rates, and sotto against Codec 2 over a simulated mobile radio channel.">
 <style>
   :root {
     --bg: #fbfaf7; --fg: #1d1d1b; --muted: #66645e; --line: #e2dfd7; --card: #ffffff;
@@ -70,7 +70,7 @@
 <body>
 <main>
   <h1>sotto</h1>
-  <p class="lede">Open 2400 bit/s digital voice for FM radios: a vocoder, error correction and a C4FM modem path, built for small fixed-point DSPs.</p>
+  <p class="lede">Open 2400 bit/s digital voice for FM radios: a vocoder, error correction and a C4FM modem path, built for small fixed-point DSPs. Slower links get the same 48-bit frame stretched to 1200, 600 and 400 bit/s.</p>
   <p>New to vocoders? <a href="course/">How sotto works</a> is a short illustrated course (written for high-school students) on pitch, envelopes, quantization, synthesis and the radio link.</p>
 
   <h2 style="margin-top:24px">Why sotto</h2>
@@ -88,16 +88,33 @@
 
   <h2 style="margin-top:24px">Try it with your own voice</h2>
   <section class="try" aria-labelledby="try-h">
-    <p id="try-h" style="margin-top:0">Record up to 30 seconds, or pick an audio file, and the page runs the sotto v3.8 encoder and decoder on it. Both run here, in your browser, compiled to WebAssembly from the same C code that targets the radio's DSP; nothing is uploaded. The <code>.sot</code> file is the bitstream itself: 6 bytes per 20 ms frame, 300 bytes a second (<code>c/sotto_dec -16 file.sot out.raw</code> decodes it too).</p>
+    <p id="try-h" style="margin-top:0">Record up to 30 seconds, or pick an audio file, and the page encodes the same recording at all four rates (2400, 1200, 600 and 400 bit/s) and decodes each one, so you can switch between them. The encoders and decoders run here, in your browser, compiled to WebAssembly from the same C code that targets the radios; nothing is uploaded. A <code>.sot</code> file is the bitstream itself: 6 bytes per frame, so 300, 150, 75 or 50 bytes a second (the C tools decode it too: <code>c/sotto_dec -16 [-1200] file.sot out.raw</code>, or <code>sotto_vlr_dec_fx 600|400</code>).</p>
     <div class="controls">
       <button id="rec" class="primary" type="button" disabled>Record</button>
       <label class="filebtn off" id="file-lbl">Encode an audio file<input id="file" type="file" accept="audio/*" disabled></label>
       <label class="filebtn off" id="sot-lbl">Play a .sot file<input id="sot" type="file" accept=".sot,application/octet-stream" disabled></label>
+      <label class="note" for="sot-rate">sent at <select id="sot-rate">
+        <option value="2400">2400</option><option value="1200">1200</option><option value="600">600</option><option value="400">400</option>
+      </select> bit/s</label>
       <span id="try-msg" role="status">Loading the codec…</span>
     </div>
     <div id="try-out" hidden></div>
   </section>
-  <p class="note">The level is set automatically: speech is scaled to −26 dBFS, the level the codec expects. Use headphones or a quiet room. Microphones that filter out everything above 4 kHz (some phones, Bluetooth headsets) leave sotto no hiss to send.</p>
+  <p class="note">The level is set automatically: speech is scaled to −26 dBFS, the level the codec expects. Use headphones or a quiet room. Microphones that filter out everything above 4 kHz (some phones, Bluetooth headsets) leave sotto no hiss to send. A <code>.sot</code> file has no header, so the page takes its rate from the name it downloads with (<code>…-600.sot</code>) or from the menu.</p>
+
+  <h2 id="rates">Four rates: 2400, 1200, 600 and 400 bit/s</h2>
+  <p>Every sotto mode sends the same 48-bit frame; the slower ones make it cover more time. Halving the rate halves the air time of a message (the UV-K6 pager sends sotto 1200 at 1800 baud), and 600 and 400 bit/s leave room for stronger error correction or a slower, more robust modem. Each voice below was encoded once at every rate from the same 16 kHz recording, with no radio channel, and is decoded here in your browser from the frames.</p>
+  <div class="tablewrap"><table class="cmp">
+    <thead><tr><th>Mode</th><th>48 bits every</th><th>What it sends</th><th>Audio</th><th>PESQ</th></tr></thead>
+    <tbody>
+      <tr><td>sotto v3.8 (2400)</td><td class="num">20 ms</td><td>pitch, voicing, energy and a 34-bit envelope every frame</td><td>16 kHz, hiss band</td><td class="num" id="rates-2400"></td></tr>
+      <tr><td>sotto 1200 hiss</td><td class="num">40 ms</td><td>one frame with a coarser envelope, then one coded as small steps from its neighbours</td><td>16 kHz, hiss band</td><td class="num" id="rates-1200"></td></tr>
+      <tr><td>sotto 600</td><td class="num">80 ms</td><td>4 frames: one voicing pattern, a pitch line, an energy level and its change, and envelopes every 40 ms with straight lines between</td><td>8 kHz</td><td class="num" id="rates-600"></td></tr>
+      <tr><td>sotto 400</td><td class="num">120 ms</td><td>6 frames, the same way</td><td>8 kHz</td><td class="num" id="rates-400"></td></tr>
+    </tbody>
+  </table></div>
+  <p class="note">PESQ is narrowband (0-4 kHz, mean of the six voices), so it can't hear the 4-8 kHz hiss band. Listening tests on other voices: sotto 1200 hiss beat plain sotto 1200 in all 6 pairs and came close to v3.8 (2 ties, 1 loss); sotto 600 beat Codec 2 700C (3-0) and Codec 2 1200 (2-0); sotto 400 split 1-1 with Codec 2 700C. 600 and 400 also have a hiss band, which won all 7 of its listening pairs, but so far only in the Python model, so the page plays them at 8 kHz. Details: <a href="https://github.com/baitisj/sotto/blob/main/docs/sotto-1200-hiss.md">sotto-1200-hiss.md</a>, <a href="https://github.com/baitisj/sotto/blob/main/docs/sotto-vlr.md">sotto-vlr.md</a>.</p>
+  <div id="rategrid" class="grid2"></div>
 
   <h2>Part 1: sotto's encoder against Codec 2's</h2>
   <p>Both encoders run at 2400 bit/s (48 bits every 20 ms). Each pair went through exactly the same chain: the same System Fusion (C4FM) frames and error protection, the same simulated radio channel with the same fading, and the same software receiver. The only difference is the encoder and decoder.</p>
@@ -248,25 +265,50 @@
     for (const r of nrows) card.append(wb(clip(r.title, r.sub, 0, `samples/fargan/${v.id}__${r.k}.flac`), v.wb[r.k]));
     nhost.append(card);
   }
+  // Four rates: one original per voice encoded at each rate (docs/samples/rates, made by
+  // tools/render_page_rates.py; narrowband PESQ from docs/results/page_rates.json)
+  const rateVoices = [
+    { id: "female_libri198_14s", name: "Female voice (LibriSpeech reader 198, 14 s)", s: { 2400: 2.72, 1200: 2.45, 600: 1.95, 400: 1.54 } },
+    { id: "male_libri3436_15s", name: "Male voice (LibriSpeech reader 3436, 15 s)", s: { 2400: 3.33, 1200: 3.00, 600: 2.47, 400: 2.00 } },
+    { id: "librispeech_3536_f", name: "Female voice (LibriSpeech reader 3536, 12 s)", s: { 2400: 2.83, 1200: 2.62, 600: 1.90, 400: 1.64 } },
+    { id: "librispeech_8842_f", name: "Female voice (LibriSpeech reader 8842, 12 s)", s: { 2400: 2.60, 1200: 2.29, 600: 1.83, 400: 1.63 } },
+    { id: "librispeech_777_m", name: "Male voice (LibriSpeech reader 777, 12 s)", s: { 2400: 3.03, 1200: 2.81, 600: 2.38, 400: 2.02 } },
+    { id: "librispeech_251_m", name: "Male voice (LibriSpeech reader 251, 12 s)", s: { 2400: 2.83, 1200: 2.44, 600: 2.02, 400: 1.72 } },
+  ];
+  const rateMean = { 2400: 2.89, 1200: 2.60, 600: 2.09, 400: 1.76 };
+  for (const r in rateMean) document.getElementById(`rates-${r}`).textContent = rateMean[r].toFixed(2);
+  const rhost = document.getElementById("rategrid");
+  for (const v of rateVoices) {
+    const card = el("section", "voice"); card.append(el("h3", null, v.name));
+    card.append(clip("Original", "16 kHz", null, `samples/v38/${v.id}__original16.flac`));
+    for (const rate of [2400, 1200, 600, 400]) {
+      const row = clip(`${rate} bit/s`, "<i>decoding…</i>", v.s[rate], null);
+      card.append(row);
+      pending.push({ row, rate, bit: `samples/rates/${v.id}__${rate}.bit`, good: null });
+    }
+    rhost.append(card);
+  }
   const status = document.getElementById("wasm-status");
   const bytes = async u => { const r = await fetch(u); if (!r.ok) throw new Error(`${u}: ${r.status}`); return new Uint8Array(await r.arrayBuffer()); };
-  const codec = import("./sotto.js").then(async m => ({ ...m, sotto: await m.loadSotto("sotto.wasm") }));
+  const codec = import("./sotto.js").then(async m => ({ ...m, sotto: await m.loadSotto("sotto.wasm", "sotto_vlr.wasm") }));
   codec.then(async ({ sotto, wavBlob }) => {
     let ms = 0;
+    pending.sort((a, b) => (b.rate ? 1 : 0) - (a.rate ? 1 : 0));   // the four-rate clips first: they're near the top
     for (const p of pending) {
       const [frames, good] = await Promise.all([bytes(p.bit), p.good ? bytes(p.good) : null]);
       const t = performance.now();
-      const pcm = sotto.decode16(frames, good);
+      const { pcm, sampleRate } = sotto.decode(p.rate || 2400, frames, good);
       ms += performance.now() - t;
       const lost = good ? good.reduce((n, g) => n + (g ? 0 : 1), 0) : 0;
-      p.row.querySelector("audio").src = URL.createObjectURL(wavBlob(pcm, sotto.sampleRate));
-      p.row.querySelector(".label span").innerHTML = p.short ? `${frames.length} bytes, 16 kHz` :
+      p.row.querySelector("audio").src = URL.createObjectURL(wavBlob(pcm, sampleRate));
+      p.row.querySelector(".label span").innerHTML = p.rate ? `${frames.length} bytes, ${sampleRate / 1000}&nbsp;kHz` :
+        p.short ? `${frames.length} bytes, 16 kHz` :
         `${p.title} · ${frames.length} bytes received` + (good ? `, ${lost} of ${good.length} frames lost` : "");
     }
     status.textContent = `Decoded ${pending.length} clips here in ${Math.round(ms)} ms.`;
   }).catch(err => {
     status.textContent = `This browser couldn't run the decoder (${err.message}), so the sotto rows are silent.`;
-    for (const p of pending) p.row.querySelector(".label span").innerHTML = p.short ? "not decoded" : `${p.title} · not decoded`;
+    for (const p of pending) p.row.querySelector(".label span").innerHTML = p.short || p.rate ? "not decoded" : `${p.title} · not decoded`;
   });
 
   // Try it: microphone or file -> 16 kHz -> level -> encoder -> .sot -> decoder
@@ -298,37 +340,47 @@
       const u = URL.createObjectURL(r.blob); urls.push(u);
       out.append(clip(r.label, r.sub, null, u, r.best));
     }
-    const d = el("div", "downloads");
-    for (const l of links) {
-      const u = URL.createObjectURL(l.blob); urls.push(u);
-      const a = el("a", "dl", l.label); a.href = u; a.download = l.name; d.append(a);
+    for (const group of links) {               // [{ label, name, blob }, ...] per line
+      const d = el("div", "downloads");
+      for (const l of group) {
+        if (!l.blob) { d.append(el("span", "note", l.label)); continue; }
+        const u = URL.createObjectURL(l.blob); urls.push(u);
+        const a = el("a", "dl", l.label); a.href = u; a.download = l.name; d.append(a);
+      }
+      out.append(d);
     }
-    out.append(d);
   }
   function busy(on) {
     $("file").disabled = $("sot").disabled = on;
     $("file-lbl").classList.toggle("off", on); $("sot-lbl").classList.toggle("off", on);
   }
+  const RATE_NAMES = { 2400: "sotto v3.8", 1200: "sotto 1200 hiss", 600: "sotto 600", 400: "sotto 400" };
   async function encodeAndShow(x16, what) {
-    const { sotto, levelTo, wavBlob } = await codec;
+    const { sotto, levelTo, wavBlob, RATES } = await codec;
     const { pcm, gainDb } = levelTo(x16);
-    msg("Encoding…"); await paint();
-    let t = performance.now();
-    const frames = sotto.encode16(pcm);
-    const tEnc = performance.now() - t; t = performance.now();
-    const y = sotto.decode16(frames);
-    const tDec = performance.now() - t;
     const secs = pcm.length / 16000, stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
-    const input = wavBlob(pcm, 16000), decoded = wavBlob(y, 16000);
+    const input = wavBlob(pcm, 16000), out = [];
+    let tEnc = 0, tDec = 0;
+    for (const rate of [2400, 1200, 600, 400]) {     // one recording, every rate
+      msg(`Encoding at ${rate} bit/s…`); await paint();
+      let t = performance.now();
+      const frames = sotto.encode(rate, pcm);
+      tEnc += performance.now() - t; t = performance.now();
+      const { pcm: y, sampleRate } = sotto.decode(rate, frames);
+      tDec += performance.now() - t;
+      out.push({ rate, frames, decoded: wavBlob(y, sampleRate), sampleRate, ms: RATES[rate].frameMs });
+    }
     show([
       { label: "Your input", sub: `${esc(what)}, 16 kHz, level ${gainDb >= 0 ? "+" : ""}${gainDb.toFixed(1)} dB`, blob: input },
-      { label: "sotto v3.8", sub: `${frames.length / 6} frames, ${frames.length} bytes (2400 bit/s)`, blob: decoded, best: true },
+      ...out.map(o => ({ label: `${RATE_NAMES[o.rate]}, ${o.rate} bit/s`, best: o.rate === 2400, blob: o.decoded,
+                         sub: `${o.frames.length / 6} frames of ${o.ms} ms, ${o.frames.length} bytes, ${o.sampleRate / 1000} kHz` })),
     ], [
-      { label: "Download .sot", name: `sotto-${stamp}.sot`, blob: new Blob([frames], { type: "application/octet-stream" }) },
-      { label: "Download decoded .wav", name: `sotto-${stamp}-decoded.wav`, blob: decoded },
-      { label: "Download input .wav", name: `sotto-${stamp}-input.wav`, blob: input },
+      [{ label: "Download .sot:" }, ...out.map(o => ({ label: String(o.rate), name: `sotto-${stamp}-${o.rate}.sot`,
+                                                     blob: new Blob([o.frames], { type: "application/octet-stream" }) }))],
+      [{ label: "Decoded .wav:" }, ...out.map(o => ({ label: String(o.rate), name: `sotto-${stamp}-${o.rate}-decoded.wav`, blob: o.decoded }))],
+      [{ label: "Download input .wav", name: `sotto-${stamp}-input.wav`, blob: input }],
     ]);
-    msg(`${secs.toFixed(1)} s encoded in ${Math.round(tEnc)} ms, decoded in ${Math.round(tDec)} ms.`);
+    msg(`${secs.toFixed(1)} s encoded at four rates in ${Math.round(tEnc)} ms, decoded in ${Math.round(tDec)} ms.`);
   }
   // Recording: the microphone at the context's own rate (Firefox can't mix rates in one graph),
   // collected by a tiny AudioWorklet, resampled to 16 kHz when it stops.
@@ -392,16 +444,21 @@
       await encodeAndShow(x, f.name + (cut ? ` (first ${MAX_FILE} s)` : ""));
     } catch (err) { msg(`Couldn't read ${f.name} as audio (${err.message || err}).`); }
   });
+  // a downloaded .sot carries its rate in its name (sotto-…-600.sot); otherwise the menu says
   $("sot").addEventListener("change", async e => {
     const f = e.target.files[0]; e.target.value = "";
     if (!f) return;
     const { sotto, wavBlob } = await codec;
+    const named = f.name.match(/-(2400|1200|600|400)\.sot$/i);
+    if (named) $("sot-rate").value = named[1];
+    const rate = Number($("sot-rate").value);
     const frames = new Uint8Array(await f.arrayBuffer());
     if (!frames.length || frames.length % 6) { msg(`${f.name} isn't a .sot file: its size should be a multiple of 6 bytes.`); return; }
-    const y = sotto.decode16(frames);
-    show([{ label: "sotto v3.8", sub: `${esc(f.name)}: ${frames.length / 6} frames, ${(frames.length / 300).toFixed(1)} s`, blob: wavBlob(y, 16000), best: true }],
-         [{ label: "Download decoded .wav", name: f.name.replace(/\.sot$/i, "") + ".wav", blob: wavBlob(y, 16000) }]);
-    msg(`Decoded ${f.name}.`);
+    const { pcm: y, sampleRate } = sotto.decode(rate, frames);
+    const wav = wavBlob(y, sampleRate);
+    show([{ label: `${RATE_NAMES[rate]}, ${rate} bit/s`, sub: `${esc(f.name)}: ${frames.length / 6} frames, ${(frames.length * 8 / rate).toFixed(1)} s`, blob: wav, best: true }],
+         [[{ label: "Download decoded .wav", name: f.name.replace(/\.sot$/i, "") + ".wav", blob: wav }]]);
+    msg(`Decoded ${f.name} at ${rate} bit/s.`);
   });
 
   // Only one clip plays at a time.
