@@ -85,10 +85,17 @@ under the rule move down 2 px. The selected row is drawn inverted, dark on a lit
 idea: no '>' column). Grades: R likely a repeater (score 6 or more), r maybe one, ? not seen
 enough yet, s simplex or a spur or a louder signal's skirt, x ignored with *. The level bar
 (Jeff's "4 revised", 2026-11-07) is 2 px of loudest level, 5 dB a pixel from -120 dBm (21 px
-full), over a dotted line for the score (10 points full). On serial, a known candidate has flag 0x20 in its K6 CAND line.
+full), over a dotted line for the score (10 points full).
+
+The header (Jeff, 2026-11-07) has an icon pair that swaps every second. While sweeping, it shows
+half-lidded eyes looking left, then right, followed by the band set and how many candidates
+were found. While listening for a CW ID, it shows dit-dah / dah-dit, the frequency, and a watch
+face at the right end whose wedge empties clockwise over the listen's time limit (2 min for the
+automatic listen). The automatic listen keeps the list on screen, with an arrow in the call
+column pointing at the row being listened to. On serial, a known candidate has flag 0x20 in its K6 CAND line.
 
 ```text
-EX ALL 11 2.3s UP          band set, candidates, one pass, UP while something is keyed
+(eyes) 70CM  7 found       sweeping: band set, candidates (listening: dit-dah, MHz, watch)
 R 146.940 -0.6 ====  W7ABC  grade, MHz, offset (S simplex), level bar, call
 r 443.100 +5.0 ===         (the selected row is drawn inverted)
 ? 440.850 +5.0 ========

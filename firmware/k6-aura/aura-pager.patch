@@ -4179,10 +4179,10 @@ index 0000000..677b2f7
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..f7a5c44
+index 0000000..756679a
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1183 @@
+@@ -0,0 +1,1275 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -5179,6 +5179,146 @@ index 0000000..f7a5c44
 +    Text::with_baseline(t, Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
 +}
 +
++/// the candidate rows (Jeff 2026-11-07): new ones above a rule, known (saved) ones below it,
++/// the selected row inverted, an arrow at the one at boxed_hz (being listened to; 0 none)
++fn list_rows<D>(lcd: &mut D, t: &State, boxed_hz: u32)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    // keep the selected row on screen
++    let top = (t.sel as usize).saturating_sub(ROWS - 1) as u32;
++    // new repeaters above a rule, known (saved) ones below it (Jeff 2026-11-07): the
++    // rows under it move down 2 px, which the 4 px above the footer leave room for
++    let mut shift = 0;
++    let mut was_new = top > 0 && cand(top - 1).is_some_and(|c| c.flags & EX_F_KNOWN == 0);
++    for k in 0..ROWS as u32 {
++        let Some(c) = cand(top + k) else { break };
++        let known = c.flags & EX_F_KNOWN != 0;
++        let ruled = known && was_new && shift == 0;
++        if ruled {
++            fill(lcd, 11 + 6 * k as i32, 1, BinaryColor::On);
++            shift = 2;
++        }
++        was_new = !known;
++        let mut b: TextBuf<32> = TextBuf::new();
++        let g = if c.flags & EX_F_IGNORED != 0 { 'x' } else { c.grade as char };
++        write!(b, "{} ", g).ok();
++        mhz(&mut b, c.hz);
++        write!(b, " ").ok();
++        off_text(&mut b, c);
++        let y = 11 + 6 * k as i32 + shift;
++        let sel = top + k == t.sel as u32;
++        // the selected row inverted (Jeff 2026-11-07, for the column a '>' took) and the one
++        // being listened to boxed: both from the blank pixel row above, unless that touches
++        // the header or the rule
++        let up = if k == 0 || ruled { 0 } else { 1 };
++        let marked = boxed_hz != 0 && c.hz == boxed_hz;
++        if sel {
++            fill(lcd, y - up, 6 + up as u32, BinaryColor::On);
++        }
++        let ink = if sel { BinaryColor::Off } else { BinaryColor::On };
++        let st = MonoTextStyle::new(&FONT_4X6, ink);
++        Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
++        // Jeff's split bar (2026-11-07): the loudest over as a 2 px bar, 5 dB a pixel
++        // from -120 dBm, and under it a dotted line for the score (10 points = full),
++        // in the columns the number took; the numbers are in the footer
++        let w = ((c.hi as i32 + 120) / 5).clamp(0, BAR_W as i32) as u32;
++        if w > 0 {
++            Rectangle::new(Point::new(BAR_X, y), Size::new(w, 2))
++                .into_styled(PrimitiveStyle::with_fill(ink))
++                .draw(lcd)
++                .ok();
++        }
++        let d = (c.score as i32 * BAR_W as i32 / 10).clamp(0, BAR_W as i32);
++        for x in (0..d).step_by(2) {
++            Pixel(Point::new(BAR_X + x, y + 3), ink).draw(lcd).ok();
++        }
++        let x = BAR_X + BAR_W as i32 + 3;
++        if marked {
++            // the row being listened to: an arrow pointing at it from the call column, which is
++            // still empty then (Jeff 2026-11-07)
++            const ARROW: [u16; 5] = [0x100, 0x300, 0x7fe, 0x300, 0x100];
++            for (r, &m) in ARROW.iter().enumerate() {
++                for c in 0..11 {
++                    if m & (0x400 >> c) != 0 {
++                        Pixel(Point::new(x + c, y + r as i32), ink).draw(lcd).ok();
++                    }
++                }
++            }
++        } else if c.call[0] != 0 {
++            Text::with_baseline(cstr(&c.call), Point::new(x, y), st, Baseline::Top).draw(lcd).ok();
++        }
++    }
++}
++
++/// the header's state icons (Jeff 2026-11-07), on the lit bar, two frames a second apart:
++/// half-lidded eyes (his pick "D") looking left and right while sweeping
++fn eyes<D>(lcd: &mut D, right: bool)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    // the white of one 7-wide eye under its lid, rows 3-8, a bit per column (bit 6 the left one)
++    const WHITE: [u8; 6] = [0x7f, 0x7f, 0x7f, 0x7f, 0x3e, 0x1c];
++    for e in [1, 9] {
++        for (r, &m) in WHITE.iter().enumerate() {
++            for c in 0..7 {
++                if m & (0x40 >> c) != 0 {
++                    Pixel(Point::new(e + c, 3 + r as i32), BinaryColor::Off).draw(lcd).ok();
++                }
++            }
++        }
++        fill_box(lcd, e + if right { 3 } else { 1 }, 3, 3, 3, BinaryColor::On);
++    }
++}
++
++/// dit-dah, then dah-dit, while listening for a CW ID
++fn ditdah<D>(lcd: &mut D, second: bool)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    let (a, b): (u32, u32) = if second { (6, 3) } else { (3, 6) };
++    fill_box(lcd, 1, 4, a, 2, BinaryColor::Off);
++    fill_box(lcd, 2 + a as i32, 4, b, 2, BinaryColor::Off);
++}
++
++/// a 9 x 9 watch face at the header's right end: the time left of the listen as a wedge that
++/// empties clockwise from 12 (used = ms of max_ms)
++fn watch<D>(lcd: &mut D, used: u32, max_ms: u32)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    // each pixel's angle from 12 o'clock in 250ths of a turn; 254 the rim, 255 outside
++    const A: [u8; 81] = [
++        255, 255, 254, 254, 254, 254, 254, 255, 255, 255, 254, 254, 237, 0, 12, 254, 254, 255, 254, 254, 218, 231,
++        0, 18, 31, 254, 254, 254, 200, 205, 218, 0, 31, 44, 49, 254, 254, 187, 187, 187, 0, 62, 62, 62, 254, 254,
++        174, 169, 156, 125, 93, 80, 75, 254, 254, 254, 156, 143, 125, 106, 93, 254, 254, 255, 254, 254, 137, 125,
++        112, 254, 254, 255, 255, 255, 254, 254, 254, 254, 254, 255, 255,
++    ];
++    let gone = if max_ms == 0 { 250 } else { (used.min(max_ms) as u64 * 250 / max_ms as u64) as u8 };
++    for (i, &a) in A.iter().enumerate() {
++        if a == 254 || (a < 250 && a >= gone) {
++            let p = Point::new(118 + (i % 9) as i32, (i / 9) as i32);
++            Pixel(p, BinaryColor::Off).draw(lcd).ok();
++        }
++    }
++}
++
++/// the header bar with text dark on it at x
++fn head_text<D>(lcd: &mut D, x: i32, t: &str)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    let st = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
++    Text::with_baseline(t, Point::new(x, 0), st, Baseline::Top).draw(lcd).ok();
++}
++
++fn fill_box<D>(lcd: &mut D, x: i32, y: i32, w: u32, h: u32, c: BinaryColor)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    Rectangle::new(Point::new(x, y), Size::new(w, h)).into_styled(PrimitiveStyle::with_fill(c)).draw(lcd).ok();
++}
++
 +/// MHz with 3 decimals, as 146.940
 +fn mhz<const N: usize>(b: &mut TextBuf<N>, hz: u32) {
 +    let k = hz / 1000;
@@ -5212,74 +5352,17 @@ index 0000000..f7a5c44
 +    }
 +    match t.view {
 +        View::List => {
-+            if !msg {
-+                let mut info: XsInfo = unsafe { core::mem::zeroed() };
-+                unsafe { ffi::xs_info(t.xs, &mut info) };
-+                let pass = info.last_ms as u32 * BANDS[t.band as usize].1.len() as u32;
-+                write!(
-+                    b,
-+                    "EX {} {} {}.{}s {}",
-+                    BANDS[t.band as usize].0,
-+                    t.ex.n,
-+                    pass / 1000,
-+                    (pass / 100) % 10,
-+                    if info.phase == 0 { "floor" } else if info.up > 0 { "UP" } else { "" }
-+                )
-+                .ok();
++            if msg {
++                line(lcd, 0, b.as_str());
++            } else {
++                // the eyes, then the band set and how many it has found (Jeff 2026-11-07: the
++                // sweep time doesn't matter to a person)
++                fill(lcd, 0, 10, BinaryColor::On);
++                eyes(lcd, now_ms() / 1000 % 2 == 1);
++                write!(b, "{}  {} found", BANDS[t.band as usize].0, t.ex.n).ok();
++                head_text(lcd, 19, b.as_str());
 +            }
-+            line(lcd, 0, b.as_str());
-+            // keep the selected row on screen
-+            let top = (t.sel as usize).saturating_sub(ROWS - 1) as u32;
-+            // new repeaters above a rule, known (saved) ones below it (Jeff 2026-11-07): the
-+            // rows under it move down 2 px, which the 4 px above the footer leave room for
-+            let mut shift = 0;
-+            let mut was_new = top > 0 && cand(top - 1).is_some_and(|c| c.flags & EX_F_KNOWN == 0);
-+            for k in 0..ROWS as u32 {
-+                let Some(c) = cand(top + k) else { break };
-+                let known = c.flags & EX_F_KNOWN != 0;
-+                let ruled = known && was_new && shift == 0;
-+                if ruled {
-+                    fill(lcd, 11 + 6 * k as i32, 1, BinaryColor::On);
-+                    shift = 2;
-+                }
-+                was_new = !known;
-+                let mut b: TextBuf<32> = TextBuf::new();
-+                let g = if c.flags & EX_F_IGNORED != 0 { 'x' } else { c.grade as char };
-+                write!(b, "{} ", g).ok();
-+                mhz(&mut b, c.hz);
-+                write!(b, " ").ok();
-+                off_text(&mut b, c);
-+                let y = 11 + 6 * k as i32 + shift;
-+                let sel = top + k == t.sel as u32;
-+                if sel {
-+                    // the selected row inverted (Jeff 2026-11-07, for the column a '>' took): a
-+                    // lit bar from the blank pixel row above, unless that touches the header
-+                    // or the rule
-+                    let up = if k == 0 || ruled { 0 } else { 1 };
-+                    fill(lcd, y - up, 6 + up as u32, BinaryColor::On);
-+                }
-+                let ink = if sel { BinaryColor::Off } else { BinaryColor::On };
-+                let st = MonoTextStyle::new(&FONT_4X6, ink);
-+                Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
-+                // Jeff's split bar (2026-11-07): the loudest over as a 2 px bar, 5 dB a pixel
-+                // from -120 dBm, and under it a dotted line for the score (10 points = full),
-+                // in the columns the number took; the numbers are in the footer
-+                let w = ((c.hi as i32 + 120) / 5).clamp(0, BAR_W as i32) as u32;
-+                if w > 0 {
-+                    Rectangle::new(Point::new(BAR_X, y), Size::new(w, 2))
-+                        .into_styled(PrimitiveStyle::with_fill(ink))
-+                        .draw(lcd)
-+                        .ok();
-+                }
-+                let d = (c.score as i32 * BAR_W as i32 / 10).clamp(0, BAR_W as i32);
-+                for x in (0..d).step_by(2) {
-+                    Pixel(Point::new(BAR_X + x, y + 3), ink).draw(lcd).ok();
-+                }
-+                if c.call[0] != 0 {
-+                    let x = BAR_X + BAR_W as i32 + 3;
-+                    Text::with_baseline(cstr(&c.call), Point::new(x, y), st, Baseline::Top).draw(lcd).ok();
-+                }
-+            }
++            list_rows(lcd, t, 0);
 +            let mut b: TextBuf<32> = TextBuf::new();
 +            if let Some(c) = cand(t.sel as u32) {
 +                write!(b, "{} dBm  score {}  {} overs", c.hi, c.score, c.overs).ok();
@@ -5331,13 +5414,22 @@ index 0000000..f7a5c44
 +        View::Listen => {
 +            let mut info: XlInfo = unsafe { core::mem::zeroed() };
 +            unsafe { ffi::xl_info(t.xl, &mut info) };
-+            if !msg {
-+                write!(b, "{} ", if t.auto_now { "AUTO" } else { "ID?" }).ok();
++            if msg {
++                line(lcd, 0, b.as_str());
++            } else {
++                // dit-dah, the frequency, and a watch face for the time left
++                fill(lcd, 0, 10, BinaryColor::On);
++                ditdah(lcd, now_ms() / 1000 % 2 == 1);
 +                mhz(&mut b, t.hz);
-+                let s = info.ms / 1000;
-+                write!(b, " {}:{:02}", s / 60, s % 60).ok();
++                head_text(lcd, 15, b.as_str());
++                watch(lcd, info.ms, if t.auto_now { AUTO_MAX_S } else { LISTEN_S } * 1000);
 +            }
-+            line(lcd, 0, b.as_str());
++            if t.auto_now {
++                // the automatic listen keeps the list on screen, an arrow at its row
++                list_rows(lcd, t, t.hz);
++                line(lcd, FOOT, "listening    any key stops");
++                return;
++            }
 +            let mut b: TextBuf<24> = TextBuf::new();
 +            write!(b, "tone {} heard {}", if info.keyed != 0 { "ON " } else { "off" }, info.msgs).ok();
 +            line(lcd, 1, b.as_str());
