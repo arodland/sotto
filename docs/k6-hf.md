@@ -70,4 +70,35 @@ synthesizer stops at a set frequency.
 
 ## Results
 
-(none yet)
+### Run 1, 2026-11-07 15:02-15:06 UTC (receive only, image 4709d7e, stock whip)
+
+`rxmap hf` and `hflo`, then `hfprobe` with the default probes and configurations. Every upload went through on
+the first send. The telemetry keeps only the newest 684 bytes, so the per-bin lines below 27 MHz (hf), below
+3.5 MHz (hflo) and the hfprobe p lines of configurations 0-3 came back only as 2 dB summary rows.
+
+- **Below about 16.5 MHz the floor is dead flat**, -110 dBm (+-2 dB quantisation) at every bin from 1 to 16.5
+  MHz. Above 16.75 MHz it moves between -100 and -116 dBm, and that texture is outside noise getting in. The
+  sharp edge between the two looks like the synthesizer's real bottom (VCO_min / N_max), about 1.5 MHz under
+  the 18 MHz spec.
+- Peaks 10 dB or more over the floor: 16.015 (-91, right at the edge), 20.590 (-90), 21.315 (-98, 15 m) and
+  18.500 MHz (-98). None is on a clock grid. They could be real signals or harmonic-mixing images of FM
+  broadcast. Not identified.
+- hfprobe heard no marker 10 dB over its floor below 18 MHz in any configuration. WWV and CHU didn't show at
+  any frequency, and neither did the 12 and 13 MHz clock markers.
+- **Front-end path off (PA13 and PA14 both low): the floor drops 38 dB to -148**, and the FD6818's own 26 MHz
+  crystal shows +12 dB at 26.000. So the -110 floor comes in through the LNA path. A better antenna would help
+  above the edge, and "no path" is the clean way to look for internal markers. UHF path -124, both paths
+  -114. REG_3E at 0x8000 or 0xC000 changed nothing visible.
+
+### Run 2 (planned): PSK31 from the IC-7100
+
+Jeff OK'd a test into a dummy load, RF power 0.0, PSK31 "AG7EW TEST" over and over (project rule from
+2026-11-07: every test transmission carries ident, and continuous carriers are PSK31):
+
+```sh
+python3 tools/k6_rxmap.py cal --hf --bin mod-rxmap.bin --key-file ~/.config/sotto/k6-mod.key
+```
+
+USB dial 18.100 is the positive control (above the spec) and 14.070 (20 m) is the question. The K6 listens
+1 kHz up (18.101, 14.071), where the PSK31 tone puts the signal. `modem/psk31.py` is the encoder: G3PLX
+varicode, matching fldigi's table, with a raised-cosine envelope.

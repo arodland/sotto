@@ -182,6 +182,8 @@ def test_schedule_and_band_rules():
     assert rx.allowed(425_000_000, line_a_north=False)
     assert not rx.allowed(144_000_000) and not rx.allowed(148_000_000) and not rx.allowed(121_500_000)
     assert all(rx.allowed(f) for f in rx.CAL_POINTS)
+    assert all(rx.allowed(f, hf=True) for f in rx.HF_POINTS) and not any(map(rx.allowed, rx.HF_POINTS))
+    assert not rx.allowed(15_000_000, hf=True) and not rx.allowed(14_345_000, hf=True)  # WWV, band edge
     s = rx.cal_schedule([144_050_000], [1.0, 0.5])
     assert s == [(144_050_000, None), (440_850_000, 1.0), (440_850_000, 0.5)]
     assert all(rx.tlm_size(n) <= rx.TLM_BYTES for _, _, n, _, _ in rx.SEGMENTS.values())
