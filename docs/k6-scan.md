@@ -117,7 +117,7 @@ time with no resends, and the ARQ report was heard both times.
 
 **2 m, 90 s:** `F0 -94 q-135`, `Z sw=90 bins=36000 ms=90131 bps=399 hot=1`. The speed held at
 399 bins/s. Bin 0 still lights up on every sweep, park or not: `T 144.000 n89 t0 -71 d1`. The
-segment floor read **-94**, against -137 in the first run, which is 43 dB high (see below).
+segment floor read -94, the same as the first run's `F -93` (the bench's floor; see below).
 
 **70 cm (70a, 440-445), 120 s, CW ID at 40.7 s:**
 
@@ -173,7 +173,8 @@ stack, the 1 s settle and `--no-rows`, but not yet the full-list fix. Logs:
 - **The floors weren't wrong:** -94 on 2 m and -106 on 70 cm are the bench's real floors. rxmap
   measured median floors of -91 in the VHF filter and -108 in the UHF filter at the bench
   (docs/k6-rxmap.md), most likely noise from the PC. All 8 reads of each F line agree to within
-  4 dB. The first run's -137 came from sample points on round frequencies (144.0, 144.5, ...).
+  4 dB, and the first run's log says `F -93` as well. (I had misremembered it as -137, Phase 0's
+  quiet-channel figure.)
   The K6 is on the same image (keyed-lr-45c23e0, flashed 07:26) for all three runs.
 - **What really went wrong on 70 cm:** the floor fell from -106 to -140/-142 during the CW ID. A
   -22 dBm carrier desenses the other bins, so a confirm next to it reads about -140, and the
@@ -188,13 +189,25 @@ stack, the 1 s settle and `--no-rows`, but not yet the full-list fix. Logs:
 - **The 1 s settle** stays. It costs nothing and the evidence for it is gone, but a strong upload
   carrier is still a reason to wait.
 
+## Fourth bench run (2026-11-07 08:49 UTC)
+
+The module was 55835eb (the full-list fix, but not yet the floor fix), CI run 42356625870, 3,516 B.
+Logs: `~/sotto-work/runs/explorer-scan-4/`.
+
+- **2 m, 60 s, `--no-rows`:** `F0 -93 q-135`, `Z sw=61 bins=24400 ms=60150 bps=405 hot=1`.
+  144.000 again on every sweep (`T 144.000 n60 t0 -71 d1`), one H line a sweep.
+- **70 cm, 120 s, CW ID at 40.7 s:** `F0 -105 q-140`. The ID was caught (`H 440.850 7782 -23`).
+  The floor was still dragged down, -114, then -116, then -143 by sweep 25, as expected without
+  f16ff0c. The bench noise at 440.000-440.225 then came in as hits. **But the full-list fix held
+  on air:** one slow sweep of 3.6 s (123 hits, the list filling), then sweeps 30-103 at
+  1,093-1,176 ms with 0-5 confirms. `Z sw=107 bins=42800 ms=121436 bps=352 hot=10`, against 112
+  without it. Something at 440.925, -91 dBm, stayed up from 08:52:57 to the end, with nobody
+  keying. 440.850 had dropped off the T list by the end: it was down, and a newer entry took its
+  place, but its H line is in the log.
+
 ## Next bench run
 
-Receive only, nothing flashed, with the module built from the branch head (3,532 B here, 84 B
-of scratch to spare; about 60 B in CI's build):
-
-1. `run 2m --seconds 60 --no-rows`: if bin 0 is clean without the R lines, the serial burst is
-   the cause, and the fix is a park long enough for the UART to drain.
-2. `run 70a --seconds 120` with the CW ID about 40 s in, with the serial log started *before* the
-   upload so the `F` line is in it. Check whether the F floor now reads about -141, the `c`
-   counts on the S lines, and bins a second.
+Receive only, nothing flashed, with f16ff0c or later (the floor fix): `run 70a --seconds 120`
+with the CW ID about 40 s in. The floor should stay near -105 through the ID (the `fl` on the N
+lines). The bench noise at 440.0-440.2 shouldn't come in as hits, and every sweep should take
+about 1 s. A run of 10 minutes or more would also let 144.000 become an `X` spur on 2 m.
