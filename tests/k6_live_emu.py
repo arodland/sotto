@@ -286,7 +286,7 @@ IFPAGER = os.path.join(ROOT, "c", "k6", "mod", "ifpager_emu.c")
 
 
 def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma=None, stall=None,
-                pre_s=0.3, after_s=0.5, flash_cpi=None):
+                pre_s=0.3, after_s=0.5, flash_cpi=None, r23=False):
     """the pager's coded 4FSK session (c/k6/ifpager.c, in the test module ifpager_emu.c) against
     a modelled burst of these XL payloads (modem/k6g.py), the carrier already up when it starts
     (as after the control packet): -> (return value, its lines, stack bytes used, the packets
@@ -294,7 +294,7 @@ def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma
     from modem import k6g
     from sim.k6if import mcu, study as st
     code, entry = k6mod.build(IFPAGER)
-    a = k6g.audio(k6g.burst_symbols(payloads), st.FSA, level)
+    a = k6g.audio(k6g.burst_symbols(payloads, r23=r23), st.FSA, level)
     s = st.fm(st.ic7100(np.concatenate([np.zeros(int(pre_s * st.FSA)), a,
                                         np.zeros(int(after_s * st.FSA))])), f_off)
     fdma = fdma or mcu.FDMA
@@ -302,6 +302,7 @@ def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma
     ib = bits.astype(np.uint8) * 2
     e = Emu(code, entry, ib, 0, fdma, cpi, stall=stall, max_s=len(ib) / fdma + 8.0,
             flash_cpi=flash_cpi)
+    e.mu.mem_write(e.scr + 1216 + 4 + 128 * 64, int(r23).to_bytes(4, "little"))   # the rate, for ifpager_emu.c
     r = e.run()
     ret, used = r if r else (None, None)
     raw = bytes(e.mu.mem_read(e.scr + 1216, 4 + 128 * 64))   # after the DMA ring (IFP_RING)

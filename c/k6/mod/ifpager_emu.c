@@ -59,7 +59,8 @@ int k6_main(const k6_api_t *api) {
   int32_t v[14];
   int r;
   *(volatile uint32_t *)(scr + IFP_RING) = 0;
-  r = ifp_session(api, scr, 8000, 60000, &res);
+  /* the test puts the rate (1: 2/3) after the packets' store */
+  r = ifp_session(api, scr, 8000, 60000, (int)*(volatile uint32_t *)(scr + IFP_RING + 4 + 128 * 64), &res);
   v[0] = r, v[1] = (int32_t)res.syncs, v[2] = (int32_t)res.syms, v[3] = (int32_t)res.lost;
   v[4] = res.acq_q, v[5] = res.acq_rej, v[6] = res.afc_hz, v[7] = res.idle_pct, v[8] = res.ks;
   v[9] = (int32_t)res.ms, v[10] = res.ram, v[11] = res.lag, v[12] = res.gap_us, v[13] = res.gap_i;

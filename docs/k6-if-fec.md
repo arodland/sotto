@@ -11,7 +11,8 @@ decisions, so any bit error costs the whole packet. PHY G carries the same XL pa
 whitened, the same CRC, interleave groups, parity packets and playback) a different way:
 
 - 4FSK at 1200 baud, with tones at 900, 1500, 2100 and 2700 Hz, Gray coded, at 0.12 peak.
-- A rate-1/2 K=7 convolutional code (polynomials 133 and 171).
+- A rate-1/2 K=7 convolutional code (polynomials 133 and 171), or the same code punctured to
+  rate 2/3 (`--g-rate 2/3`, below).
 - On the K6, the IF matched filter `ifrx.c` decides on GP0 code 13's stream, as the `iflive`
   modules do. Each tone's metric becomes a soft bit, and a soft Viterbi decoder recovers the
   packet.
@@ -25,7 +26,7 @@ code clears: the soft decoder over the real metrics made 0 errors in 24,000 bits
 A burst is:
 
 1. A control packet (F/1800, XL, two copies) with action 10. Byte 4 holds the session's longest
-   time in units of 2 s.
+   time in units of 2 s; byte 3 is 1 for rate 2/3 (images before PR #108 ignore it).
 2. 0.5 s of bare carrier.
 3. A lead of 2400 symbols (2.0 s), tones 0 and 3 in turn, starting with 0. `ifrx` acquires on it.
    Its 256 symbols of lead steering end before the data, even when the lock comes 1.3 s in.
@@ -40,10 +41,17 @@ interleaved in 24 blocks of 86 bits. Symbol i of block b carries coded bit 86b +
 value's high bit and 86b + 43 + i as its low bit, so a symbol's two bits are 21 trellis steps
 apart.
 
+**Rate 2/3** sends the same coded bits but the second one (from 171) of every odd trellis step:
+3 bits for each 2 steps, 1548 coded bits in 18 blocks of 86, 774 symbols. The interleave and
+the block size are unchanged. The decoder takes LLR 0 for each missing bit, and a step that
+needs a bit of the next block waits for it.
+
 One packet takes 1056 symbols (0.88 s) and carries 20 sotto 1200 slots (0.8 s of speech). So
 PHY G runs at 0.91x real time. **A 12 s clip** (15 XL packets) takes 15.2 s for the burst and
 17.3 s with the control packet. At F/1800 the same clip takes 10.8 s. PHY G trades air time for
-margin. The faster 4FSK is the next step (below).
+margin. At rate 2/3 a packet takes 798 symbols (0.665 s): 1.2x real time, about 1540 bit/s
+net. The same clip's burst takes 12.0 s, 14.1 s with the control packet; the 2 s lead is
+now the largest overhead.
 
 ## On the K6
 
@@ -60,7 +68,7 @@ it:
 
 It prints two lines:
 
-    K6 IFP ret=15 ms=16930 syncs=15 syms=20510 lost=0 q=88 rej=0 afc=-160 idle=43 ks=5900 ram=388 gap=139@1 lag=43 stack_free=600
+    K6 IFP ret=15 ms=16930 syncs=15 syms=20510 lost=0 q=88 rej=0 afc=-160 idle=43 ks=5900 ram=388 gap=139@1 lag=86 stack_free=600
     K6 IFP pkts=15 r=222111111111113 miss=000100000000000
 
 - `ret` is the number of packets handed over: -2 a key, -6 no lock.
@@ -69,8 +77,8 @@ It prints two lines:
 - `afc` is the AFC offset in Hz.
 - `idle` is the CPU idle percentage, `ks` the DMA's kS/s.
 - `ram` is the bytes of the hot loops run from RAM, `gap=us@i` the longest the loop was away
-  from the ring (and the sample of the symbol it came back at), and `lag` the most trellis steps
-  the decoder fell behind (over 43: blocks were overwritten).
+  from the ring (and the sample of the symbol it came back at), and `lag` the most coded bits
+  the decoder fell behind (86 is normal; 87 at rate 2/3; much more: blocks were overwritten).
 - `r` gives each packet's `sp_packet` result: 0 dup, 1 added, 2 new, 3 complete, C a bad CRC.
 - `miss` gives each sync word's wrong symbols.
 
@@ -156,10 +164,13 @@ store: 25.6 s of sotto 1200. The session stores the whole message, then plays it
 PHY G at rate 1/2 carries 1200 bit/s. The built-in FFSK nets about 1500 bit/s after packet
 overhead. Ways to get ahead of it, roughly in order of cost:
 
-- **Puncture to rate 2/3** (keep 3 of every 4 coded bits). That gives 1600 bit/s at 1200 baud,
-  at about 1.5-2 dB less margin than rate 1/2. It needs only the sender's pattern and erasures
-  (LLR 0) in the decoder, with no CPU change. With a shorter lead and sync, a 12 s clip would
-  take about 11 s.
+- **Puncture to rate 2/3**: done (PR #108), not on air yet. On the model it needs about 2 dB
+  more than rate 1/2 (every packet at 49 dB-Hz, against 47). On the M0 emulator at the image's
+  timing it takes 27% idle, with a third more trellis steps a symbol; steps that end in a
+  traceback (80 ring entries) now run only three or more samples before a burst, which an
+  overrun at rate 2/3 showed was needed.
+- **A shorter lead.** The session now starts at the control packet, so 1 s should do; to try
+  with `--g-lead 1.0` on air.
 - **A faster symbol rate.** 1600 or 1800 baud 4FSK, with the tones re-spaced to fit the IC-7100's
   3.1 kHz passband. That needs new templates (TL, taps) and costs CPU at the K6's margin; MSK 2400
   already failed on this transmitter.

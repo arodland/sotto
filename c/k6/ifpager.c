@@ -43,13 +43,21 @@ IFRX_NOINLINE static void traceback(ifp_t *p, uint32_t s, int32_t r, int32_t end
   }
 }
 
-/* one trellis step, on coded bits 2 bk and 2 bk + 1 of the block being decoded */
+/* one trellis step, on the next one or two coded bits (rate 2/3's odd steps: one, the other 0) */
 IFRX_NOINLINE static void step(ifp_t *p) {
-  const int8_t *l = p->llr[p->bb] + 2 * p->bk;
+  const int8_t *f = p->llr[0];
   int16_t *a = p->pm[p->cur], *b = p->pm[p->cur ^ 1];
-  int32_t l0 = l[0], l1 = l[1], bm[4], base = a[0];
+  int32_t bi = p->bi, l0 = f[bi], l1 = 0, bm[4], base = a[0];
   uint32_t d[2] = {0, 0};
   int j;
+  if (++bi == 2 * IFP_BLOCK) bi = 0;
+  if (!(p->r23 & p->ls & 1)) {
+    l1 = f[bi];
+    if (++bi == 2 * IFP_BLOCK) bi = 0;
+    p->step++;
+  }
+  p->step++;
+  p->bi = bi;
   bm[0] = l0 + l1, bm[1] = l0 - l1, bm[2] = l1 - l0, bm[3] = -l0 - l1;
   for (j = 0; j < 32; j++) {
     int32_t m = bm[ifp_out[j]], x = a[j] - base, y = a[j + 32] - base, u, v;
@@ -63,8 +71,6 @@ IFRX_NOINLINE static void step(ifp_t *p) {
   }
   p->cur ^= 1;
   p->dec[p->ri][0] = d[0], p->dec[p->ri][1] = d[1];
-  if (++p->bk == IFP_HALF) p->bk = 0, p->bb ^= 1;
-  p->step++;
   p->ls++;
   if (p->ls == IFP_STEPS) {
     traceback(p, 0, p->ri, p->ls, p->out, p->ls); /* the tail brought it to state 0 */
@@ -82,7 +88,8 @@ IFRX_NOINLINE static void step(ifp_t *p) {
 
 int ifp_work(ifp_t *p) {
   int k;
-  if (p->have || p->step >= p->ready) return -1;
+  /* its bits: two, or one on rate 2/3's odd steps (a packet starts on an even one) */
+  if (p->have || p->step + 2 - (uint32_t)(p->r23 & p->ls & 1) > p->ready) return -1;
   if (p->ls == IFP_STEPS) { /* the next packet's first step: start it afresh */
     p->ls = 0, p->out = 0, p->ri = 0;
     ifrx_zero(p->pkt, IFP_PAYLOAD / 4);
@@ -127,8 +134,8 @@ int ifp_sym(ifp_t *p, int tone, const uint32_t met[4]) {
     int8_t *l = p->llr[p->sb] + p->sk;
     l[0] = (int8_t)clamp_llr((int32_t)m01 - (int32_t)m23, mean);
     l[IFP_HALF] = (int8_t)clamp_llr((int32_t)m03 - (int32_t)m12, mean);
-    if (++p->sk == IFP_HALF) p->sk = 0, p->sb ^= 1, p->ready += IFP_HALF; /* a block in */
-    if (++p->nsym == IFP_STEPS) p->state = IFP_HUNT;
+    if (++p->sk == IFP_HALF) p->sk = 0, p->sb ^= 1, p->ready += IFP_BLOCK; /* a block in */
+    if (++p->nsym == (p->r23 ? IFP_SYMS23 : IFP_SYMS12)) p->state = IFP_HUNT;
     return 0;
   }
   k = ones24((p->hist ^ IFP_SYNC) | p->bad);
@@ -165,8 +172,8 @@ int ifp_sym(ifp_t *p, int tone, const uint32_t met[4]) {
 #define STALL_US 120u  /* well under a lap of the ring */
 /* the burst is over after this many symbols with no sync word: two packets' time (and the
    rest of a 2 s lead before the first) */
-#define END_SYMS (2 * (IFP_STEPS + IFP_SYNC_LEN))
-#define FIRST_SYMS (2400 + END_SYMS)
+#define END_SYMS(r23) (2 * ((r23) ? IFP_SYMS23 + IFP_SYNC_LEN : IFP_SYMS12 + IFP_SYNC_LEN))
+#define FIRST_SYMS(r23) (2400 + END_SYMS(r23))
 
 static uint32_t rd(uint32_t a) { return *(volatile uint32_t *)a; }
 static void wr(uint32_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
@@ -235,6 +242,12 @@ IFRX_NOINLINE static uint32_t ram_block(ifrx_t *rx, uint32_t *code, count_fn *cn
   return e - lo;
 }
 
+/* 1: the session's next trellis step ends in a traceback (ifp_work) */
+static int ifp_tb_next(const ifp_t *p) {
+  int32_t n = p->ls == IFP_STEPS ? 1 : p->ls + 1;
+  return n == IFP_STEPS || (!(n & (IFP_TB_OUT - 1)) && n >= IFP_TB_RING);
+}
+
 /* a decoded packet into the store (sp_packet: de-whitening, CRC, the frames) */
 IFRX_NOINLINE static void hand(ifp_t *p, ifp_result_t *res) {
   int v = sp_packet(p->pkt, IFP_PAYLOAD);
@@ -244,7 +257,7 @@ IFRX_NOINLINE static void hand(ifp_t *p, ifp_result_t *res) {
 }
 
 IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms, uint32_t max_ms,
-                            ifp_result_t *res) {
+                            int r23, ifp_result_t *res) {
   ifrx_t rx;
   ifp_t p;
   uint32_t lastw = 0, produced = 0, consumed = 0, c0, k = 0, kq = 0, idle = 0, tot = 0;
@@ -260,6 +273,7 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
   (void)code, (void)ram_block;
 #endif
   ifp_init(&p);
+  p.r23 = r23 & 1;
   start(rb);
   c0 = tim();
   for (;;) {
@@ -297,14 +311,21 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
         if ((int32_t)(p.ready - p.step) > res->lag) res->lag = (int32_t)(p.ready - p.step);
         continue;
       }
-      if (p.have) {
-        if ((i >= 0 && i <= IFRX_TL / 2 - 4) || (i >= IFRX_TL / 2 + 1 && i <= IFRX_TL - 4)) {
-          hand(&p, res);
-          r++;
+      {
+        /* the store's work, and a step that ends in a traceback (every 16th, and a packet's
+           last: 80 entries of the ring), only where the next burst is three or more samples
+           away; a plain step anywhere but the sample before one */
+        int far = (i >= 0 && i <= IFRX_TL / 2 - 4) || (i >= IFRX_TL / 2 + 1 && i <= IFRX_TL - 4);
+        if (p.have) {
+          if (far) {
+            hand(&p, res);
+            r++;
+            continue;
+          }
+        } else if (i != IFRX_TL / 2 - 1 && i < IFRX_TL - 1 && (far || !ifp_tb_next(&p)) &&
+                   ifp_work(&p) >= 0)
           continue;
-        }
-      } else if (i != IFRX_TL / 2 - 1 && i < IFRX_TL - 1 && ifp_work(&p) >= 0)
-        continue;
+      }
       idle += d;
       if (++kq & 0xFFFF) continue;
     } else {
@@ -344,7 +365,7 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
       }
       continue;
     }
-    if (p.syncs ? p.syms - p.last_sync > END_SYMS : p.syms - lock_sym > FIRST_SYMS) break;
+    if (p.syncs ? p.syms - p.last_sync > END_SYMS(p.r23) : p.syms - lock_sym > FIRST_SYMS(p.r23)) break;
   }
   stop();
   /* the burst is over (or the time): the packets whose blocks are all in */
@@ -364,7 +385,8 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
   return r;
 }
 
-int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, ifp_result_t *res) {
+int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, int r23,
+                ifp_result_t *res) {
   uint32_t ahb, apb2, t0 = api->ms();
   uint16_t r33, r34;
   ifrx_zero(res, sizeof(*res) / 4);
@@ -381,7 +403,7 @@ int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t m
   if ((r33 & 0x0100) && api->fd_write(0x33, (uint16_t)(r33 & ~0x0100)) != 0) goto out_ahb;
   api->fd_write(0x34, (uint16_t)((r34 & 0xFFF0) | 13));
   wr(RCC_APB2ENR, apb2 | TIM17EN);
-  res->ret = run(api, ring, wait_ms, max_ms, res);
+  res->ret = run(api, ring, wait_ms, max_ms, r23, res);
   wr(RCC_APB2ENR, apb2);
   api->fd_write(0x34, r34);
   api->fd_write(0x33, r33);

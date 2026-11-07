@@ -441,12 +441,12 @@ CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 
 CTL_REGS = (0x2B, 0x43, 0x44, 0x58, 0x59, 0x5C, 0x5E, 0x72, 0x73, 0x7E, 0x96, 0x9B)
 
 
-def control_record(seq, settings=None, action="none", arg=None):
+def control_record(seq, settings=None, action="none", arg=None, val=None):
     """settings: {"phy": "F"|"D", "frames": "L"|"XL", "baud": 1200|2400, "auto": 0|1,
     "emph": 0|1, "var": 0..15 (key 0's receive variant), "vol": 0..7 (key Up/Down steps,
     3 = 0 dB), "idlekeep": 0|1 (no re-arm on an idle no-sync RX-done)}; only the ones given
     change."""
-    mask = val = vv = 0
+    mask = val_bits = vv = 0
     for k, v in (settings or {}).items():
         if k not in CTL_BITS:
             raise ValueError(f"unknown setting {k!r} (have {', '.join(CTL_BITS)})")
@@ -466,9 +466,13 @@ def control_record(seq, settings=None, action="none", arg=None):
         else:  # vol
             vv |= (min(int(v), 7) & 0x0F) << 4
             on = 0
-        val |= bit if on else 0
+        val_bits |= bit if on else 0
     if arg is not None:   # an action's argument in byte 4 (ifrx: the session's length / 2 s)
         vv = int(arg) & 0xFF
+    if val is not None:   # byte 3 for an action without settings (ifrx: 1 = rate 2/3)
+        val = int(val) & 0xFF
+    else:
+        val = val_bits
     r = bytes([CTL_MAGIC, seq & 0xFF, mask, val, vv, CTL_ACTIONS[action]])
     c = crc16_ccitt(r)
     return r + bytes([c >> 8, c & 0xFF])
@@ -485,10 +489,11 @@ def control_reg_record(seq, reg, value):
     return r + bytes([c >> 8, c & 0xFF])
 
 
-def control_packet(seq, settings=None, action="none", length=64, reg=None, arg=None):
+def control_packet(seq, settings=None, action="none", length=64, reg=None, arg=None, val=None):
     """A whitened control payload: the record repeated to fill `length` (64 = L, 128 = XL).
-    reg=(register, value) makes a register write instead of a settings change; arg: byte 4."""
-    rec = control_reg_record(seq, *reg) if reg else control_record(seq, settings, action, arg)
+    reg=(register, value) makes a register write instead of a settings change; arg: byte 4;
+    val: byte 3 (an action's other argument)."""
+    rec = control_reg_record(seq, *reg) if reg else control_record(seq, settings, action, arg, val)
     return _whiten(rec * (length // len(rec)))
 
 

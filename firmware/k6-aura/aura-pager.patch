@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..20bbb6a
+index 0000000..4ee7139
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3678 @@
+@@ -0,0 +1,3683 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -366,7 +366,7 @@ index 0000000..20bbb6a
 +        pub fn sp_vlr_setup() -> i32;
 +        pub fn sp_vlr_expected() -> u32;
 +        #[cfg(not(feature = "lean"))]
-+        pub fn ifp_session(api: *const K6Api, ring: *mut u8, wait_ms: u32, max_ms: u32, res: *mut IfpResult) -> i32;
++        pub fn ifp_session(api: *const K6Api, ring: *mut u8, wait_ms: u32, max_ms: u32, r23: i32, res: *mut IfpResult) -> i32;
 +    }
 +    /// c/k6/ifpager.h: a coded 4FSK receive session's results
 +    #[repr(C)]
@@ -1217,6 +1217,8 @@ index 0000000..20bbb6a
 +    ctl: Option<[u8; 6]>,
 +    /// a coded 4FSK receive session asked for (control action 10): its longest, ms; 0 none
 +    ifrx_ms: u32,
++    /// ... at rate 2/3 (control byte 3 = 1)
++    ifrx_r23: bool,
 +    /// seq of the last control record applied, -1 none
 +    ctl_seq: i16,
 +    /// the settings before a control packet's change (phy_ffsk, xl, baud_2400, f2400_var),
@@ -1360,6 +1362,7 @@ index 0000000..20bbb6a
 +            stream_play: false,
 +            stream_start: false,
 +            ifrx_ms: 0,
++            ifrx_r23: false,
 +            waits: 0,
 +            late: 0,
 +            overruns: 0,
@@ -2730,7 +2733,7 @@ index 0000000..20bbb6a
 +    paint_free_ram();
 +    let ring = (pwm_audio::idle_bytes() as usize + 3) & !3;
 +    let mut res: ffi::IfpResult = unsafe { core::mem::zeroed() };
-+    let r = unsafe { ffi::ifp_session(&MOD_API, ring as *mut u8, IFRX_WAIT_MS, max_ms, &mut res) };
++    let r = unsafe { ffi::ifp_session(&MOD_API, ring as *mut u8, IFRX_WAIT_MS, max_ms, app.pager.ifrx_r23 as i32, &mut res) };
 +    unsafe { (*addr_of_mut!(MOD_CTX)).app = core::ptr::null_mut() };
 +    let sfree = free_ram();
 +    report_line(format_args!(
@@ -2906,7 +2909,9 @@ index 0000000..20bbb6a
 +    if action == CTL_ACT_IFRX {
 +        // a session, once this burst's handling is over (poll runs it)
 +        app.pager.ifrx_ms = (vv as u32).max(3) * 2000;
-+        report_line(format_args!("K6 CTL seq={} ifrx ms={}", seq, app.pager.ifrx_ms));
++        app.pager.ifrx_r23 = val & 1 != 0;
++        report_line(format_args!("K6 CTL seq={} ifrx ms={} r={}", seq, app.pager.ifrx_ms,
++            if app.pager.ifrx_r23 { "2/3" } else { "1/2" }));
 +        app.pager.idle_ticks = 0;
 +        return;
 +    }
