@@ -150,7 +150,8 @@ a module sends only text and pixel rows (`c/k6/k6_mod.h`):
   y = 21 down, in place of lines 2-4, `ring[head]` on top. The rows stay in the module's
   memory, so the firmware needs no buffer for them;
 - `lcd_flush()`: draws the whole frame and sends it to the display (about 20-40 ms; 0, or -1
-  with no display).
+  with no display: the lean images leave the screen out, 1 KB they don't have, so a module
+  there keeps to its serial lines).
 
 The firmware's part is in the Aura patch: `ModScreen` and the four calls in `app/pager.rs`,
 `draw_mod_screen` in `ui/pager.rs`, and a hook `main.rs` registers once with the display

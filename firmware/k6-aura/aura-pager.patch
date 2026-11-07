@@ -5686,7 +5686,7 @@ index 9d2b0c0..1842385 100644
                  app.poll_squelch(&mut cp.SYST, 3);
                  app.poll_dual_standby(&mut cp.SYST, app.rssi_open());
 diff --git a/src/ui/mod.rs b/src/ui/mod.rs
-index cdfa0f7..9a177d4 100644
+index cdfa0f7..91caa2f 100644
 --- a/src/ui/mod.rs
 +++ b/src/ui/mod.rs
 @@ -6,6 +6,7 @@ mod fm;
@@ -5705,15 +5705,19 @@ index cdfa0f7..9a177d4 100644
  use satellite::draw_satellite;
  use sstv::draw_sstv;
  use scan::draw_scan;
-@@ -62,6 +64,34 @@ impl<const N: usize> core::fmt::Write for TextBuf<N> {
+@@ -62,6 +64,42 @@ impl<const N: usize> core::fmt::Write for TextBuf<N> {
      }
  }
  
 +/// A RAM module's screen (module API level 6): app::pager's lcd_flush calls the function this
 +/// registers, which draws app::pager::MOD_SCREEN on `display` and flushes it. Modules run inside
-+/// the main loop's calls, never while it draws, so nothing else holds the display then.
++/// the main loop's calls, never while it draws, so nothing else holds the display then. The
++/// `lean` images (the codebook install, the -table fallbacks) have no room for it: lcd_flush
++/// returns -1 there and the module keeps to its serial lines.
++#[cfg(not(feature = "lean"))]
 +static mut MOD_DISPLAY: *mut () = core::ptr::null_mut();
 +
++#[cfg(not(feature = "lean"))]
 +unsafe fn mod_flush<DI: WriteOnlyDataCommand + 'static>() -> i32 {
 +    let d = unsafe { &mut *(*core::ptr::addr_of!(MOD_DISPLAY) as *mut Display<'static, DI>) };
 +    pager::draw_mod_screen(d.as_draw_target(), unsafe { &*core::ptr::addr_of!(app::pager::MOD_SCREEN) });
@@ -5721,10 +5725,14 @@ index cdfa0f7..9a177d4 100644
 +    0
 +}
 +
++#[cfg(not(feature = "lean"))]
 +pub fn hook_mod_screen<DI: WriteOnlyDataCommand + 'static>(display: &mut Display<'_, DI>) {
 +    unsafe { *core::ptr::addr_of_mut!(MOD_DISPLAY) = display as *mut Display<'_, DI> as *mut () };
 +    app::pager::set_mod_lcd(mod_flush::<DI>);
 +}
++
++#[cfg(feature = "lean")]
++pub fn hook_mod_screen<DI: WriteOnlyDataCommand + 'static>(_display: &mut Display<'_, DI>) {}
 +
 +/// Pager-only image: just the VOICE MSG screen, so the other screens aren't linked.
 +#[cfg(feature = "pager-only")]
@@ -5740,7 +5748,7 @@ index cdfa0f7..9a177d4 100644
  pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut app::App) {
      match app.mode() {
          app::Mode::AppMenu => draw_app_menu(display.as_draw_target(), &*app),
-@@ -77,6 +107,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
+@@ -77,6 +115,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
              draw_satellite(display.as_draw_target(), app);
          }
          app::Mode::Sstv => draw_sstv(display.as_draw_target(), app),
@@ -5750,10 +5758,10 @@ index cdfa0f7..9a177d4 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..46b9973
+index 0000000..84c730f
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,277 @@
+@@ -0,0 +1,278 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
@@ -5963,7 +5971,8 @@ index 0000000..46b9973
 +
 +/// a RAM module's screen (module API level 6, app/pager.rs ModScreen): line 0 as an inverted
 +/// title bar, lines 1-5 below at the explorer's baselines (y = 9, 19 ... 59), a bar after a
-+/// line's text, and the module's waterfall rows over lines 2-4
++/// line's text, and the module's waterfall rows over lines 2-4 (not in the `lean` images)
++#[cfg(not(feature = "lean"))]
 +pub fn draw_mod_screen<D>(lcd: &mut D, s: &app::pager::ModScreen)
 +where
 +    D: DrawTarget<Color = BinaryColor>,
