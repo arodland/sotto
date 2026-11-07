@@ -308,7 +308,9 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
       }
     }
     d->info.cls[half] = (int16_t)v;
-#ifdef FX_HISS_LIGHT
+#if defined(FX_HISS_FB)
+    if (half) model_bands(A, L, f0, d->info.bands[half]);   /* the K6 layer reads odd halves only */
+#elif defined(FX_HISS_LIGHT)
     model_bands(A, L, f0, d->info.bands[half]);
 #endif
   }

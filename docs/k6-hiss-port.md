@@ -16,8 +16,9 @@ This page sizes that port before any firmware change: CPU time, RAM, and the 16 
 - **The hiss made with the core's output** (below, `-DFX_HISS_FB`) removes the RAM problem's bulk.
   There is no inverse FFT and no audio held back: four band gains per 10 ms frame drive four
   order-3 filters at 8 kHz on one noise, in step with each core block. It scores like the light
-  layer, and its state is 1.0 KB instead of 12.9 KB. Its CPU is about the light layer's: 20.3 MHz
-  on the model, 15.3 MHz with the code in zero-wait RAM.
+  layer, and its state is 1.0 KB instead of 12.9 KB. With two cheaper options Jeff couldn't hear
+  (half the filters, gains every 20 ms) it adds 12.3 MHz on the model, 9.5 MHz with the code in
+  zero-wait RAM.
 - What's left: about 1 KB of RAM more than the pager has free (state, stack and a 16 kHz PWM ring),
   and the CPU, which fits only with the hot loops in RAM. Next steps are at the end.
 - One exact speed-up came out of the measuring: the resamplers now skip their zero taps.
@@ -293,14 +294,21 @@ fricative and vowel 4-8 kHz band error, dB rms):
 | light layer | 2.104 | 8.41 / 14.45 | 11.53 / 14.38 | 2.533 | 5.28 / 13.25 |
 | **made with the core's output** | 2.105 | 8.65 / 14.57 | 11.76 / 14.52 | 2.540 | 5.54 / 13.31 |
 | + half the filters (`pair`) | 2.105 | 8.57 / 14.53 | 11.70 / 14.48 | 2.540 | 5.51 / 13.28 |
-| + gains every 20 ms (`hop2`) | 2.105 | 8.45 / 14.49 | 11.47 / 14.49 | 2.541 | 5.60 / 13.29 |
+| + gains every 20 ms (`hop2`) | 2.105 | 8.99 / 14.29 | 11.90 / 14.26 | 2.539 | 5.84 / 13.02 |
+| **both (`k6`): the C build** | 2.105 | 8.89 / 14.25 | 11.82 / 14.22 | 2.539 | 5.79 / 12.98 |
 | plain (what the K6 plays) | 2.113 | 64.66 / 31.64 | 64.88 / 31.74 | 2.539 | 64.57 / 31.40 |
+
+`hop2` uses the odd frames, whose centres fall on the core's block edges, so the C can make them in
+step. The renders Jeff listened to used the even ones, which scored 0.3-0.5 dB better on fricatives
+(600: 8.45 dB) and the same on vowels. He heard no difference between the full version, `pair` and
+`hop2` (2026-11-07), so the C build is `k6`.
 
 Order 3 matters: order-2 filters leak enough outside their bands that the band error rises by about
 2 dB (600: 10.54 dB). Making the filters at 16 kHz rather than on the 8 kHz mirror scores the same.
 
-**Fixed point.** It matches the Python on LibriSpeech 3536 and EARS p020: per band, 0.1-0.6 dB
-mean and 1.6-2.2 dB rms frame by frame (two noises, so frames differ). The light layer's C and
+**Fixed point.** It matches the Python on LibriSpeech 3536 and EARS p020: per band, 0.2-0.4 dB
+mean and 1.6-2.2 dB rms frame by frame (two noises, so frames differ). The C's one-poles step
+every 20 ms where the Python's step every 10 ms and are then sampled. The light layer's C and
 Python differ by the same amount. Random bits, losses and one-frame and empty streams run clean
 under AddressSanitizer, UndefinedBehaviorSanitizer and `FX_CHECK`. The default and light builds
 are unchanged. Details:
@@ -318,9 +326,15 @@ are unchanged. Details:
 |---|---:|---:|---:|---:|---:|
 | v3.7 decoder (plain, what the K6 plays) | 47.0 | 74.9 | 37.3 | 0.8 KB | 2.7 KB |
 | light layer | 69.7 | 97.4 | 55.4 | 13.7 KB | 3.2 KB |
-| **made with the core's output** | **67.3** | **94.7** | **52.6** | **1.9 KB** | 3.2 KB |
+| made with the core's output, four filters, gains every 10 ms | 67.3 | 94.7 | 52.6 | 1.9 KB | 3.2 KB |
+| **the C build (`pair` and `hop2`)** | **59.3** | **86.7** | **46.8** | **1.8 KB** | 3.2 KB |
 
-Where its 20.3 MHz go (with the hiss pieces kept as separate functions, which costs 1.4 MHz):
+The C build's 12.3 MHz: the two filters and gains 4.3, the block loop with the noise and the fold
+4.2, stages A and B at 20 ms about 3.8. The core computes its model bands for the odd halves only,
+the ones the layer reads.
+
+Where the four-filter version's 20.3 MHz went (with the hiss pieces kept as separate functions,
+which costs 1.4 MHz):
 
 | Part | MHz |
 |---|---:|
@@ -329,12 +343,12 @@ Where its 20.3 MHz go (with the hiss pieces kept as separate functions, which co
 | The output fold (`up2_q15`) | 3.3 |
 | The block loop, noise and gains | 1.2 |
 
-The two cheaper options in the scores table each take about 3.5 MHz off. `pair` reuses the 4-5
-and 5-6 kHz filters' output, (−1)ⁿ modulated, for 7-8 and 6-7 kHz: half the filters, but those
-bands then share their fine structure, which only a listen can judge. `hop2` runs stages A and B
-every 20 ms. Neither is in the C yet.
+The two cheaper options took 8 MHz off together. `pair` reuses the 4-5 and 5-6 kHz filters'
+output, (−1)ⁿ modulated, for 7-8 and 6-7 kHz (the mirror filters are the same with z → −z), so
+those bands share their fine structure; Jeff couldn't hear it. `hop2` runs stages A and B every
+20 ms.
 
-**RAM on the K6.** The layer's state is 1.0 KB (the 1.9 KB heap less the plain decoder's 0.8 KB),
+**RAM on the K6.** The layer's state is 1.0 KB (the 1.8 KB heap less the plain decoder's 0.8 KB),
 plus about 0.4 KB more stack. The 16 kHz PWM ring would grow too: by 0.64 KB at three segments.
 That is about 2 KB against the 0.66 KB free while 600 / 400 play. To close the gap:
 
@@ -347,10 +361,11 @@ That is about 2 KB against the 0.66 KB free while 600 / 400 play. To close the g
 **CPU on the K6.** On the radio, code in flash runs about 1.29 times the model. sotto 1200 already
 decodes in 16.1 ms of each 20 ms half with RX running, which leaves about 3.9 ms (about 19 MHz):
 
-- As built, 20.3 MHz on the model is about 26 MHz on the radio, 5.5 ms. It doesn't fit from flash.
-- With `pair` and `hop2`, about 13 MHz on the model, 3.6 ms on the radio: it just fits on average,
-  and the worst frames lean on the PWM ring.
-- With the hot loops in RAM: 15.3 MHz as built, about 10 MHz with both options.
+- With four filters and gains every 10 ms, 20.3 MHz on the model is about 26 MHz on the radio,
+  5.5 ms. That doesn't fit from flash.
+- The C build, 12.3 MHz on the model, is about 16 MHz on the radio, 3.3 ms: it just fits on
+  average, and the worst frames lean on the PWM ring.
+- With the hot loops in RAM it is 9.5 MHz, about 2 ms.
 
 All of this needs measuring on the radio. Both RAM and CPU point to the same next step: the layer
 in the 1200 / 600 / 400 decoders, which the fixed-point port doesn't have yet. The C here is the
