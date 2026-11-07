@@ -106,7 +106,11 @@ SOTTO_API void sotto_dec_flush(struct sotto_dec *d, short speech[SOTTO_SAMPLES_P
  * Decoder: one call per received frame; each returns 320 samples SOTTO_DEC16_DELAY_FRAMES
  * frames behind the encoder's input (the first calls return silence). Call sotto_dec16_flush
  * until it returns 0 to drain the last frames. */
+#ifdef FX_HISS_FB
+#define SOTTO_DEC16_DELAY_FRAMES 2          /* and 20 samples: the K6 layer, in step with the core */
+#else
 #define SOTTO_DEC16_DELAY_FRAMES 5
+#endif
 
 struct sotto_enc16;
 struct sotto_dec16;

@@ -327,6 +327,14 @@ ms, SPI reads not timed: 6 per 80 ms or 4 per 120 ms, 34 us each): sotto 600 57.
 71.5 worst of 96, sotto 400 57.7 and 76.6, sotto 1200 in the same build 57.5 and 75.8. About
 4.3 KB more flash than `aura-pager-lr` and 340 bytes more RAM.
 
+**sotto 600 / 400 with its tables as ROM (`out/aura-pager-vlr-rom.bin`, 2026-11-07).** Jeff
+would rather the radio not write its SPI flash to carry sotto. `K6_CODEC=vlr K6_CB=rom` links
+sotto 600 / 400's 21,280 bytes of codebooks into the MCU's flash and reads them in place, as
+`aura-pager-vlri` does but without its installer: `sp_vlr_setup` touches no flash and the boot
+reports `K6 VLR r=1 crc=0884ef5c`. It still reads v3.7's codebook at SPI flash 0x100000 for
+sotto 1200 (the 30 KB more wouldn't fit beside these tables), and it is `lean` like vlri, which
+also refuses the module API's calibration write. So nothing in it writes the SPI flash.
+
 **Codebook in SPI flash (the default since 2026-11-06).** The decoder reads sotto's 30 KB
 codebook from the radio's SPI flash, one 20-byte vector at a time, so the table doesn't need to
 be in the MCU's flash. The images without it have 30 KB free. Flash the install image
