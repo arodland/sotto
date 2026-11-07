@@ -26,6 +26,12 @@ PC: c/sotto_enc (v3.7)  ->  k6fsk packets  ->  IC-7100 FSK  ~~~>  K6 FD6818 FSK 
   packet k carrying frames g*F*D + s*m + k, with m from total. Until a packet of the last group
   arrives the receiver presumes the short layout for packets_total (missing= lists); a last-group
   packet without the bit switches it back to the old padded layout.
+  A good slot that is a pause frame (sotto 2400 and 1200: first 14 bits voicing 0, Wo 127,
+  energy 0, marker 0xA5304B in bits 24-47) plays as N slots (bits 14-23) of the last real slot
+  again, with that slot's good flag; the store holds the compacted slots (total counts them).
+  Parity packets (spec section 14, magic | 0x10) rebuild a group's one missing packet: the
+  parity XOR the other packets' stored frames goes in through the same path as a received
+  packet, before the group is final, so streaming plays the rebuilt frames (`sp_rebuilt`).
   Playback decodes frame by frame and conceals missing frames. There is no heap: the store is in
   the caller's buffer, and the decoder's one `calloc` is a static 864-byte block.
 - **`tools/k6_build.sh`** builds `libsotto_k6.a` for thumbv6m with clang, plus a bench ELF. The

@@ -35,11 +35,29 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
   as the silent-frame study recommended. No K6 change. With the short last group: XL 12.2% fewer
   packets (2400), 18.0% (1200) on pre-trimmed corpus clips; real mic recordings gain more.
   `tools/k6_pcmhash.py` trims and packs the same way by default (same flags).
+- **Pause frames** (`tx`/`send`, sotto 2400 and 1200, default; `--no-pause`): each run of 4 or
+  more silent slots (the trim rule; in sotto 1200 the next slot's A energy must be quiet too)
+  goes as its first slot plus one pause frame: voicing 0, Wo 127, energy 0, a 10-bit count N
+  (bits 14-23) and the marker 0xA5304B (bits 24-47). A K6 from 2026-11-07 plays N slots of fill
+  there, replaying the last real slot with its good flag (so a lost one is concealed, never a held
+  speech frame). When replaying would leave the decoder's voicing state (prev_v, for code 3) other
+  than the real run does, the run's last slot goes too. Older images play a pause frame as one
+  silent slot (its sotto 1200 B half is unvoiced with energy step -6), so pauses come out short.
+  `rx` plays pause frames out (`--no-expand` keeps them). All three together on 25 clips: XL
+  19.0% fewer packets (2400), 21.5% (1200); L 15.5% / 15.0%.
 - **Profile XL** (`--payload XL`, K6 key 2): 128-byte payload, the same header, 20 frames, no
   reserved bytes; groups of 8 packets carry 160 frames. In packet mode the preamble is 16 bytes
   before the first packet and 24 before the rest: after a 128-byte packet the K6's chip reports
   its end late, and with 16 bytes the K6 false-synced on the next one. On air (2026-11-04, K6
   build b0ff399, F/1200): 8/8, 0 bit errors; a 12 s clip is 33.4 s on air against 45.0 s in L.
+- **Parity packets** (`--parity`, spec section 14, 2026-11-07): after each interleave group one
+  more packet whose magic is the codec's | 0x10 (0xB7, 0xB9, 0xBC, 0xBD) and whose body is the
+  XOR of the group's data packets' bodies. A K6 that lost one packet of the group rebuilds it
+  exactly (its PLAY line counts them in `rebuilt=`; `missing=` lists only what stayed lost), so
+  a single loss per group no longer costs concealed frames. Two lost in one group: both stay
+  lost, as without parity. Costs 1/D more air time: 12.5 % at depth 8 (25 % at depth 4). The
+  data packets are unchanged and older K6 images drop the parity packets as an unknown magic,
+  so a parity send plays on any image. `modem.k6 rx` rebuilds the same way.
 - **Stream framing** (`--stream`, K6 key 7 stream mode): after the lead-in, packets go back to
   back with only the sync word between them. The K6 finds the sync in software.
 - **F at 2400 baud** (`--phy F --baud 2400`, K6 keys 1 and 5): 1200/2400 Hz tones, MSK. On air

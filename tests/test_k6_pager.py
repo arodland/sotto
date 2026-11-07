@@ -343,7 +343,7 @@ def test_pcm_hash_is_fnv_of_the_samples_played(host, codec, name, lost):
             f.write(fr)
         miss = f"{len(lost)}" + (":" + ",".join(map(str, lost)) if lost else "")
         line = f"K6 PLAY id=00 total=70 aborted=0 pcm={h} samples={n} missing={miss}"
-        args = [f"{d}/m.sot", "--codec", codec, "--payload", name, "--check"]
+        args = [f"{d}/m.sot", "--codec", codec, "--payload", name, "--no-trim", "--no-pause", "--check"]
         assert k6_pcmhash.main(args + [line]) == 0
         assert k6_pcmhash.main(args + [line.replace(f"pcm={h}", "pcm=00000000")]) == 1
 
@@ -550,3 +550,88 @@ def test_old_layout_and_bad_short_packets():
     st, _ = _run(HOST_LR, new[:1] + bad, xl=True, store=200000)
     assert [x for x in st["results"].split(",") if x][1:] == ["0", "0"]   # SP_DUP: nothing stored
     assert int(st["got"]) == 20
+
+
+def _speechy(n, codec, seed):
+    """n slots with talk-spurt energies: loud stretches and silent runs of 1-40 slots, random
+    voicing (code 3 included) and other bits"""
+    rng = np.random.default_rng(seed)
+    out, i = bytearray(), 0
+    while len(out) < 6 * n:
+        loud = i % 2 == 0
+        for _ in range(int(rng.integers(3, 30) if loud else rng.integers(1, 40))):
+            v = int.from_bytes(rng.integers(0, 256, 6, dtype=np.uint8).tobytes(), "big")
+            e = int(rng.integers(20, 31)) if loud else int(rng.integers(0, 4))
+            v = v & ~(31 << 34) | e << 34
+            out += v.to_bytes(6, "big")
+        i += 1
+    return bytes(out[:6 * n])
+
+
+@pytest.mark.parametrize("codec", ["2400", "1200"])
+def test_pause_frames_compact_and_expand(codec):
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    fr = _speechy(900, codec, seed=3)
+    c, saved = pager.compact_pauses(fr, codec)
+    assert saved > 200 and len(c) == len(fr) - 6 * saved
+    ex, good = pager.expand_pauses(c, None, codec)
+    assert len(ex) == len(fr) and good.all()
+    pc = [pager.pause_count(c[i:i + 6]) for i in range(0, len(c), 6)]
+    assert sum(pc) == saved + sum(1 for k in pc if k)
+    # every slot is the original or (inside a pause) the run's first slot again, and the decoder's
+    # voicing state after each run is the original's
+    e = pager.energy_codes(fr, codec)
+    for i in range(0, len(fr), 6):
+        if ex[i:i + 6] != fr[i:i + 6]:
+            assert e[i // 6] <= 30 - pager.TRIM_BELOW or e[i // 6] == 0
+    st_a = st_b = 0
+    for i in range(0, len(fr), 6):
+        st_a = pager._prev_v(st_a, pager._voicing_codes(fr[i:i + 6], codec))
+        st_b = pager._prev_v(st_b, pager._voicing_codes(ex[i:i + 6], codec))
+        nxt = i + 6
+        if nxt < len(fr) and e[nxt // 6] >= 20:        # a loud slot follows: the run is over
+            assert st_a == st_b
+    assert pager.compact_pauses(fr, "600") == (fr, 0)
+    # a real slot shaped like a pause head moves to Wo 126; nothing real reads as a pause
+    head = pager.pause_frame(7)
+    c2, _ = pager.compact_pauses(head + fr, codec)
+    assert pager.pause_count(c2[:6]) == 0
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+@pytest.mark.parametrize("codec,name,lost,stream", [("1200", "XL", [], False), ("1200", "XL", [2, 9], False),
+                                                    ("1200", "XL", [4], True), ("1200", "L", [7, 30], False),
+                                                    ("2400", "XL", [], False), ("2400", "XL", [3, 11], False)])
+def test_pause_frames_play_as_the_full_message(codec, name, lost, stream):
+    """The K6 plays a compacted message exactly as sotto_dec_fx_m0 plays the full one with the
+    gaps filled by the slot before (a lost pause frame: one concealed slot; a lost slot before a
+    pause: the fill is concealed too), store-then-play and streaming."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    fr = _speechy(1100 if codec == "1200" else 700, codec, seed=5)
+    c, saved = pager.compact_pauses(fr, codec)
+    assert saved > 100
+    prof = pager.profile(name, codec)
+    n = len(c) // 6
+    pk = [p for i, p in enumerate(prof.pack(c, msg_id=33)) if i not in lost]
+    good = np.ones(n, np.uint8)
+    for q in lost:
+        for f in prof.packet_frames(q, n):
+            if f < n:
+                good[f] = 0
+    ex, eg = pager.expand_pauses(c, good, codec)
+    xl = name == "XL"
+    if codec == "1200":
+        st, pcm = (_stream(HOST_LR, pk, 32, xl=xl) if stream else _run(HOST_LR, pk, xl=xl, store=200000))
+        ref_pcm = _dec_lr(_split6(ex), eg)
+    else:
+        st, pcm = run_host(pk, xl=xl, store=200000)
+        ref_pcm = run_dec(_split6(ex), eg)
+        pcm = pcm[160:] if len(pcm) == len(ref_pcm) + 160 else pcm
+    assert int(st["total"]) == n
+    assert len(pcm) == len(ref_pcm) and np.array_equal(pcm, ref_pcm)
+
+
+def _split6(b):
+    return [b[i:i + 6] for i in range(0, len(b), 6)]
