@@ -189,6 +189,21 @@ and every played result matched (`k6_pcmhash --check`) for the packets that arri
   cycles at most (47k before).
 - The two CRC failures were a burst's last packet (rate 2/3) and its first (rate 2/3, 1 s lead).
 
+## On air, 2026-11-07 (image 4709d7e, PR #108)
+
+With the store's group clear fixed, no counts were lost, and the longest gap is the receiver's
+own burst:
+
+| Send | `K6 IFP` | `r=` | Played |
+|---|---|---|---|
+| rate 1/2 | `ret=14 fl=0 lost=0 q=49 idle=20 gap=137@1 ld=2` | `21111111111113` | 14/14, MATCH |
+| rate 2/3 | `ret=14 fl=1 lost=0 q=54 idle=19 gap=137@1 ld=0` | `21111111111113` | 14/14, MATCH |
+| rate 2/3, 1 s lead | `ret=14 fl=1 lost=0 q=59 idle=18 gap=138@1 ld=7` | `C2111111111111` | 13/14, MATCH |
+
+With a 1 s lead the first packet failed its CRC both times (here and on 45b3968), with no counts
+lost: the receiver is still settling (`ld=7` against 0-2 with the 2 s lead). A lead of about 1.5 s,
+or a longer first sync, is the next thing to try. Stack: 356 B to spare.
+
 ## Results before the bench
 
 | Test | Result |
@@ -225,7 +240,7 @@ overhead. Ways to get ahead of it, roughly in order of cost:
   traceback (80 ring entries) now run only three or more samples before a burst, which an
   overrun at rate 2/3 showed was needed.
 - **A shorter lead.** The session now starts at the control packet: a 1 s lead (`--g-lead 1.0`)
-  locked on air and played 13/14 (the first packet failed its CRC).
+  locked on air and played 13/14 twice (the first packet failed its CRC each time); try 1.5 s.
 - **A faster symbol rate.** 1600 or 1800 baud 4FSK, with the tones re-spaced to fit the IC-7100's
   3.1 kHz passband. That needs new templates (TL, taps) and costs CPU at the K6's margin; MSK 2400
   already failed on this transmitter.
