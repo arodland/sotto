@@ -83,13 +83,18 @@ typedef struct {
   int32_t nres;
   int8_t res[IFP_RES_MAX];/* each packet's sp_packet result */
   int8_t miss[IFP_RES_MAX];/* and its sync's wrong symbols */
+  int32_t ram;            /* bytes of the receiver's hot loops run from RAM (0: from flash) */
+  int32_t gap_us, gap_i;  /* the longest the loop was away (a burst and what came before it), and at
+                             which sample of the symbol it came back */
+  int32_t lag;            /* the most trellis steps the decoder fell behind (over IFP_HALF: blocks lost) */
 } ifp_result_t;
 /* A receive session (store, then play: the caller plays once it returns). ring: at least
-   IFP_RING bytes for the DMA, 4-byte aligned (the pager's PWM ring is free while nothing plays).
+   IFP_RING bytes for the DMA, 4-byte aligned (the pager's PWM ring, 1280 B, is free while nothing
+   plays).
    Waits wait_ms for the lead, then runs until no sync word for two packets' time, a key, or
    max_ms. Uses the module API's level 2 calls (fd_read/fd_write, ms, key_poll). Puts back
    REG_33, REG_34, TIM17 and DMA channel 1. */
-#define IFP_RING 1024u
+#define IFP_RING 1216u                 /* 19 counts of 64 samples: 206 us at 5.9 MS/s */
 int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, ifp_result_t *res);
 #endif
 

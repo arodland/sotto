@@ -148,23 +148,80 @@ def test_tx_builds_a_g_burst(tmp_path):
     assert abs(np.max(np.abs(x[-int(burst * fs):])) - k6g.LEVEL) < 0.01
 
 
+def test_any_start_offset_at_the_image_rate(lib):
+    """where the counts' 64-sample blocks start against the signal mustn't matter. The image's
+    DMA runs at 5.9 MS/s (its code polls from flash); there the acquisition's old edge rule
+    (back from the best offset while the fit kept half of it) locked a quarter symbol early
+    for 12 of 26 starts, and the packets were lost. Starts across one offset step (~410
+    samples) of the sweep, -164 Hz"""
+    from sim.k6if import study as st
+    pk = message(3, seed=9)
+    a = k6g.audio(k6g.burst_symbols(pk), st.FSA, k6g.LEVEL)
+    s = st.fm(st.ic7100(np.concatenate([np.zeros(int(0.3 * st.FSA)), a, np.zeros(int(0.3 * st.FSA))])), -164.0)
+    fdma = 5.9e6
+    b = st.fe.receive(s, st.FZ, 52.0, seed=5, L=0, fdma=fdma).astype(np.int64)
+    cum = np.concatenate([[0], np.cumsum(b)])
+    bad = []
+    for s0 in range(0, 410, 41):
+        i = s0 + 64 * np.arange((len(b) - s0) // 64 - 1)
+        c = np.ascontiguousarray((2 * (cum[i + 64] - cum[i]) - 64).astype(np.int8))
+        out, info = np.zeros(128 * 16, np.uint8), np.zeros(8, np.int32)
+        n = lib.ifp_host_run(c.ctypes.data, len(c), round(fdma / 1000), 0, out.ctypes.data, 16, info.ctypes.data)
+        if [out[k * 128:(k + 1) * 128].tobytes() for k in range(n)] != pk:
+            bad.append(s0)
+    assert not bad, bad
+
+
 need_clang = pytest.mark.skipif(not (shutil.which("clang") and shutil.which("ld.lld")),
                                 reason="needs clang and ld.lld")
 
 
 @need_clang
-def test_session_on_m0():
+def test_ram_block_is_self_contained():
+    """built as tools/k6_build.sh builds it for the image, the receiver's hot loops
+    (.text.ifrx_ram: sample, corr2, corr4, count, then ifp_ram_end) carry no relocations (no
+    call out of the block, no table reached but through ifrx_t), so ifp_session's copy of them
+    runs in RAM as it is; and they fit its buffer (IFP_RAM_MAX, less the 2-byte alignment)"""
+    import re
+    res = subprocess.run(["clang", "-print-resource-dir"], capture_output=True, text=True).stdout.strip()
+    d = tempfile.mkdtemp()
+    o = os.path.join(d, "ifp.o")
+    subprocess.run(["clang", "--target=thumbv6m-none-eabi", "-mcpu=cortex-m0", "-mthumb", "-mfloat-abi=soft",
+                    "-nostdinc", "-isystem", os.path.join(K6, "..", "fixed", "cm4", "inc"), "-isystem",
+                    os.path.join(res, "include"), "-ffunction-sections", "-fdata-sections", "-std=c99",
+                    "-ffreestanding", "-I" + os.path.join(K6, ".."), "-O2", "-Os", "-DIFRX_T4_K6", "-c",
+                    os.path.join(K6, "ifpager.c"), "-o", o], check=True)
+    secs = subprocess.run(["llvm-readelf", "-S", o], capture_output=True, text=True, check=True).stdout
+    assert ".rel.text.ifrx_ram" not in secs
+    size = int(re.search(r"\.text\.ifrx_ram\s+PROGBITS\s+\S+\s+\S+\s+(\S+)", secs).group(1), 16)
+    syms = subprocess.run(["llvm-nm", "-n", o], capture_output=True, text=True, check=True).stdout
+    names = [ln.split()[-1] for ln in syms.splitlines() if ln.split()[-1] in
+             ("sample", "corr2", "corr4", "count", "ifp_ram_end")]
+    assert names[0] == "sample" and names[-1] == "ifp_ram_end" and len(names) == 5, names
+    cap = int(re.search(r"#define IFP_RAM_MAX (\d+)u", open(os.path.join(K6, "ifpager.c")).read()).group(1))
+    assert size + 2 + 4 <= cap, (size, cap)
+
+
+@need_clang
+@pytest.mark.parametrize("fdma,flash_cpi", [(None, None), (5.9e6, 2.0)])
+def test_session_on_m0(fdma, flash_cpi):
     """the session (ifpager_emu.c: ifpager.c with a stand-in sp_packet of the same cost) on the
     emulated M0 against a modelled 8-packet burst 164 Hz off: every packet handed over, in
     order, no counts lost (each trellis step and packet check waits for a gap between the
-    receiver's bursts), CPU to spare, inside the 3.5 KB of stack"""
+    receiver's bursts), CPU to spare, inside the 3.5 KB of stack. Twice: as a RAM module would
+    run (5.49 MS/s), and as the image does (its code in flash, flash_cpi 2.0 matching the K6's
+    23% idle while hunting on air, the DMA at the 5.9 MS/s it measured there), where the hot
+    loops' copy in RAM is what keeps it inside the ring"""
     pytest.importorskip("unicorn")
     import k6_live_emu as emu
     pk = message(8)
-    ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0)
+    ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0, fdma=fdma, flash_cpi=flash_cpi)
     assert ret == len(pk), said
     assert got == pk, said
     f = dict(kv.split("=") for kv in said[-1].split()[2:])
     assert int(f["L"]) == 0 and int(f["syncs"]) == len(pk), said
-    assert int(f["i"]) >= 30, said
-    assert used < 3504 - 256, used
+    assert int(f["ram"]) > 0, said                       # the RAM block was copied and used
+    assert int(f["lag"]) <= 43, said                      # the decoder within one block
+    assert int(f["i"]) >= (25 if flash_cpi else 35), said
+    # 3.45 KB: the K6 measured 1140 B to spare at 2.9 KB (2026-11-07), so about 0.6 KB now
+    assert used < 3504 - 32, used

@@ -79,11 +79,15 @@ def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=
 
 class Emu:
     def __init__(self, code, entry, ib, on_at, fdma, cpi=1.5, max_s=None, key_us=60, stall=None,
-                 wobble=None):
+                 wobble=None, flash_cpi=None):
         import unicorn
         from unicorn import arm_const as A
         self.U, self.A = unicorn, A
         self.ib, self.on_at, self.fdma, self.cpi = ib, on_at, fdma, cpi
+        # flash_cpi: the module's code stands for code in the image's flash (two wait states,
+        # its tables read there too): its chunks take flash_cpi; code it copied to RAM (the
+        # stack) takes cpi
+        self.flash_cpi, self.code_end = flash_cpi, None
         self.key_us, self.stall, self.keys = key_us, stall, 0
         # wobble w: ib holds the sigma-delta's bits at FCLK, and the DMA runs at fdma while the
         # CPU computes and fdma * (1 + w) while it polls the ring (a chunk with 3 or more reads
@@ -101,6 +105,7 @@ class Emu:
         self.base, self.api, self.stubs = ram + 0x1000, ram + 0x8000, ram + 0x9000
         self.stop, self.sp0, self.stack_lo = ram + 0x9F00, ram + 0x7F00, ram + 0x7F00 - 3504
         mu.mem_write(self.base, code)
+        self.code_end = self.base + len(code)
         mu.mem_write(self.stack_lo - 512, b"\xa5" * (3504 + 512))
         self.names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms",
                       "key_down", "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read",
@@ -245,7 +250,8 @@ class Emu:
             n = int(rng.integers(CHUNK * 3 // 4, CHUNK * 5 // 4 + 1)) if prof is not None else CHUNK
             self.mu.emu_start(pc, self.stop, count=n)
             pc = self.mu.reg_read(A.UC_ARM_REG_PC)
-            self.tick(n * self.cpi, self.nread >= 3)
+            fl = self.flash_cpi is not None and self.base <= pc < self.code_end
+            self.tick(n * (self.flash_cpi if fl else self.cpi), self.nread >= 3)
             self.nread = 0
             if pc == self.stop:
                 break
@@ -280,7 +286,7 @@ IFPAGER = os.path.join(ROOT, "c", "k6", "mod", "ifpager_emu.c")
 
 
 def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma=None, stall=None,
-                pre_s=0.3, after_s=0.5):
+                pre_s=0.3, after_s=0.5, flash_cpi=None):
     """the pager's coded 4FSK session (c/k6/ifpager.c, in the test module ifpager_emu.c) against
     a modelled burst of these XL payloads (modem/k6g.py), the carrier already up when it starts
     (as after the control packet): -> (return value, its lines, stack bytes used, the packets
@@ -294,10 +300,11 @@ def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma
     fdma = fdma or mcu.FDMA
     bits = st.fe.receive(s, st.FZ, cn0, seed=seed, L=0, fdma=fdma)
     ib = bits.astype(np.uint8) * 2
-    e = Emu(code, entry, ib, 0, fdma, cpi, stall=stall, max_s=len(ib) / fdma + 8.0)
+    e = Emu(code, entry, ib, 0, fdma, cpi, stall=stall, max_s=len(ib) / fdma + 8.0,
+            flash_cpi=flash_cpi)
     r = e.run()
     ret, used = r if r else (None, None)
-    raw = bytes(e.mu.mem_read(e.scr + 1024, 4 + 128 * 64))
+    raw = bytes(e.mu.mem_read(e.scr + 1216, 4 + 128 * 64))   # after the DMA ring (IFP_RING)
     n = int.from_bytes(raw[:4], "little")
     pk = [raw[4 + 128 * i:4 + 128 * (i + 1)] for i in range(min(n, 64))]
     return ret, e.said, used, pk

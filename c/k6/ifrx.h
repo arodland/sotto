@@ -50,7 +50,7 @@ extern "C" {
 #define IFRX_4FSK 1
 enum { IFRX_ACQ = 0, IFRX_LEAD = 1, IFRX_TRACK = 2 };
 
-typedef struct {
+typedef struct ifrx_s {
   /* scalars first: an M0 load reaches 124 bytes into a struct in one instruction */
   const uint8_t *tm;        /* templates [M][P/2][TL], 4-bit re and im (each also stands for its
                                conjugate) */
@@ -94,6 +94,14 @@ typedef struct {
   int16_t w[IFRX_TL + 2][2];
   int32_t A[IFRX_MAXS][4], A1[IFRX_MAXS][4]; /* each kept template's four sums; at half way */
   int8_t ring[2 * IFRX_RING]; /* the counts, twice over */
+#ifdef IFRX_RAMFN
+  /* the hot loops, which the caller may point at copies in RAM (code in the K6's flash runs at
+     two wait states: about 1.3x the cycles); ifrx_init points them at the originals */
+  void (*samp)(const struct ifrx_s *s, uint32_t m, uint32_t th, int16_t out[2]);
+  void (*c4)(const int16_t (*w)[2], const uint8_t *t, int32_t a[4], int n);
+  const uint32_t *g;        /* the filter's taps, and the sine's quarter: the block reaches */
+  const int16_t *qs;        /* its tables only through these, so a copy needs no relocation */
+#endif
 } ifrx_t;
 
 /* mode IFRX_FFSK or IFRX_4FSK; ks16 = the DMA's rate, 1/16 kS/s (counts = ks16 * 62.5 / 64 a

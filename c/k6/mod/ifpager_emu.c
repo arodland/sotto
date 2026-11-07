@@ -30,8 +30,8 @@ int sp_packet(const uint8_t *payload, int len) {
 
 /* say f with each '%' a signed decimal from v */
 static void say_f(const k6_api_t *api, const char *f, const int32_t *v) {
-  char line[96], *p = line, t[10];
-  while (*f && p < line + 84) {
+  char line[120], *p = line, t[10];
+  while (*f && p < line + 108) {
     if (*f != '%') {
       *p++ = *f++;
     } else {
@@ -56,13 +56,13 @@ int k6_main(const k6_api_t *api) {
   uint32_t n;
   uint8_t *scr = (uint8_t *)api->scratch(&n);
   ifp_result_t res;
-  int32_t v[10];
+  int32_t v[14];
   int r;
   *(volatile uint32_t *)(scr + IFP_RING) = 0;
   r = ifp_session(api, scr, 8000, 60000, &res);
   v[0] = r, v[1] = (int32_t)res.syncs, v[2] = (int32_t)res.syms, v[3] = (int32_t)res.lost;
   v[4] = res.acq_q, v[5] = res.acq_rej, v[6] = res.afc_hz, v[7] = res.idle_pct, v[8] = res.ks;
-  v[9] = (int32_t)res.ms;
-  say_f(api, "ifp % syncs=% syms=% L=% q=% j=% f=% i=% k=% ms=%", v);
+  v[9] = (int32_t)res.ms, v[10] = res.ram, v[11] = res.lag, v[12] = res.gap_us, v[13] = res.gap_i;
+  say_f(api, "ifp % syncs=% syms=% L=% q=% j=% f=% i=% k=% ms=% ram=% lag=% gap=% at=%", v);
   return r;
 }

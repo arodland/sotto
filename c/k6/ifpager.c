@@ -3,6 +3,17 @@
 #define IFRX_ONLY 1 /* IFRX_4FSK */
 #endif
 #include "ifpager.h"
+/* the acquisition backs off less from its best offset than the modules' default (1/2): at the
+   image's DMA rate (5.9 MS/s, K6-trained templates) a half left a quarter of the starting
+   offsets locked a quarter symbol early; 2/3 took 243 of 252 packets on the model at 47 dB-Hz
+   over two rates, three offsets and 14 starts, against 150 */
+#ifndef IFRX_EDGE_NUM
+#define IFRX_EDGE_NUM 2
+#define IFRX_EDGE_DEN 3
+#endif
+#ifndef IFP_HOST
+#define IFRX_RAMFN 1 /* the receiver's hot loops run from a copy in RAM (ifp_session) */
+#endif
 #include "ifrx.c"
 
 /* the code's outputs (bit 1: polynomial 133, bit 0: 171) for new state 2j with the older
@@ -146,7 +157,10 @@ int ifp_sym(ifp_t *p, int tone, const uint32_t met[4]) {
 #define TIM17EN (1u << 18)
 #define RSZ IFP_RING
 #define L 64u
-#define KS0 5530       /* kS/s to start on (measured as it runs) */
+#ifndef KS0
+#define KS0 5880       /* kS/s to start on (measured as it runs): the image's code polls the ring
+                          from flash, where channel 1 runs at 5880-5915 (on air, 2026-11-07) */
+#endif
 #define BLK_US 131072u /* TIM17 microseconds a measurement of the rate */
 #define STALL_US 120u  /* well under a lap of the ring */
 /* the burst is over after this many symbols with no sync word: two packets' time (and the
@@ -179,8 +193,9 @@ static void start(uint8_t *ring) {
   wr(DMA_CCR1, (3u << 12) | (1u << 7) | (1u << 5) | 1u); /* PL very high, MINC, CIRC, EN */
 }
 
-/* L samples at ring offset r: the ones on PB1 (bit 1 of each byte), as a count */
-static int count(const uint8_t *ring, uint32_t r) {
+/* L samples at ring offset r: the ones on PB1 (bit 1 of each byte), as a count. In the RAM
+   block after ifrx.c's sample, corr2 and corr4, which ifp_ram_end closes */
+IFRX_RAM static int count(const uint8_t *ring, uint32_t r) {
   const uint32_t *q = (const uint32_t *)(ring + r);
   uint32_t acc = 0, i;
   for (i = 0; i < L / 4; i += 4)
@@ -191,6 +206,43 @@ static int count(const uint8_t *ring, uint32_t r) {
   return 2 * (int)((acc & 0xFFFF) + (acc >> 16)) - (int)L;
 }
 
+IFRX_RAM static void ifp_ram_end(void) { __asm__ volatile(""); }
+
+/* the RAM block (sample .. ifp_ram_end) into code[], and rx's hot loops and *cnt pointed at the
+   copies: returns its size, or 0 (the originals stay: the block isn't as laid out, or too big).
+   Thumb: a function's address has bit 0 set; the copy keeps each word's place in a word, as
+   its literal loads (pc-relative, word aligned) need; the calls inside it (bl) are relative */
+#define IFP_RAM_MAX 416u
+typedef int (*count_fn)(const uint8_t *, uint32_t);
+IFRX_NOINLINE static uint32_t ram_block(ifrx_t *rx, uint32_t *code, count_fn *cnt) {
+  uint32_t f[4], lo = 0xFFFFFFFFu, e = (uint32_t)ifp_ram_end & ~1u, i, d;
+  uint16_t *dst;
+  const uint16_t *src;
+  f[0] = (uint32_t)sample, f[1] = (uint32_t)corr2, f[2] = (uint32_t)corr4, f[3] = (uint32_t)count;
+  for (i = 0; i < 4; i++) {
+    f[i] &= ~1u;
+    if (f[i] >= e) return 0;
+    if (f[i] < lo) lo = f[i];
+  }
+  if (e - lo + 4 > IFP_RAM_MAX) return 0;
+  dst = (uint16_t *)((uint8_t *)code + (lo & 2));
+  src = (const uint16_t *)lo;
+  for (i = 0; i < (e - lo) / 2; i++) dst[i] = src[i];
+  d = (uint32_t)dst - lo;
+  rx->samp = (void (*)(const struct ifrx_s *, uint32_t, uint32_t, int16_t *))((f[0] + d) | 1u);
+  rx->c4 = (void (*)(const int16_t (*)[2], const uint8_t *, int32_t *, int))((f[2] + d) | 1u);
+  *cnt = (count_fn)((f[3] + d) | 1u);
+  return e - lo;
+}
+
+/* a decoded packet into the store (sp_packet: de-whitening, CRC, the frames) */
+IFRX_NOINLINE static void hand(ifp_t *p, ifp_result_t *res) {
+  int v = sp_packet(p->pkt, IFP_PAYLOAD);
+  if (res->nres < IFP_RES_MAX) res->res[res->nres] = (int8_t)v, res->miss[res->nres] = (int8_t)p->miss;
+  res->nres++;
+  p->have = 0;
+}
+
 IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms, uint32_t max_ms,
                             ifp_result_t *res) {
   ifrx_t rx;
@@ -198,16 +250,25 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
   uint32_t lastw = 0, produced = 0, consumed = 0, c0, k = 0, kq = 0, idle = 0, tot = 0;
   uint32_t ks = KS0 * 16, bp = 0, bt = 0, t0 = api->ms(), lock_sym = 0;
   int r = 0, locked = 0;
+  uint32_t code[IFP_RAM_MAX / 4], cpos = 0, pmet[4];
+  int pend = 0, psym = 0;
+  count_fn cnt = count;
   ifrx_init(&rx, IFRX_4FSK, ks);
+#ifndef IFP_NO_RAM
+  res->ram = (int32_t)ram_block(&rx, code, &cnt);
+#else
+  (void)code, (void)ram_block;
+#endif
   ifp_init(&p);
   start(rb);
   c0 = tim();
   for (;;) {
-    uint32_t w = RSZ - (rd(DMA_CNDTR1) & 0xFFFF), dw = (w - lastw) & (RSZ - 1), cn = tim(), d, a,
-             nc = 0;
+    uint32_t w = RSZ - (rd(DMA_CNDTR1) & 0xFFFF), dw = w >= lastw ? w - lastw : w + RSZ - lastw,
+             cn = tim(), d, a, nc = 0;
     d = (cn - c0) & 0xFFFF;
     c0 = cn;
     tot += d;
+    if (d > (uint32_t)res->gap_us && locked) res->gap_us = (int32_t)d, res->gap_i = rx.i;
     lastw = w;
     if (d > STALL_US) /* away near a lap of the ring or more: the laps it didn't see, by the clock */
       dw += ifrx_udiv(ifrx_udiv(d * (ks >> 4), 1000u) + RSZ / 2 - dw, RSZ) * RSZ;
@@ -216,43 +277,58 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
     if (a > RSZ - L) { /* the ring overran: skip what's gone */
       nc = a / L;
       consumed += nc * L;
+      cpos += nc * L;
+      cpos -= ifrx_udiv(cpos, RSZ) * RSZ;
       res->lost += nc;
       ifrx_skip(&rx, nc);
       continue;
     }
     if (a < L) {
-      /* caught up: a trellis step (~30 us), or a decoded packet into the store (its CRC,
-         ~130 us), but only where it ends before the receiver's next burst (half way through
-         a symbol and at its end, each ~120 us: begun late, they would overrun the ring) */
+      /* caught up: the last symbol into the decoder, a trellis step (~30 us in RAM, ~40 from
+         flash), or a decoded packet into the store (its CRC, ~130 us), but not just before the
+         receiver's bursts (half way through a symbol and at its end, ~120-150 us), which would
+         then overrun the ring: a step anywhere but the sample before them (the decoder must
+         keep within one interleave block of the symbols), the store's work three or more
+         samples before them */
       int i = rx.i;
+      if (pend) {
+        pend = 0;
+        ifp_sym(&p, psym, pmet);
+        if ((int32_t)(p.ready - p.step) > res->lag) res->lag = (int32_t)(p.ready - p.step);
+        continue;
+      }
       if (p.have) {
-        if (i >= 1 && i <= 4) {
-          int v = sp_packet(p.pkt, IFP_PAYLOAD);
-          if (res->nres < IFP_RES_MAX) res->res[res->nres] = (int8_t)v, res->miss[res->nres] = (int8_t)p.miss;
-          res->nres++;
-          p.have = 0;
+        if ((i >= 0 && i <= IFRX_TL / 2 - 4) || (i >= IFRX_TL / 2 + 1 && i <= IFRX_TL - 4)) {
+          hand(&p, res);
           r++;
           continue;
         }
-      } else if (((i >= 1 && i <= IFRX_TL / 2 - 4) || (i >= IFRX_TL / 2 + 1 && i <= IFRX_TL - 4)) &&
-                 ifp_work(&p) >= 0)
+      } else if (i != IFRX_TL / 2 - 1 && i < IFRX_TL - 1 && ifp_work(&p) >= 0)
         continue;
       idle += d;
       if (++kq & 0xFFFF) continue;
     } else {
-      if (ifrx_push(&rx, count(rb, consumed & (RSZ - 1)))) {
+      if (ifrx_push(&rx, cnt(rb, cpos))) {
+        /* the symbol's soft bits later, when caught up (not on top of the burst that
+           decided it) */
+        if (pend) ifp_sym(&p, psym, pmet);
         if (!locked) locked = 1, lock_sym = p.syms;
         rx.gap = 0;
-        ifp_sym(&p, rx.sym, rx.met);
+        psym = rx.sym, pmet[0] = rx.met[0], pmet[1] = rx.met[1], pmet[2] = rx.met[2], pmet[3] = rx.met[3];
+        pend = 1;
       }
       consumed += L;
+      cpos += L;
+      if (cpos == RSZ) cpos = 0;
       /* the checks every 256 counts, a third into a symbol (away from the receiver's bursts) */
       if (++k < 256 || (rx.i != IFRX_TL / 3 && k < 1024)) continue;
     }
     k = 0;
     if (tot - bt >= BLK_US) {
       ks = ifrx_udiv((produced - bp) * 2000u, (tot - bt) >> 3); /* 1/16 kS/s */
+#ifndef IFP_NO_RATE
       ifrx_rate(&rx, ks);
+#endif
       bp = produced, bt = tot;
       continue;
     }
@@ -271,6 +347,13 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
     if (p.syncs ? p.syms - p.last_sync > END_SYMS : p.syms - lock_sym > FIRST_SYMS) break;
   }
   stop();
+  /* the burst is over (or the time): the packets whose blocks are all in */
+  if (pend) ifp_sym(&p, psym, pmet);
+  if (r >= 0)
+    for (;;) {
+      if (p.have) hand(&p, res), r++;
+      else if (ifp_work(&p) < 0) break;
+    }
   res->syncs = p.syncs;
   res->syms = p.syms;
   res->acq_q = rx.acq_q;
