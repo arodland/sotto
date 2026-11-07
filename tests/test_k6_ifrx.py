@@ -172,7 +172,7 @@ def test_lost_counts_keep_the_clock(lib, name):
 
 
 @need_clang
-@pytest.mark.parametrize("src", ["iflive.c", "iflive_ffsk.c", "iflive_tsweep.c"])
+@pytest.mark.parametrize("src", ["iflive.c", "iflive_ffsk.c", "iflive_tsweep.c", "iflive_fsweep.c"])
 def test_live_module_builds_fits_level_2(src):
     path = os.path.join(K6, "mod", src)
     code, entry = k6mod.build(path)

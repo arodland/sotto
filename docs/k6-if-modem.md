@@ -399,8 +399,20 @@ settles a different amount early or late on each step: from about one half-sampl
 0) to one late (step 8), with step 4 the plain receiver. Every step runs at gain step 2. Its
 line has no `r=` or `i=` (no room). The bias applies only once tracking: on the lead, ±1200 and more threw the lock out. On the
 emulator (47 dB-Hz, 164 Hz off), steps 0-8 gave 10.1, 9.7, 5.4, 0.68, **0.30**, 0.45, 3.4, 9.6
-and 9.7%: the model's best is the plain receiver, as it should be. On the K6, the step with
-the lowest BER says how far and which way to move the loop's zero.
+and 9.7%: the model's best is the plain receiver, as it should be. On the K6 (2026-11-07, 03:14 UTC, receive
+only) steps 0-9 read 10.5, 10.7, 9.6, 8.7, 4.6, **3.4**, 8.7, 10.0, 10.0 and 10.1%: the best is
+one notch late, and no setting gets near the captures' 0.4%. So timing isn't 4FSK's floor.
+
+**The K6's own C decisions on the captures are fine.** `ifrx.c` built for the host with its
+loops frozen (`ifrx_static`, scratch harness), at the best timing and IF it finds for each
+capture, gives 4FSK 0.32% on the captures, against 0.41% for the float analysis. FFSK has no
+errors either way. So the integer code doesn't make the floor. What's left is something only
+the live receiver sees: the AFC's settling point (the captures put the AFC detector's zero
+15 Hz off the best), or the stream itself while the receiver runs.
+
+**`iflive_fsweep`** (`c/k6/mod/iflive_fsweep.c`) tries the AFC. Steps 0-4 add
+`((step % 5) - 2) * 240` (Q12, about 27 Hz a notch) to the AFC detector, and steps 5-9 the
+same with tsweep's best timing (+600). Every step runs at gain step 2.
 
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
