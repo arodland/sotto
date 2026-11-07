@@ -321,8 +321,8 @@ def soft_from(z, c, rate=375 / 8):
 # (2026-11-07) the IC-7100 -> K6 receive wandered about +-1.8 Hz, more than a tone spacing, and
 # the linear drift search above found nothing. Here each symbol's spectrum, padded so that a tone
 # spacing is 16 bins of 0.092 Hz, scores every tone-0 frequency b by the sync vector's parity
-# (the larger of the two tones the symbol's sync bit allows, less the larger of the two it
-# doesn't), and a Viterbi search finds the best track that moves at most M bins a symbol (each
+# (the larger of the two tones' log powers the symbol's sync bit allows, less the larger of the
+# two it doesn't), and a Viterbi search finds the best track that moves at most M bins a symbol (each
 # bin moved costs lam). The parity score is what keeps the track from slipping by a tone. The
 # signal is then derotated along the track and decoded as if it stood still.
 PAD = 16
@@ -339,11 +339,13 @@ def _dp_spec(z, rate):
     return sp / (np.median(sp) + 1e-12), hop
 
 
-def _dp_scores(sp, starts, B, clip):
+def _dp_scores(sp, starts, B):
     c = sp.shape[1] // 2
     base = c + np.arange(-B, B + 1)
     rows = starts[:, None] + 4 * np.arange(NSYM)[None, :]
-    Q = np.minimum(sp[rows], clip)                                   # start x symbol x bin
+    # start x symbol x bin, as log power: a clip (first try) flattened the bench's +37 dB signal
+    # and its -13 dB sidelobes level with each other, and the track wandered off into the noise
+    Q = np.log1p(sp[rows])
     t = [Q[:, :, base + PAD * j] for j in range(4)]                  # tone j's power, tone 0 at b
     s = SYNC[None, :, None] == 1
     right = np.where(s, np.maximum(t[1], t[3]), np.maximum(t[0], t[2]))
@@ -374,7 +376,7 @@ def _viterbi(S, M, lam, back=False):
     return D, arg
 
 
-def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.5, clip=30.0, top=3):
+def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.1, top=3):
     """-> [(start s, tone 0's offset Hz per symbol, score)]: the best smooth tracks of the
     `top` best start times (quarter symbols)"""
     assert int(round(rate * SYM)) == 32
@@ -387,7 +389,7 @@ def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.5, clip=30.0, top=3):
     starts = np.arange(nstart)
     sc = np.empty(nstart)
     for i in range(0, nstart, 64):
-        D, _ = _viterbi(_dp_scores(sp, starts[i:i + 64], B, clip), M, lam)
+        D, _ = _viterbi(_dp_scores(sp, starts[i:i + 64], B), M, lam)
         sc[i:i + 64] = D.max(axis=1)
     picks = []
     for s in np.argsort(sc)[::-1]:
@@ -395,7 +397,7 @@ def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.5, clip=30.0, top=3):
             picks.append(int(s))
         if len(picks) == top:
             break
-    D, arg = _viterbi(_dp_scores(sp, np.array(picks), B, clip), M, lam, back=True)
+    D, arg = _viterbi(_dp_scores(sp, np.array(picks), B), M, lam, back=True)
     out = []
     for r, s in enumerate(picks):
         b = int(np.argmax(D[r]))
@@ -407,12 +409,12 @@ def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.5, clip=30.0, top=3):
     return out
 
 
-def decode_tracked(z, rate=375 / 8, fspan=18.0):
+def decode_tracked(z, rate=375 / 8, fspan=18.0, **kw):
     """[(text, f0, dt, drift, score)] along the best tracks; f0 is the track's mean and drift
     its last symbol less its first (Hz)"""
     t = np.arange(len(z)) / rate
     found = []
-    for dt, off, score in track(z, rate, fspan):
+    for dt, off, score in track(z, rate, fspan, **kw):
         tc = dt + (np.arange(NSYM) + 0.5) * SYM
         offs = np.convolve(np.pad(off, 2, mode="edge"), np.ones(5) / 5, "valid")
         zc = z * np.exp(-2j * np.pi * np.cumsum(np.interp(t, tc, offs)) / rate)

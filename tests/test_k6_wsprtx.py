@@ -59,6 +59,10 @@ def test_reference_follows_wander():
     got = w.decode_tracked(z, rate)
     assert got and got[0][0] == TEXT, got
     assert abs(got[0][2] - 2.0) < 0.2 and abs(got[0][1] + 3.0) < 1.0, got
+    # the bench's signal was +37 dB in 2500 Hz: a strong one must track too
+    s0 = np.concatenate([pad, np.exp(2j * np.pi * np.cumsum(f) / rate), pad])
+    got = w.decode_tracked(s0 + 1e-3 * (z - s0), rate)
+    assert got and got[0][0] == TEXT, got
 
 
 def test_header_is_the_encoders():
