@@ -286,7 +286,7 @@ carriers on 2 m / 70 cm points. `tools/k6_rxmap.py` patches the segment into CI'
 0x20001028 + 17720 bytes, ending at 0x20005560, but the KD32F328 is sold with 24 KB of SRAM, which
 would end at 0x20006000. Nobody has claimed those 2720 bytes. The module writes two patterns to
 every word of that range, holds a third for 50 ms, restores what it found, and says
-`ram probe 20005560..20006000 good=0x2a8 first_bad=none held=0x2a8` (0x2a8 = 680 words = all of
+`ram probe good=2a8 bad=none held=2a8 alias=none` (0x2a8 = 680 words = all of it; alias = a lower address that moved with the probe, a mirror of a smaller SRAM; on 2026-11-07 the K6 said good=2a8 bad=none and ran on, so the RAM is there, all of
 it). If the SRAM ends lower the first access past the end faults and the radio resets, so run it
 when a reset is acceptable. If it holds, `memory.x` can grow by 2720 bytes: the hiss band image
 (docs/k6-hiss-port.md) would get its fourth PWM segment and its 4 KB message store back.
