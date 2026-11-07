@@ -10,6 +10,9 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
   python -m modem.k6 tx msg.sot tx.wav --phy F --payload XL --codec 1200
                                                        a sotto 1200 message (sotto_enc -1200, 40 ms
                                                        per frame, magic 0xA9): real time at F/1800
+  python -m modem.k6 tx msg.sot tx.wav --phy F --payload XL --codec 1200 --parity
+                                                       ... with an XOR parity packet after each group
+                                                       (a group's one lost packet is rebuilt, spec 14)
   python -m modem.k6 rx rx.wav back.sot --good g.u8    decode a recording (or our own tx.wav)
   python -m modem.k6 test test.wav                     spec test packet 0, repeated (calibration)
   python -m modem.k6 cal cal.wav                       modulation-path calibration signal
@@ -164,6 +167,11 @@ def _tx_opts(p):
                    help="tx/send, sotto 2400 and 1200: each inner run of 4+ silent slots goes as its first "
                         "slot and one pause frame, which a K6 from 2026-11-07 fills by replaying that slot "
                         "(older ones play it as one silent slot, so pauses come out short)")
+    p.add_argument("--parity", action="store_true",
+                   help="send one XOR parity packet after each interleave group (spec 14): a K6 that "
+                        "lost one packet of the group rebuilds it exactly instead of concealing its "
+                        "frames. Costs 1/depth more air time (12.5%% at depth 8). L and XL; K6 images "
+                        "without it ignore the parity packets")
     p.add_argument("--level", type=float, default=0.5, help="peak audio, 0..1 (default 0.5)")
     p.add_argument("--invert", action="store_true", help="flip the bit polarity")
     p.add_argument("--comp", help="pre-compensate: a fit JSON, 'voice' (generic model) or 'preemph'")
@@ -196,7 +204,7 @@ def _tx_opts(p):
 
 def _profile(a):
     return pager.profile(a.payload, getattr(a, "codec", "2400"), getattr(a, "depth", pager.GROUP),
-                         getattr(a, "short_last", True))
+                         getattr(a, "short_last", True), getattr(a, "parity", False))
 
 
 def _trimmed(a, frames):
@@ -216,6 +224,9 @@ def _payloads(a, frames):
     prof = _profile(a)
     mid = a.msg_id if a.msg_id is not None else msg_id_for(frames)
     pk = prof.pack(frames, mid)
+    drop = {int(x) for x in (getattr(a, "drop", None) or "").split(",") if x}
+    if drop:              # leave data packets out on purpose (tests of the K6's parity rebuild)
+        pk = [p for p in pk if (q := prof.unpack(p))["parity"] is not None or q["seq"] not in drop]
     pk = pk * a.passes
     if getattr(a, "repeat_first", False) and len(pk) > 1:
         pk = pk + pk[:1]
@@ -240,6 +251,8 @@ def main(argv=None):
     _tx_opts(t)
     t.add_argument("--msg-id", type=int, help="0-255 (default: from the file's CRC)")
     t.add_argument("--passes", type=int, default=1, help="send the message this many times")
+    t.add_argument("--drop", metavar="SEQS", help="leave out these data packets, e.g. 3,17 (to test the K6's "
+                                                  "--parity rebuild; parity packets are always sent)")
 
     e = sub.add_parser("test", help="spec test packet 0, repeated (or the whole test message)")
     e.add_argument("output")
@@ -252,6 +265,7 @@ def main(argv=None):
     _tx_opts(s)
     s.add_argument("--msg-id", type=int)
     s.add_argument("--passes", type=int, default=1)
+    s.add_argument("--drop", metavar="SEQS", help="as tx --drop")
     s.add_argument("--port", help="CI-V / PTT serial port, e.g. /dev/ttyUSB0 or COM5")
     s.add_argument("--ptt", choices=("civ", "rts", "dtr", "none"), default="civ")
     s.add_argument("--hang-ms", type=float, default=500.0,
@@ -535,7 +549,8 @@ def main(argv=None):
             mid = max(asm.messages, key=lambda m: len(asm.messages[m]["pk"]))
         fr, gd = asm.frames(mid)
         log(f"msg_id {mid}: {len(gd)} frames, {int(gd.sum())} received, "
-            f"{len(gd) - int(gd.sum())} to conceal")
+            f"{len(gd) - int(gd.sum())} to conceal"
+            + (f"; {asm.rebuilt} lost packets rebuilt from parity" if asm.rebuilt else ""))
         if a.expand:
             n0 = len(gd)
             fr, gd = pager.expand_pauses(fr, gd, a.codec)

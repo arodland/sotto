@@ -50,6 +50,14 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
   before the first packet and 24 before the rest: after a 128-byte packet the K6's chip reports
   its end late, and with 16 bytes the K6 false-synced on the next one. On air (2026-11-04, K6
   build b0ff399, F/1200): 8/8, 0 bit errors; a 12 s clip is 33.4 s on air against 45.0 s in L.
+- **Parity packets** (`--parity`, spec section 14, 2026-11-07): after each interleave group one
+  more packet whose magic is the codec's | 0x10 (0xB7, 0xB9, 0xBC, 0xBD) and whose body is the
+  XOR of the group's data packets' bodies. A K6 that lost one packet of the group rebuilds it
+  exactly (its PLAY line counts them in `rebuilt=`; `missing=` lists only what stayed lost), so
+  a single loss per group no longer costs concealed frames. Two lost in one group: both stay
+  lost, as without parity. Costs 1/D more air time: 12.5 % at depth 8 (25 % at depth 4). The
+  data packets are unchanged and older K6 images drop the parity packets as an unknown magic,
+  so a parity send plays on any image. `modem.k6 rx` rebuilds the same way.
 - **Stream framing** (`--stream`, K6 key 7 stream mode): after the lead-in, packets go back to
   back with only the sync word between them. The K6 finds the sync in software.
 - **F at 2400 baud** (`--phy F --baud 2400`, K6 keys 1 and 5): 1200/2400 Hz tones, MSK. On air

@@ -3,7 +3,7 @@
  * FIFO would hand them over (64 bytes each, 128 with -x for profile XL), in arrival order; lost packets are
  * simply absent. Writes the played message as 8 kHz 16-bit raw (the decoder's first 20 ms of
  * delay included, as on the radio) and prints one line of status:
- *   results=<sp_packet codes> total= stored= got= packets= of= complete= bad=
+ *   results=<sp_packet codes> total= stored= got= packets= of= complete= bad= ... missing= rebuilt=
  * -b sets the store size (default 6144 bytes). -S turns stream mode off (store then play; the
  * sotto 1200 build streams by default). -s HALVES simulates live streaming: playback starts as
  * soon as sp_stream_ready says so and plays HALVES x 20 ms after each packet (32 is real time
@@ -147,7 +147,7 @@ int main(int argc, char **argv) {
     int i, nm = sp_missing(miss, 8);
     printf("missing=%d", nm);
     for (i = 0; i < nm && i < 8; i++) printf("%c%u", i ? ',' : ':', miss[i]);
-    printf("\n");
+    printf(" rebuilt=%d\n", sp_rebuilt());
   }
   if (halves) {
     if (!playing) sp_play_start(), start = npk;

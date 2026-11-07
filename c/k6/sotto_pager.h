@@ -20,6 +20,8 @@
  * taken: the radio reads 64-byte packets fine.) Pause frames (sotto 2400 and 1200, senders from
  * 2026-11-07): a good slot with voicing 0, Wo 127, energy 0 and marker 0xA5304B in bits 24-47
  * plays as N slots (bits 14-23) of the last real slot again, with its good flag.
+ * Optional parity packets (magic | 0x10, one after each group) rebuild a group's one lost
+ * packet exactly: sp_rebuilt.
  *
  * No heap, no floating point, no 64-bit division: everything lives in the caller's buffer
  * (sp_init) and in this library's static decoder state (about 0.9 KB plus a 2 KB cos/sin
@@ -56,7 +58,7 @@ extern "C" {
 /* sp_packet results */
 enum {
   SP_BAD_LENGTH = -3,
-  SP_BAD_MAGIC = -2,             /* de-whitened byte 0 is not 0xA7, 0xA9, 0xAC or 0xAD */
+  SP_BAD_MAGIC = -2,             /* de-whitened byte 0 is not 0xA7, 0xA9, 0xAC or 0xAD (or one | 0x10) */
   SP_BAD_CRC = -1,
   SP_DUP = 0,                    /* good packet, nothing new in it */
   SP_ADDED = 1,                  /* good packet with new frames */
@@ -97,6 +99,13 @@ typedef struct {
 } sp_status_t;
 void sp_status(sp_status_t *st);
 int sp_magic(void);              /* the stored message's magic byte (its codec), 0 for none */
+/* Packets of the stored message rebuilt from parity packets (spec 14): after each interleave
+   group the sender may add one packet whose byte 0 is the codec's magic | 0x10 (0xB7, 0xB9,
+   0xBC, 0xBD) and whose bytes 6 .. len-3 are the XOR of the group's data packets' bytes there.
+   sp_packet takes it like a voice packet; when exactly one of the group's packets is missing
+   it rebuilds that one (its frames become good, its seq counts as received, sp_missing no
+   longer lists it) and returns SP_ADDED or SP_COMPLETE, else SP_DUP. */
+int sp_rebuilt(void);
 /* The seqs (packets of one pass) not received yet, up to max of them into out; returns how many
    are missing in all (0 while the total is unknown). */
 int sp_missing(uint16_t *out, int max);

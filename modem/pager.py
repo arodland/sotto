@@ -41,6 +41,15 @@ gets m from total. Full groups are as before, so a receiver from before this cha
 full group and loses only the short one (its seqs read as 8192 and up). Profile(short_last=False)
 sends the old padded layout. On XL this is about 9% fewer packets on real clips.
 
+Parity packets (optional, `Profile(parity=True)`, `modem.k6 tx --parity`; spec section 14): after
+the D packets of each interleave group comes one more L or XL packet whose byte 0 is the codec's
+magic | 0x10 (0xB7, 0xB9, 0xBC, 0xBD), bytes 1-5 the header with the group number g in place of
+seq (bits 15-14 the depth as in a data packet), and bytes 6 up to the CRC the XOR of the group's
+data packets' bytes in the same places (their frames, zero padding and L's reserved bytes). A
+receiver missing exactly one of the group's packets rebuilds it: the parity XOR the others.
+Receivers that don't know it drop it (an unknown magic). It costs 1/D more air time (12.5 % at
+the usual depth 8) and turns a group's single lost packet from concealed frames into exact ones.
+
 On air (Air): 0x55 x 16, sync 07 6B 3E 36, payload, MSB first. The chip CRC and scrambler
 are off; all checking is ours. Stream framing (Air(preamble_bytes=0)): the lead-in, then each
 packet as just the sync word and the payload, back to back, for a receiver that finds the sync
@@ -56,9 +65,11 @@ MAGIC = 0xA7                    # sotto v3.7, 20 ms per frame
 MAGIC_1200 = 0xA9               # sotto 1200, 40 ms per frame (0xA8 is the control packet)
 MAGIC_600 = 0xAC                # sotto 600, 80 ms per frame (0xAA: k6_update, 0xAB: RAM modules)
 MAGIC_400 = 0xAD                # sotto 400, 120 ms per frame
+PARITY = 0x10                   # magic | PARITY: the parity packet of an interleave group
 CODECS = {"2400": (MAGIC, 0.020), "1200": (MAGIC_1200, 0.040),     # magic, seconds per frame
           "600": (MAGIC_600, 0.080), "400": (MAGIC_400, 0.120)}
 FRAME_BYTES = 6
+HDR = 6                         # magic, msg_id, seq (2), total (2)
 GROUP = 8                       # packets per interleave group, unless the header says otherwise
 DEPTHS = (8, 4, 2, 1)           # by the depth code in seq's top 2 bits
 SYNC = bytes([0x07, 0x6B, 0x3E, 0x36])
@@ -107,6 +118,7 @@ class Profile:
     magic: int = MAGIC    # byte 0 (L and XL): which codec the frames are
     depth: int = GROUP    # packets per interleave group: 8, 4, 2 or 1 (L and XL)
     short_last: bool = True  # a partial last group takes only the packets it fills (seq bit 13)
+    parity: bool = False  # pack: one XOR parity packet after each group (L and XL)
 
     @property
     def frame_s(self):
@@ -138,8 +150,26 @@ class Profile:
         return [g * self.group_frames + s * self.depth + k for s in range(self.slots)]
 
     def n_packets(self, total):
+        """Data packets (seqs) in a message of `total` frames; parity packets come on top."""
         first, m = self.last_group(total)
         return first + m if first is not None else -(-total // self.group_frames) * self.depth
+
+    def group_seqs(self, g, total):
+        """The seqs of interleave group g's data packets: what its parity packet covers."""
+        return range(g * self.depth, min((g + 1) * self.depth, self.n_packets(total)))
+
+    def air_packets(self, total):
+        """Packets on air for one pass: the data packets and, with parity, one per group."""
+        n = self.n_packets(total)
+        return n + (-(-n // self.depth) if self.parity else 0)
+
+    def _header(self, magic, msg_id, field, total):
+        hs = DEPTHS.index(self.depth) << 14 | field
+        return bytes([magic, msg_id & 0xFF]) + hs.to_bytes(2, "big") + total.to_bytes(2, "big")
+
+    def _seal(self, p):
+        p += bytes(self.payload - 2 - len(p))                # L: 8 reserved bytes
+        return _whiten(p + crc16_ccitt(p).to_bytes(2, "big"))
 
     def pack(self, frames, msg_id=0):
         """frames: bytes (6 per frame) -> list of whitened payloads in transmit order."""
@@ -154,20 +184,28 @@ class Profile:
             raise ValueError("message too long: seq has 13 bits (bit 13 marks the short last group)")
         if self.name == "S" and npk > 2048:
             raise ValueError("message too long for profile S (2048 packets)")
+        if self.parity and self.name == "S":
+            raise ValueError("profile S has no magic byte, so no parity packets")
         out = []
         first, _ = self.last_group(total)
+        acc = None
         for seq in range(npk):
             body = b"".join(fr[f] if f < total else bytes(6) for f in self.packet_frames(seq, total))
             if self.name != "S":
                 short = first is not None and seq >= first
-                hs = DEPTHS.index(self.depth) << 14 | short << 13 | seq
-                p = bytes([self.magic, msg_id & 0xFF]) + hs.to_bytes(2, "big") + total.to_bytes(2, "big")
-                p += body
-                p += bytes(self.payload - 2 - len(p))         # L: 8 reserved bytes
+                p = self._header(self.magic, msg_id, short << 13 | seq, total) + body
+                out.append(self._seal(p))
+                if self.parity:      # XOR of bytes 6 .. payload-3 of the group's packets
+                    d = _whiten(out[-1])[HDR:-2]
+                    acc = d if acc is None else bytes(a ^ b for a, b in zip(acc, d))
+                    if (seq + 1) % self.depth == 0 or seq == npk - 1:
+                        g = seq // self.depth
+                        out.append(self._seal(self._header(self.magic | PARITY, msg_id, short << 13 | g, total) + acc))
+                        acc = None
             else:
                 last = int(seq // GROUP == npk // GROUP - 1)
                 p = bytes([(msg_id & 15) << 4 | last << 3 | (seq >> 8) & 7, seq & 0xFF]) + body
-            out.append(_whiten(p + crc16_ccitt(p).to_bytes(2, "big")))
+                out.append(_whiten(p + crc16_ccitt(p).to_bytes(2, "big")))
         return out
 
     def unpack(self, payload):
@@ -176,13 +214,16 @@ class Profile:
         if len(p) != self.payload or crc16_ccitt(p[:-2]) != int.from_bytes(p[-2:], "big"):
             return None
         if self.name != "S":
-            if p[0] != self.magic:
+            if p[0] not in (self.magic, self.magic | PARITY):
                 return None
-            return dict(msg_id=p[1], seq=int.from_bytes(p[2:4], "big") & 0x1FFF,
-                        depth=DEPTHS[p[2] >> 6], short=bool(p[2] & 0x20), total=int.from_bytes(p[4:6], "big"), last=None,
-                        frames=[p[6 + 6 * s:12 + 6 * s] for s in range(self.slots)])
+            q = dict(msg_id=p[1], seq=int.from_bytes(p[2:4], "big") & 0x1FFF,
+                     depth=DEPTHS[p[2] >> 6], short=bool(p[2] & 0x20), total=int.from_bytes(p[4:6], "big"),
+                     last=None, frames=[p[6 + 6 * s:12 + 6 * s] for s in range(self.slots)], parity=None)
+            if p[0] & PARITY:        # a parity packet: seq is the group, the rest the XOR
+                q.update(group=q.pop("seq"), parity=p[HDR:-2], frames=None)
+            return q
         return dict(msg_id=p[0] >> 4, seq=(p[0] & 7) << 8 | p[1], depth=GROUP, short=False, total=None,
-                    last=(p[0] >> 3) & 1, frames=[p[2:8], p[8:14]])
+                    last=(p[0] >> 3) & 1, frames=[p[2:8], p[8:14]], parity=None)
 
 
 L = Profile("L", 64, 8)
@@ -350,17 +391,20 @@ def expand_pauses(frames, good=None, codec="2400"):
     return b"".join(out), np.array(og, np.uint8)
 
 
-def profile(name, codec="2400", depth=GROUP, short_last=True):
+def profile(name, codec="2400", depth=GROUP, short_last=True, parity=False):
     """The packet profile for a codec: "2400" (sotto v3.7), "1200" (sotto 1200, magic 0xA9), "600"
     or "400" (0xAC, 0xAD; the last three L and XL only, since profile S has no magic byte), with
     `depth` packets per interleave group
-    (8, 4, 2 or 1; S only 8)."""
+    (8, 4, 2 or 1; S only 8), and with `parity` an XOR parity packet after each group (L and XL)."""
     magic = CODECS[codec][0]
     if name == "S" and magic != MAGIC:
         raise ValueError("profile S carries sotto v3.7 frames only (it has no magic byte)")
     if depth not in DEPTHS or (name == "S" and depth != GROUP):
         raise ValueError(f"interleave depth {depth}: L and XL take 8, 4, 2 or 1, S only 8")
-    return replace(PROFILES[name], magic=magic, depth=depth, short_last=short_last and name != "S")
+    if parity and name == "S":
+        raise ValueError("profile S has no magic byte, so no parity packets")
+    return replace(PROFILES[name], magic=magic, depth=depth, short_last=short_last and name != "S",
+                   parity=parity)
 
 
 # ---- control packets (spec section 13) ----------------------------------------------------
@@ -464,10 +508,13 @@ class Assembler:
     """Collects payloads (any pass, any order) into messages: frames + per-frame good flags.
 
     A packet with a bad CRC or magic is counted and dropped. A new msg_id starts a new
-    message, as on the radio; `messages` keeps them all here for testing."""
+    message, as on the radio; `messages` keeps them all here for testing. Parity packets are
+    kept per group; `frames` rebuilds a group's one missing packet from its parity (counted in
+    `rebuilt`), as the K6 does."""
 
     def __init__(self, profile=L):
         self.profile, self.bad, self.swapped, self.messages = profile, 0, 0, {}
+        self.rebuilt = 0
 
     def push(self, payload):
         """-> the unpacked packet, or None. A payload whose 16-bit words arrive byte-swapped
@@ -481,14 +528,35 @@ class Assembler:
                 return None
             self.swapped += 1
         m = self.messages.setdefault(q["msg_id"], {"total": None, "last_seq": None, "pk": {},
-                                                   "depth": q["depth"], "short": False})
+                                                   "depth": q["depth"], "short": False, "parity": {}})
         m["short"] |= q["short"]
         if q["total"] is not None:
             m["total"] = q["total"]
+        if q["parity"] is not None:
+            m["parity"][q["group"]] = q["parity"]
+            return q
         if q["last"]:
             m["last_seq"] = max(m["last_seq"] or 0, q["seq"])
         m["pk"][q["seq"]] = q["frames"]
         return q
+
+    def _rebuild(self, m, prof):
+        """Each group with exactly one data packet missing and its parity packet in: the
+        missing packet = the parity XOR the group's other packets (frames and padding as sent;
+        L's reserved bytes are zero on both sides)."""
+        nb = prof.slots * FRAME_BYTES
+        for g, par in m["parity"].items():
+            seqs = prof.group_seqs(g, m["total"])
+            lost = [q for q in seqs if q not in m["pk"]]
+            if len(lost) != 1:
+                continue
+            body = bytearray(par[:nb])
+            for q in seqs:
+                if q != lost[0]:
+                    for i, b in enumerate(b"".join(m["pk"][q])):
+                        body[i] ^= b
+            m["pk"][lost[0]] = [bytes(body[6 * s:6 * s + 6]) for s in range(prof.slots)]
+            self.rebuilt += 1
 
     def frames(self, msg_id):
         """-> (frames bytes, good uint8 per frame) for one message."""
@@ -499,6 +567,8 @@ class Assembler:
             total = (top // GROUP + 1) * self.profile.group_frames
         fr, good = [bytes(6)] * total, np.zeros(total, np.uint8)
         prof = replace(self.profile, depth=m.get("depth", GROUP), short_last=m.get("short", False))
+        if m.get("parity") and m["total"] is not None:
+            self._rebuild(m, prof)
         for seq, body in m["pk"].items():
             for s, f in enumerate(prof.packet_frames(seq, m["total"])):
                 if f < total:

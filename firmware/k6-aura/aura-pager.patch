@@ -226,7 +226,7 @@ new file mode 100644
 index 0000000..a6560b5
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3534 @@
+@@ -0,0 +1,3536 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -338,6 +338,7 @@ index 0000000..a6560b5
 +        pub fn sp_last_packet() -> *const u8;
 +        pub fn sp_status(st: *mut SpStatus);
 +        pub fn sp_missing(out: *mut u16, max: i32) -> i32;
++        pub fn sp_rebuilt() -> i32;
 +        pub fn sp_play_start();
 +        pub fn sp_play_pwm(out: *mut u16, top: u32, gain_q8: i32, emphasis: i32) -> i32;
 +        pub fn sp_play_pos() -> i32;
@@ -3673,7 +3674,7 @@ index 0000000..a6560b5
 +    let mut s = Serial;
 +    write!(
 +        s,
-+        "K6 PLAY id={:02x} total={} stored={} got={} packets={}/{} played={} dec_mean_us={} dec_max_us={} ram_free={} aborted={} stream={} waits={} late={} overruns={} yields={} pcm={:08x} samples={} missing={}",
++        "K6 PLAY id={:02x} total={} stored={} got={} packets={}/{} played={} dec_mean_us={} dec_max_us={} ram_free={} aborted={} stream={} waits={} late={} overruns={} yields={} pcm={:08x} samples={} rebuilt={} missing={}",
 +        st.msg_id,
 +        st.total,
 +        st.stored,
@@ -3692,6 +3693,7 @@ index 0000000..a6560b5
 +        unsafe { Y_SERVICED },
 +        pcm,
 +        samples,
++        unsafe { ffi::sp_rebuilt() },
 +        n_missing
 +    )
 +    .ok();
