@@ -126,6 +126,7 @@ int ifp_sym(ifp_t *p, int tone, const uint32_t met[4]) {
      packet's count put it is still found */
   p->hist = (p->hist << 1) | (tone == 3);
   p->bad = (p->bad << 1) | (tone == 1 || tone == 2);
+  if (!p->syncs) p->lead_n++, p->lead_bad += (tone == 1 || tone == 2);
   if (p->state == IFP_DATA) {
     /* Gray: tones 0 1 2 3 are 00 01 11 10; LLR > 0 for a 0 bit */
     uint32_t m01 = met[0] > met[1] ? met[0] : met[1], m23 = met[2] > met[3] ? met[2] : met[3];
@@ -248,109 +249,147 @@ static int ifp_tb_next(const ifp_t *p) {
   return n == IFP_STEPS || (!(n & (IFP_TB_OUT - 1)) && n >= IFP_TB_RING);
 }
 
+/* the session's receiving state: the DMA ring's bookkeeping and the receiver, which both the loop
+   and (in images built with SP_PKT_YIELD) sp_packet's yields drive */
+typedef struct {
+  ifrx_t rx;
+  ifp_t *p;
+  ifp_result_t *res;
+  uint8_t *rb;
+  count_fn cnt;
+  uint32_t lastw, produced, consumed, cpos, c0, tot, ks, lock_sym, pmet[4];
+  int pend, psym, locked;
+} svc_t;
+
+/* the DMA's progress since the last look: returns the microseconds since it, with s->produced
+   moved on; an overrun skips what's gone (returns with bit 31 set) */
+static uint32_t svc_poll(svc_t *s) {
+  uint32_t w = RSZ - (rd(DMA_CNDTR1) & 0xFFFF), dw = w >= s->lastw ? w - s->lastw : w + RSZ - s->lastw,
+           cn = tim(), d, a, nc;
+  d = (cn - s->c0) & 0xFFFF;
+  s->c0 = cn;
+  s->tot += d;
+  if (d > (uint32_t)s->res->gap_us && s->locked) s->res->gap_us = (int32_t)d, s->res->gap_i = s->rx.i;
+  s->lastw = w;
+  if (d > STALL_US) /* away near a lap of the ring or more: the laps it didn't see, by the clock */
+    dw += ifrx_udiv(ifrx_udiv(d * (s->ks >> 4), 1000u) + RSZ / 2 - dw, RSZ) * RSZ;
+  s->produced += dw;
+  a = s->produced - s->consumed;
+  if (a > RSZ - L) { /* the ring overran: skip what's gone */
+    nc = a / L;
+    s->consumed += nc * L;
+    s->cpos += nc * L;
+    s->cpos -= ifrx_udiv(s->cpos, RSZ) * RSZ;
+    s->res->lost += nc;
+    ifrx_skip(&s->rx, nc);
+    return d | 0x80000000u;
+  }
+  return d;
+}
+
+/* a decided symbol into the decoder (its soft bits, or the sync hunt: each sync's wrong symbols) */
+static void svc_sym(svc_t *s) {
+  if (ifp_sym(s->p, s->psym, s->pmet) && s->p->syncs <= IFP_RES_MAX)
+    s->res->miss[s->p->syncs - 1] = (int8_t)s->p->miss;
+}
+
+/* the next count into the receiver; a symbol it decides waits in pmet for its soft bits (not on
+   top of the burst that decided it) */
+static void svc_push(svc_t *s) {
+  if (ifrx_push(&s->rx, s->cnt(s->rb, s->cpos))) {
+    if (s->pend) svc_sym(s);
+    if (!s->locked) s->locked = 1, s->lock_sym = s->p->syms;
+    s->rx.gap = 0;
+    s->psym = s->rx.sym;
+    s->pmet[0] = s->rx.met[0], s->pmet[1] = s->rx.met[1], s->pmet[2] = s->rx.met[2], s->pmet[3] = s->rx.met[3];
+    s->pend = 1;
+  }
+  s->consumed += L;
+  s->cpos += L;
+  if (s->cpos == RSZ) s->cpos = 0;
+}
+
+#ifdef SP_PKT_YIELD
+/* sp_packet's yield: the counts that came in meanwhile into the receiver */
+static void svc_yield(void *ctx) {
+  svc_t *s = (svc_t *)ctx;
+  while (!(svc_poll(s) >> 31) && s->produced - s->consumed >= L) svc_push(s);
+}
+#endif
+
 /* a decoded packet into the store (sp_packet: de-whitening, CRC, the frames) */
 IFRX_NOINLINE static void hand(ifp_t *p, ifp_result_t *res) {
   int v = sp_packet(p->pkt, IFP_PAYLOAD);
-  if (res->nres < IFP_RES_MAX) res->res[res->nres] = (int8_t)v, res->miss[res->nres] = (int8_t)p->miss;
+  if (res->nres < IFP_RES_MAX) res->res[res->nres] = (int8_t)v;
   res->nres++;
   p->have = 0;
 }
 
 IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms, uint32_t max_ms,
-                            int r23, ifp_result_t *res) {
-  ifrx_t rx;
+                            int flags, ifp_result_t *res) {
+  svc_t s;
   ifp_t p;
-  uint32_t lastw = 0, produced = 0, consumed = 0, c0, k = 0, kq = 0, idle = 0, tot = 0;
-  uint32_t ks = KS0 * 16, bp = 0, bt = 0, t0 = api->ms(), lock_sym = 0;
-  int r = 0, locked = 0;
-  uint32_t code[IFP_RAM_MAX / 4], cpos = 0, pmet[4];
-  int pend = 0, psym = 0;
-  count_fn cnt = count;
-  ifrx_init(&rx, IFRX_4FSK, ks);
+  int nodec = flags & IFP_NODECODE;
+  uint32_t k = 0, kq = 0, idle = 0, bp = 0, bt = 0, t0 = api->ms();
+  int r = 0;
+  uint32_t code[IFP_RAM_MAX / 4];
+  ifrx_zero(&s, sizeof(s) / 4);
+  s.p = &p, s.res = res, s.rb = rb, s.cnt = count, s.ks = KS0 * 16;
+  ifrx_init(&s.rx, IFRX_4FSK, s.ks);
 #ifndef IFP_NO_RAM
-  res->ram = (int32_t)ram_block(&rx, code, &cnt);
+  res->ram = (int32_t)ram_block(&s.rx, code, &s.cnt);
 #else
   (void)code, (void)ram_block;
 #endif
   ifp_init(&p);
-  p.r23 = r23 & 1;
+  p.r23 = flags & IFP_R23;
+#ifdef SP_PKT_YIELD
+  sp_set_packet_yield(svc_yield, &s);
+#endif
   start(rb);
-  c0 = tim();
+  s.c0 = tim();
   for (;;) {
-    uint32_t w = RSZ - (rd(DMA_CNDTR1) & 0xFFFF), dw = w >= lastw ? w - lastw : w + RSZ - lastw,
-             cn = tim(), d, a, nc = 0;
-    d = (cn - c0) & 0xFFFF;
-    c0 = cn;
-    tot += d;
-    if (d > (uint32_t)res->gap_us && locked) res->gap_us = (int32_t)d, res->gap_i = rx.i;
-    lastw = w;
-    if (d > STALL_US) /* away near a lap of the ring or more: the laps it didn't see, by the clock */
-      dw += ifrx_udiv(ifrx_udiv(d * (ks >> 4), 1000u) + RSZ / 2 - dw, RSZ) * RSZ;
-    produced += dw;
-    a = produced - consumed;
-    if (a > RSZ - L) { /* the ring overran: skip what's gone */
-      nc = a / L;
-      consumed += nc * L;
-      cpos += nc * L;
-      cpos -= ifrx_udiv(cpos, RSZ) * RSZ;
-      res->lost += nc;
-      ifrx_skip(&rx, nc);
-      continue;
-    }
-    if (a < L) {
+    uint32_t d = svc_poll(&s);
+    if (d >> 31) continue;
+    if (s.produced - s.consumed < L) {
       /* caught up: the last symbol into the decoder, a trellis step (~30 us in RAM, ~40 from
-         flash), or a decoded packet into the store (its CRC, ~130 us), but not just before the
-         receiver's bursts (half way through a symbol and at its end, ~120-150 us), which would
-         then overrun the ring: a step anywhere but the sample before them (the decoder must
-         keep within one interleave block of the symbols), the store's work three or more
-         samples before them */
-      int i = rx.i;
-      if (pend) {
-        pend = 0;
-        ifp_sym(&p, psym, pmet);
+         flash), or a decoded packet into the store (sp_packet, ~400 us on the K6: in images
+         with SP_PKT_YIELD it hands the counts that come meanwhile to the receiver), but not
+         just before the receiver's bursts (half way through a symbol and at its end, ~120-150
+         us), which would then overrun the ring: a step anywhere but the sample before them (the
+         decoder must keep within one interleave block of the symbols), the store's work and a
+         step that ends in a traceback (every 16th, and a packet's last: 80 entries of the ring)
+         only where the next burst is three or more samples away */
+      int i = s.rx.i, far = (i >= 0 && i <= IFRX_TL / 2 - 4) || (i >= IFRX_TL / 2 + 1 && i <= IFRX_TL - 4);
+      if (s.pend) {
+        s.pend = 0;
+        svc_sym(&s);
         if ((int32_t)(p.ready - p.step) > res->lag) res->lag = (int32_t)(p.ready - p.step);
         continue;
       }
-      {
-        /* the store's work, and a step that ends in a traceback (every 16th, and a packet's
-           last: 80 entries of the ring), only where the next burst is three or more samples
-           away; a plain step anywhere but the sample before one */
-        int far = (i >= 0 && i <= IFRX_TL / 2 - 4) || (i >= IFRX_TL / 2 + 1 && i <= IFRX_TL - 4);
-        if (p.have) {
-          if (far) {
-            hand(&p, res);
-            r++;
-            continue;
-          }
-        } else if (i != IFRX_TL / 2 - 1 && i < IFRX_TL - 1 && (far || !ifp_tb_next(&p)) &&
-                   ifp_work(&p) >= 0)
+      if (nodec) {
+      } else if (p.have) {
+        if (far) {
+          hand(&p, res);
+          r++;
           continue;
-      }
+        }
+      } else if (i != IFRX_TL / 2 - 1 && i < IFRX_TL - 1 && (far || !ifp_tb_next(&p)) && ifp_work(&p) >= 0)
+        continue;
       idle += d;
       if (++kq & 0xFFFF) continue;
     } else {
-      if (ifrx_push(&rx, cnt(rb, cpos))) {
-        /* the symbol's soft bits later, when caught up (not on top of the burst that
-           decided it) */
-        if (pend) ifp_sym(&p, psym, pmet);
-        if (!locked) locked = 1, lock_sym = p.syms;
-        rx.gap = 0;
-        psym = rx.sym, pmet[0] = rx.met[0], pmet[1] = rx.met[1], pmet[2] = rx.met[2], pmet[3] = rx.met[3];
-        pend = 1;
-      }
-      consumed += L;
-      cpos += L;
-      if (cpos == RSZ) cpos = 0;
+      svc_push(&s);
       /* the checks every 256 counts, a third into a symbol (away from the receiver's bursts) */
-      if (++k < 256 || (rx.i != IFRX_TL / 3 && k < 1024)) continue;
+      if (++k < 256 || (s.rx.i != IFRX_TL / 3 && k < 1024)) continue;
     }
     k = 0;
-    if (tot - bt >= BLK_US) {
-      ks = ifrx_udiv((produced - bp) * 2000u, (tot - bt) >> 3); /* 1/16 kS/s */
+    if (s.tot - bt >= BLK_US) {
+      s.ks = ifrx_udiv((s.produced - bp) * 2000u, (s.tot - bt) >> 3); /* 1/16 kS/s */
 #ifndef IFP_NO_RATE
-      ifrx_rate(&rx, ks);
+      ifrx_rate(&s.rx, s.ks);
 #endif
-      bp = produced, bt = tot;
+      bp = s.produced, bt = s.tot;
       continue;
     }
     if (api->key_poll()) {
@@ -358,34 +397,38 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
       break;
     }
     if (api->ms() - t0 > max_ms) break;
-    if (!locked) {
+    if (!s.locked) {
       if (api->ms() - t0 > wait_ms) {
         r = -6;
         break;
       }
       continue;
     }
-    if (p.syncs ? p.syms - p.last_sync > END_SYMS(p.r23) : p.syms - lock_sym > FIRST_SYMS(p.r23)) break;
+    if (p.syncs ? p.syms - p.last_sync > END_SYMS(p.r23) : p.syms - s.lock_sym > FIRST_SYMS(p.r23)) break;
   }
   stop();
+#ifdef SP_PKT_YIELD
+  sp_set_packet_yield(0, 0);
+#endif
   /* the burst is over (or the time): the packets whose blocks are all in */
-  if (pend) ifp_sym(&p, psym, pmet);
-  if (r >= 0)
+  if (s.pend) svc_sym(&s);
+  if (r >= 0 && !nodec)
     for (;;) {
       if (p.have) hand(&p, res), r++;
       else if (ifp_work(&p) < 0) break;
     }
   res->syncs = p.syncs;
   res->syms = p.syms;
-  res->acq_q = rx.acq_q;
-  res->acq_rej = rx.acq_rej;
-  res->afc_hz = ifrx_afc_hz(&rx);
-  res->idle_pct = (int32_t)ifrx_udiv(idle >> 8, (tot >> 16) | 1) * 100 >> 8;
-  res->ks = (int32_t)(ks >> 4);
+  res->acq_q = s.rx.acq_q;
+  res->acq_rej = s.rx.acq_rej;
+  res->afc_hz = ifrx_afc_hz(&s.rx);
+  res->idle_pct = (int32_t)ifrx_udiv(idle >> 8, (s.tot >> 16) | 1) * 100 >> 8;
+  res->ks = (int32_t)(s.ks >> 4);
+  res->lead_ser = (int32_t)ifrx_udiv(p.lead_bad * 1000u, p.lead_n | 1);
   return r;
 }
 
-int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, int r23,
+int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, int flags,
                 ifp_result_t *res) {
   uint32_t ahb, apb2, t0 = api->ms();
   uint16_t r33, r34;
@@ -403,7 +446,7 @@ int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t m
   if ((r33 & 0x0100) && api->fd_write(0x33, (uint16_t)(r33 & ~0x0100)) != 0) goto out_ahb;
   api->fd_write(0x34, (uint16_t)((r34 & 0xFFF0) | 13));
   wr(RCC_APB2ENR, apb2 | TIM17EN);
-  res->ret = run(api, ring, wait_ms, max_ms, r23, res);
+  res->ret = run(api, ring, wait_ms, max_ms, flags, res);
   wr(RCC_APB2ENR, apb2);
   api->fd_write(0x34, r34);
   api->fd_write(0x33, r33);

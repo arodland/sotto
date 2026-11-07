@@ -68,11 +68,11 @@ it:
 
 It prints two lines:
 
-    K6 IFP ret=15 r23=0 ms=16930 syncs=15 syms=20510 lost=0 q=88 rej=0 afc=-160 idle=43 ks=5900 ram=388 gap=139@1 lag=86 stack_free=600
+    K6 IFP ret=15 fl=0 ms=16930 syncs=15 syms=20510 lost=0 q=88 rej=0 afc=-160 idle=43 ks=5900 ram=388 gap=139@1 lag=86 ld=21 stack_free=600
     K6 IFP pkts=15 r=222111111111113 miss=000100000000000
 
 - `ret` is the number of packets handed over: -2 a key, -6 no lock.
-- `r23` is 1 for a rate 2/3 session.
+- `fl` is the control packet's flags: 1 rate 2/3, 2 no decoding (a bench test). `ld` is the lead's inner-tone decisions per mille.
 - `lost` is the counts lost to ring overruns.
 - `q` is the lead fit, out of 256.
 - `afc` is the AFC offset in Hz.
@@ -113,8 +113,8 @@ The decoder (`ifp_sym`, `ifp_work`) works like this:
 - The pager leaves its packet loop as soon as an `ifrx` control packet is in, turns the chip's
   packet engine off (`disarm`) and starts the session, so the session hears the whole lead.
 
-Stack: about 3.45 KB in the session (the emulator measures it), under `poll`. On air the lr
-image had 1140 B to spare at 2.9 KB, so about 0.6 KB now. Flash: about 5 KB (the receiver, its K6-trained templates and the
+Stack: about 3.56 KB in the session (the emulator measures it), under `poll`. On air fe25ec8
+left 596 B to spare at 3.45 KB; sp_packet's yields add about 110 B, so about 0.5 KB now. Flash: about 5 KB (the receiver, its K6-trained templates and the
 decoder). The lr image keeps 18.7 KB free. The lean images don't call it, so it isn't linked
 there.
 
@@ -134,6 +134,34 @@ of the session, and the acquisition's quarter-symbol early lock. The session tes
 as a module would (5.49 MS/s, RAM) and as the image does (5.9 MS/s, flash). Re-sending the same
 G WAV only repeats the control packet (`K6 CTL seq=.. repeat`): give each send its own
 `--msg-id`.
+
+## On air, 2026-11-07 (image fe25ec8, PR #108)
+
+The same 10.7 s clip (lynden11, 14 XL packets) each time. PHY F played it bit-exact (MATCH).
+
+| Send | `K6 IFP` | `r=` | Played |
+|---|---|---|---|
+| rate 1/2 | `ret=6 syncs=6 lost=77 q=57 idle=33 ks=5773 gap=407@10` | `21C1C1` | 4/14 packets |
+| rate 1/2 | `ret=12 syncs=12 lost=110 q=60 idle=32 gap=407@14` | `211CC1111CCC` | 7/14, MATCH for those |
+| rate 2/3 | `ret=12 syncs=12 lost=0 q=63 idle=31 gap=138@1` | `CCCCCCCCCCCC` | none |
+| rate 2/3 | `ret=14 syncs=14 lost=148 q=61 idle=30 gap=406@10` | `21C111111CC1CC` | 9/14, MATCH for those |
+
+Every send now locks and finds the sync words, and the packets that pass their CRC play
+bit-exact. Two things were left:
+
+- **The store's work.** A good packet kept the session away from its ring for 407 us (the
+  emulator's stand-in had charged ~130), so every good packet overran the ring by about 19
+  counts. sp_packet now yields to the session's receiver every 16 bytes of its CRC, 32 of its
+  de-whitening and 4 frames of the store (`sp_set_packet_yield`, built in with `SP_PKT_YIELD` in
+  the images that have the session, the ones with the codebook in SPI flash). The stand-in now
+  costs what the K6 measured, and the emulator loses no counts with the yields (395 without).
+- **More symbol errors than the modules see.** A RAM-module check on the same bench minutes later
+  (iflive_k6t) measured 2.5-3.1% raw bits wrong, as in the morning. But the sessions' sync words
+  had 1.6-3.9 wrong symbols of 24 (7-16%), more than that rate gives (about 1.3). The next image
+  reports the lead's inner-tone rate (`ld=`, per mille: the raw symbol errors before any
+  decoding load) and has a bench mode that decodes nothing (`--g-nodecode`, control byte 3 bit 1),
+  to tell the decoder's CPU and bus load from the rest. The `miss=` list is now one entry per
+  sync word (it had shown each packet the next one's).
 
 ## Results before the bench
 

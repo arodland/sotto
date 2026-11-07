@@ -58,6 +58,10 @@ NOPAR=
 case "${K6_CB:-}:$VLR" in
   :*|install:) NOPAR=-DSP_NO_PARITY ;;
 esac
+# the images with the coded 4FSK session (c/k6/ifpager.c: not lean) are the ones with the codebook
+# in SPI flash: there sp_packet yields to the session's receiver while a packet goes in
+PKY=
+[ "${K6_CB:-}" = spi ] && PKY=-DSP_PKT_YIELD
 CC=${K6_CC:-clang}
 AR=${K6_AR:-llvm-ar}
 OBJCOPY=${K6_OBJCOPY:-llvm-objcopy}
@@ -65,7 +69,7 @@ RES=$("$CC" -print-resource-dir)
 CFLAGS="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -nostdinc
   -isystem $ROOT/c/fixed/cm4/inc -isystem $RES/include -ffunction-sections -fdata-sections -std=c99
   -ffreestanding -fno-builtin-calloc -fno-builtin-free -Wall -Wno-unused-function
-  -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DFX_CS512_CONST -DFX_YIELD_HOOK $LR -I$ROOT/c -O2 $NOPAR $*"
+  -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DFX_CS512_CONST -DFX_YIELD_HOOK $LR -I$ROOT/c -O2 $NOPAR $PKY $*"
 mkdir -p "$OUT"
 if [ -n "${K6_CB:-}" ]; then
   # the codebook image and its CRC, from this tree's fx_tables.c (a host build of c/k6/sp_cb.c)

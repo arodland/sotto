@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..c794a9c
+index 0000000..1c60746
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3687 @@
+@@ -0,0 +1,3692 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -388,6 +388,7 @@ index 0000000..c794a9c
 +        pub gap_us: i32,
 +        pub gap_i: i32,
 +        pub lag: i32,
++        pub lead_ser: i32,
 +    }
 +    /// c/k6/k6_mod.h: what a RAM module can call (append-only, ABI 1)
 +    #[repr(C)]
@@ -1217,9 +1218,9 @@ index 0000000..c794a9c
 +    ctl: Option<[u8; 6]>,
 +    /// a coded 4FSK receive session asked for (control action 10): its longest, ms; 0 none
 +    ifrx_ms: u32,
-+    /// ... at rate 2/3 (control byte 3 = 1)
++    /// ... its flags (control byte 3: 1 rate 2/3, 2 no decoding, a bench test)
 +    #[cfg(not(feature = "lean"))]
-+    ifrx_r23: bool,
++    ifrx_flags: u8,
 +    /// seq of the last control record applied, -1 none
 +    ctl_seq: i16,
 +    /// the settings before a control packet's change (phy_ffsk, xl, baud_2400, f2400_var),
@@ -1364,7 +1365,7 @@ index 0000000..c794a9c
 +            stream_start: false,
 +            ifrx_ms: 0,
 +            #[cfg(not(feature = "lean"))]
-+            ifrx_r23: false,
++            ifrx_flags: 0,
 +            waits: 0,
 +            late: 0,
 +            overruns: 0,
@@ -2735,26 +2736,30 @@ index 0000000..c794a9c
 +    paint_free_ram();
 +    let ring = (pwm_audio::idle_bytes() as usize + 3) & !3;
 +    let mut res: ffi::IfpResult = unsafe { core::mem::zeroed() };
-+    let r = unsafe { ffi::ifp_session(&MOD_API, ring as *mut u8, IFRX_WAIT_MS, max_ms, app.pager.ifrx_r23 as i32, &mut res) };
++    let r = unsafe { ffi::ifp_session(&MOD_API, ring as *mut u8, IFRX_WAIT_MS, max_ms, app.pager.ifrx_flags as i32, &mut res) };
 +    unsafe { (*addr_of_mut!(MOD_CTX)).app = core::ptr::null_mut() };
 +    let sfree = free_ram();
 +    report_line(format_args!(
-+        "K6 IFP ret={} r23={} ms={} syncs={} syms={} lost={} q={} rej={} afc={} idle={} ks={} ram={} gap={}@{} lag={} stack_free={}",
-+        r, app.pager.ifrx_r23 as u8, res.ms, res.syncs, res.syms, res.lost, res.acq_q, res.acq_rej, res.afc_hz, res.idle_pct, res.ks,
-+        res.ram, res.gap_us, res.gap_i, res.lag, sfree
++        "K6 IFP ret={} fl={} ms={} syncs={} syms={} lost={} q={} rej={} afc={} idle={} ks={} ram={} gap={}@{} lag={} ld={} stack_free={}",
++        r, app.pager.ifrx_flags, res.ms, res.syncs, res.syms, res.lost, res.acq_q, res.acq_rej, res.afc_hz, res.idle_pct, res.ks,
++        res.ram, res.gap_us, res.gap_i, res.lag, res.lead_ser, sfree
 +    ));
 +    let n = (res.nres.max(0) as usize).min(64);
++    let ns = (res.syncs as usize).min(64);
 +    let mut codes = [0u8; 64];
 +    let mut miss = [0u8; 64];
 +    for i in 0..n {
 +        codes[i] = ifp_code(res.res[i]);
++    }
++    // each sync word's wrong symbols (one a packet, in order)
++    for i in 0..ns {
 +        miss[i] = ifp_code(res.miss[i]);
 +    }
 +    report_line(format_args!(
 +        "K6 IFP pkts={} r={} miss={}",
 +        res.nres,
 +        core::str::from_utf8(&codes[..n]).unwrap_or("?"),
-+        core::str::from_utf8(&miss[..n]).unwrap_or("?")
++        core::str::from_utf8(&miss[..ns]).unwrap_or("?")
 +    ));
 +    // back to the pager's set-up, GP0 as it was
 +    app.radio.fd6818.reg_write(syst, MOD_GPIO, gpio);
@@ -2913,7 +2918,7 @@ index 0000000..c794a9c
 +        app.pager.ifrx_ms = (vv as u32).max(3) * 2000;
 +        #[cfg(not(feature = "lean"))]
 +        {
-+            app.pager.ifrx_r23 = val & 1 != 0;
++            app.pager.ifrx_flags = val & 3;
 +        }
 +        report_line(format_args!("K6 CTL seq={} ifrx ms={}", seq, app.pager.ifrx_ms));
 +        app.pager.idle_ticks = 0;

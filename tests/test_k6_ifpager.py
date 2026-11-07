@@ -237,7 +237,7 @@ def test_session_on_m0(fdma, flash_cpi, r23):
     pytest.importorskip("unicorn")
     import k6_live_emu as emu
     pk = message(8)
-    ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0, fdma=fdma, flash_cpi=flash_cpi, r23=r23)
+    ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0, fdma=fdma, flash_cpi=flash_cpi, flags=int(r23))
     assert ret == len(pk), said
     assert got == pk, said
     f = dict(kv.split("=") for kv in said[-1].split()[2:])
@@ -246,6 +246,27 @@ def test_session_on_m0(fdma, flash_cpi, r23):
     # the decoder within one block (coded bits; rate 2/3's step across two blocks waits for the
     # second, one bit more, and the writer reaches that bit's place 42 symbols later)
     assert int(f["lag"]) <= 86 + r23, said
-    assert int(f["i"]) >= (25 if flash_cpi else 35), said
-    # 3.45 KB: the K6 measured 1140 B to spare at 2.9 KB (2026-11-07), so about 0.6 KB now
-    assert used < 3504 - 32, used
+    # CPU to spare with sp_packet at the 400 us it took on the K6 (on air fe25ec8 idled 30-33%)
+    assert int(f["i"]) >= (20 if flash_cpi else 30), said
+    # 3.56 KB: on air (fe25ec8) the session left 596 B to spare at 3.45 KB here; sp_packet's
+    # yields to the receiver add ~110 B (hand, sp_packet and the yield under a receiver burst)
+    assert used < 3600, used
+    assert 0 <= int(f["ld"]) < 50, said                  # the lead's symbols, nearly all right
+
+
+@need_clang
+def test_session_yields_inside_the_store():
+    """the stand-in sp_packet costs what the K6's took on air (407 us, 2026-11-07): without its
+    yields the ring overran at every good packet; with them (SP_PKT_YIELD, as the image builds
+    sotto_pager.c) the counts that come meanwhile go to the receiver, and none are lost. And the
+    no-decode bench mode finds every sync word but hands nothing over"""
+    pytest.importorskip("unicorn")
+    import k6_live_emu as emu
+    pk = message(4)
+    ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0, fdma=5.773e6, flash_cpi=2.0)
+    f = dict(kv.split("=") for kv in said[-1].split()[2:])
+    assert ret == len(pk) and got == pk and int(f["L"]) == 0, said
+    assert int(f["gap"]) < 180, said                     # never away near a lap of the ring
+    ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0, fdma=5.773e6, flash_cpi=2.0, flags=2)
+    f = dict(kv.split("=") for kv in said[-1].split()[2:])
+    assert ret == 0 and got == [] and int(f["syncs"]) == len(pk), said

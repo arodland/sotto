@@ -469,7 +469,7 @@ def control_record(seq, settings=None, action="none", arg=None, val=None):
         val_bits |= bit if on else 0
     if arg is not None:   # an action's argument in byte 4 (ifrx: the session's length / 2 s)
         vv = int(arg) & 0xFF
-    if val is not None:   # byte 3 for an action without settings (ifrx: 1 = rate 2/3)
+    if val is not None:   # byte 3 for an action without settings (ifrx: 1 rate 2/3, 2 no decoding)
         val = int(val) & 0xFF
     else:
         val = val_bits

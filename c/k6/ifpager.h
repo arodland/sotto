@@ -61,6 +61,8 @@ typedef struct {
   uint32_t syncs;         /* sync words found */
   uint32_t last_sync;     /* syms at the last one */
   int32_t miss;           /* the last sync's wrong symbols */
+  uint32_t lead_n, lead_bad; /* symbols decided before the first sync word (the lead), and how many
+                             were an inner tone (the lead has only tones 0 and 3) */
   int16_t pm[2][64];      /* path metrics, this step's and the next's */
   int32_t cur;            /* which of pm is this step's */
   uint32_t dec[IFP_TB_RING][2]; /* each step's 64 decisions */
@@ -90,20 +92,26 @@ typedef struct {
   int32_t acq_q, acq_rej, afc_hz, idle_pct, ks; /* lead fit, rejected acquisitions, AFC, CPU idle, kS/s */
   int32_t nres;
   int8_t res[IFP_RES_MAX];/* each packet's sp_packet result */
-  int8_t miss[IFP_RES_MAX];/* and its sync's wrong symbols */
+  int8_t miss[IFP_RES_MAX];/* each sync word's wrong symbols */
   int32_t ram;            /* bytes of the receiver's hot loops run from RAM (0: from flash) */
   int32_t gap_us, gap_i;  /* the longest the loop was away (a burst and what came before it), and at
                              which sample of the symbol it came back */
   int32_t lag;            /* the most coded bits the decoder fell behind (over IFP_BLOCK: blocks lost) */
+  int32_t lead_ser;       /* per mille of the lead's symbols decided as an inner tone (the raw symbol
+                             errors, before the data and its decoding load) */
 } ifp_result_t;
 /* A receive session (store, then play: the caller plays once it returns). ring: at least
    IFP_RING bytes for the DMA, 4-byte aligned (the pager's PWM ring, 1280 B, is free while nothing
    plays).
    Waits wait_ms for the lead, then runs until no sync word for two packets' time, a key, or
-   max_ms. r23: 1 for rate 2/3 (the control packet says which). Uses the module API's level 2 calls (fd_read/fd_write, ms, key_poll). Puts back
+   max_ms. flags (the control packet's byte 3): IFP_R23 for rate 2/3; IFP_NODECODE (a bench test)
+   decodes nothing, only finds the sync words, so their wrong symbols (miss) come without the
+   decoder's load. Uses the module API's level 2 calls (fd_read/fd_write, ms, key_poll). Puts back
    REG_33, REG_34, TIM17 and DMA channel 1. */
+#define IFP_R23 1
+#define IFP_NODECODE 2
 #define IFP_RING 1216u                 /* 19 counts of 64 samples: 206 us at 5.9 MS/s */
-int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, int r23,
+int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, int flags,
                 ifp_result_t *res);
 #endif
 

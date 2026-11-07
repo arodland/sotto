@@ -32,6 +32,14 @@ void (*volatile fx_yield)(void);
 void sp_set_yield(void (*f)(void)) { fx_yield = f; }
 void sp_yield_probe(void) {}         /* a do-nothing yield, for c/k6/bench_k6.py's gap count */
 #endif
+#ifdef SP_PKT_YIELD
+static void (*pk_yield)(void *);
+static void *pk_ctx;
+void sp_set_packet_yield(void (*f)(void *), void *ctx) { pk_yield = f, pk_ctx = ctx; }
+#define PK_YIELD(i, m) do { if (pk_yield && ((i) & (m)) == (m)) pk_yield(pk_ctx); } while (0)
+#else
+#define PK_YIELD(i, m) do {} while (0)
+#endif
 static uint32_t dec_mem[SP_DEC_MAX / 4];
 static unsigned dec_used, dec_blocks;
 void *sp_calloc(size_t n, size_t size);
@@ -84,7 +92,10 @@ static unsigned crc_byte(unsigned c, unsigned b) {
 static unsigned crc16(const uint8_t *p, int n) {
   unsigned c = 0xFFFF;
   int i;
-  for (i = 0; i < n; i++) c = crc_byte(c, p[i]);
+  for (i = 0; i < n; i++) {
+    c = crc_byte(c, p[i]);
+    PK_YIELD(i, 15);
+  }
   return c;
 }
 
@@ -287,6 +298,7 @@ static int packet(const uint8_t *p, int fpp, uint8_t profile) {
   for (s = 0; s < fpp; s++) {
     long f = frame_in(seq / dep, k, s);
     if (f < S.st.stored) put_frame((int)f, p + HDR + 6 * s);
+    PK_YIELD(s, 3);
   }
   return finish_packet(seq, was_new, before);
 }
@@ -331,6 +343,7 @@ static int parity(uint8_t *p, int fpp, uint8_t profile) {
       const uint8_t *q = S.frames + 6 * pos_of(f);
       if (f < total)
         for (i = 0; i < 6; i++) p[HDR + 6 * s + i] ^= q[i];
+      PK_YIELD(s, 3);
     }
   p[0] &= (uint8_t)~PARITY, p[2] = (uint8_t)((p[2] & 0xE0) | (seq0 + miss) >> 8), p[3] = (uint8_t)(seq0 + miss);
   r = packet(p, fpp, profile);
@@ -344,7 +357,10 @@ int sp_packet(const uint8_t *payload, int len) {
   int i, r;
   if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return SP_BAD_LENGTH;
   if (!pn9[0]) pn9_init();
-  for (i = 0; i < len; i++) last_pkt[i] = payload[i] ^ pn9[i];
+  for (i = 0; i < len; i++) {
+    last_pkt[i] = payload[i] ^ pn9[i];
+    PK_YIELD(i, 31);
+  }
   for (; i < SP_PAYLOAD_MAX; i++) last_pkt[i] = 0;
   if (!pager_magic(last_pkt[0])) { S.st.bad_packets++; return SP_BAD_MAGIC; }
   if (crc16(last_pkt, len - 2) != ((unsigned)last_pkt[len - 2] << 8 | last_pkt[len - 1])) {
