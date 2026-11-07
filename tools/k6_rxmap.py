@@ -454,16 +454,13 @@ def cmd_cal(a):
                     time.sleep(5)
                 note(f"carrier {i + 1}/{len(sched)}: {mhz(hz)} MHz"
                      + (f", RF power {pw * p0:.2f} ({pw:g} of {p0:.2f})" if pw is not None else ""))
-                try:
-                    up.rig(ns, "T", 1)
+                # under the bench's PTT lock, so the CW ID keeper waits; lead 0: the K6's
+                # schedule counts the hold from T 1
+                with up.bench.keyed(lambda *v: up.rig(ns, *v), "data", f"rxmap carrier {mhz(hz)}",
+                                    dry_run=ns.dry_run, lead=0.0):
                     time.sleep(a.hold)
                     if a.id_each:
-                        if a.dry_run:
-                            print("dry run: paplay", idw)
-                        else:
-                            subprocess.run(["paplay", f"--device={ns.device}", idw], check=True)
-                finally:
-                    up.rig(ns, "T", 0)
+                        up.bench.play(idw, ns.device, ns.dry_run)
                 time.sleep(a.gap)
         finally:
             up.rig(ns, "F", PAGER_HZ)
@@ -479,7 +476,7 @@ def cmd_cal(a):
         finally:
             rec.stop()
             note("CW ID")
-            up.key_and_play(ns, idw)
+            up.key_and_play(ns, idw, "id", a.call)
             out.close()
             print(f"log: {log}")
 

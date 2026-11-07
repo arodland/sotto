@@ -30,6 +30,11 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from modem import k6mod  # noqa: E402
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import k6_bench as bench  # noqa: E402  (the PTT lock and the CW ID keeper's state)
+
+TOOL = "k6_upload"
+
 FS = 48000
 PLAY = "alsa_output.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.analog-stereo"
 REC = "alsa_input.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.analog-stereo"
@@ -59,19 +64,10 @@ def rig(a, *args):
     return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def key_and_play(a, path):
-    if rig(a, "t") != "0":
-        sys.exit("the IC-7100 is already keyed (ID keeper?): try again in a minute")
-    try:
-        rig(a, "T", 1)
-        time.sleep(0.2)
-        if a.dry_run:
-            print("dry run: paplay", path)
-        else:
-            subprocess.run(["paplay", f"--device={a.device}", path], check=True)
-        time.sleep(0.05)
-    finally:
-        rig(a, "T", 0)
+def key_and_play(a, path, kind="data", text=bench.ID_TEXT):
+    """the bench's keying sequence under its PTT lock (tools/k6_bench.py); kind "id" for a CW ID"""
+    bench.key_and_play(lambda *v: rig(a, *v), path, a.device, a.dry_run, kind,
+                       f"{TOOL} {os.path.basename(path)}", text)
 
 
 def mod_wav(a, path, serial, xfer, only=None):
@@ -214,7 +210,7 @@ def main():
             import soundfile as sf
             sf.write(p, k6.cw(a.call + " SOTTO TEST", FS), FS, subtype="PCM_16")
             print(f"{time.strftime('%H:%M:%S')} CW ID", flush=True)
-            key_and_play(a, p)
+            key_and_play(a, p, "id", a.call + " SOTTO TEST")
 
 
 if __name__ == "__main__":
