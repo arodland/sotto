@@ -223,24 +223,23 @@ static int sync(const k6_api_t *api, uint32_t *td) {
 /* one frame, its tones from t0 (or the lead after tx_on if that is later), and its ID, keyed;
    the symbols sent and *id the ID's units, or a negative error */
 static int frame(const k6_api_t *api, int *id, uint32_t t0) {
-  uint32_t k, j;
-  int r;
+  uint32_t k = 0, j, t3;
+  int r = 0;
   if (api->tx_on(TX_MS) != 0) return -3;
   api->fd_write(0x70, 0);
   api->fd_write(0x71, (uint16_t)(WORD(WSPR_AUDIO) + ((WSPR_TONES[0] * TONE_Q16) >> 16)));
   if ((int32_t)(t0 - api->ms()) < WSPR_LEAD_MS) t0 = api->ms() + WSPR_LEAD_MS;
-  r = until(api, t0);
-  if (!r) api->fd_write(0x70, REG70_ON);
-  for (k = 0; !r && k < NSYM; k++) {
-    uint32_t t3;
-    if ((r = keyed(api)) != 0) break;
-    api->fd_write(0x71, (uint16_t)(WORD(WSPR_AUDIO) + ((WSPR_TONES[k] * TONE_Q16) >> 16)));
-    /* the next symbol starts at t0 + (k + 1) 2048 / 3 ms: wait for 3 ms() to pass 3 t0 + ... */
-    t3 = 3u * t0 + (k + 1) * SYM3;
+  /* the lead (from tx_on's return to the slot: 0.3-0.9 s), then symbol k from t0 + k 2048 / 3 ms,
+     each wait checking the key and the core's limit about every 70 ms */
+  for (t3 = 3u * t0; !r && k <= NSYM; t3 += SYM3) {
     for (j = 0; !r && (int32_t)(3u * api->ms() - t3) < 0; j++) {
-      if (!(j & 127) && api->key_down()) r = -4;    /* about every 70 ms */
+      if (!(j & 127) && ((r = keyed(api)) != 0 || api->key_down())) r = r ? r : -4;
       api->delay_us(500);
     }
+    if (r || k == NSYM) break;
+    if (!k) api->fd_write(0x70, REG70_ON);
+    api->fd_write(0x71, (uint16_t)(WORD(WSPR_AUDIO) + ((WSPR_TONES[k] * TONE_Q16) >> 16)));
+    k++;
   }
   api->fd_write(0x70, 0);
   if (!r) r = until(api, api->ms() + 400);    /* a gap, then the ID */
