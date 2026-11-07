@@ -107,15 +107,18 @@ K6 shows up at the input. Plan:
 ### Tone on the output
 
 The plan: dwell up to 0.4 s on an over with no tone yet, and believe a CTCSS or DCS reading only
-when two reads agree, as Aura's ScanQT does. On the BK4819 the scan results are REG_68 (CTCSS)
-and REG_69 (CDCSS), as the UV-K5 firmware reads them. **Not confirmed on this chip (0x4819)**,
-and they aren't in the register map yet (k6-fd6818-regmap). Steps:
+when two reads agree, as Aura's ScanQT does. Aura's ScanQT (edf3b98) sets REG_51 = 0x0300, reads
+CTCSS from REG_68 (Hz = raw / 20.6489) and DCS from REG_69/6A. That's working code on this chip,
+but we haven't measured it on the bench, and it isn't in the register map (k6-fd6818-regmap)
+yet. Steps:
 
-1. Read Aura's ScanQT driver code for the exact set-up, since that code works on this chip.
-2. Write a probe module (level 2, like cwprobe): the IC-7100 keys 440.850 with a 100.0 Hz tone,
-   then 123.0 Hz, then a DCS code, and the module prints REG_68/69 every 50 ms.
-3. Add what it finds to the register map before anything else uses it.
-4. Then add the dwell to the scan or the core.
+1. Write a probe module (level 2, like cwprobe) that does ScanQT's set-up. The IC-7100 keys
+   440.850 with a 100.0 Hz tone, then 123.0 Hz, then a DCS code, and the module prints REG_68,
+   69 and 6A every 50 ms. Note how long a reading takes to settle and how often two reads agree.
+2. Add what it finds to the register map before anything else uses it.
+3. Then add the dwell to the scan or the core. `fd_write` allows REG_51 (it refuses only 0x30,
+   0x33, 0x36 and 0x37). The module should put REG_51 back itself rather than count on the
+   pager's receiver set-up after the module covering it.
 
 The dwell takes the sweep away for 0.4 s, so do it once per candidate, not once per over.
 
