@@ -54,8 +54,8 @@ M lo=18.000 b=2000 n=160 s=25000 q=3000 sig=12 ms=55120
 `tools/k6_rxmap.py decode` reads either form. It uses the serial detail where it has it (1 dB,
 with the peak's frequency) and the rows otherwise (2 dB steps). It prints the coverage per
 region (median floor and signals 10 dB or more over it, with likely services), lists the
-signals, and draws an SVG with `--svg`. Peaks within 30 kHz of a 26 MHz harmonic are starred:
-the K6's own crystal.
+signals, and draws an SVG with `--svg`. Peaks within 30 kHz of a multiple of 13, 6 or 25 MHz are
+starred, because the first bench run found those clocks' harmonics everywhere (below).
 
 cal prints the floors (`C 440.850:-131 ...`), then one line per carrier as it drops
 (`c 440.850 -61 -60 fl-131 n8 z0`: mean and max dBm, floor, readings, mean REG_63), then
@@ -90,15 +90,44 @@ load on the IC-7100 keeps the K6's signal in its linear range: Phase 0's bench c
 
 ## What it can't tell
 
-- The noise floor is the chip's own, as REG_67 reports it. It doesn't drop where the filters
-  cut, because the K6's own noise dominates there. That's why map uses off-air signals.
+- The noise floor is what REG_67 reports with no signal. It does show the filters (it drops 10 to
+  17 dB outside them), but the bench's own noise sets it inside them. So weak-signal reach comes
+  from the off-air peaks and from cal, not from the floor.
 - The coverage measured is the radio plus its stock antenna, which is a 2 m / 70 cm whip.
 - RSSI is uncalibrated outside the bands Aura calibrates, and may not be linear. cal's power
   steps check its slope at 440.850.
 - True sensitivity (12 dB SINAD or a packet error rate) needs a calibrated signal source.
   The cal levels against REG_63 come closest.
 
+## First bench run (2026-11-07)
+
+The K6 receives off-air signals from 18 MHz up to about 630 MHz, and nothing above that. The run
+covered nine segments, all receive only. Each upload worked on the first send, and each ARQ report
+was complete. The image was keyed-lr-888ccb0, with frames set to XL over the air and the stock
+antenna on, beside the bench PC. The full table is in the project files at
+`k6-rxmap/results-2026-11-07.md`.
+
+| MHz | region | median floor dBm | what it heard |
+|---|---|---|---|
+| 18-136 | below the VHF filter | -108 | 14 FM broadcast stations, -80 to -98 |
+| 136-174 | VHF filter | -91 | only clock harmonics (144.000 at -72); no NOAA, no airband traffic |
+| 174-300 | above the VHF filter | -103 | clock harmonics, one at 217.575 (-91) |
+| 300-400 | below the UHF filter | -117 | weak (375, 377 at -113 to -116) |
+| 400-520 | UHF filter | -108 | land mobile / GMRS 454-464 at -81 to -89, TV 474.775 at -94 |
+| 520-630 | above the UHF filter | -125 | 600 MHz LTE 617-626 at -115 to -131 |
+| 630-1298 | gap and top band | -146 | only the FD6818's 13 / 6.5 MHz grid; no cellular, pagers or ADS-B |
+
+- Above about 630 MHz, Aura's tune path (REG_38/39, band GPIOs at 300 MHz) doesn't receive at
+  all. It may take another chip setting there. That's untested.
+- The floor in the VHF filter sits about 46 dB over Phase 0's empty-channel -137. In-band noise
+  at the bench, most likely the PC, limits weak signals there. The next run should move the K6 away
+  from it.
+- Clocks to ignore: 24 MHz multiples (72 to 336 MHz), 25 MHz (125, 175: probably hamlet's
+  Ethernet), and 13 / 26 MHz (the FD6818's crystal).
+- A 320 MHz segment took 79.7 s, so a tune costs about 2.3 ms. `estimate` now uses that figure.
+
 ## Status
 
-2026-11-06: coded and emulator-tested (PR to come with this file). Not on air yet: the K6 is
-hung until a battery pull, about 01:00 UTC 2026-11-07.
+- 2026-11-06: coded and emulator-tested (PR #84).
+- 2026-11-07 01:17-01:36 UTC: map on the bench, all nine segments (above).
+- Still to run: cal, which waits on Jeff's OK.

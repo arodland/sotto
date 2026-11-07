@@ -118,7 +118,7 @@ def test_map_finds_the_signals_and_the_summary_fits():
     summary = [ln for ln in said if ln[:1] in "TFPM" and not ln.startswith("rxmap")]
     assert sum(len(ln) + 1 for ln in summary) <= rx.tlm_size(30)
     # the run time the plan quotes is the emulator's within a third
-    est = rx.estimate(30, 40) * 1000
+    est = rx.estimate(30, 40, tune_us=400) * 1000      # the emulator charges 400 us a tune
     assert abs(runs[0]["ms"] - est) < est / 3, (runs[0]["ms"], est)
     rep = rx.report(runs)
     assert "162.550 MHz   -75" in rep or "162.550 MHz   -76" in rep
@@ -193,7 +193,7 @@ def test_decode_serial_log_and_birdies(tmp_path):
            "12:00:02 K6 MOD say M lo=156.000 b=2000 n=2 s=25000 q=3000 sig=1 ms=900\n")
     runs = rx.decode(log)
     assert runs[0]["bins"][0] == {"f": 156_000_000, "fl": -131, "pk": -45, "at": 156_000_000}
-    assert rx.birdie(156_000_000) and not rx.birdie(162_550_000)
+    assert rx.birdie(156_000_000) and rx.birdie(144_000_000) and not rx.birdie(162_550_000)
     assert "*" in rx.report(runs)
     p = tmp_path / "x.svg"
     assert rx.svg(runs, str(p)) and p.read_text().startswith("<svg")

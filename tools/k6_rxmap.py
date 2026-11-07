@@ -81,7 +81,9 @@ REGIONS = [
     (300, 400, "below the UHF filter"), (400, 520, "UHF filter"), (520, 630, "above the UHF filter"),
     (630, 840, "synthesizer gap?"), (840, 1300, "synth top band"),
 ]
-XTAL_HZ = 26_000_000
+XTAL_HZ = 26_000_000                  # the FD6818's crystal
+CLOCK_HZ = 6_000_000                  # a 24 MHz clock's grid (A: 144, 168, 240 ...; D: a 6 MHz comb)
+BENCH_HZ = 25_000_000                 # 125 and 175 MHz on the bench: a 25 MHz clock (hamlet's Ethernet?)
 
 
 # ---- the parameter block ----
@@ -133,9 +135,10 @@ def parse_range(text):
     return lo, b, max(1, round((hi - lo) / b)), s, text
 
 
-def estimate(nbins, nsteps, quick_us=3000, full_us=30000):
-    """seconds a map run takes on the K6 (tune ~0.5 ms, a full read = full_us + 3 ms, a line 5 ms)"""
-    return nbins * (nsteps * (quick_us + 500) + 2 * (full_us + 3500) + 5000) / 1e6
+def estimate(nbins, nsteps, quick_us=3000, full_us=30000, tune_us=2300):
+    """seconds a map run takes on the K6: a step = tune + quick_us, a full read = full_us + 3 ms, a line
+    5 ms. tune_us from the first bench run (2026-11-07: segment A took 79.7 s, so a tune costs ~2.3 ms)"""
+    return nbins * (nsteps * (quick_us + tune_us) + 2 * (full_us + 3500 + tune_us) + 5000) / 1e6
 
 
 def tlm_size(nbins, tops=12):
@@ -219,11 +222,17 @@ def service(hz):
 
 
 def birdie(hz, tol=30_000):
-    """a crystal harmonic (the K6's own 26 MHz): likely self-made"""
+    """a harmonic of the K6's own clocks, on the bench 2026-11-07: 13 MHz (half the FD6818's 26 MHz
+    crystal: every peak in 658-978 MHz) and 6 MHz (24 MHz multiples at 144-336 MHz in segment A, a 6 MHz
+    comb at -128 to -134 dBm in 978-1298), and 25 MHz (125, 175 MHz: probably the bench PC): likely
+    not off the air. Flags ~1.7% of real signals by chance."""
     if hz is None:
         return False
-    n = round(hz / XTAL_HZ)
-    return n > 0 and abs(hz - n * XTAL_HZ) <= tol
+    for c in (XTAL_HZ // 2, CLOCK_HZ, BENCH_HZ):    # 13 MHz covers 26's harmonics too
+        n = round(hz / c)
+        if n > 0 and abs(hz - n * c) <= tol:
+            return True
+    return False
 
 
 def coverage(runs):
@@ -254,7 +263,7 @@ def report(runs):
             out.append(f"{lo:>5}-{hi:<5}  {name:<22} {len(sel):>4} {fl:>6.0f} {len(sig):>4}  {s}")
         sig = sorted((b for b in bins if b["pk"] - b["fl"] >= 10), key=lambda b: b["fl"] - b["pk"])
         out.append("")
-        out.append("Signals, strongest over floor first (* = a 26 MHz crystal harmonic: the K6's own)")
+        out.append("Signals, strongest over floor first (* = on a 13, 6 or 25 MHz harmonic: a clock, not off the air)")
         for b in sig[:40]:
             f = b["at"] or b["f"]
             out.append(f"  {mhz(f):>9} MHz  {b['pk']:>4} dBm  +{b['pk'] - b['fl']:<3} {'*' if birdie(f) else ' '} "
