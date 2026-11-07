@@ -554,6 +554,14 @@ trained on all four logs above (8320 symbols). **`iflive_k6t`** is `iflive` with
 On the emulated model at 52 dB-Hz it locks every step at 0.4-1.3% (the model's signal isn't
 what it was trained on); the bench is what counts.
 
+**On the bench (2026-11-07 05:42-05:45, CI artifact aura-pager-ae5cde6, K6 on keyed-lr-431c327,
+receive only, `live 4fsk` at the normal level):** 2.2-2.8% BER on the 8 steps that decoded
+(about 9100 bits each), against 3.6-5.0% for `iflive` with the model's templates. The held-out
+estimate was 2.3%. AFC steady at -4..+8 Hz, no counts lost to speak of, 60% idle. Step 2 never
+locked (2 rejects, lead fit 14) and step 3 took one reject: the lead fits read 56-69 of 256
+against 70-87 with the model's templates, nearer `IFRX_ACQ_Q` (48), so acquisition has less
+margin. Step 9 is past the end of the sender's audio, as always.
+
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
 Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential
