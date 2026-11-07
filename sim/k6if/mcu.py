@@ -260,7 +260,7 @@ def c_tables(t4_k6=None, t4_k6_note=""):
     return "\n".join(out)
 
 
-H_BAUDS = (1200, 1500, 1600)
+H_BAUDS = (1200, 1350, 1440, 1500, 1600)
 
 
 def c_tables_4h():

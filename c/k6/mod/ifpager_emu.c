@@ -5,7 +5,6 @@
    work's time (de-whitening into a copy, the nibble-table CRC, the frames into a store: here a
    copy into scratch RAM after the DMA ring, for the test to read). Prints the session's results. SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 4
-#define IFRX_T4_K6 1
 #define SP_PKT_YIELD 1 /* as the image builds it: sp_packet yields to the receiver */
 #include "../k6_mod.h"
 #include "../ifpager.c"
@@ -72,7 +71,7 @@ int k6_main(const k6_api_t *api) {
   int32_t v[15];
   int r;
   *(volatile uint32_t *)(scr + IFP_RING) = 0;
-  /* the test puts the flags (IFP_R23, IFP_NODECODE) after the packets' store */
+  /* the test puts the flags (IFP_R23, IFP_NODECODE, IFP_R34) after the packets' store */
   r = ifp_session(api, scr, 8000, 60000, (int)*(volatile uint32_t *)(scr + IFP_RING + 4 + 128 * 64), &res);
   v[0] = r, v[1] = (int32_t)res.syncs, v[2] = (int32_t)res.syms, v[3] = (int32_t)res.lost;
   v[4] = res.acq_q, v[5] = res.acq_rej, v[6] = res.afc_hz, v[7] = res.idle_pct, v[8] = res.ks;
