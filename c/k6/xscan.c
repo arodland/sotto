@@ -242,25 +242,26 @@ static void revisit(xs_t *s) {
   s->rev = api->ms();
 }
 
-/* segment g's floors: quick and full reads on 8 of its bins, off the round frequencies (one
-   segment a step: about 120 ms) */
+/* segment g's floors: full and quick reads on 8 of its bins, off the round frequencies (one
+   segment a step: about 130 ms). Each quick read is one bin over a full read's settled tune, as in
+   the sweep: straight after the 1/8-segment hop it read 40 dB low on air (q-134, bench 3). */
 static void floors(xs_t *s, int g) {
   const k6_api_t *api = s->api;
-  uint32_t i;
+  uint32_t i, step = s->seg[g].step_hz;
   char *p;
   {
-    uint32_t k = (uint32_t)s->seg[g].nbins >> 3, f = s->seg[g].lo_hz + ((k >> 1) + 3) * s->seg[g].step_hz;
+    uint32_t k = (uint32_t)s->seg[g].nbins >> 3, f = s->seg[g].lo_hz + ((k >> 1) + 3) * step;
     uint8_t a[2] = {255, 255}, b[2] = {255, 255}, rd[8];
     for (i = 0; i < 16; i++) {
       uint8_t v;
-      int j = i & 1;
-      if (!j) {
-        api->tune(f, s->wide);
+      int j = !(i & 1);
+      if (j) {
+        v = rd[i >> 1] = st8(full(s, f, 0));
+      } else {
+        api->tune(f + step, s->wide);
         api->delay_us(s->quick_us);
         v = st8(rssi(api));
-      } else {
-        v = rd[i >> 1] = st8(full(s, f, s->quick_us));
-        f += k * s->seg[g].step_hz;
+        f += k * step;
       }
       if (v < a[j]) b[j] = a[j], a[j] = v;
       else if (v < b[j]) b[j] = v;
@@ -278,7 +279,8 @@ static void floors(xs_t *s, int g) {
    reads down while it's up (desense: the bench's own -23 dBm ID did it in explorer-scan-6), and
    the floors follow them down but have nothing to bring them back while the band is quiet, so a
    bin at the old floor looked 13 dB up for 20 minutes. Not while a carrier 30 dB over the floor
-   is up in the segment (that's when the reads are low), unless that has put it off 4 times. */
+   is up in the segment (that's when the reads are low), unless that has put it off 4 times. A
+   spur doesn't count: it's up for good (the 144.000 birdie held 2 m's floor off for 4 minutes). */
 static int refloor_due(xs_t *s) {
   const xs_seg_t *G = &s->seg[s->g];
   uint32_t age = s->api->ms() - s->fl_t[s->g], every = s->refloor_s * 1000u, top = G->lo_hz + G->nbins * G->step_hz;
@@ -287,7 +289,7 @@ static int refloor_due(xs_t *s) {
   if (!every || age < every) return 0;
   if (age >= 4 * every) return 1;
   for (i = 0; i < XS_HOT; i++, h++)
-    if (h->up && h->hz >= G->lo_hz && h->hz < top && h->lvl >= s->sfl[s->g] + 30) return 0;
+    if (h->up && !h->spur && h->hz >= G->lo_hz && h->hz < top && h->lvl >= s->sfl[s->g] + 30) return 0;
   return 1;
 }
 
@@ -406,6 +408,12 @@ int xs_step(xs_t *s) {
   sweep_end(s);
   sweep_start(s);
   return XS_ROW;
+}
+
+void xs_resume(xs_t *s) {
+  if (s->phase != XS_SWEEP) return;
+  refloor(s);
+  sweep_start(s);
 }
 
 void xs_close(xs_t *s) {

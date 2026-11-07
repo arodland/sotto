@@ -190,6 +190,25 @@ rtls module, sent by the IC-7100 (18 of 18 chunks in 23.6 s), read the table bac
 `RT live=1 ... RT 1 440850000 5000000 T0 - r -21`. The call is `-` because of the confirm bug
 above.
 
+## Bench 3: false 2 m hits after a listen (2026-11-07 20:22-20:33 UTC, main 8a8c677)
+
+The new header showed, but the K6 spent its time listening to 2 m noise. Log:
+`~/sotto-work/runs/explore-bench-3/serial.log`. Each time an automatic listen ended, about 22
+"new" 2 m carriers showed at once (146.900 to 147.990, -88 to -91 dBm, all against fl-101). The
+listener sat 2 minutes on one of them, and then the same thing happened again. 2 m's real floor
+was -93 (the first F0 line, at 20:27:14). Three faults locked together, all fixed in xscan:
+
+- **The floor was 8 dB low and nothing refreshed it.** A segment's floor is read again only when
+  no carrier 30 dB over it is up. Against the low floor, the 144.000 birdie (-71) counted as one,
+  and a spur stays up for good, so 2 m went 4.5 minutes without a floor read (the 4-minute limit
+  ended it). Spurs don't hold the floor read off now.
+- **The sweep came back from a listen in the middle of a segment,** judging the rest of the
+  segment against a floor from before the listen. The app now calls `xs_resume` after Listen,
+  Try and automatic listens: the segment reads its floor again and sweeps from its start.
+- **The quick floor read 40 dB low** (q-134) because each quick read came straight after the
+  1/8-segment hop between floor points. The quick read now comes one bin over a settled full
+  read, as in the sweep.
+
 ## Not built yet
 
 - The input-hop cue (the strongest cue) and the tone dwell (k6-explorer-next.md).

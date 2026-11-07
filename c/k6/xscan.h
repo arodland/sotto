@@ -85,6 +85,11 @@ int xs_init(xs_t *s, const k6_api_t *api, ex_t *ex, uint8_t *mem, uint32_t bytes
    XS_ROW when a segment's sweep ended this step (s->row holds its row, s->cols columns, segment
    s->last_g), XS_KEY when a key was down (nothing more done), else XS_RUN. */
 int xs_step(xs_t *s);
+/* Back from a gap (a Listen or Try that had the receiver for a while): the segment being swept
+   reads its floor again and is swept from its start, so its bins aren't judged against a floor
+   from before the gap (bench 3: 2 m's floor rose 8 dB during a 2 minute listen, and the rest of
+   the segment came back as a wall of new hits). The hot list stays. */
+void xs_resume(xs_t *s);
 /* end every over that's up (their H lines and ex_over calls), as at the end of a run */
 void xs_close(xs_t *s);
 /* the hot list's summary lines (T) and the Z line, as the module's end of run */
