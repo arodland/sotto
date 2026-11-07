@@ -151,6 +151,11 @@ uint32_t sp_pcm_hash(unsigned *samples);
    store or call this library. */
 void sp_set_yield(void (*f)(void));
 void sp_yield_probe(void);
+/* Builds with -DSP_PKT_YIELD (the images with the coded 4FSK session, c/k6/ifpager.c): f(ctx)
+   is called from inside sp_packet every 16 bytes or 4 frames of its work (about 30 us on the
+   K6), so a receiver can keep up with its DMA ring while a packet goes in; 0 for none. f must
+   not touch the store or call this library. */
+void sp_set_packet_yield(void (*f)(void *), void *ctx);
 void sp_set_stream(int on);
 int sp_stream(void);
 int sp_stream_ready(void);

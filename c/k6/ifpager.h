@@ -7,6 +7,9 @@
    of the K6's M0), with a sliding traceback in 640 bytes.
 
      ifp_init / ifp_sym: the decoder alone (for tests on a PC and inside the session)
+     Rate 2/3 punctures the same code (the odd steps' second bit, from polynomial 171, isn't
+   sent): the decoder takes 0 for it.
+
      ifp_session: a receive session on the K6: GP0 code 13's stream on PB1 through DMA channel
        1 into ifrx and ifp_sym, every packet into sp_packet, until the burst ends
 
@@ -22,6 +25,10 @@ extern "C" {
 #define IFP_STEPS (IFP_PAYLOAD * 8 + 8)  /* trellis steps a packet: its bits and 8 zeros */
 #define IFP_BLOCK 86                    /* coded bits an interleave block (43 symbols) */
 #define IFP_HALF (IFP_BLOCK / 2)
+/* data symbols a packet: rate 1/2, one a trellis step; rate 2/3 (every other step's second
+   coded bit not sent: 3 bits each 2 steps), 774 */
+#define IFP_SYMS12 IFP_STEPS
+#define IFP_SYMS23 (IFP_STEPS * 3 / 4)
 #define IFP_SYNC_LEN 24
 #define IFP_SYNC 0x907E6Au              /* 1 = tone 3, 0 = tone 0, the first symbol in bit 23 */
 #ifndef IFP_SYNC_MISS
@@ -40,10 +47,11 @@ typedef struct {
   uint32_t bad;           /* ... and 1 where the decision was an inner tone */
   int32_t nsym;           /* data symbols of the packet coming in */
   int32_t sk, sb;         /* its next symbol's place in its block, and the block's buffer */
-  uint32_t ready;         /* trellis steps whose blocks are in (all packets) */
-  uint32_t step;          /* trellis steps run (all packets) */
-  int32_t ls;             /* ... of the packet being decoded */
-  int32_t bk, bb;         /* the next step's place in its block, and the block's buffer */
+  uint32_t ready;         /* coded bits whose blocks are in (all packets) */
+  uint32_t step;          /* coded bits the trellis has taken (all packets) */
+  int32_t ls;             /* trellis steps run of the packet being decoded */
+  int32_t bi;             /* the next step's first coded bit in llr (both blocks, 0..2 IFP_BLOCK-1) */
+  int32_t r23;            /* 1: rate 2/3 (punctured; set after ifp_init) */
   int32_t out;            /* bits decided (traced back) of that packet */
   int32_t ri;             /* the next step's entry in dec */
   int32_t have;           /* 1: pkt holds a decoded packet (the caller clears it) */
@@ -53,6 +61,8 @@ typedef struct {
   uint32_t syncs;         /* sync words found */
   uint32_t last_sync;     /* syms at the last one */
   int32_t miss;           /* the last sync's wrong symbols */
+  uint32_t lead_n, lead_bad; /* symbols decided before the first sync word (the lead), and how many
+                             were an inner tone (the lead has only tones 0 and 3) */
   int16_t pm[2][64];      /* path metrics, this step's and the next's */
   int32_t cur;            /* which of pm is this step's */
   uint32_t dec[IFP_TB_RING][2]; /* each step's 64 decisions */
@@ -82,15 +92,27 @@ typedef struct {
   int32_t acq_q, acq_rej, afc_hz, idle_pct, ks; /* lead fit, rejected acquisitions, AFC, CPU idle, kS/s */
   int32_t nres;
   int8_t res[IFP_RES_MAX];/* each packet's sp_packet result */
-  int8_t miss[IFP_RES_MAX];/* and its sync's wrong symbols */
+  int8_t miss[IFP_RES_MAX];/* each sync word's wrong symbols */
+  int32_t ram;            /* bytes of the receiver's hot loops run from RAM (0: from flash) */
+  int32_t gap_us, gap_i;  /* the longest the loop was away (a burst and what came before it), and at
+                             which sample of the symbol it came back */
+  int32_t lag;            /* the most coded bits the decoder fell behind (over IFP_BLOCK: blocks lost) */
+  int32_t lead_ser;       /* per mille of the lead's symbols decided as an inner tone (the raw symbol
+                             errors, before the data and its decoding load) */
 } ifp_result_t;
 /* A receive session (store, then play: the caller plays once it returns). ring: at least
-   IFP_RING bytes for the DMA, 4-byte aligned (the pager's PWM ring is free while nothing plays).
+   IFP_RING bytes for the DMA, 4-byte aligned (the pager's PWM ring, 1280 B, is free while nothing
+   plays).
    Waits wait_ms for the lead, then runs until no sync word for two packets' time, a key, or
-   max_ms. Uses the module API's level 2 calls (fd_read/fd_write, ms, key_poll). Puts back
+   max_ms. flags (the control packet's byte 3): IFP_R23 for rate 2/3; IFP_NODECODE (a bench test)
+   decodes nothing, only finds the sync words, so their wrong symbols (miss) come without the
+   decoder's load. Uses the module API's level 2 calls (fd_read/fd_write, ms, key_poll). Puts back
    REG_33, REG_34, TIM17 and DMA channel 1. */
-#define IFP_RING 1024u
-int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, ifp_result_t *res);
+#define IFP_R23 1
+#define IFP_NODECODE 2
+#define IFP_RING 1216u                 /* 19 counts of 64 samples: 206 us at 5.9 MS/s */
+int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, int flags,
+                ifp_result_t *res);
 #endif
 
 #ifdef __cplusplus
