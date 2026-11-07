@@ -510,6 +510,30 @@ carrier (`run --level 1e-6` sends one in place of the 4FSK pass). The model's ta
 2, 6, 27, 96, 251, 242 Hz rms in 0-50, 50-200, 200-600, 600-1500, 1500-3000 and 3000-4500 Hz. If
 the bare carrier shows the bump, a K6-to-IC-7100 capture would tell which radio adds it.
 
+### A bare carrier, and the AFC off (2026-11-07 05:09-05:20)
+
+- **Bare carrier** (`run --level 1e-6`, `tests/data/k6/gp0carrier-20261107.log.gz`): `fmnoise`
+  gives 0, 1, 3, 6, 12, 14 Hz rms at steps 1-5 (-61 dBm), rising to 36 and 96 Hz in 600-1500 and
+  1500-3000 Hz at step 8 (-72 dBm). So **neither radio's synthesizer is the noise**: it shows only
+  under modulation. (The tap's sigma-delta noise on a steady IF tone is lower than the model's,
+  which whitens it; under modulation the model gives 250-300 Hz.)
+- **AFC off** (`gp0cap_afc`, r73=4692, `tests/data/k6/gp0afcoff-20261107.log.gz`): the
+  residual is the same (528 Hz rms against 539 with the AFC on), and so is the per-symbol
+  wobble (13.7%) and the 4FSK held-out BER (5.1%). FFSK read 0.29% (6 errors in 2080 bits)
+  against 1.0% with the AFC on. **The K6's AFC isn't the 4FSK floor.**
+- With a 1.4 ms FIR shared by all captures (the sender's audio response, fitted), the residual
+  is 530-540 Hz rms against 276 in the model. Given that FIR, the previous symbol and the audio
+  phase explain none of what's left (530 -> 519-533 held out). Without it they explain a
+  good part (627 -> 504), because the IC-7100's audio response isn't the model's. The IF's
+  amplitude falls to 0.7 at +-4 kHz, as in the model.
+
+So about 450 Hz rms of FM noise at the tones comes with the modulation. It scales with the
+signal (the 14% wobble holds at 0.07, under the limiter, and at 0.18) and is white from symbol
+to symbol. It isn't intersymbol interference, the AFC, a synthesizer or the K6's channel
+filter. It most likely comes from the IC-7100's transmit audio path (USB codec, its DSP, the
+modulator). Telling the two radios apart needs another transmitter, or another receiver of the
+IC-7100's signal, or the IC-7100's ACC input instead of USB audio.
+
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
 Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential
