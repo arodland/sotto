@@ -71,6 +71,12 @@ class XsFloors(ctypes.Structure):
                 ("sfl", U8 * 4), ("qfl", U8 * 4), ("fl_t", U32 * 4)]
 
 
+class XsPos(ctypes.Structure):
+    """xs_t up to where the sweep is"""
+    _fields_ = XsFloors._fields_ + [("phase", U8), ("g", U8), ("cols", U8), ("last_g", U8), ("b", U16),
+                                    ("base", U16)]
+
+
 class XsInfo(ctypes.Structure):
     _fields_ = [("sweeps", U32), ("bins", U32), ("ms", U32), ("last_ms", U16), ("g", U8), ("phase", U8),
                 ("floor_dbm", ctypes.c_int16 * 4), ("hot", U8), ("up", U8), ("pad", U8 * 2)]
@@ -87,7 +93,7 @@ def lib():
     for f in ("xs_state_bytes", "xl_state_bytes", "xs_mem_bytes"):
         getattr(L, f).restype = U32
     L.xs_init.argtypes = [ctypes.c_void_p, ctypes.POINTER(Api), ctypes.c_void_p, ctypes.c_void_p, U32]
-    L.xs_step.argtypes = L.xs_close.argtypes = L.xs_summary.argtypes = [ctypes.c_void_p]
+    L.xs_step.argtypes = L.xs_close.argtypes = L.xs_summary.argtypes = L.xs_resume.argtypes = [ctypes.c_void_p]
     L.xs_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(XsInfo)]
     L.xl_start.argtypes = [ctypes.c_void_p, ctypes.POINTER(Api), U32, U32]
     L.xl_step.argtypes = [ctypes.c_void_p]
@@ -292,6 +298,66 @@ def test_floors_dragged_down_by_a_strong_carrier_come_back(lib):
     assert all(-140 <= info.floor_dbm[g] <= -134 for g in range(2)), list(info.floor_dbm)
     assert 2 not in res and radio.longest < 200_000, radio.longest   # the re-read is a step of its own
     assert len([l for l in radio.lines if " F0 " in l]) >= 3            # at the start and every minute
+
+
+class Rising(Receiver):
+    """the floor db louder from at_us on (bench 3: 2 m's floor rose 8 dB during a listen)"""
+
+    def __init__(self, signals, at_us, db):
+        super().__init__(signals)
+        self.at, self.db = at_us, db
+
+    def level(self, us):
+        return super().level(us) + (self.db if us >= self.at else 0)
+
+
+def test_back_from_a_listen_the_segment_reads_its_floor_again(lib):
+    """explore-bench-3 (20:25): an automatic listen held the receiver 2 minutes, 2 m's floor came
+    back 8 dB up, and the sweep went on from the middle of the segment against the old floor: a
+    wall of 23 new hits (146.900 to 147.990, -88 to -91 dBm, fl-101), and the next automatic listen
+    sat 2 minutes on noise. xs_resume reads the segment's floor again and sweeps it from its start."""
+    L, kxl = lib
+    segs = [(146_400_000, 10_000, 60, 5_000), (146_600_000, 10_000, 80, 5_000)]
+
+    def run(resume):
+        radio = Radio(Rising([], at_us=s_(40), db=13))
+        buf, mem, ex = explorer(L, kxl, segs, radio)
+        assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+        run_steps(L, buf, radio, 30)
+        pos = XsPos.from_buffer(buf)
+        while not (pos.g == 1 and 20 <= pos.b < 40):      # stopped in the middle of a segment
+            L.xs_step(buf)
+        radio.us += s_(120)                              # the listen: the floor rises meanwhile
+        mark = len(radio.lines)
+        if resume:
+            L.xs_resume(buf)
+            assert pos.b == 0 and pos.g == 1
+        res = run_steps(L, buf, radio, radio.us / 1e6 + 20)
+        after = radio.lines[mark:]
+        return [l for l in after if " say N " in l], [l for l in after if " say F" in l], res, radio
+
+    n, _, _, _ = run(False)
+    assert len(n) >= 3, n                                # the old way: phantoms
+    n, f, res, radio = run(True)
+    assert not n, n
+    assert f and " F1 " in f[0], f                       # the segment it was in reads first
+    assert 2 not in res and radio.longest < 200_000
+
+
+def test_a_spur_does_not_hold_the_floor_off(lib):
+    """a carrier 30 dB over the floor puts the segment's floor read off (its desense pulls the
+    reads down), but a spur is up for good: on air the 144.000 birdie held 2 m's read off until
+    the 4-minute limit. Once it's a spur the floor is read every minute again."""
+    L, kxl = lib
+    radio = Radio(Receiver([(146_700_000, -70, [(0, s_(1000))])]))
+    buf, mem, ex = explorer(L, kxl, [(146_600_000, 10_000, 80, 5_000)], radio)
+    assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+    run_steps(L, buf, radio, 200)
+    log = radio.lines
+    x = [float(l.split()[0]) for l in log if " say X " in l]
+    f = [float(l.split()[0]) for l in log if " say F0 " in l]
+    assert x and 55 < x[0] < 70, x                      # it passes for a spur after spur_s
+    assert len([t for t in f if t > x[0]]) >= 2, (x, f)  # and the floor is read each minute after
 
 
 def test_an_over_carries_its_level_after_the_transmitter_comes_up(lib):
