@@ -92,8 +92,9 @@ station". The level bar
 (Jeff's "4 revised", 2026-11-07) is 2 px of loudest level, 5 dB a pixel from -120 dBm (21 px
 full), over a dotted line for the score (10 points full).
 
-The header (Jeff, 2026-11-07) has an icon pair that swaps every second. While sweeping, it shows
-half-lidded eyes looking left, then right, followed by the band set and how many candidates
+The header (Jeff, 2026-11-07) has an icon pair. While sweeping, it shows half-lidded eyes that
+look the other way each time a sweep of the band set ends, so how fast they glance shows how fast
+the scan is going (Jeff 22:38), followed by the band set and how many candidates
 were found. While listening for a CW ID, it shows dit-dah / dah-dit, the frequency, and a watch
 face at the right end whose wedge empties clockwise over the listen's time limit (for the
 automatic listen 2 min, less for a station already listened to). The automatic listen keeps the list on screen, with an arrow in the call

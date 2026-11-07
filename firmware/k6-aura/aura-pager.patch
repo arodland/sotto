@@ -4179,10 +4179,10 @@ index 0000000..7f6e8e1
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..7bab6a5
+index 0000000..2f0fd40
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1382 @@
+@@ -0,0 +1,1383 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -5354,8 +5354,9 @@ index 0000000..7bab6a5
 +    }
 +}
 +
-+/// the header's state icons (Jeff 2026-11-07), on the lit bar, two frames a second apart:
-+/// half-lidded eyes (his pick "D") looking left and right while sweeping
++/// the header's state icons (Jeff 2026-11-07), on the lit bar: half-lidded eyes (his pick "D")
++/// that look the other way each time a sweep of the band set ends (Jeff 22:38: a visual of how
++/// fast the scan is going)
 +fn eyes<D>(lcd: &mut D, right: bool)
 +where
 +    D: DrawTarget<Color = BinaryColor>,
@@ -5461,7 +5462,7 @@ index 0000000..7bab6a5
 +                // the eyes, then the band set and how many it has found (Jeff 2026-11-07: the
 +                // sweep time doesn't matter to a person)
 +                fill(lcd, 0, 10, BinaryColor::On);
-+                eyes(lcd, now_ms() / 1000 % 2 == 1);
++                eyes(lcd, passes() % 2 == 1);
 +                write!(b, "{}  {} found", BANDS[t.band as usize].0, unsafe { ffi::ex_view_n(&t.ex) }).ok();
 +                head_text(lcd, 19, b.as_str());
 +            }
