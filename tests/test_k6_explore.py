@@ -259,6 +259,30 @@ def test_listen_for_id_takes_turns_and_skips_the_ones_with_a_call(lib):
     assert x.find(146_520_000).listens == 0
 
 
+def test_listen_cap_shrinks_with_time_listened(lib):
+    # Jeff 2026-11-07: "reduces the time spent listening for CW the longer a given station has
+    # actually been listened to": 120 s, halved per minute already spent on it, 20 s at least
+    x = List(lib)
+    x.over(146_940_000, 0, 20_000, -80)
+
+    def cap():
+        return lib.ex_listen_cap(ctypes.byref(x.find(146_940_000)), 120, 20)
+
+    assert cap() == 120
+    lib.ex_heard(ctypes.byref(x.e), 146_940_000, 59)
+    assert cap() == 120
+    lib.ex_heard(ctypes.byref(x.e), 146_940_000, 1)
+    assert cap() == 60
+    lib.ex_heard(ctypes.byref(x.e), 146_940_000, 60)
+    assert cap() == 30
+    lib.ex_heard(ctypes.byref(x.e), 146_940_000, 60)
+    assert cap() == 20
+    lib.ex_heard(ctypes.byref(x.e), 146_940_000, 70000)        # saturates, stays at the floor
+    assert x.find(146_940_000).heard_s == 0xffff and cap() == 20
+    lib.ex_heard(ctypes.byref(x.e), 147_000_000, 30)          # no candidate there: nothing
+    assert x.find(147_000_000) is None
+
+
 def test_listen_for_id_picks_a_first_key_up_and_only_repeater_outputs(lib):
     # the EXPLORE bench run (2026-11-07 17:56): the listener went to 144.000, the K6's own 24 MHz
     # harmonic, and a carrier keyed for the first time had no candidate yet, so it couldn't be

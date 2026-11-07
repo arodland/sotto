@@ -67,6 +67,7 @@ typedef struct {
   char grade;                    /* '?' 'R' 'r' 's' */
   char call[10];                 /* from ex_cw, NUL padded */
   uint8_t listens;               /* times Listen for ID went to it on its own (ex_pick_id) */
+  uint16_t heard_s;              /* seconds those listens lasted (ex_heard) */
 } ex_cand_t;
 
 typedef struct {
@@ -120,6 +121,12 @@ int ex_on_raster(uint32_t hz);
    up, so it moves to the back: the next loudest goes when it's up again, and two repeaters that
    ID at the same time take turns and neither starves. 0: none to listen to. */
 ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n);
+/* The automatic listen's cap, by Jeff's rule (2026-11-07: "reduces the time spent listening for
+   CW the longer a given station has actually been listened to"): max_s halved for each
+   EX_HEARD_STEP_S already spent on it, min_s at least; ex_heard adds a listen's seconds. */
+#define EX_HEARD_STEP_S 60
+unsigned ex_listen_cap(const ex_cand_t *c, unsigned max_s, unsigned min_s);
+void ex_heard(ex_t *e, uint32_t hz, unsigned s);
 /* a repeater table record from a candidate, for Save (id 0: rt_put makes it a new entry) */
 void ex_to_rt(const ex_cand_t *c, rt_rec_t *r);
 

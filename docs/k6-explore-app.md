@@ -53,7 +53,8 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
   up, the sweep goes and listens to it (quietly, with the speaker off). If several are up at
   once, it picks the one listened to fewest times (`ex_pick_id`), and every listen moves that
   one to the back, so two repeaters that ID together take turns and neither starves. It stays
-  while the carrier is up, then 3 s more, 2 minutes at most. The next pick waits for a full
+  while the carrier is up, then 3 s more, 2 minutes at most, halved for each full minute already
+  spent listening to that station, 20 s at least (`ex_listen_cap`). The next pick waits for a full
   pass over the band set and takes the loudest of those listened to fewest times. A call heard once is kept, and a second decode alike, on the same
   listen or a later one, confirms it. Spurs, skirts, simplex frequencies, ignored candidates and
   's' grades are never picked. Key 1 turns it off and on.
@@ -92,8 +93,8 @@ full), over a dotted line for the score (10 points full).
 The header (Jeff, 2026-11-07) has an icon pair that swaps every second. While sweeping, it shows
 half-lidded eyes looking left, then right, followed by the band set and how many candidates
 were found. While listening for a CW ID, it shows dit-dah / dah-dit, the frequency, and a watch
-face at the right end whose wedge empties clockwise over the listen's time limit (2 min for the
-automatic listen). The automatic listen keeps the list on screen, with an arrow in the call
+face at the right end whose wedge empties clockwise over the listen's time limit (for the
+automatic listen 2 min, less for a station already listened to). The automatic listen keeps the list on screen, with an arrow in the call
 column pointing at the row being listened to. On serial, a known candidate has flag 0x20 in its K6 CAND line.
 
 ```text
@@ -234,6 +235,14 @@ carrier just evaluated moves to the back and the next loudest goes when it's up 
 The listener also picks only at the end of a full pass over the band set, two passes after a
 listen ends so one is whole (Jeff 21:57: "spend a couple seconds to do a full sweep first"), not
 the moment the first carrier shows partway through a sweep.
+
+And his listen-time rule (22:01: "reduces the time spent listening for CW the longer a given
+station has actually been listened to"): each candidate keeps the seconds its automatic listens
+lasted (`heard_s`, added by `ex_heard` when a listen ends or a key stops it), and the next
+listen's cap is 120 s halved per full minute of that: 120, 60, 30, then 20 s for good. A
+repeater that IDs every 10 minutes still gets a 20 s window each time it keys up, which covers an
+ID at 13 wpm or faster, while a chatty carrier with no ID stops eating whole sweeps. The serial
+line `K6 EX auto` now shows `heard=` and `max=`.
 
 ## Bench 4 (2026-11-07 21:07-21:12 UTC, PR #122 head 7a591c0)
 

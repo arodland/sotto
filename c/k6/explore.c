@@ -257,6 +257,17 @@ ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n) {
   return best;
 }
 
+unsigned ex_listen_cap(const ex_cand_t *c, unsigned max_s, unsigned min_s) {
+  unsigned t;
+  for (t = c->heard_s; t >= EX_HEARD_STEP_S && max_s > min_s; t -= EX_HEARD_STEP_S) max_s >>= 1;
+  return max_s < min_s ? min_s : max_s;
+}
+
+void ex_heard(ex_t *e, uint32_t hz, unsigned s) {
+  ex_cand_t *c = ex_find(e, hz);
+  if (c) c->heard_s = (uint16_t)(c->heard_s + s > 0xffffu ? 0xffffu : c->heard_s + s);
+}
+
 void ex_to_rt(const ex_cand_t *c, rt_rec_t *r) {
   int i, lvl = c->hi;
   zero(r, sizeof *r);

@@ -4179,10 +4179,10 @@ index 0000000..7f6e8e1
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..9c3fd10
+index 0000000..383ef85
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1350 @@
+@@ -0,0 +1,1371 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4250,6 +4250,7 @@ index 0000000..9c3fd10
 +        pub grade: u8,
 +        pub call: [u8; 10],
 +        pub listens: u8,
++        pub heard_s: u16,
 +    }
 +    #[repr(C)]
 +    pub struct Ex {
@@ -4380,6 +4381,8 @@ index 0000000..9c3fd10
 +        pub fn ex_view(e: *mut Ex, i: u32) -> *mut Cand;
 +        pub fn ex_view_n(e: *const Ex) -> u32;
 +        pub fn ex_cw(e: *mut Ex, hz: u32, call: *const u8);
++        pub fn ex_listen_cap(c: *const Cand, max_s: u32, min_s: u32) -> u32;
++        pub fn ex_heard(e: *mut Ex, hz: u32, s: u32);
 +        pub fn ex_to_rt(c: *const Cand, r: *mut RtRec);
 +        pub fn rt_mount(t: *mut Rt, fl: *const RtFlash, base: u32, force: i32) -> i32;
 +        pub fn rt_find(t: *mut Rt, id: u16, rx_hz: u32, tol: u32, out: *mut RtRec) -> i32;
@@ -4407,11 +4410,14 @@ index 0000000..9c3fd10
 +const LISTEN_S: u32 = 1500;
 +/// the automatic Listen for ID (Jeff's rule, 2026-11-07): it goes to a candidate with no call
 +/// when it keys up, the one listened to fewest times first (ex_pick_id); it stays while the
-+/// carrier is up, then AUTO_TAIL_MS more, AUTO_MAX_S at most. The next is picked only at the end
++/// carrier is up, then AUTO_TAIL_MS more, AUTO_MAX_S at most, halved for each minute already
++/// spent listening to it, AUTO_MIN_S at least (Jeff 2026-11-07: "reduces the time spent
++/// listening for CW the longer a given station has actually been listened to"). The next is picked only at the end
 +/// of a full pass over the band set (AUTO_PASSES after a listen, so one is whole), from all that
 +/// are up then, loudest first (Jeff 2026-11-07: "spend a couple seconds to do a full sweep
 +/// first"). A call needs two decodes alike, on one listen or two.
 +const AUTO_MAX_S: u32 = 120;
++const AUTO_MIN_S: u32 = 20;
 +const AUTO_TAIL_MS: u32 = 3000;
 +const AUTO_PASSES: u32 = 2;
 +const AUTO_DROP_DB: i16 = 15;
@@ -4487,6 +4493,8 @@ index 0000000..9c3fd10
 +    auto: bool,
 +    auto_now: bool,
 +    auto_seen_ms: u32,
++    auto_start_ms: u32,
++    auto_max_s: u32,
 +    auto_lvl: i16,
 +    /// full passes (xs_info sweeps) at the last listen's end or the band's start, and the last
 +    /// pass the listener looked at
@@ -4530,6 +4538,8 @@ index 0000000..9c3fd10
 +    auto: true,
 +    auto_now: false,
 +    auto_seen_ms: 0,
++    auto_start_ms: 0,
++    auto_max_s: AUTO_MAX_S,
 +    auto_lvl: 0,
 +    auto_mark: 0,
 +    auto_pass: 0,
@@ -4826,7 +4836,7 @@ index 0000000..9c3fd10
 +            ctx_off();
 +            monitor_off(app, syst);
 +            if core::mem::take(&mut t.auto_now) {
-+                t.auto_mark = passes();
++                auto_done();
 +            }
 +            note("LISTEN STOPPED");
 +            t.view = View::List;
@@ -4952,12 +4962,14 @@ index 0000000..9c3fd10
 +    // the reads then
 +    t.auto_lvl = if c.overs == 0 { -127 } else { c.hi - AUTO_DROP_DB };
 +    t.auto_seen_ms = now_ms();
++    t.auto_start_ms = t.auto_seen_ms;
++    t.auto_max_s = unsafe { ffi::ex_listen_cap(c, AUTO_MAX_S, AUTO_MIN_S) };
 +    t.resume = true;
 +    app.radio.retune_rx(syst, t.hz, true);
 +    ctx_on(app, syst);
-+    unsafe { ffi::xl_start(t.xl, &MOD_API, t.hz, AUTO_MAX_S) };
++    unsafe { ffi::xl_start(t.xl, &MOD_API, t.hz, t.auto_max_s) };
 +    ctx_off();
-+    say(format_args!("K6 EX auto {} listens={}", t.hz, c.listens));
++    say(format_args!("K6 EX auto {} listens={} heard={} max={}", t.hz, c.listens, c.heard_s, t.auto_max_s));
 +    t.view = View::Listen;
 +    t.dirty = true;
 +}
@@ -4993,6 +5005,15 @@ index 0000000..9c3fd10
 +    }
 +}
 +
++/// An automatic listen ended: the next pick waits for a whole pass, and the time it took counts
++/// against the station's next cap (ex_listen_cap).
++fn auto_done() {
++    let t = st();
++    t.auto_mark = passes();
++    let s = now_ms().wrapping_sub(t.auto_start_ms) / 1000;
++    unsafe { ffi::ex_heard(&mut t.ex, t.hz, s) };
++}
++
 +/// A listen ended: a confirmed call goes on the candidate, and into the table by Jeff's rule
 +/// (2026-11-07): a saved entry with no call takes it at once, a different saved call waits for
 +/// MENU, no saved entry keeps it in RAM until Save.
@@ -5006,7 +5027,7 @@ index 0000000..9c3fd10
 +    }
 +    let auto = core::mem::take(&mut t.auto_now);
 +    if auto {
-+        t.auto_mark = passes();
++        auto_done();
 +    } else {
 +        monitor_off(app, syst);
 +    }
@@ -5497,7 +5518,7 @@ index 0000000..9c3fd10
 +                ditdah(lcd, now_ms() / 1000 % 2 == 1);
 +                mhz(&mut b, t.hz);
 +                head_text(lcd, 15, b.as_str());
-+                watch(lcd, info.ms, if t.auto_now { AUTO_MAX_S } else { LISTEN_S } * 1000);
++                watch(lcd, info.ms, if t.auto_now { t.auto_max_s } else { LISTEN_S } * 1000);
 +            }
 +            if t.auto_now {
 +                // the automatic listen keeps the list on screen, an arrow at its row
