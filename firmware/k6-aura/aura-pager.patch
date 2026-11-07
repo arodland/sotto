@@ -4179,10 +4179,10 @@ index 0000000..7f6e8e1
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..383ef85
+index 0000000..7bab6a5
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1371 @@
+@@ -0,0 +1,1382 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4202,7 +4202,8 @@ index 0000000..383ef85
 +//! Keys: UP/DOWN pick a row; MENU Try (listen to it: the sweep stops, the speaker opens);
 +//! 0 Listen for ID (the CW ID decoder, c/k6/xlisten.c, up to 25 minutes, any key stops);
 +//! 5 Save (the repeater table in SPI flash, c/k6/rt.c, through module API level 5's checks);
-+//! * ignore; # the next band set; 7 the list and the table on the serial report (K6 CAND,
++//! * ignore; # the next band set; 1 automatic Listen for ID on/off; 9 its speaker on/off (on
++//! at start); 7 the list and the table on the serial report (K6 CAND,
 +//! K6 RT lines); EXIT twice back to VOICE MSG (the list is in RAM only and goes with it).
 +//!
 +//! RAM: none of its own beyond this file's statics. While EXPLORE runs it borrows the message
@@ -4491,6 +4492,8 @@ index 0000000..383ef85
 +    /// automatic Listen for ID: on (key 1), this listen is one, its carrier last seen (ms),
 +    /// the level that counts as up, when the last one ended; calls heard once (hz, call)
 +    auto: bool,
++    /// the automatic listen plays on the speaker (Jeff 2026-11-07 22:10: on by default); key 9
++    auto_spk: bool,
 +    auto_now: bool,
 +    auto_seen_ms: u32,
 +    auto_start_ms: u32,
@@ -4536,6 +4539,7 @@ index 0000000..383ef85
 +    heard_wpm: 0,
 +    level: 0,
 +    auto: true,
++    auto_spk: true,
 +    auto_now: false,
 +    auto_seen_ms: 0,
 +    auto_start_ms: 0,
@@ -4891,6 +4895,10 @@ index 0000000..383ef85
 +                t.auto = !t.auto;
 +                note(if t.auto { "AUTO ID ON" } else { "AUTO ID OFF" });
 +            }
++            KeyId::Digit9 => {
++                t.auto_spk = !t.auto_spk;
++                note(if t.auto_spk { "AUTO ID SPEAKER ON" } else { "AUTO ID SPEAKER OFF" });
++            }
 +            KeyId::Exit => {
 +                if t.leave_armed {
 +                    leave(app, syst);
@@ -4941,7 +4949,7 @@ index 0000000..383ef85
 +}
 +
 +/// A candidate with no call keyed up: go and listen (the sweep's hot list stays as it is, so the
-+/// over goes on being followed when the sweep comes back). Quietly: the speaker stays off.
++/// over goes on being followed when the sweep comes back). On the speaker unless key 9 muted it.
 +fn auto_pick(app: &mut App, syst: &mut SYST) {
 +    let t = st();
 +    let mut up = [0u32; 10];
@@ -4965,7 +4973,11 @@ index 0000000..383ef85
 +    t.auto_start_ms = t.auto_seen_ms;
 +    t.auto_max_s = unsafe { ffi::ex_listen_cap(c, AUTO_MAX_S, AUTO_MIN_S) };
 +    t.resume = true;
-+    app.radio.retune_rx(syst, t.hz, true);
++    if t.auto_spk {
++        monitor_on(app, syst, t.hz);
++    } else {
++        app.radio.retune_rx(syst, t.hz, true);
++    }
 +    ctx_on(app, syst);
 +    unsafe { ffi::xl_start(t.xl, &MOD_API, t.hz, t.auto_max_s) };
 +    ctx_off();
@@ -5028,9 +5040,8 @@ index 0000000..383ef85
 +    let auto = core::mem::take(&mut t.auto_now);
 +    if auto {
 +        auto_done();
-+    } else {
-+        monitor_off(app, syst);
 +    }
++    monitor_off(app, syst);
 +    t.view = View::List;
 +    if r != XL_OK {
 +        ctx_off();

@@ -57,7 +57,9 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
   spent listening to that station, 20 s at least (`ex_listen_cap`). The next pick waits for a full
   pass over the band set and takes the loudest of those listened to fewest times. A call heard once is kept, and a second decode alike, on the same
   listen or a later one, confirms it. Spurs, skirts, simplex frequencies, ignored candidates and
-  's' grades are never picked. Key 1 turns it off and on.
+  's' grades are never picked. Key 1 turns it off and on. It plays on the speaker (Jeff
+  2026-11-07 22:10); key 9 turns the speaker off or back on for every automatic listen after
+  that, until the radio is switched off.
 - **The table** (`c/k6/rt.c`): Save writes one 64-byte record in SPI flash at 0x0F0000-0x0FFFFF,
   through the same checks as module API level 5. A confirmed CW ID follows Jeff's rule: a saved
   entry with no call takes it at once, and a different saved call waits for MENU. With no saved
