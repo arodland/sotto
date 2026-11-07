@@ -21,6 +21,8 @@ c/sotto_enc -16 in.raw out.bit   # 16 kHz, 16-bit mono raw in; 6 bytes per frame
 c/sotto_dec -16 out.bit dec.raw [good.u8]
 c/sotto_enc in.raw out.bit       # without -16: the 8 kHz v3.7 encoder and decoder
 c/sotto_dec out.bit dec.raw [good.u8]
+c/sotto_enc -16 -1200 in.raw out.bit   # sotto 1200 hiss: 16 kHz in, 6 bytes per 40 ms
+c/sotto_dec -16 -1200 out.bit dec.raw [good.u8]   # (-1200 alone: sotto 1200 at 8 kHz)
 make -C c install PREFIX=/usr/local
 ```
 
@@ -72,6 +74,11 @@ frame. The v3.8 pair (`sotto_enc16_*`, `sotto_dec16_*`) works in 320-sample bloc
 16 kHz: the encoder's first frame comes on the 17th call (the voicing rules look
 `SOTTO_RULE_LAG` frames ahead), and the decoder's output is `SOTTO_DEC16_DELAY_FRAMES`
 (5) frames late, with `sotto_dec16_flush` draining them at the end.
+sotto 1200 hiss (`sotto_lr_enc16_*`, `sotto_lr_dec16_*`, `docs/sotto-1200-hiss.md`) works in
+640-sample blocks at 16 kHz, one 48-bit superframe each: the encoder's first comes on the
+12th call, and the decoder plays `SOTTO_LR_DEC16_DELAY` (4) superframes late.
+`tools/check_lr_hiss.py` checks it against `sim/sotto_lr_hiss.py`. The fixed-point build has
+no sotto 1200 hiss yet (its create functions return NULL).
 
 ## Checked against Python
 

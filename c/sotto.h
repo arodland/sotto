@@ -159,6 +159,32 @@ SOTTO_API int sotto_lr_decode_half(struct sotto_lr_dec *d, const unsigned char i
                                    int good, int half, short speech[SOTTO_SAMPLES_PER_FRAME]);
 SOTTO_API int sotto_lr_dec_flush_half(struct sotto_lr_dec *d, int half, short speech[SOTTO_SAMPLES_PER_FRAME]);
 
+/* ---- sotto 1200 hiss: sotto 1200 with v3.8's 4-8 kHz band, 16 kHz (VARIANT=v3.8) ---------
+ * Still 48 bits per 40 ms (docs/sotto-1200-hiss.md, sim/sotto_lr_hiss.py): the pitch fields
+ * of unvoiced frames carry the hiss, so sotto_lr_decode plays a hiss stream at 8 kHz.
+ * Encoder: feed 640 samples (40 ms at 16 kHz) per call; returns 1 and writes a superframe
+ * once its look-ahead is in: the first on the 12th call with the default SOTTO_RULE_LAG of 10
+ * (sotto 1200's look-ahead, v3.8's rules, and the local decoder needing A(s + 1)'s
+ * envelope); call sotto_lr_enc16_flush until it returns 0.
+ * Decoder: one call per received superframe; each returns 640 samples SOTTO_LR_DEC16_DELAY
+ * superframes behind (the first calls return silence); call sotto_lr_dec16_flush until it
+ * returns 0. */
+#define SOTTO_LR_SAMPLES_PER_FRAME_16K 640
+#define SOTTO_LR_DEC16_DELAY 4   /* superframes: sotto 1200's 2 plus the 16 kHz layer's */
+
+struct sotto_lr_enc16;
+struct sotto_lr_dec16;
+SOTTO_API struct sotto_lr_enc16 *sotto_lr_enc16_create(void);
+SOTTO_API void sotto_lr_enc16_destroy(struct sotto_lr_enc16 *e);
+SOTTO_API int sotto_lr_encode16(struct sotto_lr_enc16 *e, const short speech[SOTTO_LR_SAMPLES_PER_FRAME_16K],
+                                unsigned char out[SOTTO_BYTES_PER_FRAME]);
+SOTTO_API int sotto_lr_enc16_flush(struct sotto_lr_enc16 *e, unsigned char out[SOTTO_BYTES_PER_FRAME]);
+SOTTO_API struct sotto_lr_dec16 *sotto_lr_dec16_create(void);
+SOTTO_API void sotto_lr_dec16_destroy(struct sotto_lr_dec16 *d);
+SOTTO_API void sotto_lr_decode16(struct sotto_lr_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME],
+                                 int good, short speech[SOTTO_LR_SAMPLES_PER_FRAME_16K]);
+SOTTO_API int sotto_lr_dec16_flush(struct sotto_lr_dec16 *d, short speech[SOTTO_LR_SAMPLES_PER_FRAME_16K]);
+
 #ifdef __cplusplus
 }
 #endif

@@ -56,7 +56,9 @@
 #define SOTTO_RULE_LAG 10                   /* frames of look-ahead for the encoder rules */
 #endif
 #define FRING 128                           /* frames of history the rules see */
-#define SRING 64                            /* STFT frames of features kept */
+/* STFT frames of features kept: the sotto 1200 hiss encoder reaches 2 * SOTTO_RULE_LAG + 29
+   back (49 at the default lag) */
+#define SRING (2 * SOTTO_RULE_LAG + 29 <= 64 ? 64 : 128)
 #define PCT_MAX 12000                       /* frames the running percentile remembers (120 s) */
 #define ALIGN_CALLS 2                       /* core decoder calls before its output lines up with the input */
 
@@ -234,7 +236,8 @@ struct sotto_dec16 {
   double env[MRING][NFB];                   /* per model frame k */
   int mcls[MRING];
   long kmax;                                /* model frames known: 0 .. kmax */
-  int code[GRING], idx[GRING], run[GRING];  /* per codec frame */
+  int code[GRING], run[GRING];              /* per codec frame */
+  double res[GRING][4];                     /* its coded 4-band hiss correction (unvoiced frames) */
   double pc[GRING][3];
   /* side channel reader (hiss_band._read_pc) */
   double cur[3];
@@ -246,6 +249,11 @@ struct sotto_dec16 {
   double out[ORING];                        /* y16 + hiss, out[j] at j & (ORING-1) */
   long outn;                                /* samples handed out */
   unsigned rng;
+  /* sotto 1200 hiss (sotto_lr_dec16): the sotto 1200 decoder feeds the frames, and the
+     20 ms blocks out queue up for its 40 ms calls */
+  struct sotto_lr_dec *lr;
+  short q[4 * N16];
+  int qn;
 };
 
 struct sotto_dec16 *sotto_dec16_create(void) {
@@ -316,7 +324,7 @@ static void dec_stage_a(struct sotto_dec16 *d, long t) {
   guess(v, E, s->p);
   s->mask = 0;
   if (src >= 0) {
-    for (int b = 0; b < 4; b++) s->p[b] += sotto_hiss_cb6[d->idx[src % GRING] * 4 + b];
+    for (int b = 0; b < 4; b++) s->p[b] += d->res[src % GRING][b];
     s->mask = 1;
   } else if (v == 2) {
     for (int b = 0; b < 4; b++) s->p[b] += MIXED_DB;
@@ -423,13 +431,13 @@ static void dec_output(struct sotto_dec16 *d, short *speech) {
   d->outn += N16;
 }
 
-/* one received frame: core decode, bookkeeping, hiss stages, one 20 ms block out */
-void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
-                    short speech[SOTTO_SAMPLES_PER_FRAME_16K]) {
-  short y8[SOTTO_SAMPLES_PER_FRAME];
+/* one 20 ms frame through the core: its 160 samples y8 (frame n - 1 synthesised), the core's
+   envelope and classes of those halves, frame n's voicing code, hiss correction and
+   concealment run, and its side-channel bit (read when the frame is unvoiced and arrived:
+   hiss_band._read_pc). Then the hiss stages, and one 20 ms block out once past the delay. */
+static void dec_push(struct sotto_dec16 *d, const short *y8, const sotto_dec_info_t *info, int code,
+                     const double *res, int run, int side, int sgood, short *speech) {
   long n = d->n;
-  sotto_decode(d->core, in, good, y8);
-  const sotto_dec_info_t *info = sotto_dec_info(d->core);
   if (n >= ALIGN_CALLS)
     for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) d->y8[d->y8n++ & (DY8 - 1)] = y8[i] / 32768.0;
   if (n >= 1) {                              /* frame n - 1 was synthesised */
@@ -440,16 +448,15 @@ void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PE
       d->kmax = k;
     }
   }
-  d->code[n % GRING] = frame_code(info->b2);
-  d->idx[n % GRING] = index6(info->b2);
-  d->run[n % GRING] = info->run;
-  /* hiss_band._read_pc: the speaker shape in force at frame n */
+  d->code[n % GRING] = code;
+  memcpy(d->res[n % GRING], res, sizeof d->res[0]);
+  d->run[n % GRING] = run;
   if (n % WIN_FRAMES == 0) d->ngot = 0, d->ok = 1;
   memcpy(d->pc[n % GRING], d->cur, sizeof d->cur);
   if (d->ok && d->ngot < MSG_BITS) {
-    if (!good) d->ok = 0;
-    else if (frame_code(in) == 0) {
-      d->got[d->ngot++] = frame_bit(in, 8);
+    if (!sgood) d->ok = 0;
+    else if (code == 0) {
+      d->got[d->ngot++] = side;
       if (d->ngot == MSG_BITS && unpack_pc(d->got, d->cur)) memcpy(d->pc[n % GRING], d->cur, sizeof d->cur);
     }
   }
@@ -459,28 +466,126 @@ void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PE
   else memset(speech, 0, N16 * sizeof(short));
 }
 
+/* the core's last output (frame n - 1): the stream has ended */
+static void dec_end(struct sotto_dec16 *d, const short *y8, const sotto_dec_info_t *info) {
+  if (d->n >= ALIGN_CALLS)
+    for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) d->y8[d->y8n++ & (DY8 - 1)] = y8[i] / 32768.0;
+  for (int h = 0; h < 2; h++) {
+    long k = 2 * (d->n - 1) + h;
+    memcpy(d->env[k % MRING], info->env[h], sizeof info->env[h]);
+    d->mcls[k % MRING] = info->cls[h];
+    d->kmax = k;
+  }
+  d->nend = d->n;
+  while (d->y8n < 160 * d->nend + 10) d->y8[d->y8n++ & (DY8 - 1)] = 0;   /* zero padding, as the Python */
+  dec_run(d);
+}
+
+/* one received frame: core decode, bookkeeping, hiss stages, one 20 ms block out */
+void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
+                    short speech[SOTTO_SAMPLES_PER_FRAME_16K]) {
+  short y8[SOTTO_SAMPLES_PER_FRAME];
+  sotto_decode(d->core, in, good, y8);
+  const sotto_dec_info_t *info = sotto_dec_info(d->core);
+  double res[4];
+  for (int b = 0; b < 4; b++) res[b] = sotto_hiss_cb6[index6(info->b2) * 4 + b];
+  dec_push(d, y8, info, frame_code(info->b2), res, info->run, frame_bit(in, 8), good, speech);
+}
+
 /* the end of the stream: returns 1 and 320 samples while output remains */
 int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAME_16K]) {
   if (d->n == 0) return 0;
   if (d->nend < 0) {
     short y8[SOTTO_SAMPLES_PER_FRAME];
     sotto_dec_flush(d->core, y8);
-    const sotto_dec_info_t *info = sotto_dec_info(d->core);
-    if (d->n >= ALIGN_CALLS)
-      for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) d->y8[d->y8n++ & (DY8 - 1)] = y8[i] / 32768.0;
-    for (int h = 0; h < 2; h++) {
-      long k = 2 * (d->n - 1) + h;
-      memcpy(d->env[k % MRING], info->env[h], sizeof info->env[h]);
-      d->mcls[k % MRING] = info->cls[h];
-      d->kmax = k;
-    }
-    d->nend = d->n;
-    while (d->y8n < 160 * d->nend + 10) d->y8[d->y8n++ & (DY8 - 1)] = 0;   /* zero padding, as the Python */
-    dec_run(d);
+    dec_end(d, y8, sotto_dec_info(d->core));
   }
   if (d->outn >= 320 * d->nend) return 0;
   dec_output(d, speech);
   return 1;
+}
+
+/* ================================================================== sotto 1200 hiss decoder */
+struct sotto_lr_dec16 {
+  struct sotto_dec16 h;
+};
+
+static void lr_hook(void *ctx, int code, const double *res, int side, int sgood, int run, const short *out,
+                    int flushed) {
+  struct sotto_dec16 *d = ctx;
+  const sotto_dec_info_t *info = sotto_dec_info(sotto_lr_dec_core(d->lr));
+  if (flushed) {
+    dec_end(d, out, info);
+    return;
+  }
+  short blk[N16];
+  long n = d->n;
+  dec_push(d, out, info, code, res, run, side, sgood, blk);
+  if (n + 1 > SOTTO_DEC16_DELAY_FRAMES) memcpy(d->q + N16 * d->qn++, blk, sizeof blk);
+}
+
+struct sotto_lr_dec16 *sotto_lr_dec16_create(void) {
+  struct sotto_lr_dec16 *L = calloc(1, sizeof *L);
+  if (!L) return NULL;
+  struct sotto_dec16 *d = &L->h;
+  init_tables();
+  d->lr = sotto_lr_dec_create();
+  d->fwd = codec2_fftr_alloc(HN, 0, NULL, NULL);
+  d->inv = codec2_fftr_alloc(HN, 1, NULL, NULL);
+  if (!d->lr || !d->fwd || !d->inv) {
+    sotto_lr_dec16_destroy(L);
+    return NULL;
+  }
+  sotto_lr_dec_set_hook(d->lr, lr_hook, d);
+  d->nend = -1;
+  d->kmax = -1;
+  d->last_true = -1;
+  d->ok = 1;
+  d->rng = 0x9E3779B9u;
+  return L;
+}
+
+void sotto_lr_dec16_destroy(struct sotto_lr_dec16 *L) {
+  if (!L) return;
+  sotto_lr_dec_destroy(L->h.lr);
+  codec2_fftr_free(L->h.fwd);
+  codec2_fftr_free(L->h.inv);
+  free(L);
+}
+
+/* 640 samples from the queue (two 20 ms blocks), or silence while it fills */
+static int lr_pop(struct sotto_dec16 *d, short *speech) {
+  if (d->qn < 2) {
+    memset(speech, 0, 2 * N16 * sizeof(short));
+    return 0;
+  }
+  memcpy(speech, d->q, 2 * N16 * sizeof(short));
+  memmove(d->q, d->q + 2 * N16, (size_t)(d->qn - 2) * N16 * sizeof(short));
+  d->qn -= 2;
+  return 1;
+}
+
+void sotto_lr_decode16(struct sotto_lr_dec16 *L, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
+                       short speech[SOTTO_LR_SAMPLES_PER_FRAME_16K]) {
+  struct sotto_dec16 *d = &L->h;
+  short y[SOTTO_SAMPLES_PER_FRAME];
+  sotto_lr_decode_half(d->lr, in, good, 0, y);
+  sotto_lr_decode_half(d->lr, NULL, 0, 1, y);
+  lr_pop(d, speech);
+}
+
+int sotto_lr_dec16_flush(struct sotto_lr_dec16 *L, short speech[SOTTO_LR_SAMPLES_PER_FRAME_16K]) {
+  struct sotto_dec16 *d = &L->h;
+  if (d->n == 0) return 0;
+  short y[SOTTO_SAMPLES_PER_FRAME];
+  while (d->nend < 0 && d->qn < 2) {           /* the sotto 1200 decoder's last frames */
+    if (!sotto_lr_dec_flush_half(d->lr, 0, y)) break;
+    sotto_lr_dec_flush_half(d->lr, 1, y);
+  }
+  while (d->nend >= 0 && d->qn < 2 && d->outn < 320 * d->nend) dec_output(d, d->q + N16 * d->qn++);
+  if (!d->qn) return 0;
+  if (d->qn == 1) memset(d->q + N16, 0, N16 * sizeof(short)), d->qn = 2;
+  return lr_pop(d, speech);
 }
 
 /* ================================================================== encoder */
@@ -535,9 +640,7 @@ struct sotto_enc16 {
   int qh, qn;
 };
 
-struct sotto_enc16 *sotto_enc16_create(void) {
-  struct sotto_enc16 *e = calloc(1, sizeof *e);
-  if (!e) return NULL;
+static void enc_init(struct sotto_enc16 *e) {
   init_tables();
   e->core = sotto_enc_create();
   e->ldec = sotto_dec_create();
@@ -545,6 +648,12 @@ struct sotto_enc16 *sotto_enc16_create(void) {
   e->nend = -1;
   e->lkmax = -1;
   e->msgpos = MSG_BITS;
+}
+
+struct sotto_enc16 *sotto_enc16_create(void) {
+  struct sotto_enc16 *e = calloc(1, sizeof *e);
+  if (!e) return NULL;
+  enc_init(e);
   return e;
 }
 
@@ -771,9 +880,9 @@ static void enc_accumulate(struct sotto_enc16 *e, long tmax) {
   }
 }
 
-/* finish frame g: the 6-bit index of an all-unvoiced frame and its side-channel bit */
-static void enc_finish(struct sotto_enc16 *e, long g) {
-  rframe_t *r = &e->rf[g % FRING];
+/* hiss_band._side_pc for frame g (frames in order) of voicing code: its side-channel bit,
+   or -1 when it carries none */
+static int enc_side(struct sotto_enc16 *e, long g, int code) {
   enc_accumulate(e, 2 * g - 3);
   if (g % WIN_FRAMES == 0) {                 /* a new window: its message from the frames before it */
     double pc[3] = {0, 0, 0};
@@ -786,32 +895,53 @@ static void enc_finish(struct sotto_enc16 *e, long g) {
     pack_pc(pc, e->msg);
     e->msgpos = 0;
   }
+  return code == 0 && e->msgpos < MSG_BITS ? e->msg[e->msgpos++] : -1;
+}
+
+/* hiss_band.uu_residuals for frame g: the mean (input - guess) over its STFT frames, up to
+   STFT frame tlast; returns how many */
+static int enc_residual(const struct sotto_enc16 *e, long g, long tlast, double *res) {
+  int nt = 0;
+  for (int b = 0; b < 4; b++) res[b] = 0;
+  for (long t = 2 * g - 2; t <= tlast; t++) {
+    if (t < 0 || t >= e->nst) continue;
+    long k = t + HB_LAG;
+    if (k > e->lkmax) k = e->lkmax;
+    double p[4];
+    guess(0, e->lenv[k % MRING], p);
+    for (int b = 0; b < 4; b++) res[b] += e->sf[t % SRING].hb[b] - p[b];
+    nt++;
+  }
+  for (int b = 0; nt && b < 4; b++) res[b] /= nt;
+  return nt;
+}
+
+/* the nearest of n 4-band codewords */
+static int nearest4(const double *cb, int n, const double *base, const double *x) {
+  int best = 0;
+  double bd = 1e300;
+  for (int i = 0; i < n; i++) {
+    double d = 0;
+    for (int b = 0; b < 4; b++) {
+      double v = base[b] + cb[i * 4 + b] - x[b];
+      d += v * v;
+    }
+    if (d < bd) bd = d, best = i;
+  }
+  return best;
+}
+
+static const double zero4[4] = {0, 0, 0, 0};
+
+/* finish frame g: the 6-bit index of an all-unvoiced frame and its side-channel bit */
+static void enc_finish(struct sotto_enc16 *e, long g) {
+  rframe_t *r = &e->rf[g % FRING];
+  int side = enc_side(e, g, r->code);
   if (r->code == 0) {
-    double res[4] = {0, 0, 0, 0};
-    int nt = 0;
-    for (long t = 2 * g - 2; t <= 2 * g - 1; t++) {
-      if (t < 0 || t >= e->nst) continue;
-      long k = t + HB_LAG;
-      if (k > e->lkmax) k = e->lkmax;
-      double p[4];
-      guess(0, e->lenv[k % MRING], p);
-      for (int b = 0; b < 4; b++) res[b] += e->sf[t % SRING].hb[b] - p[b];
-      nt++;
-    }
-    int best = 0;
-    if (nt) {
-      double bd = 1e300;
-      for (int i = 0; i < 64; i++) {
-        double d = 0;
-        for (int b = 0; b < 4; b++) {
-          double x = sotto_hiss_cb6[i * 4 + b] - res[b] / nt;
-          d += x * x;
-        }
-        if (d < bd) bd = d, best = i;
-      }
-    }
+    double res[4];
+    int best = enc_residual(e, g, 2 * g - 1, res) ? nearest4(sotto_hiss_cb6, 64, zero4, res) : 0;
     for (int i = 0; i < 6; i++) set_bit(r->bits, 2 + i, (best >> (5 - i)) & 1);
-    if (e->msgpos < MSG_BITS) set_bit(r->bits, 8, e->msg[e->msgpos++]);
+    if (side >= 0) set_bit(r->bits, 8, side);
   }
   memcpy(e->outq[(e->qh + e->qn++) % OUTQ], r->bits, SOTTO_BYTES_PER_FRAME);
 }
@@ -886,31 +1016,211 @@ int sotto_encode16(struct sotto_enc16 *e, const short speech[SOTTO_SAMPLES_PER_F
   return enc_pop(e, out);
 }
 
+/* the input has ended: analyse its tail, flush the core, take its last frames */
+static void enc_end_input(struct sotto_enc16 *e) {
+  long n16 = e->x16n;
+  for (int i = 0; i < 40; i++) e->x16[e->x16n++ & (EX16 - 1)] = 0;   /* the resampler's tail */
+  for (;;) {                                 /* analyse the remaining blocks of the input itself */
+    long n0 = 80 * e->nblk;
+    if (n0 + 80 > n16 / 2) break;
+    short x8[80];
+    for (int i = 0; i < 80; i++) {
+      double x[NTAPS];
+      long m = 2 * (n0 + i) - 20;
+      for (int j = 0; j < NTAPS; j++) x[j] = m + j < 0 || m + j >= n16 ? 0 : e->x16[(m + j) & (EX16 - 1)];
+      double v = rint(down2(x));
+      x8[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : (short)v;
+    }
+    sotto_enc_analyse_block(e->core, x8);
+    e->nblk++;
+  }
+  e->x16n = n16;
+  sotto_enc_flush_core(e->core);
+  sotto_enc_frame_t f;
+  while (sotto_enc_pop_frame(e->core, &f)) e->rf[e->nraw++ % FRING].raw = f;
+  e->nend = e->nraw;
+}
+
 int sotto_enc16_flush(struct sotto_enc16 *e, unsigned char out[SOTTO_BYTES_PER_FRAME]) {
   if (e->nend < 0) {
-    long n16 = e->x16n;
-    for (int i = 0; i < 40; i++) e->x16[e->x16n++ & (EX16 - 1)] = 0;   /* the resampler's tail */
-    e->nblk = e->nblk;                         /* blocks up to n16 / 2 */
-    for (;;) {                                 /* analyse the remaining blocks of the input itself */
-      long n0 = 80 * e->nblk;
-      if (n0 + 80 > n16 / 2) break;
-      short x8[80];
-      for (int i = 0; i < 80; i++) {
-        double x[NTAPS];
-        long m = 2 * (n0 + i) - 20;
-        for (int j = 0; j < NTAPS; j++) x[j] = m + j < 0 || m + j >= n16 ? 0 : e->x16[(m + j) & (EX16 - 1)];
-        double v = rint(down2(x));
-        x8[i] = v > 32767 ? 32767 : v < -32768 ? -32768 : (short)v;
-      }
-      sotto_enc_analyse_block(e->core, x8);
-      e->nblk++;
-    }
-    e->x16n = n16;
-    sotto_enc_flush_core(e->core);
-    sotto_enc_frame_t f;
-    while (sotto_enc_pop_frame(e->core, &f)) e->rf[e->nraw++ % FRING].raw = f;
-    e->nend = e->nraw;
+    enc_end_input(e);
     enc_run(e);
   }
   return enc_pop(e, out);
+}
+
+/* ================================================================== sotto 1200 hiss encoder */
+/* Sotto1200Hiss.encode: v3.8's front end (core, input features, voicing rules) feeds its
+   final 20 ms frames to sotto 1200's coder; the superframes go through a local decoder (the
+   v3.7 core on the frames sotto 1200's decoder rebuilds), whose envelope gives the guess and
+   whose output the side channel's predictor, as in v3.8. Superframe s is finished once A(s + 1)
+   can be quantised: A's 6-bit index, B's 2-bit level over the mean of the unvoiced anchors
+   A(s) and A(s + 1), and a side-channel bit in every unvoiced frame. */
+#define LSQ 16                              /* superframes coded but not finished */
+
+struct sotto_lr_enc16 {
+  struct sotto_enc16 h;                     /* front end, local streams, side channel, output queue */
+  struct sotto_lr_enc *lr;                  /* sotto 1200's coder */
+  sotto_fparams_t fp[FRING];                /* frames after the rules */
+  long npushed;                             /* frames given to the coder */
+  unsigned char sf[LSQ][SOTTO_BYTES_PER_FRAME];   /* plain sotto 1200 superframes */
+  long nsf, nloc, ndone;                    /* superframes coded, decoded locally, finished */
+  long nsf_end;                             /* superframes in all once the input ended, else -1 */
+  int lflushed;                             /* local decoder flushed */
+  double qa[LSQ][4];                        /* A(s)'s quantised hiss when unvoiced */
+  int ia[LSQ];
+};
+
+struct sotto_lr_enc16 *sotto_lr_enc16_create(void) {
+  struct sotto_lr_enc16 *L = calloc(1, sizeof *L);
+  if (!L) return NULL;
+  enc_init(&L->h);
+  L->lr = sotto_lr_enc_create_frames();
+  if (!L->h.core || !L->h.ldec || !L->h.fwd || !L->lr) {
+    sotto_lr_enc16_destroy(L);
+    return NULL;
+  }
+  L->nsf_end = -1;
+  return L;
+}
+
+void sotto_lr_enc16_destroy(struct sotto_lr_enc16 *L) {
+  if (!L) return;
+  sotto_enc_destroy(L->h.core);
+  sotto_dec_destroy(L->h.ldec);
+  codec2_fftr_free(L->h.fwd);
+  sotto_lr_enc_destroy(L->lr);
+  free(L);
+}
+
+static void lr_take(struct sotto_lr_enc16 *L) {
+  unsigned char b[SOTTO_BYTES_PER_FRAME];
+  while (sotto_lr_enc_pop(L->lr, b)) memcpy(L->sf[L->nsf++ % LSQ], b, sizeof b);
+}
+
+/* one 20 ms frame into the local decoder (its output is the frame before) */
+static void lr_feed_local(struct sotto_enc16 *e, const sotto_fparams_t *p) {
+  long g = e->nfed++;
+  short y8[SOTTO_SAMPLES_PER_FRAME];
+  sotto_dec_frame(e->ldec, p, 0, y8);
+  const sotto_dec_info_t *info = sotto_dec_info(e->ldec);
+  if (g >= ALIGN_CALLS)
+    for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) e->ly8[e->ly8n++ & (EX8 - 1)] = y8[i] / 32768.0;
+  if (g >= 1)
+    for (int h = 0; h < 2; h++) {
+      long k = 2 * (g - 1) + h;
+      memcpy(e->lenv[k % MRING], info->env[h], sizeof info->env[h]);
+      e->lcls[k % MRING] = info->cls[h];
+      e->lkmax = k;
+    }
+}
+
+/* A(s)'s 6-bit index and quantised hiss (unvoiced A frames) */
+static void lr_a_index(struct sotto_lr_enc16 *L, long s) {
+  long g = 2 * s;
+  L->ia[s % LSQ] = -1;
+  if (L->fp[g % FRING].code) return;
+  double res[4];
+  int i = enc_residual(&L->h, g, 2 * g - 1, res) ? nearest4(sotto_hiss_cb6, 64, zero4, res) : 0;
+  L->ia[s % LSQ] = i;
+  memcpy(L->qa[s % LSQ], sotto_hiss_cb6 + 4 * i, sizeof L->qa[0]);
+}
+
+/* everything superframe s needs is in: A(s + 1)'s envelope and the local output up to the
+   side channel's frames */
+static int lr_ready(const struct sotto_lr_enc16 *L, long s) {
+  const struct sotto_enc16 *e = &L->h;
+  if (L->lflushed) return 1;
+  long g = 2 * s;
+  return e->lkmax >= 2 * (g + 2) + 1 && e->lnst > 2 * (g + 1) - 3 && e->nst > 2 * (g + 2) - 1;
+}
+
+static void lr_finish(struct sotto_lr_enc16 *L, long s) {
+  struct sotto_enc16 *e = &L->h;
+  long g = 2 * s;
+  int last = L->nsf_end >= 0 && s == L->nsf_end - 1;
+  if (s == 0) lr_a_index(L, 0);
+  if (!last) lr_a_index(L, s + 1);
+  int ca = L->fp[g % FRING].code, cb = L->fp[(g + 1) % FRING].code;
+  int sa = enc_side(e, g, ca), sb = enc_side(e, g + 1, cb), wa = -1, dw = -1;
+  if (ca == 0) wa = (L->ia[s % LSQ] << 1) | (sa > 0);
+  if (cb == 0) {                            /* Sotto1200Hiss._b_base + the nearest level */
+    double res[4], base[4];
+    int ha = ca == 0, hn = !last && L->ia[(s + 1) % LSQ] >= 0;
+    const double *qa = L->qa[s % LSQ], *qn = L->qa[(s + 1) % LSQ];
+    for (int b = 0; b < 4; b++) base[b] = ha && hn ? (qa[b] + qn[b]) / 2 : ha ? qa[b] : hn ? qn[b] : 0.0;
+    /* the last frame also takes the STFT frames past its own (hiss_band.frame_map's clip) */
+    long tlast = last && L->h.nend >= 0 ? e->nst - 1 : 2 * (g + 1) - 1;
+    int k = enc_residual(e, g + 1, tlast, res) ? nearest4(sotto_lr_hiss_bcb, 4, base, res) : 0;
+    dw = (k << 1) | (sb > 0);
+  }
+  unsigned char *b = e->outq[(e->qh + e->qn++) % OUTQ];
+  memcpy(b, L->sf[s % LSQ], SOTTO_BYTES_PER_FRAME);
+  sotto_lr_set_hiss(b, wa, dw);
+}
+
+static void lr_run(struct sotto_lr_enc16 *L) {
+  struct sotto_enc16 *e = &L->h;
+  sotto_enc_frame_t f;
+  while (sotto_enc_pop_frame(e->core, &f)) e->rf[e->nraw++ % FRING].raw = f;
+  enc_rules(e);
+  long nfinal = e->nend >= 0 ? e->nraw : (e->nraw - SOTTO_RULE_LAG > 0 ? e->nraw - SOTTO_RULE_LAG : 0);
+  for (; L->npushed < nfinal; L->npushed++) {  /* Sotto1200Hiss._v38_rules -> p["code"], p["wi"] */
+    const rframe_t *r = &e->rf[L->npushed % FRING];
+    sotto_fparams_t *p = &L->fp[L->npushed % FRING];
+    *p = r->raw.p;
+    p->code = r->code;
+    p->wi = 0;
+    for (int i = 2; i < 9; i++) p->wi = (p->wi << 1) | frame_bit(r->bits, i);
+    sotto_lr_enc_push(L->lr, p);
+    lr_take(L);
+  }
+  if (e->nend >= 0 && L->nsf_end < 0) {
+    sotto_lr_enc_end(L->lr);
+    lr_take(L);
+    L->nsf_end = L->nsf;
+    if (e->nend % 2) L->fp[e->nend % FRING] = L->fp[(e->nend - 1) % FRING];   /* odd count: B = A */
+  }
+  /* superframe s through the local decoder once s + 1 is coded (B(s) is halfway to A(s + 1)) */
+  while (L->nloc < L->nsf - 1 || (L->nsf_end >= 0 && L->nloc < L->nsf_end)) {
+    long s = L->nloc++;
+    sotto_fparams_t a, b;
+    sotto_lr_frames(L->sf[s % LSQ], s + 1 < L->nsf ? L->sf[(s + 1) % LSQ] : NULL, &a, &b);
+    lr_feed_local(e, &a);
+    lr_feed_local(e, &b);
+  }
+  if (L->nsf_end >= 0 && L->nloc == L->nsf_end && !L->lflushed) {
+    long nf = 2 * L->nsf_end;
+    short y8[SOTTO_SAMPLES_PER_FRAME];
+    sotto_dec_flush(e->ldec, y8);
+    if (nf >= ALIGN_CALLS)
+      for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) e->ly8[e->ly8n++ & (EX8 - 1)] = y8[i] / 32768.0;
+    const sotto_dec_info_t *info = sotto_dec_info(e->ldec);
+    for (int h = 0; h < 2; h++) {
+      long k = 2 * (nf - 1) + h;
+      memcpy(e->lenv[k % MRING], info->env[h], sizeof info->env[h]);
+      e->lcls[k % MRING] = info->cls[h];
+      e->lkmax = k;
+    }
+    while (e->ly8n < 160 * nf + 10) e->ly8[e->ly8n++ & (EX8 - 1)] = 0;
+    L->lflushed = 1;
+  }
+  enc_advance_local(e);
+  while (L->ndone < L->nloc && e->qn < OUTQ && lr_ready(L, L->ndone)) lr_finish(L, L->ndone++);
+}
+
+int sotto_lr_encode16(struct sotto_lr_enc16 *L, const short speech[SOTTO_LR_SAMPLES_PER_FRAME_16K],
+                      unsigned char out[SOTTO_BYTES_PER_FRAME]) {
+  struct sotto_enc16 *e = &L->h;
+  for (int i = 0; i < 2 * N16; i++) e->x16[e->x16n++ & (EX16 - 1)] = speech[i];
+  e->ncall += 2;
+  enc_analyse(e);
+  lr_run(L);
+  return enc_pop(e, out);
+}
+
+int sotto_lr_enc16_flush(struct sotto_lr_enc16 *L, unsigned char out[SOTTO_BYTES_PER_FRAME]) {
+  if (L->h.nend < 0) enc_end_input(&L->h);
+  lr_run(L);
+  return enc_pop(&L->h, out);
 }

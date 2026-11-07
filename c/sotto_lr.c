@@ -329,8 +329,58 @@ int sotto_lr_enc_flush(struct sotto_lr_enc *e, unsigned char out[SOTTO_BYTES_PER
   return pop(e, out);
 }
 
+#ifdef SOTTO_V38
+/* sotto 1200 hiss (sotto_lr_enc16 in sotto_hiss.c): the same coder without its core, fed
+   the 20 ms frames after v3.8's voicing rules */
+struct sotto_lr_enc *sotto_lr_enc_create_frames(void) { return calloc(1, sizeof(struct sotto_lr_enc)); }
+
+void sotto_lr_enc_push(struct sotto_lr_enc *e, const sotto_fparams_t *p) {
+  *FR(e, e->nin++) = *p;
+  drain(e);
+}
+
+void sotto_lr_enc_end(struct sotto_lr_enc *e) {
+  e->flushed = 1;
+  drain(e);
+}
+
+int sotto_lr_enc_pop(struct sotto_lr_enc *e, unsigned char out[SOTTO_BYTES_PER_FRAME]) { return pop(e, out); }
+#endif
+
 /* ------------------------------------------------------------------ decoder */
+#ifdef SOTTO_V38
+#define LR_HISS                      /* sotto 1200 hiss: sotto_lr_dec16 in sotto_hiss.c hooks in */
+#include "sotto_hiss_tables.h"
+#endif
 #define lr_params_t sotto_fparams_t
 #define lr_shape_a a_shape
 #define lr_shape_b b_shape
 #include "sotto_lr_dec.inc"
+
+#ifdef LR_HISS
+void sotto_lr_dec_set_hook(struct sotto_lr_dec *d, lr_hiss_hook_t hook, void *ctx) {
+  d->hook = hook, d->hctx = ctx;
+}
+
+const struct sotto_dec *sotto_lr_dec_core(const struct sotto_lr_dec *d) { return d->core; }
+
+/* the decoder's A(s) and B(s) from superframe s and the next one (NULL: s is the last) */
+void sotto_lr_frames(const unsigned char *sf, const unsigned char *next, sotto_fparams_t *a, sotto_fparams_t *b) {
+  lr_fields_t f, fn;
+  sotto_fparams_t an;
+  unpack(sf, &f);
+  a_params(&f, a);
+  if (next) unpack(next, &fn), a_params(&fn, &an);
+  else an = *a;
+  b_frame(a, &an, &f, b);
+}
+
+/* the hiss fields: A's pitch field (wa >= 0) and B's pitch step (dw >= 0) */
+void sotto_lr_set_hiss(unsigned char *sf, int wa, int dw) {
+  lr_fields_t f;
+  unpack(sf, &f);
+  if (wa >= 0) f.wa = wa;
+  if (dw >= 0) f.dw = dw;
+  pack(&f, sf);
+}
+#endif

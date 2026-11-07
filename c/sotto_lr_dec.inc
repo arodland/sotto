@@ -25,7 +25,27 @@ struct sotto_lr_dec {
   unsigned n;                   /* calls so far (superframes in, then flushes) */
   int n_in, run, rebuilt;   /* run: concealment run of the last frame pushed */
   int pend, pend_s, pend_u, avail_u;   /* the second half to come: superframe s, has A(s + 1) */
+#ifdef LR_HISS
+  /* sotto 1200 hiss (sim/sotto_lr_hiss.py decode_audio16): the 4-band hiss correction of
+     A(s) and A(u), A(u)'s side bit and whether its superframe arrived, and the hook that
+     gets every frame the core synthesises */
+  double hra[4], hran[4];
+  int hsu, hsgu;
+  lr_hiss_hook_t hook;
+  void *hctx;
+#endif
 };
+
+#ifdef LR_HISS
+/* Sotto1200Hiss._b_base: the mean of the corrections of the unvoiced anchors, else 0 */
+static void h_base(const double *x, int hx, const double *y, int hy, double *o) {
+  for (int b = 0; b < 4; b++) o[b] = hx && hy ? (x[b] + y[b]) / 2 : hx ? x[b] : hy ? y[b] : 0.0;
+}
+
+static void h_cb6(int wa, double *o) {
+  for (int b = 0; b < 4; b++) o[b] = sotto_hiss_cb6[(wa >> 1) * 4 + b];
+}
+#endif
 
 static int is_good(const struct sotto_lr_dec *d, int t) { return t >= 0 && t < d->n_in && d->good[t & 3]; }
 
@@ -68,12 +88,41 @@ static int half0(struct sotto_lr_dec *d, short *out) {
   if (have_u) {                 /* A(u): received, the last good one, or rebuilt in place from A(s), A(u + 1) */
     a_params(&d->in[(u + reb) & 3], an);
     if (reb) z.cb = d->a.code, b_frame(&d->a, an, &z, an);
+#ifdef LR_HISS
+    memset(d->hran, 0, sizeof d->hran);
+    d->hsu = 0, d->hsgu = is_good(d, u);
+    if (an->code == 0) {
+      if (reb) {                /* rebuilt: halfway between A(s)'s and A(u + 1)'s */
+        const lr_fields_t *fn = &d->in[(u + 1) & 3];
+        double q[4];
+        if (fn->ca == 0) h_cb6(fn->wa, q);
+        h_base(d->hra, d->a.code == 0, q, fn->ca == 0, d->hran);
+      } else {                  /* the 6-bit index and the side bit in A's pitch field */
+        h_cb6(d->in[u & 3].wa, d->hran);
+        d->hsu = d->in[u & 3].wa & 1;
+      }
+    }
+#endif
   }
   if (s >= 0) {                 /* B(s): by its fields, or (rebuilt) halfway to A(u) with its voicing */
     const lr_fields_t *f = &d->in[s & 3];
     if (rb) z.cb = an->code, f = &z;
     b_frame(&d->a, have_u && avail ? an : &d->a, f, &b);
-    sotto_dec_frame(d->core, &b, run_of(d, rb || is_good(d, s)), out);
+    int run = run_of(d, rb || is_good(d, s));
+    sotto_dec_frame(d->core, &b, run, out);
+#ifdef LR_HISS
+    if (d->hook) {              /* B: the anchors' mean plus a 2-bit level, and a side bit */
+      double r[4];
+      int side = 0;
+      h_base(d->hra, d->a.code == 0, d->hran, have_u && an->code == 0, r);
+      if (b.code != 0) memset(r, 0, sizeof r);
+      else if (!rb) {
+        for (int k = 0; k < 4; k++) r[k] += sotto_lr_hiss_bcb[(f->dw >> 1) * 4 + k];
+        side = f->dw & 1;
+      }
+      d->hook(d->hctx, b.code, r, side, is_good(d, s), run, out, 0);
+    }
+#endif
   } else {
     memset(out, 0, SOTTO_SAMPLES_PER_FRAME * sizeof(short));
   }
@@ -88,8 +137,19 @@ static int half1(struct sotto_lr_dec *d, short *out) {
     return 0;
   }
   d->pend = 0;
-  if (d->pend_u) sotto_dec_frame(d->core, &d->an, run_of(d, d->avail_u), out), d->a = d->an;
-  else if (d->pend_s >= 0) sotto_dec_flush(d->core, out);
+  if (d->pend_u) {
+    int run = run_of(d, d->avail_u);
+    sotto_dec_frame(d->core, &d->an, run, out), d->a = d->an;
+#ifdef LR_HISS
+    memcpy(d->hra, d->hran, sizeof d->hra);
+    if (d->hook) d->hook(d->hctx, d->an.code, d->hran, d->hsu, d->hsgu, run, out, 0);
+#endif
+  } else if (d->pend_s >= 0) {
+    sotto_dec_flush(d->core, out);
+#ifdef LR_HISS
+    if (d->hook) d->hook(d->hctx, 0, NULL, 0, 0, 0, out, 1);
+#endif
+  }
   if (d->pend_s < 0) memset(out, 0, SOTTO_SAMPLES_PER_FRAME * sizeof(short));   /* A(0) in: the core's first frame out is silent */
   return 1;
 }

@@ -128,7 +128,7 @@ check-tables:
 	rm -rf tables.chk; echo "generated tables match the generators"
 
 sotto.o: sotto.c sotto.h sotto_codebook.h sotto_internal.h
-sotto_lr.o: sotto_lr.c sotto.h sotto_codebook.h sotto_internal.h sotto_lr_tables.h sotto_lr_dec.inc
+sotto_lr.o: sotto_lr.c sotto.h sotto_codebook.h sotto_internal.h sotto_lr_tables.h sotto_lr_dec.inc sotto_hiss_tables.h
 sotto_hiss.o: sotto_hiss.c sotto.h sotto_internal.h sotto_hiss_tables.h
 sotto_hiss_tables.o: sotto_hiss_tables.c sotto_hiss_tables.h
 sotto_vlr.o: sotto_vlr.c sotto.h sotto_internal.h sotto_vlr.h sotto_vlr_tables.h

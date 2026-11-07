@@ -2,7 +2,8 @@
 
 *2026-11-06. Python reference `sim/sotto_lr_hiss.py` (`Sotto1200Hiss`); B-frame tables
 `tools/train_lr_hiss.py`; scores `tools/eval_lr_hiss.py` → `docs/results/lr_hiss.json`;
-listening round 19. No C port yet.*
+listening round 19. Float C port in `c/sotto_hiss.c` (`sotto_lr_enc16` / `sotto_lr_dec16`),
+checked by `tools/check_lr_hiss.py` → `docs/results/lr_hiss_c_check.json`.*
 
 Jeff asked whether v3.8's hiss band (s, sh, f and t above 4 kHz, `docs/unvoiced-hiss.md`) can
 go into sotto 1200 (`docs/sotto-1200.md`). It can, and it needs no extra bits: the frame stays
@@ -53,7 +54,7 @@ unvoiced frame takes the mean of its neighbours' hiss):
 | | PESQ-NB | PESQ-WB | hiss error |
 |---|---:|---:|---:|
 | sotto 1200 | 2.156 | 1.421 | no band |
-| sotto 1200 hiss | 2.147 | 1.365 | 7.65 / −2.29 dB |
+| sotto 1200 hiss | 2.147 | 1.365 | 7.64 / −2.28 dB |
 
 - **The band comes out at v3.8's accuracy.** Fricative hiss lands within 5.3 dB rms of the
   original, against v3.8's 5.0 at twice the rate. On the round-19 clips, the share of energy above 4.2 kHz
@@ -122,9 +123,67 @@ The hiss band is a clear win over plain sotto 1200. At half the rate it ties v3.
 three voices. It loses on p020_m, which among the v3.8 pairs is also the voice where its
 PESQ-NB drops most (2.674 → 2.620).
 
+## C port
+
+*2026-11-06, after round 19.* `make -C c` (VARIANT=v3.8, the default) builds it into libsotto;
+the API is in `c/sotto.h` under "sotto 1200 hiss". The tools take `-16 -1200`:
+`sotto_enc -16 -1200 in16k.raw out.bit` and `sotto_dec -16 -1200 in.bit out16k.raw [good.u8]`
+(one flag byte per superframe). Plain `sotto_dec -1200` still plays a hiss stream at 8 kHz.
+
+**How it is built.** Nothing of v3.8 or sotto 1200 is copied; both are reused:
+
+- **Decoder.** The sotto 1200 streaming decoder (`sotto_lr_dec.inc`) calls a hook after every
+  20 ms frame its core synthesises, with the frame's voicing, its 4-band hiss correction, its
+  side bit, whether its superframe arrived, and the concealment run. The correction is worked
+  out in the .inc where the superframe fields are at hand: A's 6-bit index, B's 2-bit level
+  over the mean of its unvoiced anchors, and for a rebuilt superframe the anchors' mean alone
+  (no side bit). The hook feeds v3.8's 16 kHz layer, which now takes a correction per frame
+  instead of reading an index out of a v3.8 frame (`dec_push`). The hook code exists only
+  under `SOTTO_V38` in the float build, so the fixed-point decoder and the K6 images compile
+  exactly as before.
+- **Encoder.** v3.8's front end (decimation, the core, input features, the voicing rules over
+  the ring) hands its final 20 ms frames to sotto 1200's coder, run without its own core. The
+  superframes go through a local decoder (the v3.7 core on the frames the sotto 1200 decoder
+  rebuilds), whose envelope gives the guess and whose output gives the side channel's
+  predictor, as in v3.8. Superframe s is finished once A(s + 1) can be quantised, since B(s)
+  needs it.
+- Small refactors on the way, all output-neutral: `enc_side`, `enc_residual` and `nearest4`
+  are shared by both encoders, and the Python decoder's concealment step became an
+  overridable `_conceal_rows`. Two semantic fixes in the Python came with it: the rows
+  sotto 1200 hands v3.8's layer are already concealed (they were concealed a second time
+  frame by frame), and a rebuilt superframe carries no side bit. Rescored, the loss row above
+  moved by 0.01 dB.
+
+**Check against the Python** (`tools/check_lr_hiss.py`, the 16 test voices, whole clips, the
+Python with the C's fixed-lag tracker and whisper look-ahead, as for v3.8):
+
+| | clean | 1 superframe in 8 lost |
+|---|---:|---:|
+| Superframes whose 48 bits match | 4,485 of 4,487 (14 voices all, p020 and 251 one each) | (same bits) |
+| 0-4 kHz SNR, C decoder vs Python decoder on the same bits | 26-45 dB | 27-44 dB |
+| 4-8 kHz level per 10 ms, mean / 95th pct. |difference| | 0.72 / 1.84 dB | 0.73 / 1.85 dB |
+| PESQ-NB: Python / C decoder / C encoder + C decoder | 2.557 / 2.556 / 2.555 | 2.156 / 2.157 / 2.157 |
+
+- The two superframes that differ are a shape near-tie on p020 (both A stages) and an energy
+  code on 251. 251 then scores 0.02 lower in PESQ; nothing else moves.
+- The decoders differ only in the noise band's random phase: 0.72 / 1.84 dB is the spread
+  between two Python seeds for v3.8 (0.73 / 1.92). The 0-4 kHz SNR is limited the same way
+  as v3.8's (hiss near 4 kHz leaks into the measurement with its random phase).
+- **Delay.** The encoder returns its first superframe on the 12th 40 ms call (sotto 1200's
+  look-ahead, v3.8's 200 ms of rule look-ahead, and the local decoder waiting for
+  A(s + 1)'s envelope). The decoder plays 4 superframes behind: sotto 1200's 2 plus v3.8's
+  layer.
+- **Cost on a PC** (11.5 s of p020): the decoder takes the same time as v3.8's 16 kHz
+  decoder, the encoder about 1.5 times v3.8's (sotto 1200's shape search on top).
+
+**Fixed point.** Not done. The fixed-point build links stubs that return NULL (the tools say
+"use the float build"). The C55x would need it to play or send hiss streams on the FTM-300D;
+the MD-UV380's Cortex-M4F can run the float code. The fixed v3.8 layer in
+`c/fixed/sotto_fx_hiss.c` mirrors the float one, so the same hook and `dec_push` change carries
+over, plus B's table in Q format.
+
 ## Open
 
-- **C port** (round 19 says it is worth doing): the v3.8 layer in `c/sotto_hiss.c` already runs on per-20 ms
-  fields. It needs sotto 1200's superframe packing and B's 2-bit table.
+- **Fixed-point port** for the C55x (above).
 - **v3.9's hiss ceiling** (unmerged branch, `docs/hiss-ceiling.md`) rides the same side-channel
   bit, so it should stack on this unchanged once v3.9 merges.

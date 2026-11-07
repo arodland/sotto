@@ -38,4 +38,22 @@ int sotto_enc_pop_frame(struct sotto_enc *e, sotto_enc_frame_t *f);
 const sotto_dec_info_t *sotto_dec_info(const struct sotto_dec *d);
 void sotto_dec_frame(struct sotto_dec *d, const sotto_fparams_t *p, int run, short speech[160]);
 double sotto_env_db(const double *rk, double hz);   /* np.interp(hz, KFREQ, rk) */
+
+/* sotto 1200 hiss (VARIANT=v3.8): the sotto 1200 decoder calls the hook after every 20 ms
+   frame the core takes, with the frame's voicing code, its 4-band hiss correction (dB, NULL
+   when flushed), its side-channel bit, whether its superframe arrived (sgood), its
+   concealment run and the core's 160 samples out; flushed = 1 for the core's last output */
+struct sotto_lr_dec;
+typedef void (*lr_hiss_hook_t)(void *ctx, int code, const double *res, int side, int sgood, int run,
+                               const short *out, int flushed);
+void sotto_lr_dec_set_hook(struct sotto_lr_dec *d, lr_hiss_hook_t hook, void *ctx);
+const struct sotto_dec *sotto_lr_dec_core(const struct sotto_lr_dec *d);
+/* and its encoder: sotto 1200's coder fed the frames after v3.8's rules */
+struct sotto_lr_enc;
+struct sotto_lr_enc *sotto_lr_enc_create_frames(void);
+void sotto_lr_enc_push(struct sotto_lr_enc *e, const sotto_fparams_t *p);
+void sotto_lr_enc_end(struct sotto_lr_enc *e);
+int sotto_lr_enc_pop(struct sotto_lr_enc *e, unsigned char out[SOTTO_BYTES_PER_FRAME]);
+void sotto_lr_frames(const unsigned char *sf, const unsigned char *next, sotto_fparams_t *a, sotto_fparams_t *b);
+void sotto_lr_set_hiss(unsigned char *sf, int wa, int dw);
 #endif
