@@ -339,13 +339,13 @@ def _dp_spec(z, rate):
     return sp / (np.median(sp) + 1e-12), hop
 
 
-def _dp_scores(sp, starts, B):
+def _dp_scores(sp, starts, B, score="max"):
     c = sp.shape[1] // 2
     base = c + np.arange(-B, B + 1)
     rows = starts[:, None] + 4 * np.arange(NSYM)[None, :]
-    # start x symbol x bin, as log power: a clip (first try) flattened the bench's +37 dB signal
-    # and its -13 dB sidelobes level with each other, and the track wandered off into the noise
-    Q = np.log1p(sp[rows])
+    if score == "max":
+        sp = sp / (sp.max(axis=1, keepdims=True) + 1e-12)
+    Q = np.log1p(sp[rows]) if score == "log" else sp[rows]           # start x symbol x bin
     t = [Q[:, :, base + PAD * j] for j in range(4)]                  # tone j's power, tone 0 at b
     s = SYNC[None, :, None] == 1
     right = np.where(s, np.maximum(t[1], t[3]), np.maximum(t[0], t[2]))
@@ -376,7 +376,7 @@ def _viterbi(S, M, lam, back=False):
     return D, arg
 
 
-def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.1, top=3):
+def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.02, top=3, score="max"):
     """-> [(start s, tone 0's offset Hz per symbol, score)]: the best smooth tracks of the
     `top` best start times (quarter symbols)"""
     assert int(round(rate * SYM)) == 32
@@ -389,7 +389,7 @@ def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.1, top=3):
     starts = np.arange(nstart)
     sc = np.empty(nstart)
     for i in range(0, nstart, 64):
-        D, _ = _viterbi(_dp_scores(sp, starts[i:i + 64], B), M, lam)
+        D, _ = _viterbi(_dp_scores(sp, starts[i:i + 64], B, score), M, lam)
         sc[i:i + 64] = D.max(axis=1)
     picks = []
     for s in np.argsort(sc)[::-1]:
@@ -397,7 +397,7 @@ def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.1, top=3):
             picks.append(int(s))
         if len(picks) == top:
             break
-    D, arg = _viterbi(_dp_scores(sp, np.array(picks), B), M, lam, back=True)
+    D, arg = _viterbi(_dp_scores(sp, np.array(picks), B, score), M, lam, back=True)
     out = []
     for r, s in enumerate(picks):
         b = int(np.argmax(D[r]))
