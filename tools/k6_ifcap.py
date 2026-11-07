@@ -39,6 +39,11 @@ sys.path.insert(0, ROOT)
 from sim.k6if import study as st  # noqa: E402
 from sim.k6if.modes import Mode  # noqa: E402
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import k6_bench as bench  # noqa: E402  (the PTT lock and the CW ID keeper's state)
+
+TOOL = "k6_ifcap"
+
 FSA = 48000
 PASSES = {1: ("ffsk", Mode([1200, 1800], 1200, 0.14)),
           2: ("4fsk", Mode([900, 1500, 2100, 2700], 1200, 0.12))}
@@ -111,19 +116,10 @@ def rig(a, *args):
     return subprocess.run(cmd, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def key_and_play(a, path):
-    if rig(a, "t") != "0":
-        sys.exit("the IC-7100 is already keyed (ID keeper?): try again in a minute")
-    try:
-        rig(a, "T", 1)
-        time.sleep(0.2)
-        if a.dry_run:
-            print("dry run: paplay", path)
-        else:
-            subprocess.run(["paplay", f"--device={a.device}", path], check=True)
-        time.sleep(0.05)
-    finally:
-        rig(a, "T", 0)
+def key_and_play(a, path, kind="data", text=bench.ID_TEXT):
+    """the bench's keying sequence under its PTT lock (tools/k6_bench.py); kind "id" for a CW ID"""
+    bench.key_and_play(lambda *v: rig(a, *v), path, a.device, a.dry_run, kind,
+                       f"{TOOL} {os.path.basename(path)}", text)
 
 
 def rig_setup(a):
@@ -138,7 +134,7 @@ def cw_id(a, d):
     p = os.path.join(d, "id.wav")
     write(p, k6.cw(a.call + " SOTTO TEST", FSA))
     print(f"{time.strftime('%H:%M:%S')} CW ID", flush=True)
-    key_and_play(a, p)
+    key_and_play(a, p, "id", a.call + " SOTTO TEST")
 
 
 def cmd_live(a):
