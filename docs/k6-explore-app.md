@@ -79,6 +79,9 @@ mounts the table and says one `RT` line per entry, so the table can be read over
 The screen layout is Jeff's pick from the font sheet (2026-11-07, /mnt/project-files/k6-fonts/):
 a header in the 6x10 font, dark on a lit bar (21 characters), then 7 candidate rows and a
 footer in the 4x6 font (32 characters a row, so a row also shows its callsign once heard).
+New repeaters are listed first. A thin rule separates them from the known ones under it: the
+frequencies already saved in the table (read at the start, and added on each Save). The rows
+under the rule move down 2 px. On serial, a known candidate has flag 0x20 in its K6 CAND line.
 
 ```text
 EX ALL 11 2.3s UP          band set, candidates, one pass, UP while something is keyed

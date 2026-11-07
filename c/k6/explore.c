@@ -26,6 +26,18 @@ static void zero(void *p, unsigned n) {
 
 void ex_init(ex_t *e, ex_cand_t *store, unsigned cap) {
   e->c = store, e->n = 0, e->cap = (uint16_t)cap, e->tol_hz = 5000;
+  e->known = 0, e->known_n = e->known_cap = 0;
+}
+
+void ex_known_store(ex_t *e, uint32_t *buf, unsigned cap) {
+  e->known = buf, e->known_n = 0, e->known_cap = (uint16_t)cap;
+}
+
+static int known(const ex_t *e, uint32_t hz) {
+  unsigned i;
+  for (i = 0; i < e->known_n; i++)
+    if (dist(e->known[i], hz) <= e->tol_hz) return 1;
+  return 0;
 }
 
 ex_cand_t *ex_find(ex_t *e, uint32_t hz) {
@@ -108,7 +120,14 @@ static ex_cand_t *get(ex_t *e, uint32_t hz, uint32_t t) {
   zero(c, sizeof *c);
   c->hz = hz, c->first_ms = c->last_ms = t, c->grade = '?';
   if (own_clock(hz)) c->flags = EX_F_SPUR;
+  if (known(e, hz)) c->flags |= EX_F_KNOWN;
   return c;
+}
+
+void ex_know(ex_t *e, uint32_t hz) {
+  ex_cand_t *c = ex_find(e, hz);
+  if (c) c->flags |= EX_F_KNOWN;
+  if (!known(e, hz) && e->known_n < e->known_cap) e->known[e->known_n++] = hz;
 }
 
 ex_cand_t *ex_over(ex_t *e, uint32_t hz, uint32_t start_ms, uint32_t dur_ms, int level) {
@@ -165,7 +184,9 @@ void ex_cw(ex_t *e, uint32_t hz, const char *call) {
 
 /* is a ranked before b? */
 static int before(const ex_cand_t *a, const ex_cand_t *b) {
+  int ka = (a->flags & EX_F_KNOWN) != 0, kb = (b->flags & EX_F_KNOWN) != 0;
   int ia = (a->flags & EX_F_IGNORED) != 0, ib = (b->flags & EX_F_IGNORED) != 0;
+  if (ka != kb) return kb;
   if (ia != ib) return ib;
   if (a->score != b->score) return a->score > b->score;
   if (a->overs != b->overs) return a->overs > b->overs;

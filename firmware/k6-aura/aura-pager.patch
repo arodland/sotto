@@ -4080,10 +4080,10 @@ index 0000000..a30ead6
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..1c6eb40
+index 0000000..88cf97e
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1111 @@
+@@ -0,0 +1,1158 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4158,6 +4158,9 @@ index 0000000..1c6eb40
 +        pub n: u16,
 +        pub cap: u16,
 +        pub tol_hz: u32,
++        pub known: *mut u32,
++        pub known_n: u16,
++        pub known_cap: u16,
 +    }
 +    /// c/k6/rt.h rt_rec_t (64 bytes)
 +    #[repr(C)]
@@ -4271,6 +4274,8 @@ index 0000000..1c6eb40
 +        pub fn xl_stop(x: *mut u8, why: i32);
 +        pub fn xl_info(x: *const u8, out: *mut XlInfo);
 +        pub fn ex_init(e: *mut Ex, store: *mut Cand, cap: u32);
++        pub fn ex_known_store(e: *mut Ex, buf: *mut u32, cap: u32);
++        pub fn ex_know(e: *mut Ex, hz: u32);
 +        pub fn ex_rank(e: *mut Ex, i: u32) -> *mut Cand;
 +        pub fn ex_cw(e: *mut Ex, hz: u32, call: *const u8);
 +        pub fn ex_to_rt(c: *const Cand, r: *mut RtRec);
@@ -4311,6 +4316,10 @@ index 0000000..1c6eb40
 +const EX_F_TRIED: u8 = 0x02;
 +const EX_F_OFF_HEARD: u8 = 0x04;
 +const EX_F_SIMPLEX: u8 = 0x08;
++const EX_F_KNOWN: u8 = 0x20;
++/// the saved table's frequencies, for the new / known rule on the list (more stay unmarked)
++const KNOWN_N: usize = 64;
++static mut KNOWN: [u32; KNOWN_N] = [0; KNOWN_N];
 +const RT_F_CALL_USER: u16 = 0x0010;
 +const RT_F_NAME_USER: u16 = 0x0008;
 +const RT_C_FROM_CW: u8 = 0x08;
@@ -4394,7 +4403,7 @@ index 0000000..1c6eb40
 +    xl: null_mut(),
 +    ring: null_mut(),
 +    ring_bytes: 0,
-+    ex: Ex { c: null_mut(), n: 0, cap: 0, tol_hz: 0 },
++    ex: Ex { c: null_mut(), n: 0, cap: 0, tol_hz: 0, known: null_mut(), known_n: 0, known_cap: 0 },
 +    rt: Rt { fl: core::ptr::null(), base: 0, live: 0, dead: 0, free: 0, max_id: 0, wseq: 0, spare: 0, gcs: 0, repairs: 0 },
 +    rt_res: 0,
 +    hz: 0,
@@ -4536,7 +4545,10 @@ index 0000000..1c6eb40
 +    t.xs = store;
 +    let cands = unsafe { store.add(xs_bytes) } as *mut Cand;
 +    let cap = ((STORE_BYTES - xs_bytes) / core::mem::size_of::<Cand>()).min(CAP);
-+    unsafe { ffi::ex_init(&mut t.ex, cands, cap as u32) };
++    unsafe {
++        ffi::ex_init(&mut t.ex, cands, cap as u32);
++        ffi::ex_known_store(&mut t.ex, addr_of_mut!(KNOWN) as *mut u32, KNOWN_N as u32);
++    }
 +    t.ring = ((pwm_audio::idle_bytes() as usize + 3) & !3) as *mut u8;
 +    t.ring_bytes = (pwm_audio::RING_BYTES - 4) as u32;
 +    t.on = true;
@@ -4546,6 +4558,18 @@ index 0000000..1c6eb40
 +    t.msg_len = 0;
 +    ctx_on(app, syst);
 +    t.rt_res = unsafe { ffi::rt_mount(&mut t.rt, &RT_FLASH, RT_BASE, 0) };
++    if t.rt_res >= 0 {
++        // every saved entry is a known repeater: listed under the rule
++        let mut r: RtRec = unsafe { core::mem::zeroed() };
++        let mut slot = -1;
++        loop {
++            slot = unsafe { ffi::rt_next(&mut t.rt, slot, &mut r) };
++            if slot < 0 {
++                break;
++            }
++            unsafe { ffi::ex_know(&mut t.ex, r.rx_hz) };
++        }
++    }
 +    start_band(t.band);
 +    ctx_off();
 +    say(format_args!(
@@ -4938,6 +4962,9 @@ index 0000000..1c6eb40
 +        }
 +    }
 +    let slot = unsafe { ffi::rt_put(&mut t.rt, &mut r) };
++    if slot >= 0 {
++        unsafe { ffi::ex_know(&mut t.ex, c.hz) };
++    }
 +    let erases = unsafe { (*addr_of!(MOD_CTX)).fl_erases };
 +    ctx_off();
 +    say(format_args!(
@@ -5032,7 +5059,14 @@ index 0000000..1c6eb40
 +        Text::with_baseline(t, Point::new(1, 0), st, Baseline::Top).draw(lcd).ok();
 +        return;
 +    }
-+    let y = if r >= FOOT { 58 } else { 11 + 6 * (r - 1) };
++    row(lcd, if r >= FOOT { 58 } else { 11 + 6 * (r - 1) }, t);
++}
++
++/// a 4x6 line with its top at y
++fn row<D>(lcd: &mut D, y: i32, t: &str)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
 +    let st = MonoTextStyle::new(&FONT_4X6, BinaryColor::On);
 +    Text::with_baseline(t, Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
 +}
@@ -5088,8 +5122,21 @@ index 0000000..1c6eb40
 +            line(lcd, 0, b.as_str());
 +            // keep the selected row on screen
 +            let top = (t.sel as usize).saturating_sub(ROWS - 1) as u32;
++            // new repeaters above a rule, known (saved) ones below it (Jeff 2026-11-07): the
++            // rows under it move down 2 px, which the 4 px above the footer leave room for
++            let mut shift = 0;
++            let mut was_new = top > 0 && cand(top - 1).is_some_and(|c| c.flags & EX_F_KNOWN == 0);
 +            for k in 0..ROWS as u32 {
 +                let Some(c) = cand(top + k) else { break };
++                let known = c.flags & EX_F_KNOWN != 0;
++                if known && was_new && shift == 0 {
++                    Rectangle::new(Point::new(0, 11 + 6 * k as i32), Size::new(128, 1))
++                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
++                        .draw(lcd)
++                        .ok();
++                    shift = 2;
++                }
++                was_new = !known;
 +                let mut b: TextBuf<32> = TextBuf::new();
 +                let mark = if top + k == t.sel as u32 { '>' } else { ' ' };
 +                let g = if c.flags & EX_F_IGNORED != 0 { 'x' } else { c.grade as char };
@@ -5102,7 +5149,7 @@ index 0000000..1c6eb40
 +                if c.call[0] != 0 {
 +                    write!(b, " {}", cstr(&c.call)).ok();
 +                }
-+                line(lcd, 1 + k as i32, b.as_str());
++                row(lcd, 11 + 6 * k as i32 + shift, b.as_str());
 +            }
 +            let mut b: TextBuf<24> = TextBuf::new();
 +            if let Some(c) = cand(t.sel as u32) {

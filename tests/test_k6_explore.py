@@ -15,7 +15,7 @@ K6 = os.path.join(ROOT, "c", "k6")
 MIN = 60_000
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import k6_explore as kx  # noqa: E402
-from k6_explore import F_IGNORED, F_OFF_HEARD, F_SIMPLEX, F_SPUR, F_TRIED, Rec  # noqa: E402
+from k6_explore import F_IGNORED, F_KNOWN, F_OFF_HEARD, F_SIMPLEX, F_SPUR, F_TRIED, Rec  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +44,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
     assert und == [], und
     size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
     text, data, bss = (int(x) for x in size.split()[:3])
-    assert text < 2048 and data == 0 and bss == 0
+    assert text < 2304 and data == 0 and bss == 0   # 2194 with the known list (2026-11-07)
 
 
 def test_a_repeater_output_grades_up_with_its_cw_id(lib):
@@ -145,6 +145,25 @@ def test_rank_by_score_then_overs_and_ignored_last(lib):
     for hz in (433_500_000, 433_600_000, 433_700_000):
         y.over(hz, 0, 5000, -80)
     assert y.ranked() == [433_500_000, 433_600_000, 433_700_000]
+
+
+def test_known_repeaters_rank_after_the_new_ones(lib):
+    """Jeff 2026-11-07: new repeaters above a rule, the saved table's below"""
+    x = List(lib)
+    x.know(443_100_000)                                     # saved before this candidate shows up
+    for k in range(3):
+        x.over(443_100_000, k * MIN, 5000, -80)             # +3, known from the start
+        x.over(442_375_000, k * MIN, 5000, -80)             # +3
+        x.over(146_520_000, k * MIN, 5000, -60 - 15 * k)    # simplex: -5
+    x.over(443_100_000, 4 * MIN, 5000, -80)                 # more overs: would rank first
+    assert x.find(443_100_000).flags & F_KNOWN
+    assert x.ranked() == [442_375_000, 146_520_000, 443_100_000]
+    x.know(442_375_000)                                     # Save: marked now, still once listed
+    x.know(442_376_000)
+    assert x.e.known_n == 2
+    assert x.ranked() == [146_520_000, 443_100_000, 442_375_000]
+    x.find(146_520_000).flags |= F_IGNORED                  # ignored: last of the new ones
+    assert x.ranked()[0] == 146_520_000
 
 
 def test_a_full_list_drops_the_weakest_but_keeps_ignored_and_tried(lib):
