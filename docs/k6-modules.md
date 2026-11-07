@@ -280,6 +280,17 @@ in us of the cases that arrive on the carrier, -1 if no carrier came, -2 if a ke
 carriers on 2 m / 70 cm points. `tools/k6_rxmap.py` patches the segment into CI's
 `mod-rxmap.bin`, uploads it and decodes the over-air summary. See [k6-rxmap.md](k6-rxmap.md).
 
+## The RAM probe (ramprobe)
+
+`c/k6/mod/ramprobe.c` (2026-11-07, the hiss band thread): Aura's `memory.x` gives the application
+0x20001028 + 17720 bytes, ending at 0x20005560, but the KD32F328 is sold with 24 KB of SRAM, which
+would end at 0x20006000. Nobody has claimed those 2720 bytes. The module writes two patterns to
+every word of that range, holds a third for 50 ms, restores what it found, and says
+`ram probe 20005560..20006000 good=0x2a8 first_bad=none held=0x2a8` (0x2a8 = 680 words = all of
+it). If the SRAM ends lower the first access past the end faults and the radio resets, so run it
+when a reset is acceptable. If it holds, `memory.x` can grow by 2720 bytes: the hiss band image
+(docs/k6-hiss-port.md) would get its fourth PWM segment and its 4 KB message store back.
+
 ## Insights (a living list)
 
 Ideas from the K6 work that might change the plan. None has been tested unless it says so.

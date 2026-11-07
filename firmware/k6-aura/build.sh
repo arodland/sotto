@@ -244,7 +244,7 @@ fi
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -Werror -I$ROOT/c/k6"
 for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep afsweep gp0cap \
-         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t iflive_h1200 iflive_h1350 iflive_h1440 iflive_h1500 iflive_h1600 xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls wsprtx wsprbcn wspriq bandreg; do
+         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t iflive_h1200 iflive_h1350 iflive_h1440 iflive_h1500 iflive_h1600 xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls wsprtx wsprbcn wspriq bandreg ramprobe; do
   opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
   clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do
