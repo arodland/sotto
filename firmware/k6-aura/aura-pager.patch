@@ -242,10 +242,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..7f6e8e1
+index 0000000..2e551cd
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3947 @@
+@@ -0,0 +1,3963 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -1501,6 +1501,8 @@ index 0000000..7f6e8e1
 +    /// the last stream's frames whose group wasn't in yet, and fills more than 70 ms apart
 +    waits: u16,
 +    late: u16,
++    /// fills the DMA caught up with: the speaker played stale or half-written samples
++    under: u16,
 +    overruns: u16,
 +}
 +
@@ -1620,6 +1622,7 @@ index 0000000..7f6e8e1
 +            ifrx_flags: 0,
 +            waits: 0,
 +            late: 0,
++            under: 0,
 +            overruns: 0,
 +        }
 +    }
@@ -3438,6 +3441,7 @@ index 0000000..7f6e8e1
 +    dn: u32,
 +    waits: u16,
 +    late: u16,
++    under: u16,
 +    last_fill: u16,
 +}
 +
@@ -3457,6 +3461,7 @@ index 0000000..7f6e8e1
 +    dn: 0,
 +    waits: 0,
 +    late: 0,
++    under: 0,
 +    last_fill: 0,
 +};
 +
@@ -3521,7 +3526,16 @@ index 0000000..7f6e8e1
 +    fill_seg(app, syst, wr);
 +    unsafe {
 +        let s = &mut *addr_of_mut!(STREAM);
-+        s.wr = (wr + 1) % pwm_audio::NSEG;
++        // the DMA got to the segment being written, or past it, before the fill ended: what
++        // played there was stale or half new. `late` above misses this (a long decode after
++        // a fill in time), which is how the hiss image's streaming popped on dense speech
++        // with no count on 2026-11-07
++        let n = pwm_audio::NSEG;
++        let cur2 = s.audio.play_segment();
++        if !s.done && (cur2 + n - cur) % n >= (wr + n - cur) % n {
++            s.under = s.under.saturating_add(1);
++        }
++        s.wr = (wr + 1) % n;
 +        s.last_fill = uptime::now();
 +    }
 +    true
@@ -3543,7 +3557,7 @@ index 0000000..7f6e8e1
 +        s.g = ((s.auto * VOL_Q8[app.pager.vol as usize]) >> 8).min(32767);
 +        s.emph = app.pager.emphasis as i32;
 +        (s.wr, s.tail, s.done, s.ended, s.aborted) = (0, 0, false, false, false);
-+        (s.dsum, s.dmax, s.dn, s.waits, s.late) = (0, 0, 0, 0, 0);
++        (s.dsum, s.dmax, s.dn, s.waits, s.late, s.under) = (0, 0, 0, 0, 0, 0);
 +        s.on = true;
 +        unsafe {
 +            Y_SERVICED = 0;
@@ -3591,6 +3605,7 @@ index 0000000..7f6e8e1
 +    p.dec_mean_x10 = if s.dn > 0 { (s.dsum * 10 / s.dn) as u16 } else { 0 };
 +    p.waits = s.waits;
 +    p.late = s.late;
++    p.under = s.under;
 +    p.overruns = ov.clamp(0, 65535) as u16;
 +    p.ram_free = free_ram();
 +    refresh_status(app);
@@ -4104,7 +4119,7 @@ index 0000000..7f6e8e1
 +    let mut s = Serial;
 +    write!(
 +        s,
-+        "K6 PLAY id={:02x} total={} stored={} got={} packets={}/{} played={} dec_mean_us={} dec_max_us={} ram_free={} aborted={} stream={} waits={} late={} overruns={} yields={} pcm={:08x} samples={} rebuilt={} missing={}",
++        "K6 PLAY id={:02x} total={} stored={} got={} packets={}/{} played={} dec_mean_us={} dec_max_us={} ram_free={} aborted={} stream={} waits={} late={} under={} overruns={} yields={} pcm={:08x} samples={} rebuilt={} missing={}",
 +        st.msg_id,
 +        st.total,
 +        st.stored,
@@ -4119,6 +4134,7 @@ index 0000000..7f6e8e1
 +        (unsafe { ffi::sp_stream_info(core::ptr::null_mut()) } != 0 && p.stream_play) as u8,
 +        p.waits,
 +        p.late,
++        p.under,
 +        p.overruns,
 +        unsafe { Y_SERVICED },
 +        pcm,
