@@ -19,7 +19,7 @@ to rxmap-<seg>-<time>.log.
 
 cal: the IC-7100 transmits, in the US amateur 2 m and 70 cm bands only (430-450 MHz: Lynden is
 north of Line A, where 420-430 is closed to amateurs), on a dummy load if you have one. Each
-point gets a bare FM carrier for --hold s and the station's CW ID, then the power steps at
+point gets PSK31 "AG7EW TEST" as FM audio (project rule: a test transmission carries ident) and the station's CW ID, then the power steps at
 440.850; the K6 measures each carrier and sends the lines back when it is done.
 
 hamlet has no clang: give --bin the CI-built mod-rxmap.bin (K6 pager firmware artifact). The
@@ -420,10 +420,11 @@ def cmd_cal(a):
         sys.exit("not on 2 m / 70 cm (430-450 north of Line A)" + (" or 20/17 m" if a.hf else "")
                  + ": " + ", ".join(map(mhz, bad)))
     hold = a.hold if a.hold is not None else 10.0 if a.hf else 2.5
-    if a.hf:
-        from modem import psk31
-        psk = psk31.modulate(psk31.repeat_to(HF_TEXT, hold), up.FS, TONE_HZ, level=0.3)
-        hold = len(psk) / up.FS
+    # project rule (Jeff, 2026-11-07): a test transmission carries ident, and a steady carrier goes out
+    # as PSK31 "AG7EW TEST" over and over: in PKTUSB on HF, as the FM audio on 2 m / 70 cm
+    from modem import psk31
+    psk = psk31.modulate(psk31.repeat_to(HF_TEXT, hold), up.FS, TONE_HZ, level=0.3)
+    hold = len(psk) / up.FS
     k6hz = {f: f + TONE_HZ if a.hf else f for f in points}     # where the K6 listens for each point
     # --hf leaves 440.850 out: the closing CW ID there must not count as "seen" (run 2, 2026-11-07)
     uniq = list(dict.fromkeys([k6hz[f] for f in points] + ([] if a.hf else [PAGER_HZ])))
@@ -459,8 +460,7 @@ def cmd_cal(a):
         idw = os.path.join(d, "id.wav")
         sf.write(idw, k6.cw(a.call, up.FS, wpm=25), up.FS, subtype="PCM_16")
         pskw = os.path.join(d, "psk31.wav")
-        if a.hf:
-            sf.write(pskw, psk, up.FS, subtype="PCM_16")
+        sf.write(pskw, psk, up.FS, subtype="PCM_16")
         count = up.chunks_of(ns)
         rec = up.Recorder(ns, d)
         try:
@@ -503,10 +503,7 @@ def cmd_cal(a):
                 # schedule counts the hold from T 1
                 with up.bench.keyed(lambda *v: up.rig(ns, *v), "data", f"rxmap carrier {mhz(hz)}",
                                     dry_run=ns.dry_run, lead=0.0):
-                    if a.hf:
-                        up.bench.play(pskw, ns.device, ns.dry_run)
-                    else:
-                        time.sleep(hold)
+                    up.bench.play(pskw, ns.device, ns.dry_run)
                     if a.id_each:
                         up.bench.play(idw, ns.device, ns.dry_run)
                 time.sleep(a.gap)
@@ -560,7 +557,8 @@ def main():
     c.add_argument("--points", help="MHz, comma separated (default: plan's list)")
     c.add_argument("--powers", help="RF power steps at 440.850, 0..1 of the radio's own (default 1,.5,.25,.1,0; "
                                     "'none' for no steps)")
-    c.add_argument("--hold", type=float, help="s of bare carrier a point (default 2.5; --hf: about 10 s of PSK31)")
+    c.add_argument("--hold", type=float, help="s of PSK31 'AG7EW TEST' a point, at least one copy (default 2.5, "
+                                             "i.e. one copy, ~4.2 s; --hf: about 10 s)")
     c.add_argument("--gap", type=float, default=1.5, help="s unkeyed between points (default 1.5)")
     c.add_argument("--no-id-each", dest="id_each", action="store_false", help="no CW ID after each carrier")
     c.add_argument("--det-db", type=int, default=15)
