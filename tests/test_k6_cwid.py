@@ -373,16 +373,19 @@ def test_probe_decodes_two_ids_on_m0(scratch):
 
 # ---- the listener module: the tone detector as the probe run found it ----
 
-def tone_reg(edges, idx, lag_on=10.0, lag_off=10.0, junk=()):
+def tone_reg(edges, idx, lag_on=10.0, lag_off=20.0, junk=()):
     """REG_0B as on air: 0xC006, bit 12 while a programmed tone is present (lag_on ms after the
-    key goes down, lag_off after it goes up), [11:8] the tone. junk: (ms, len, idx) blips."""
+    key goes down, lag_off after it goes up), [11:8] the tone. junk: (ms, len, idx) blips.
+    The default makes every mark 10 ms longer and every space 10 ms shorter, as the real
+    detector did on air (tests/test_k6_air.py checks it against the probe's raw edges)."""
     def f(reg, ms):
         if reg != 0x0B:
             return 0x0200 if reg == 0x0C else 0
         for t, n, i in junk:
             if t <= ms < t + n:
                 return 0xD006 | (i << 8)
-        on = key_at(edges, ms - lag_on) and key_at(edges, ms - lag_off)
+        a, b = key_at(edges, ms - lag_on), key_at(edges, ms - lag_off)
+        on = (a or b) if lag_off >= lag_on else (a and b)
         return (0xD006 | (idx << 8)) if on else (0xC006 | (idx << 8))
     return f
 
