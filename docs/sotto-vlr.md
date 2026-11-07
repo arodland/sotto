@@ -63,7 +63,7 @@ A superframe holds N 20 ms frames (N = 4 for 600, 6 for 400), coded together:
 | Field | 600 | 400 | |
 |---|---:|---:|---|
 | voicing pattern | 3 | 3 | one of 8 trained patterns of N v3.2 voicing codes |
-| pitch: centre | 7 | 7 | a least-squares line through the voiced frames' 7-bit log-Wo indices, its value at the superframe's centre |
+| pitch: centre | 7 | 7 | a least-squares line through the voiced frames' 7-bit log-Wo indices, its value at the superframe's centre (since 2026-11-07, frames more than 20 steps off the line are left out and the line refitted; see [pitch-errors.md](pitch-errors.md)) |
 | pitch: slope | 3 | 3 | the line's slope, from a trained table (about -7.8 to +7.8 index steps per frame) |
 | energy: mean | 5 | 5 | mean of the N 5-bit energy codes |
 | energy: residual | 5 | 5 | a trained N-dimensional codebook for the codes around that mean |

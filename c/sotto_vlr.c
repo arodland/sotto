@@ -234,6 +234,20 @@ static int pitch_at(const vlr_mode_t *m, int wc, int ws, int k) {
   return w < 0 ? 0 : w > 127 ? 127 : w;
 }
 
+/* the least-squares line through the voiced frames' pitch indices (sotto_vlr.pitch_line):
+   its value at the superframe's centre and its slope, in index steps per frame */
+#define VLR_OUTLIER 20      /* index steps (~0.5 octave): a frame further off is an octave slip */
+static void line_fit(int n, const int *voiced, const int *wi, double *c, double *slope) {
+  double sn = 0, st = 0, stt = 0, sy = 0, sty = 0;
+  for (int k = 0; k < n; k++)
+    if (voiced[k]) {
+      double t = k - (n - 1) / 2.0;
+      sn += 1, st += t, stt += t * t, sy += wi[k], sty += t * wi[k];
+    }
+  double sl = (sn * sty - st * sy) / (sn * stt - st * st);
+  *c = (sy - sl * st) / sn, *slope = sl;
+}
+
 static int energy_at(const vlr_mode_t *m, int em, int er, int k) {
   int x = (int)floor(em * 31 / 31.0 + m->eres16[er * m->n + k] / 16.0 + 0.5);
   return x < 0 ? 0 : x > 31 ? 31 : x;
@@ -270,14 +284,20 @@ static void code_superframe(struct sotto_vlr_enc *e, long s) {
       while (!voiced[k]) k++;
       c = wi[k];
     } else {
-      double sn = 0, st = 0, stt = 0, sy = 0, sty = 0;
-      for (int k = 0; k < n; k++)
-        if (voiced[k]) {
+      double sl;
+      line_fit(n, voiced, wi, &c, &sl);
+      /* octave slips (sotto_vlr.SottoVLR.OUTLIER): leave out frames far off the line, refit */
+      if (nv >= 3) {
+        int keep[VLR_MAX_N], nk = 0;
+        for (int k = 0; k < n; k++) {
           double t = k - (n - 1) / 2.0;
-          sn += 1, st += t, stt += t * t, sy += wi[k], sty += t * wi[k];
+          nk += keep[k] = voiced[k] && fabs(wi[k] - (c + sl * t)) <= VLR_OUTLIER;
         }
-      double sl = (sn * sty - st * sy) / (sn * stt - st * st);
-      c = (sy - sl * st) / sn;
+        if (nk >= 2 && nk < nv) {
+          memcpy(voiced, keep, sizeof keep);
+          line_fit(n, voiced, wi, &c, &sl);
+        }
+      }
     }
     int c0 = (int)rint(c);
     c0 = c0 < 0 ? 0 : c0 > 127 ? 127 : c0;
@@ -287,7 +307,8 @@ static void code_superframe(struct sotto_vlr_enc *e, long s) {
         long err = 0;
         for (int k = 0; k < n; k++)
           if (voiced[k]) {
-            long d = pitch_at(m, x, q, k) - wi[k];
+            long d = labs((long)(pitch_at(m, x, q, k) - wi[k]));
+            if (d > VLR_OUTLIER) d = VLR_OUTLIER;
             err += d * d;
           }
         if (best < 0 || err < best) best = err, wc = x, ws = q;

@@ -59,6 +59,7 @@ class Sotto1200(vl.SottoV37):
     BITS = 48
     JOINT = 1.0                   # weight of the neighbouring B frames in A's shape choice
     INTERP = True                 # rebuild a lost superframe between two good ones from both
+    ONSET_WO = True               # an onset edge frame codes its voiced half's pitch (2026-11-07)
 
     def wa_index(self, wo):
         return self.wo_index(wo) >> (7 - self.WO_A_BITS)
@@ -87,7 +88,12 @@ class Sotto1200(vl.SottoV37):
         for f in range(n):
             a, b = c[2 * f], c[2 * f + 1]
             code[f] = a if a == b else (3 if 0 in (a, b) else 1)
-        wo = m["Wo"][0::2]
+        wo = m["Wo"][0::2].copy()
+        if self.ONSET_WO:
+            # an onset edge (unvoiced, then voiced half): the unvoiced half's Wo is whatever
+            # Codec 2 guessed in the silence (often its 50 Hz floor), so take the voiced half's
+            on = (c[0::2] == 0) & (c[1::2] != 0)
+            wo[on] = m["Wo"][1::2][on]
         sh = rk[0::2] - rk[0::2].mean(1, keepdims=True)
         # pitch and energy indices exactly as the v3.7 frame codes them (SottoV0.encode)
         wi = np.array([int(vl.q_wo(np.array([w]), hi=self.WO_HI)[0][0]) for w in wo])

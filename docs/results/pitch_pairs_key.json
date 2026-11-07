@@ -1,0 +1,50 @@
+{
+ "A1": {
+  "A": "before",
+  "B": "after",
+  "clip": "librispeech_3536_f",
+  "t": 0.63
+ },
+ "A2": {
+  "A": "after",
+  "B": "before",
+  "clip": "librispeech_251_m",
+  "t": 6.38
+ },
+ "A3": {
+  "A": "before",
+  "B": "after",
+  "clip": "librispeech_8842_f",
+  "t": 5.94
+ },
+ "A4": {
+  "A": "after",
+  "B": "before",
+  "clip": "ears_p051_f",
+  "t": 1.94
+ },
+ "B1": {
+  "A": "after",
+  "B": "after_up",
+  "clip": "ears_p070_f",
+  "t": 0.82
+ },
+ "B2": {
+  "A": "after_up",
+  "B": "after",
+  "clip": "ears_p070_f",
+  "t": 8.06
+ },
+ "B3": {
+  "A": "after",
+  "B": "after_up",
+  "clip": "ears_p051_f",
+  "t": 6.35
+ },
+ "B4": {
+  "A": "after_up",
+  "B": "after",
+  "clip": "librispeech_3536_f",
+  "t": 1.64
+ }
+}

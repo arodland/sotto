@@ -460,7 +460,7 @@ static int q_index(double x, double lo, double hi, int bits) {
   return i < 0 ? 0 : i > n - 1 ? n - 1 : (int)i;
 }
 
-static void emit(struct sotto_enc *e, int cls);
+static void emit(struct sotto_enc *e, int cls, float wo_o);
 
 /* frame t is decided: voiced at candidate k-1, or unvoiced (k = 0) */
 static void decide(struct sotto_enc *e, long t, int k) {
@@ -524,12 +524,15 @@ static void decide(struct sotto_enc *e, long t, int k) {
     e->en_e = en;
     e->cls_e = cls;
   } else {
-    emit(e, cls);
+    emit(e, cls, wo);
   }
 }
 
-/* pack the frame: the even half's parameters and both halves' voicing classes */
-static void emit(struct sotto_enc *e, int cls) {
+/* pack the frame: the even half's parameters and both halves' voicing classes. The low-rate
+   modes' pitch (p.wi) at an onset edge (unvoiced, then voiced half) is the voiced half's
+   (wo_o): the unvoiced half's is Codec 2's guess in the silence (sotto_lr.Sotto1200.ONSET_WO).
+   The 2400 frame keeps the even half's, as its decoder takes the next frame's pitch there. */
+static void emit(struct sotto_enc *e, int cls, float wo_o) {
   {
     int a = e->cls_e, b = cls, code = a == b ? a : (a == 0 || b == 0) ? 3 : 1;
     sotto_enc_frame_t *fr = &e->q[(e->q_head + e->q_n++) % 8];
@@ -543,6 +546,7 @@ static void emit(struct sotto_enc *e, int cls) {
     memset(out, 0, SOTTO_BYTES_PER_FRAME);
     put_bits(out, &pos, code, 2);
     put_bits(out, &pos, fr->p.wi, 7);
+    if (a == 0 && b != 0) fr->p.wi = q_index(logf(wo_o), log(WO_MIN), log(WO_HI), 7);
     put_bits(out, &pos, fr->p.ei, 5);
     for (int s2 = 0; s2 < sotto_cb_stages; s2++) put_bits(out, &pos, e->idx_e[s2], sotto_cb_bits[s2]);
   }
@@ -636,7 +640,7 @@ void sotto_enc_flush_core(struct sotto_enc *e) {
     frame_costs(e, n - 1, 0);
     viterbi_step(e, n - 1);
     while (e->n_dec < n) decide_from(e, e->n_dec++, n - 1);
-    if (n % 2) emit(e, e->cls_e);    /* odd frame count: the last half repeated */
+    if (n % 2) emit(e, e->cls_e, e->wo_e);    /* odd frame count: the last half repeated */
     e->flushed = 1;
   }
 }

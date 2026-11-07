@@ -63,6 +63,8 @@ def analyse(x, pitch="c2"):
         if pitch == "tracked4":
             # v3.7: also a third of Codec 2's estimate as a candidate
             opts = {"third": True, **opts}
+        if TRACK2.get("up") or opts.get("up"):
+            opts = {"x": xi, **opts}
         wo, v = sn.track_pitch_voicing(Sw, m["Wo"], m["voiced"], **opts)
         m2 = sn.analyse(xi, wo, voicing=v, do_refine=False)[:len(m)]
         if pitch in ("tracked2t", "tracked3", "tracked4"):

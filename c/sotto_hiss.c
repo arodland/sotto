@@ -644,6 +644,8 @@ struct sotto_enc16 {
   int msg[MSG_BITS], msgpos;
   unsigned char outq[OUTQ][SOTTO_BYTES_PER_FRAME];
   int qh, qn;
+  int onset_wi;                             /* the low-rate modes: an onset edge's pitch bits from
+                                               core p.wi (the voiced half's), as Sotto1200.params */
 };
 
 static void enc_init(struct sotto_enc16 *e) {
@@ -749,6 +751,8 @@ static void enc_rules(struct sotto_enc16 *e) {
   for (int i = 0; i < n; i++) {
     rframe_t *r = RF(g0 + i);
     memcpy(r->bits, r->raw.bits, SOTTO_BYTES_PER_FRAME);
+    if (e->onset_wi)
+      for (int k = 0; k < 7; k++) set_bit(r->bits, 2 + k, (r->raw.p.wi >> (6 - k)) & 1);
     code[i] = c0[i] = frame_code(r->raw.bits);
   }
   /* _onsets: a loud, low-heavy unvoiced frame next to a voiced or mixed one -> MM with its pitch */
@@ -1083,6 +1087,7 @@ struct sotto_lr_enc16 *sotto_lr_enc16_create(void) {
   struct sotto_lr_enc16 *L = calloc(1, sizeof *L);
   if (!L) return NULL;
   enc_init(&L->h);
+  L->h.onset_wi = 1;
   L->lr = sotto_lr_enc_create_frames();
   if (!L->h.core || !L->h.ldec || !L->h.fwd || !L->lr) {
     sotto_lr_enc16_destroy(L);
@@ -1449,6 +1454,7 @@ struct sotto_vlr_enc16 *sotto_vlr_enc16_create(int rate) {
   struct sotto_vlr_enc16 *V;
   if (!m || !(V = calloc(1, sizeof *V))) return NULL;
   enc_init(&V->h);
+  V->h.onset_wi = 1;
   sotto_dec_destroy(V->h.ldec);             /* the local decoder is sotto 600 / 400's */
   V->h.ldec = NULL;
   V->m = m, V->mi = mi;

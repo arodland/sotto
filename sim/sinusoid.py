@@ -242,7 +242,7 @@ def odd_even_db(S, w, fmax=1500.0, first=3):
 
 def track_pitch_voicing(Sw, wo0, voiced0, lam=3.0, bias=0.5, fmin=70.0, wo_max=WO_MAX_HI,
                         uv_cost=-0.5, prior=1.0, switch=1.5, jump=4.0, norm="bias", tilt=0.0,
-                        sub=0.0, sub_db=10.0, lag=None, third=False):
+                        sub=0.0, sub_db=10.0, lag=None, third=False, x=None, up=0.0, up_thr=0.5):
     """Joint pitch and voicing track over the whole utterance (Viterbi).
 
     States per frame: unvoiced, or voiced at one of the candidates refine(wo0[t+d] * mu)
@@ -259,8 +259,16 @@ def track_pitch_voicing(Sw, wo0, voiced0, lam=3.0, bias=0.5, fmin=70.0, wo_max=W
     refine(wo0[t] / 3), when wo0[t] / 3 is at or above fmin: Codec 2 sometimes says three
     times the true pitch for several frames running (EARS p020 at 0.4 s: 400 Hz for a
     120 Hz voice), and none of the other candidates is then near the true pitch.
+    With `up` set (and the frame's samples x, the int-scaled speech spectra() was given), a
+    candidate w also costs up * (nccf - up_thr) when the time-domain normalised
+    autocorrelation at the period of 2 w or 3 w is above up_thr: a voice that repeats at
+    half (or a third of) w's period has its pitch there, and w is a subharmonic. The MBE fit
+    can't see this when the voice has energy between its harmonics (breathy, diplophonic
+    or creaky stretches), where a comb at half the pitch fits better.
     Returns (wo, voiced)."""
     n = len(wo0)
+    if up:
+        xp = np.concatenate([np.ones(M_PITCH - N), np.asarray(x, float), np.zeros(n * N)])
     v0 = np.asarray(voiced0) > 0
     cands, costs = [], []
     for t in range(n):
@@ -276,6 +284,10 @@ def track_pitch_voicing(Sw, wo0, voiced0, lam=3.0, bias=0.5, fmin=70.0, wo_max=W
                             ws.append(w)
         ws = np.array(ws)
         le = np.array([np.log(fit_error(Sw[t], w)) for w in ws])
+        if up:
+            buf = xp[t * N:t * N + M_PITCH]
+            le = le + up * np.array([max(0.0, max(nccf(buf, 2 * np.pi / (2 * w)), nccf(buf, 2 * np.pi / (3 * w)))
+                                         - up_thr) for w in ws])
         le = le - noise_logerr(ws) if norm == "noise" else le - bias * np.log(ws)
         c = le + prior * (not v0[t])
         if sub:
@@ -323,6 +335,19 @@ def track_pitch_voicing(Sw, wo0, voiced0, lam=3.0, bias=0.5, fmin=70.0, wo_max=W
         if k:
             wo[t], voiced[t] = cands[t][k - 1], 1
     return wo, voiced
+
+
+def nccf(buf, period):
+    """normalised autocorrelation of buf at a (fractional) period in samples: the larger at
+    the two whole lags either side; 0 for periods under 2 samples"""
+    if period < 2:
+        return 0.0
+    best = -1.0
+    for P in (int(np.floor(period)), int(np.ceil(period))):
+        a, b = buf[:-P], buf[P:]
+        d = np.sqrt(np.dot(a, a) * np.dot(b, b))
+        best = max(best, np.dot(a, b) / d if d > 0 else 0.0)
+    return best
 
 
 def unvoice_tails(Sw, m, lo_snr=6.0, drop=20.0, hold=30):
