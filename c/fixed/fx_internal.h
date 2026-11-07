@@ -30,6 +30,10 @@ typedef struct {
 typedef struct {
   int32_t env[2][FX_NFB];             /* dB Q8 envelope at FB of the two halves just synthesised */
   int16_t cls[2];                     /* their class: 0 unvoiced, 1 voiced, 2 mixed */
+#ifdef FX_HISS_LIGHT
+  int32_t bands[2][16];               /* K6 light layer: hiss_band.model_bands of each half at
+                                         FLO + (3000, 3500), dB Q8 */
+#endif
   unsigned char b2[SOTTO_BYTES_PER_FRAME];   /* the bits the frame just received decodes (concealed) */
   int16_t run;                        /* lost frames in a row, 0 for a good frame */
 } fx_dec_info_t;

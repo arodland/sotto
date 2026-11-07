@@ -136,6 +136,60 @@ def fine_levels(y16, nfr, spk_pc=None):
     return pr + ref[:, None] + corr
 
 
+# K6 light layer (docs/k6-hiss-port.md): the vowel predictor's 0-4 kHz bands read from the
+# decoded model (harmonic amplitudes as a power density) instead of an STFT of the decoded
+# audio. MODEL_REF_DB: the model density's level against the STFT's 3.0-3.5 kHz band, the
+# median over voiced frames of four Codec 2 clips outside the test voices (hts1a, hts2a,
+# kristoff, ve9qrp_10s: -27.6, -26.9, -27.6, -27.6)
+MODEL_REF_DB = -27.6
+_GRID = np.arange(0, 4000, 50.0) + 25
+
+
+def model_bands(m, bands):
+    """dB per band of each model frame's harmonic power density (A^2 per f0 Hz, on 50 Hz bins)"""
+    out = np.zeros((len(m), len(bands)))
+    sel = [(_GRID >= a) & (_GRID < b) for a, b in bands]
+    for k, r in enumerate(m):
+        L = r["L"]
+        f0 = r["Wo"] * 4000 / np.pi
+        d = np.interp(_GRID, np.arange(1, L + 1) * f0, 20 * np.log10(r["A"][1:L + 1] + 1e-9)) - 10 * np.log10(f0)
+        p = 10 ** (d / 10)
+        out[k] = [10 * np.log10(p[s].mean() + 1e-12) for s in sel]
+    return out
+
+
+def fine_levels_model(m, nfr, spk_pc=None):
+    """fine_levels from the model frames (STFT frame t reads model frame t + HB_LAG)"""
+    F = fine_model()
+    k = np.clip(np.arange(nfr) + HB_LAG, 0, len(m) - 1)
+    B = model_bands(m, FLO + [(3000, 3500)])[k]
+    ref = B[:, -1] + MODEL_REF_DB
+    pr = np.column_stack([np.ones(nfr), B[:, :-1] - B[:, -1:]]) @ F["W"]
+    if spk_pc is None:
+        corr = F["m0"][None, :]
+    else:
+        pc = np.asarray(spk_pc, float)
+        corr = F["m0"][None, :] + (pc @ F["Vt"] if pc.ndim == 2 else (F["Vt"].T @ pc)[None, :])
+    return pr + ref[:, None] + corr
+
+
+def fold8(y8, X, n16):
+    """The 4-8 kHz STFT X (16 kHz frames) made at 8 kHz as its mirror about 4 kHz and folded in
+    through the 1:2 interpolator: up2(y8 - s) + 2 s zero-stuffed. The half-band interpolator's
+    complement passes 4-8 kHz, so 2 stuff(s) - up2(s) is s mirrored; one interpolator does both."""
+    nfr = len(X)
+    Xm = X[:, ::-1][:, :N // 4 + 1] * 0.5                 # bin j at 8 kHz = bin 160 - j at 16 kHz
+    w8 = np.sqrt(np.hanning(N // 2 + 1)[:N // 2])
+    s = np.zeros(n16 // 2 + N)
+    for i, fr in enumerate(np.fft.irfft(Xm, N // 2, axis=1) * w8):
+        s[i * H // 2:i * H // 2 + N // 2] += fr
+    s = s[:n16 // 2]
+    y8 = np.pad(y8, (0, max(0, n16 // 2 - len(y8))))[:n16 // 2]
+    st = np.zeros(n16)
+    st[0::2] = 2 * s
+    return resample_poly(y8 - s, 2, 1) + st
+
+
 def fine_speaker(x16, y16, nfr):
     """Encoder side: the speaker's mean miss over vowel frames, as 3 PCA coefficients."""
     F = fine_model()
@@ -228,7 +282,7 @@ class SottoV38(vl.SottoV37):
     UU_WO_GUARD = True      # UU frames' pitch field is a hiss index: never interpolate from it
 
 
-    def __init__(self, model=MODEL, vowel=None, voiced_trim=0.0, texture="noise", pulse=1.0, vowel_shape=False, smooth_ms=30.0, peak_hz=None, peak_db=9.0, peak_bw=250.0, peak_floor=4.0, spk_pc=None, blend=False, whisper=False, release_ms=20.0, vsmooth=False, keep_mixed=False, sib_db=None, sib_voiced=False, whisper_lag=None, **kw):
+    def __init__(self, model=MODEL, vowel=None, voiced_trim=0.0, texture="noise", pulse=1.0, vowel_shape=False, smooth_ms=30.0, peak_hz=None, peak_db=9.0, peak_bw=250.0, peak_floor=4.0, spk_pc=None, blend=False, whisper=False, release_ms=20.0, vsmooth=False, keep_mixed=False, sib_db=None, sib_voiced=False, whisper_lag=None, vowel_src="stft", synth8=False, hb_max_hz=None, uv50=True, **kw):
         """vowel: None (no high band in voiced frames), "guess" (voiced frames at the guess
         - 3 dB) or "adaptive" (voiced and mixed frames at the guess + a per-speaker offset
         sent one bit per UU frame; the UU index is then 6 bits)."""
@@ -246,6 +300,10 @@ class SottoV38(vl.SottoV37):
         self.release_ms = release_ms          # blend: consonant hiss hold (0 = none)
         self.vsmooth = vsmooth                # encoder: no V/M flutter or U blips inside voiced runs
         self.blend = blend                    # one layer: max(vowel, consonant) power, flickers bridged
+        # K6 light layer, decoder only (docs/k6-hiss-port.md): vowel_src "model" (the vowel
+        # predictor reads the decoded model), synth8 (hiss made at 8 kHz and folded in),
+        # hb_max_hz (no hiss above it), uv50=False (v3.7's unvoiced halves, no 50 Hz spacing)
+        self.vowel_src, self.synth8, self.hb_max_hz, self.uv50 = vowel_src, synth8, hb_max_hz, uv50
         if model:                                       # None while training the guess
             z = np.load(model, allow_pickle=True)
             self.W, self.cb = z["W"].item(), z["cb"]
@@ -255,6 +313,8 @@ class SottoV38(vl.SottoV37):
 
     # ---------------------------------------------------------------- decoder hooks
     def _model_hook(self, m, rk, en):
+        if not getattr(self, "uv50", True):
+            return m
         u = np.where(m["voiced"] == 0)[0]
         if len(u):
             mu = vl.set_wo(m[u], np.full(len(u), W50), np.zeros(len(u), int))
@@ -545,7 +605,7 @@ class SottoV38(vl.SottoV37):
             if self.vowel == "speaker":                 # from the side channel, per frame
                 win = self._read_pc(bits, good)
                 pcs = win[np.minimum(f, len(win) - 1)]
-            vt = fine_levels(y16, nfr, pcs)             # 16 bands of 250 Hz, not 4
+            vt = fine_levels_model(m, nfr, pcs) if self.vowel_src == "model" else fine_levels(y16, nfr, pcs)
         mask = np.zeros(nfr)
         for t in range(nfr):
             src = f[t] if uu[t] else None
@@ -636,4 +696,8 @@ class SottoV38(vl.SottoV37):
             env = np.convolve(env, np.ones(16) / 16, "same")          # 1 ms
             rms = np.sqrt(np.convolve(env ** 2, np.ones(320) / 320, "same")) + 1e-9
             return y16 + hu + hv * (env / rms) ** self.pulse
+        if self.hb_max_hz:
+            X = X * (FR <= self.hb_max_hz)[None, :]
+        if self.synth8:
+            return fold8(y8, X, len(y16))
         return y16 + istft(X, len(y16))

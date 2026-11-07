@@ -66,6 +66,7 @@ class SottoVLR(lr.Sotto1200):
     """48 bits per N x 20 ms superframe; see the module docstring."""
 
     M_BEST = 16
+    OUTLIER = 20                  # pitch index steps (~0.5 octave: octave slips); 0 = the plain least squares
 
     def __init__(self, mode="600", tables=None, cfg=None, **kw):
         self.mode = mode
@@ -133,17 +134,28 @@ class SottoVLR(lr.Sotto1200):
         return self.pitch_frames(f["wc"], f["ws"])
 
     def q_pitch(self, wi, voiced, prev_wc):
-        """(centre index, slope index) minimising the voiced frames' squared index error."""
+        """(centre index, slope index) minimising the voiced frames' squared index error,
+        each frame's error capped at OUTLIER index steps. With OUTLIER set (2026-11-07), a
+        voiced frame more than OUTLIER steps off the least-squares line is left out and the
+        line refitted, so one wrong frame (an octave slip, a junk onset pitch) doesn't bend
+        the whole superframe's pitch."""
         line = self.pitch_line(wi, voiced)
         if line is None:
             return prev_wc, int(np.argmin(np.abs(self.slopes)))
+        cap = self.OUTLIER
+        if cap and voiced.sum() >= 3:
+            t = np.arange(self.N) - (self.N - 1) / 2
+            keep = voiced & (np.abs(wi - (line[0] + line[1] * t)) <= cap)
+            if 2 <= keep.sum() < voiced.sum():
+                line, voiced = self.pitch_line(wi, keep), keep
         b = self.cfg["bw"]
         c0 = int(np.clip(np.round((line[0] - ((1 << (7 - b)) >> 1)) / (1 << (7 - b))), 0, (1 << b) - 1))
         best = None
         v = np.where(voiced)[0]
         for wc in range(max(0, c0 - 1), min((1 << b), c0 + 2)):
             for ws in range(len(self.slopes)):
-                e = ((self.pitch_frames(wc, ws)[v] - wi[v]) ** 2).sum()
+                d = np.abs(self.pitch_frames(wc, ws)[v] - wi[v])
+                e = (np.minimum(d, cap) ** 2 if cap else d ** 2).sum()
                 if best is None or e < best[0]:
                     best = (e, wc, ws)
         return best[1], best[2]
