@@ -534,6 +534,26 @@ filter. It most likely comes from the IC-7100's transmit audio path (USB codec, 
 modulator). Telling the two radios apart needs another transmitter, or another receiver of the
 IC-7100's signal, or the IC-7100's ACC input instead of USB audio.
 
+### Templates trained on the K6 (`iflive_k6t`)
+
+Whatever adds the noise, the K6 can fit the signal it gets better than the model does. On 320
+captures (2026-11-06 and the 0.12, 0.18 and AFC-off runs, steps 1-8), trained on half of them
+and tested on the other half, with timing and IF picked on one half of each test capture:
+
+| 4FSK templates | held-out BER |
+|---|---|
+| the model's (c/k6/ifrx_tables.h) | 5.5% (4-bit: 5.6%) |
+| trained per tone and start phase | 2.8% |
+| the same, each phase folded with its conjugate (as the C keeps them) | 2.4% (4-bit: 2.3%) |
+| trained per previous tone and tone, with decision feedback | 6.3% (too few symbols a class) |
+
+**`k6_ifcap.py tables LOG...`** writes c/k6/ifrx_tables.h with a second 4FSK set trained on
+the given captures (`mcu_train4`), used by builds with `IFRX_T4_K6`; the model's tables are
+unchanged otherwise (`python3 -m sim.k6if.mcu --tables` still writes them alone). The committed set is
+trained on all four logs above (8320 symbols). **`iflive_k6t`** is `iflive` with that set.
+On the emulated model at 52 dB-Hz it locks every step at 0.4-1.3% (the model's signal isn't
+what it was trained on); the bench is what counts.
+
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
 Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential

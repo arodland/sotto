@@ -15,6 +15,8 @@ the IF matched filter, so the two meet the same samples.
   python3 tools/k6_ifcap.py livelog LOG         iflive's lines as a table: BER, lock, AFC, CPU
   python3 tools/k6_ifcap.py mcu LOG             gp0cap's captures through the MCU receiver's
                                                 templates (the model's) and ones trained on them
+  python3 tools/k6_ifcap.py tables LOG...        c/k6/ifrx_tables.h with 4FSK templates trained on
+                                                gp0cap's captures too (built with IFRX_T4_K6)
   python3 tools/k6_ifcap.py fmnoise LOG         the FM noise of a bare carrier (run --level 1e-6
         [--pass 2]                              sends one in place of the 4FSK pass), Hz rms by band
 
@@ -605,6 +607,47 @@ def cmd_mcu(a):
     mcu_analyze(caps, train_gain=a.train_step)
 
 
+def mcu_train4(caps, steps=(1, 8)):
+    """4FSK templates (M, P, TL) from gp0cap's captures: at each capture's data-aided timing and
+    IF (mcu_fit with the model's templates), each known symbol's segment turned to and put in
+    its tone's best-matching model start phase, averaged; then each phase folded with its
+    conjugate half a turn on, as the C keeps only the first half. Held out (train on half the
+    2026-11-06/07 captures, test on the rest), 4-bit: 2.3% BER against the model's 5.6%"""
+    from sim.k6if import mcu
+    from sim.k6if import modes as md
+    m = md.Mode(*md.MODES["4fsk1200"])
+    Tm = mcu.make_templates(m)[0]
+    M, P, TL = Tm.shape
+    ref = pn_symbols(PASSES[2][1])
+    acc, cnt = np.zeros((M, P, TL), complex), np.zeros((M, P))
+    for c in caps:
+        if c["lost"] or c["pass_"] != 2 or not steps[0] <= c["gain"] <= steps[1]:
+            continue
+        _, _, t0, p, n, z, pc = mcu_fit(c, Tm, ref)
+        seg = mcu_decide(z, Tm, t0, pc, n)[2]
+        kn = ref[(p + np.arange(n)) % len(ref)]
+        for i, t in enumerate(kn):
+            cr = seg[i] @ np.conj(Tm[t]).T
+            j = int(np.argmax(np.abs(cr)))
+            acc[t, j] += seg[i] * np.exp(-1j * np.angle(cr[j]))
+            cnt[t, j] += 1
+    T = np.where(cnt[..., None] > 0, acc / np.maximum(cnt, 1)[..., None], Tm)
+    H = P // 2
+    for j in range(H):
+        a = 0.5 * (T[:, j] + np.conj(T[:, j + H]))
+        T[:, j], T[:, j + H] = a, np.conj(a)
+    return T, int(cnt.sum())
+
+
+def cmd_tables(a):
+    from sim.k6if import mcu
+    import gzip
+    caps = [c for f in a.logs for c in parse((gzip.open if f.endswith(".gz") else open)(f, "rt", errors="replace"))]
+    T, n = mcu_train4(caps)
+    names = ", ".join(os.path.basename(f) for f in a.logs)
+    sys.stdout.write(mcu.c_tables(t4_k6=T, t4_k6_note=f" ({n} symbols: {names})"))
+
+
 FM_BANDS = ((0, 50), (50, 200), (200, 600), (600, 1500), (1500, 3000), (3000, 4500))
 
 
@@ -666,6 +709,9 @@ def main():
     ll = sub.add_parser("livelog")
     ll.add_argument("log")
     ll.set_defaults(fn=cmd_livelog)
+    tb = sub.add_parser("tables")
+    tb.add_argument("logs", nargs="+")
+    tb.set_defaults(fn=cmd_tables)
     fm = sub.add_parser("fmnoise")
     fm.add_argument("log")
     fm.add_argument("--pass", dest="pass_", type=int, default=2)
