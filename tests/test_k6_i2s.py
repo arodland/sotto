@@ -21,13 +21,16 @@ from modem import k6mod  # noqa: E402
 need_clang = pytest.mark.skipif(not (shutil.which("clang") and shutil.which("ld.lld")),
                                 reason="needs clang and ld.lld")
 NAMES = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down",
-         "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read", "cal_write"]
+         "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read", "cal_write",
+         "fl_read", "fl_prog", "fl_erase"]
+FL_LO, FL_HI, FL_READ_HI = 0x0F0000, 0x100000, 0x200000   # level 5's flash (c/k6/k6_mod.h)
 REFUSED = (0x30, 0x33, 0x36, 0x37)
 PERIOD = 400            # samples between modelled DFS edges
 
 
 def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024,
-        mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None, tune=None, count=200_000_000, code=None, gpiob=None):
+        mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None, tune=None, count=200_000_000, code=None, gpiob=None,
+        flash=None):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
@@ -43,10 +46,16 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     cal_write lands there and in cal["writes"] (refused, -1, after the first or while keyed).
     tune(hz, wide, us): called on every api->tune (a receiver model's way to follow the module);
     count: the emulator's instruction limit; code: (bytes, entry) to run instead of building src;
-    gpiob(off, value, st): takes the module's GPIOB writes (else a write fails the test). Returns (ret, said lines, registers at the end, writes)."""
+    gpiob(off, value, st): takes the module's GPIOB writes (else a write fails the test).
+    flash: a dict for level 5: flash["mem"] (a bytearray, 0x0F0000-0x1FFFFF, default all 0xFF) is
+    what fl_read reads and fl_prog / fl_erase change, with the firmware's rules (program and
+    erase in 0x0F0000-0x0FFFFF only, a program inside one page and only clearing bits, at most 32
+    erases); flash["progs"], flash["erases"] and flash["refused"] count the calls.
+    Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
     st = {"us": 0, "said": [], "writes": [], "reads": 0, "pin": 0}
+    spi = flash                                    # (the cal branch has a local called flash)
     regs = dict(regs)
     mu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_THUMB | unicorn.UC_MODE_MCLASS)
     mu.ctl_set_cpu_model(A.UC_CPU_ARM_CORTEX_M0)
@@ -91,7 +100,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
 
     def on_stub(uc, addr, size, _):
         name = NAMES[(addr - stubs) // 16]
-        r0, r1 = uc.reg_read(A.UC_ARM_REG_R0), uc.reg_read(A.UC_ARM_REG_R1)
+        r0, r1, r2 = uc.reg_read(A.UC_ARM_REG_R0), uc.reg_read(A.UC_ARM_REG_R1), uc.reg_read(A.UC_ARM_REG_R2)
         ret = 0
         if name == "say":
             st["said"].append(bytes(uc.mem_read(r0, 64)).split(b"\0")[0].decode())
@@ -138,6 +147,28 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
                 data = bytes(uc.mem_read(r0, r1))
                 cal["flash"] = data + flash[len(data):]
                 cal.setdefault("writes", []).append(data)
+        elif name in ("fl_read", "fl_prog", "fl_erase"):
+            assert spi is not None, f"{name} called"
+            mem = spi.setdefault("mem", bytearray(b"\xff" * (FL_READ_HI - FL_LO)))
+            for k in ("progs", "erases", "refused"):
+                spi.setdefault(k, 0)
+            ret = -1
+            if name == "fl_read":
+                if FL_LO <= r0 < FL_READ_HI and r2 <= FL_READ_HI - r0:
+                    uc.mem_write(r1, bytes(mem[r0 - FL_LO:r0 - FL_LO + r2]))
+                    ret = 0
+            elif name == "fl_prog":
+                if FL_LO <= r0 < FL_HI and 0 < r2 <= 256 and (r0 & 255) + r2 <= 256:
+                    for i, b in enumerate(uc.mem_read(r1, r2)):
+                        mem[r0 - FL_LO + i] &= b
+                    spi["progs"] += 1
+                    ret = 0
+            elif FL_LO <= r0 < FL_HI and r0 % 4096 == 0 and spi["erases"] < 32:
+                mem[r0 - FL_LO:r0 - FL_LO + 4096] = b"\xff" * 4096
+                spi["erases"] += 1
+                ret = 0
+            if ret:
+                spi["refused"] += 1
         elif name in ("tx_on", "tx_off", "tx_pa"):
             assert tx is not None, f"{name} called"
             tx.setdefault("log", []).append((name, r0, st["us"]))

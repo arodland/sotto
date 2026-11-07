@@ -198,3 +198,55 @@ def test_a_strong_carrier_s_skirts_are_marked(lib):
         assert "skirt" in kx.row_text(rows[hz])
     assert rows[440_900_000].skirts == 0 and rows[440_900_000].score != -100
     assert x.ranked()[0].hz == 440_850_000
+
+
+def test_listen_for_id_takes_turns_and_skips_the_ones_with_a_call(lib):
+    # Jeff, 2026-11-07: two repeaters that ID at the same time; the one still missing its call
+    # goes first, and each one listened to moves to the back, so neither starves
+    x = List(lib)
+    for k in range(3):
+        x.over(146_940_000, k * 3 * MIN, 20_000, -80)       # r, +5
+        x.over(147_200_000, k * 3 * MIN, 20_000, -82)       # r, +5
+        x.over(146_520_000, k * 3 * MIN, 20_000, -60 - 15 * k)   # simplex
+    up = (ctypes.c_uint32 * 3)(146_940_000, 147_200_000, 146_520_000)
+
+    def pick():
+        p = lib.ex_pick_id(ctypes.byref(x.e), up, 3)
+        return p.contents.hz if p else None
+
+    first = pick()
+    assert first in (146_940_000, 147_200_000)
+    second = pick()
+    assert {first, second} == {146_940_000, 147_200_000}       # took turns
+    assert pick() == first                                      # and round again
+    x.cw(first, b"W7ABC")
+    assert [pick() for _ in range(3)] == [second] * 3            # a call heard: only the other
+    x.cw(second, b"W7XYZ")
+    assert pick() is None                                       # nothing left; never the simplex
+    assert x.find(146_520_000).listens == 0
+
+
+def test_scores_the_app_s_list_against_a_repeater_list(tmp_path):
+    log = "\n".join([
+        "12:00:00 K6 CAND band=ALL n=9 sweeps=1 bins=860 ms=2300",       # an older dump: replaced
+        "12:00:00 K6 CAND 0 R 146000000 off=0 tone=0 call= score=9 overs=9 on=1 hi=-1 lo=-1 ids=0 skirts=0 fl=0",
+        "13:00:00 K6 CAND band=ALL n=4 sweeps=900 bins=774000 ms=2100000",
+        "13:00:00 K6 CAND 0 R 146940000 off=-600000 tone=0 call=W7ABC score=8 overs=5 on=60 hi=-80 lo=-81 ids=1 skirts=0 fl=0",
+        "13:00:00 K6 CAND 1 R 440850000 off=5000000 tone=0 call=AG7EW score=7 overs=3 on=20 hi=-22 lo=-23 ids=2 skirts=0 fl=0",
+        "13:00:00 K6 CAND 2 r 443100000 off=5000000 tone=0 call= score=3 overs=3 on=30 hi=-85 lo=-86 ids=0 skirts=0 fl=0",
+        "13:00:00 K6 CAND 3 ? 147160000 off=600000 tone=0 call= score=2 overs=1 on=9 hi=-95 lo=-95 ids=0 skirts=0 fl=0",
+    ])
+    cands = kx.cands_of(log)
+    assert [c["hz"] for c in cands] == [146_940_000, 440_850_000, 443_100_000, 147_160_000]
+    truth = kx.truth_of('"Frequency","Input","Call"\n"146.9400","146.3400","W7ABC"\n443.1000,448.1000\n'
+                        "147.1600 +\n224.5000 -1.6\n")
+    assert truth == [146_940_000, 147_160_000, 224_500_000, 443_100_000]
+    r = kx.score(cands, truth)
+    assert (r["truth"], r["found"], r["R"], r["R_real"]) == (4, 2, 2, 1)
+    assert r["missed"] == [147_160_000, 224_500_000] and r["heard_any"] == [146_940_000, 147_160_000, 443_100_000]
+    assert r["R_false"] == [440_850_000]          # the bench's ID keeper: honest, not a repeater
+    assert kx.score(cands, truth, lo=440_000_000, hi=450_000_000)["truth"] == 1
+    p, t = tmp_path / "log.txt", tmp_path / "rb.csv"
+    p.write_text(log)
+    t.write_text("146.94\n443.1\n")
+    assert kx.main(["score", str(p), "--truth", str(t)]) == 0

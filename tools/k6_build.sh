@@ -45,6 +45,13 @@ else
   OUT=${K6_OUT:-"$ROOT/c/k6/build"}
   LR=
 fi
+# K6_VOICE=0: the EXPLORE image's library (firmware/k6-aura/build.sh aura-explore), the voice
+# decoder left out (c/k6/sp_novoice.c stands in for it), into c/k6/build-explore
+if [ "${K6_VOICE:-1}" = 0 ]; then
+  [ -z "$LR" ] || { echo "K6_VOICE=0 is the v3.7 build without its decoder: no K6_CODEC" >&2; exit 1; }
+  OUT=${K6_OUT:-"$ROOT/c/k6/build-explore"}
+  K6_OUT=$OUT
+fi
 CB=
 case "${K6_CB:-}" in
   "") ;;
@@ -110,7 +117,13 @@ fi
 # K6, soft Viterbi): linked only by the images that call it (not the lean ones). -Os, as the
 # emulator's timing of it (tests/k6_live_emu.py run_ifpager)
 $CC $CFLAGS -Os -DIFRX_T4_K6 -c "$ROOT/c/k6/ifpager.c" -o "$OUT/ifpager.o"
-LIBOBJS="$OUT/sotto_pager.o $OUT/k6_mod.o $OUT/sotto_fx_dec.o $OUT/sp_cb.o $OUT/sp_vlr.o $OUT/fx_math.o $OUT/fx_tables.o $OUT/ifpager.o"
+# the EXPLORE app's engine (docs/k6-explore-app.md): the sweep a block at a time, the candidate
+# list, the repeater table and Listen for ID. -Oz: none of it is hot next to a 1.5 ms read, and
+# only the images that call it link it (rt.c goes in as k6_rt.o: c/fixed/cm0/rt.c is the bench's)
+for f in xscan xlisten explore cwid; do $CC $CFLAGS -Oz -c "$ROOT/c/k6/$f.c" -o "$OUT/$f.o"; done
+$CC $CFLAGS -Oz -c "$ROOT/c/k6/rt.c" -o "$OUT/k6_rt.o"
+LIBOBJS="$OUT/sotto_pager.o $OUT/k6_mod.o $OUT/sotto_fx_dec.o $OUT/sp_cb.o $OUT/sp_vlr.o $OUT/fx_math.o $OUT/fx_tables.o $OUT/ifpager.o
+  $OUT/xscan.o $OUT/xlisten.o $OUT/explore.o $OUT/cwid.o $OUT/k6_rt.o"
 if [ -n "$LR" ]; then     # not hot (field unpacking and shape sums once per 40 ms): -Os
   $CC $CFLAGS -Os -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_lr.c" -o "$OUT/sotto_fx_lr.o"
   LIBOBJS="$LIBOBJS $OUT/sotto_fx_lr.o"
@@ -122,9 +135,15 @@ if [ -n "$VLR" ]; then    # once per 20 ms frame, then the v3.7 core's synthesis
   $CC $CFLAGS $VT -c "$ROOT/c/sotto_vlr_tables.c" -o "$OUT/sotto_vlr_tables.o"
   LIBOBJS="$LIBOBJS $OUT/sotto_fx_vlr.o $OUT/sotto_vlr_tables.o"
 fi
+if [ "${K6_VOICE:-1}" = 0 ]; then
+  $CC $CFLAGS -Os -c "$ROOT/c/k6/sp_novoice.c" -o "$OUT/sp_novoice.o"
+  LIBOBJS=$(echo $LIBOBJS | sed "s# [^ ]*/sotto_fx_dec.o# $OUT/sp_novoice.o#; s# [^ ]*/fx_math.o##")
+fi
 rm -f "$OUT/libsotto_k6.a"
 $AR rcs "$OUT/libsotto_k6.a" $LIBOBJS
 echo "built $OUT/libsotto_k6.a"
+# no bench for the EXPLORE image's library: it has no decoder to time
+[ "${K6_VOICE:-1}" = 0 ] && exit 0
 # the bench: the library alone, with the cm0 bench's run-time helpers and memory functions
 # (and with the codebook in SPI flash, c/k6/flash_bench.c's stand-in flash, which serves the
 # image from the MCU's flash: the decode is the same, the SPI transfers aren't counted)
