@@ -119,6 +119,16 @@ variant() {
   if command -v llvm-objdump >/dev/null 2>&1; then
     llvm-objdump -d -C --no-show-raw-insn "$ELF" | python3 "$ROOT/tools/k6_frames.py" 40 > "$OUT/frames-$name.txt" &&
       { echo "== stack frames, $title"; cat "$OUT/frames-$name.txt"; python3 "$ROOT/tools/k6_frames.py" --sizes "$ELF" | tee -a "$OUT/frames-$name.txt"; }
+    # Aura's boot runs main and place_app (the App built on the stack, then moved to its
+    # static) at once: their frames must fit the free stack with room for the calls under them
+    # and an interrupt, or the boot writes over the top of .bss (aura-pager-vlri at 148 B to
+    # spare lost sp_vlr.c's cached CRC that way, 2026-11-07)
+    "$SIZE" -A "$ELF" | awk -v f="$OUT/frames-$name.txt" '
+      $1 == ".data" || $1 == ".bss" || $1 == ".uninit" { ram += $2 }
+      END { while ((getline l < f) > 0) { split(l, w, " "); if (w[2] == "aura::__cortex_m_rt_main" || w[2] == "aura::place_app") boot += w[1] }
+            printf "boot stack: main + place_app %d of %d B free (%d to spare)\n", boot, 17720 - ram, 17720 - ram - boot
+            if (17720 - ram - boot < 384) print "warning: under 384 B of stack to spare at boot: the boot may overwrite the top of .bss" }' \
+      | tee -a "$OUT/size-$name.txt"
   fi
 }
 
