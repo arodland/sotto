@@ -480,6 +480,88 @@ BER is the same at 0.065, below that. **`k6_ifcap.py run --level X`** scales the
 pass, so `gp0cap` at a few levels can measure the deviation and this distortion against level
 directly.
 
+### Captures at three levels (2026-11-07 04:29-04:40)
+
+`gp0cap` with `run --level` 0.07, 0.12 and 0.18 (logs in
+`tests/data/k6/gp0lvl-*-20261107.log.gz`), steps 1-8:
+
+| level | 900 Hz | 1500 Hz | 2100 Hz | 2700 Hz | residual 1.5-3 kHz | per-symbol deviation sd | held-out BER |
+|---|---|---|---|---|---|---|---|
+| 0.07 | 1243 | 1917 | 2343 | 1809 | 411 Hz | 13.8% | 6.2% |
+| 0.12 | 1464 | 2101 | 2531 | 2042 | 450 Hz | 14.4% | 5.4% |
+| 0.18 | 1490 | 2085 | 2565 | 2000 | 438 Hz | 14.3% | 5.4% |
+
+(Per-tone deviation in Hz.) **The IC-7100 limits deviation.** From 0.12 to 0.18 (x1.5) it rises
+0-2%; from 0.07 to 0.12 (x1.7) only 10-18%. The limiter makes few harmonics, so it acts like a
+gain control rather than a clipper. At 30% USB MOD the sender already sits at its ceiling.
+
+**The extra noise doesn't follow the signal.** It is the same at all three levels. Its mean over
+a symbol, given the symbol before and after, explains none of it on held-out symbols (624 Hz rms
+-> 625-640), so it isn't intersymbol interference. Model templates rebuilt at the measured
+deviation (all tones x0.77, or per tone) give 5.2-5.9% held out against 5.4%, so it isn't the
+templates either. The confusions lean one way (900 Hz read as 1500 about 120 times, the
+reverse about 8; 2100 as 2700 about 40, the reverse 3-10). 900 Hz has the smallest deviation
+and 2700 Hz the next smallest.
+
+What's left is FM noise of about 450 Hz rms in 1.5-3 kHz, constant whatever the modulation: the
+signature of synthesizer noise (a PLL's phase noise peaks near its loop bandwidth) in the
+IC-7100's transmitter or the K6's receiver. **`k6_ifcap.py fmnoise LOG`** measures it on a bare
+carrier (`run --level 1e-6` sends one in place of the 4FSK pass). The model's tap alone gives
+2, 6, 27, 96, 251, 242 Hz rms in 0-50, 50-200, 200-600, 600-1500, 1500-3000 and 3000-4500 Hz. If
+the bare carrier shows the bump, a K6-to-IC-7100 capture would tell which radio adds it.
+
+### A bare carrier, and the AFC off (2026-11-07 05:09-05:20)
+
+- **Bare carrier** (`run --level 1e-6`, `tests/data/k6/gp0carrier-20261107.log.gz`): `fmnoise`
+  gives 0, 1, 3, 6, 12, 14 Hz rms at steps 1-5 (-61 dBm), rising to 36 and 96 Hz in 600-1500 and
+  1500-3000 Hz at step 8 (-72 dBm). So **neither radio's synthesizer is the noise**: it shows only
+  under modulation. (The tap's sigma-delta noise on a steady IF tone is lower than the model's,
+  which whitens it; under modulation the model gives 250-300 Hz.)
+- **AFC off** (`gp0cap_afc`, r73=4692, `tests/data/k6/gp0afcoff-20261107.log.gz`): the
+  residual is the same (528 Hz rms against 539 with the AFC on), and so is the per-symbol
+  wobble (13.7%) and the 4FSK held-out BER (5.1%). FFSK read 0.29% (6 errors in 2080 bits)
+  against 1.0% with the AFC on. **The K6's AFC isn't the 4FSK floor.**
+- With a 1.4 ms FIR shared by all captures (the sender's audio response, fitted), the residual
+  is 530-540 Hz rms against 276 in the model. Given that FIR, the previous symbol and the audio
+  phase explain none of what's left (530 -> 519-533 held out). Without it they explain a
+  good part (627 -> 504), because the IC-7100's audio response isn't the model's. The IF's
+  amplitude falls to 0.7 at +-4 kHz, as in the model.
+
+So about 450 Hz rms of FM noise at the tones comes with the modulation. It scales with the
+signal (the 14% wobble holds at 0.07, under the limiter, and at 0.18) and is white from symbol
+to symbol. It isn't intersymbol interference, the AFC, a synthesizer or the K6's channel
+filter. It most likely comes from the IC-7100's transmit audio path (USB codec, its DSP, the
+modulator). Telling the two radios apart needs another transmitter, or another receiver of the
+IC-7100's signal, or the IC-7100's ACC input instead of USB audio.
+
+### Templates trained on the K6 (`iflive_k6t`)
+
+Whatever adds the noise, the K6 can fit the signal it gets better than the model does. On 320
+captures (2026-11-06 and the 0.12, 0.18 and AFC-off runs, steps 1-8), trained on half of them
+and tested on the other half, with timing and IF picked on one half of each test capture:
+
+| 4FSK templates | held-out BER |
+|---|---|
+| the model's (c/k6/ifrx_tables.h) | 5.5% (4-bit: 5.6%) |
+| trained per tone and start phase | 2.8% |
+| the same, each phase folded with its conjugate (as the C keeps them) | 2.4% (4-bit: 2.3%) |
+| trained per previous tone and tone, with decision feedback | 6.3% (too few symbols a class) |
+
+**`k6_ifcap.py tables LOG...`** writes c/k6/ifrx_tables.h with a second 4FSK set trained on
+the given captures (`mcu_train4`), used by builds with `IFRX_T4_K6`; the model's tables are
+unchanged otherwise (`python3 -m sim.k6if.mcu --tables` still writes them alone). The committed set is
+trained on all four logs above (8320 symbols). **`iflive_k6t`** is `iflive` with that set.
+On the emulated model at 52 dB-Hz it locks every step at 0.4-1.3% (the model's signal isn't
+what it was trained on); the bench is what counts.
+
+**On the bench (2026-11-07 05:42-05:45, CI artifact aura-pager-ae5cde6, K6 on keyed-lr-431c327,
+receive only, `live 4fsk` at the normal level):** 2.2-2.8% BER on the 8 steps that decoded
+(about 9100 bits each), against 3.6-5.0% for `iflive` with the model's templates. The held-out
+estimate was 2.3%. AFC steady at -4..+8 Hz, no counts lost to speak of, 60% idle. Step 2 never
+locked (2 rejects, lead fit 14) and step 3 took one reject: the lead fits read 56-69 of 256
+against 70-87 with the model's templates, nearer `IFRX_ACQ_Q` (48), so acquisition has less
+margin. Step 9 is past the end of the sender's audio, as always.
+
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
 Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential

@@ -31,3 +31,18 @@ def test_simulated_capture_log():
     assert res[1, 1]["ber_if"] < res[1, 1]["ber_disc"]
     assert res[1, 1]["ber_disc"] > 0.02
     assert 0.02 < res["floor"] < 0.12
+
+
+def test_fm_noise_of_a_bare_carrier():
+    """the model's tap noise on a bare carrier at the captures' C/N0, and a 1 kHz FM tone
+    showing in its band"""
+    from sim.k6if import mcu, modes as md
+    m = md.Mode([1000, 1000], 1200, 1e-6)
+    lk = mcu.Link(m, 600, lead=2, f_off=-164, pre=0.05, seed=3)
+    c = lk.counts(52, seed=5).astype(float)
+    r = np.median([K.fm_noise(c[i:i + 2160], 5490) for i in range(4000, len(c) - 2200, 2400)], 0)
+    assert r[4] < 350 and r[3] < 150 and r[0] < 20, r
+    lk = mcu.Link(md.Mode([1000, 1000], 1200, 0.05), 600, lead=2, f_off=-164, pre=0.05, seed=3)
+    c = lk.counts(52, seed=5).astype(float)
+    t = K.fm_noise(c[4000:6160], 5490)
+    assert t[3] > 5 * r[3], (t, r)

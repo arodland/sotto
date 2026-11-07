@@ -13,7 +13,8 @@ the study's IF matched filter rebuilt from what the radio has, checked against t
     -> bits and max-log soft values
 
   python3 -m sim.k6if.mcu [ffsk1200 4fsk1200] [--off HZ]     BER vs C/N0 against the study
-  python3 -m sim.k6if.mcu --tables > c/k6/ifrx_tables.h       the C receiver's tables
+  python3 tools/k6_ifcap.py tables LOG... > c/k6/ifrx_tables.h   the C receiver's tables (the
+                                                              model's, and 4FSK from captures)
 MIT licence."""
 import argparse
 
@@ -191,15 +192,21 @@ def ber(mode_name, cn0s, nsym=4000, f_off=0.0, floor=0.05, nt=NT):
     return out
 
 
-def c_tables():
+def c_tables(t4_k6=None, t4_k6_note=""):
     """c/k6/ifrx_tables.h: the decimating filter (Q14) and each mode's templates (4-bit re and
     im, -7..7, one scale for all of a mode's: the quantising costs about 0.02 dB), made from
-    the model"""
+    the model. t4_k6: 4FSK templates (M, P, TL) trained on the K6's own captures
+    (tools/k6_ifcap.py tables), written as the table a build with IFRX_T4_K6 uses instead"""
     g = taps() * 16384
     g = np.round(g.real).astype(int) + 1j * np.round(g.imag).astype(int)
-    out = ["/* ifrx_tables.h: made by `python3 -m sim.k6if.mcu --tables` (sim/k6if/mcu.py) from the",
-           "   K6 GP0 model: the decimating filter and the IF templates. SPDX-License-Identifier: MIT */",
-           "#ifndef IFRX_TABLES_H", "#define IFRX_TABLES_H", "#include <stdint.h>", "",
+    head = (["/* ifrx_tables.h: made by `python3 tools/k6_ifcap.py tables LOG...` (sim/k6if/mcu.py) from the",
+             "   K6 GP0 model: the decimating filter and the IF templates, and from gp0cap's captures: a",
+             "   4FSK template set for builds with IFRX_T4_K6. SPDX-License-Identifier: MIT */"]
+            if t4_k6 is not None else
+            ["/* ifrx_tables.h: made by `python3 -m sim.k6if.mcu --tables` (sim/k6if/mcu.py) from the",
+             "   K6 GP0 model: the decimating filter and the IF templates. SPDX-License-Identifier: MIT */"])
+    out = head + [
+        "#ifndef IFRX_TABLES_H", "#define IFRX_TABLES_H", "#include <stdint.h>", "",
            f"/* {NT} taps, Q14: a {CUT:.0f} Hz low-pass turned up to the IF ({st.fe.FIF:.1f} Hz at"
            f" {FC:.0f} counts/s);",
            "   re in the low 16 bits, im in the high: one load a tap */",
@@ -207,10 +214,15 @@ def c_tables():
     out += ["  " + " ".join(f"0x{(int(v.real) & 0xFFFF) | ((int(v.imag) & 0xFFFF) << 16):08x}u," for v in g[i:i + 6])
             for i in range(0, NT, 6)]
     out += ["};"]
-    for name in ("ffsk1200", "4fsk1200"):
+    sets = [("ffsk1200", None), ("4fsk1200", None)]
+    if t4_k6 is not None:
+        sets.append(("4fsk1200", t4_k6))
+    for name, Tk in sets:
         tones, baud, lv = md.MODES[name]
         mode = md.Mode(tones, baud, lv)
         T, classes, o = make_templates(mode)
+        if Tk is not None:
+            T = Tk
         # the second half of the start phases are the first half's conjugates: keep the first
         P = len(classes)
         T = T[:, :P // 2]
@@ -219,8 +231,15 @@ def c_tables():
         q = ((q.real.astype(int) & 15) << 4) | (q.imag.astype(int) & 15)  # a byte: re, im
         cname = "ifrx_t_" + name.replace("1200", "")
         only = "IFRX_FFSK" if mode.M == 2 else "IFRX_4FSK"
-        out += ["", f"#if !defined(IFRX_ONLY) || IFRX_ONLY == {only}",
-                f"/* {mode.name}: [tone][audio start phase {classes} of 24, each also half a turn on as its "
+        if mode.M == 4 and t4_k6 is not None:
+            # the model's 4FSK table unless IFRX_T4_K6, then the one trained on the K6
+            guard = (f"#if (!defined(IFRX_ONLY) || IFRX_ONLY == {only}) && "
+                     + ("defined(IFRX_T4_K6)" if Tk is not None else "!defined(IFRX_T4_K6)"))
+        else:
+            guard = f"#if !defined(IFRX_ONLY) || IFRX_ONLY == {only}"
+        what = (f"trained on the K6's captures{t4_k6_note}" if Tk is not None else "")
+        out += ["", guard,
+                f"/* {mode.name}{', ' + what if what else ''}: [tone][audio start phase {classes} of 24, each also half a turn on as its "
                 "conjugate][sample], re in the high 4 bits, im in the low, each -7..7 */",
                 f"static const uint8_t {cname}[{mode.M}][{len(classes)}][{TL}] = {{"]
         for i in range(mode.M):
