@@ -100,12 +100,12 @@ def cmd_run(a):
                 continue
             p = os.path.join(d, f"{name}.wav")
             write(p, pass_audio(a.level))
-            rig(a, "M", mode, 0)
+            rig(a, "M", mode, 12000 if mode == "PKTFM" else 0)  # FM-D wide, as the bench runs
             time.sleep(1.0)
             print(f"{time.strftime('%H:%M:%S')} pass {name} ({mode}): 65 s", flush=True)
             key_and_play(a, p)
             time.sleep(4.0)
-        rig(a, "M", "PKTFM", 0)
+        rig(a, "M", "PKTFM", 12000)  # 0 picks FM-D narrow (6 kHz): half the deviation
         time.sleep(1.0)
         # the station ID (FCC 97.119), in FM like the ID keeper
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))

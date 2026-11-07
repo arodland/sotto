@@ -348,7 +348,7 @@ what would settle it.
       print and change gain between steps without the tick + TIM17 lap reckoning `gp0cap`-style
       modules need. It saved about 200 B of code, and each run checks acquisition 10 times.
     - Buys: simpler bench modules wherever the sender can repeat a preamble.
-    - Settled by: the first `iflive` bench run (every step should show `s=2`).
+    - Settled by: the first `iflive` bench run (every step should lock, `j=0`, with `b` near the step's full length).
 15. **The IF receiver's CPU.**
     - From: `iflive` on the emulator at 1.5 cycles an instruction: 4FSK leaves 41% idle and FFSK
       51%. That is about twice the study's estimate, so it doesn't yet leave room for the sotto
@@ -441,7 +441,17 @@ what would settle it.
       F/1800. If the IC-7100 doesn't decode them, try the reports at 1200 (a REG_72 write
       around the send) before anything else.
     - Settled by: the first `tools/k6_upload.py` run on the bench.
-24. **The REG_63 noise indicator as a sensitivity meter.**
+24. **Time everything on the K6's DMA by the clock, not by assumption.**
+    - From: the first live-receiver run (2026-11-06). Channel 1's free-running rate was 5490
+      kS/s under gp0dma, 5555 under gp0cap, and 5875 while iflive only polled. It moves with
+      the CPU's bus traffic, and a module that times it in one loop and decodes in another is
+      off by up to 7%.
+    - Buys: a receiver that acquires (it needs the rate to 0.05%) and a ring index that
+      survives a stall. Any other DMA module (gp0dma, gp0cap, ft8rx, ft8wf) that measures its
+      rate once has the same exposure.
+    - Settled by: the `k=` column of the next iflive run, step by step, and whether it moves
+      between acquisition and tracking.
+25. **The REG_63 noise indicator as a sensitivity meter.**
     - From: the coverage thread (2026-11-06, [k6-rxmap.md](k6-rxmap.md)). Phase 0 read 0x0000
       on a strong carrier and 0x002a on an empty channel. If REG_63 rises smoothly as a carrier
       weakens, it measures FM quieting, which is close to what SINAD measures. Then sensitivity
@@ -449,7 +459,7 @@ what would settle it.
     - Buys: a sensitivity number per band, and a squelch that opens on quieting, not on RSSI.
     - Settled by: `k6_rxmap.py cal`'s `z` column against its levels (power steps at 440.850,
       on a dummy load).
-25. **RSSI under-reads after a short tune, and by more for weak signals?**
+26. **RSSI under-reads after a short tune, and by more for weak signals?**
     - Phase 0's curves come from a -20 dBm carrier. rxmap's quick pass (3 ms) only ranks the
       channels in a bin, then re-reads the winner at 30 ms. If a weak signal (-110 dBm) ramps
       slower than the empty channel next to it, the quick pass ranks it below the noise.

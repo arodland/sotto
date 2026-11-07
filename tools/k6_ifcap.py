@@ -128,7 +128,7 @@ def rig_setup(a):
     f = rig(a, "f")
     if not a.dry_run and int(f) != a.freq:
         sys.exit(f"IC-7100 on {f} Hz, not {a.freq}: set both radios to the same frequency first")
-    rig(a, "M", "PKTFM", 0)
+    rig(a, "M", "PKTFM", 12000)  # FM-D wide: 0 picks the 6 kHz filter, half the deviation
 
 
 def cw_id(a, d):
@@ -176,11 +176,11 @@ def cmd_livelog(a):
     head, steps = parse_live(open(a.log, errors="replace").read().splitlines())
     if head:
         print(f"DMA {head['ks']} kS/s, receiver state {head['rx']} B")
-    print("step  bits    errs   BER        RSSI  AFC Hz  lock  fit  sweeps rej  lost  idle%")
+    print("step  bits    errs   BER        RSSI  AFC Hz  fit  rej  lost  idle%  kS/s")
     for d in steps:
         ber = d["e"] / 3 / d["b"] if d["b"] else float("nan")
         print(f"{d['step']:4d} {d['b']:6d} {d['e']:6d}   {ber:9.2e} {d['r']:5d} {d['f'] * 65536 / 50069:7.0f}"
-              f"  {'yes' if d['s'] else 'no ':4s} {d['q']:4d} {d['w']:6d} {d['j']:3d} {d['L']:5d} {d['i']:5d}")
+              f"  {d['q']:4d} {d['j']:4d} {d['L']:5d} {d['i']:5d}  {d.get('k', head.get('ks', 0)):5d}")
 
 
 def cmd_run(a):

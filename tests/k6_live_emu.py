@@ -5,6 +5,7 @@ would write into the module's ring, paced by the emulated CPU's time. tests/test
 uses it; run on its own for the full 10-step run:
 
   python3 tests/k6_live_emu.py [4fsk|ffsk] [--cn0 46] [--off -164] [--steps 10] [--cpi 1.5]
+                               [--fdma 5.875e6] [--stall 50,400]
   python3 tests/k6_live_emu.py --module c/k6/mod/gp0dma.c      (any GP0 module on the same stream)
   python3 tests/k6_live_emu.py --module c/k6/mod/iflive.c --profile   (and where its time goes)
 
@@ -52,7 +53,7 @@ def build(mode, defs=()):
         return k6mod.build(w)
 
 
-def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=0.25):
+def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=0.25, fdma=None):
     """(bytes the DMA reads from GPIOB's IDR at its rate, bit 1 the code 13 output; the
     sample at which the carrier comes up). pre_s of nothing, then carrier and the live audio."""
     import k6_ifcap as ic
@@ -61,19 +62,21 @@ def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=
     a = ic.live_audio(m, steps, seg_s, lead_s)
     n0 = int(0.2 * st.FSA)                      # key_and_play: carrier 0.2 s before the audio
     s = st.fm(st.ic7100(np.concatenate([np.zeros(n0), a])), f_off)
-    bits = st.fe.receive(s, st.FZ, cn0, seed=seed, L=0, fdma=mcu.FDMA)  # Jeff's K6's rate
-    lead = int(pre_s * mcu.FDMA)
+    fdma = fdma or mcu.FDMA                     # Jeff's K6's rate under gp0dma
+    bits = st.fe.receive(s, st.FZ, cn0, seed=seed, L=0, fdma=fdma)
+    lead = int(pre_s * fdma)
     rng = np.random.default_rng(seed + 1)
     noise = rng.integers(0, 2, lead)            # no carrier: the squelched IF's idle toggling
-    return np.concatenate([noise, bits]).astype(np.uint8) * 2, lead, mcu.FDMA
+    return np.concatenate([noise, bits]).astype(np.uint8) * 2, lead, fdma
 
 
 class Emu:
-    def __init__(self, code, entry, ib, on_at, fdma, cpi=1.5, max_s=None):
+    def __init__(self, code, entry, ib, on_at, fdma, cpi=1.5, max_s=None, key_us=60, stall=None):
         import unicorn
         from unicorn import arm_const as A
         self.U, self.A = unicorn, A
         self.ib, self.on_at, self.fdma, self.cpi = ib, on_at, fdma, cpi
+        self.key_us, self.stall, self.keys = key_us, stall, 0
         self.max_cyc = (max_s or (len(ib) / fdma + 1.0)) * FCPU
         self.cyc = 0.0
         self.said, self.writes, self.reg = [], {}, {}
@@ -134,8 +137,8 @@ class Emu:
             self.dma_fill()
             rsz = self.reg.get(0x4002000C, 1024)
             return rsz - self.made % rsz
-        if a == 0x40014824:                          # TIM17_CNT at 96 MHz
-            return int(self.cyc) & 0xFFFF
+        if a == 0x40014824:                          # TIM17_CNT: 96 MHz / (PSC + 1)
+            return int(self.cyc / (self.reg.get(0x40014828, 0) + 1)) & 0xFFFF
         if a == 0x40002024:                          # TIM14_CNT: Aura's 100 us uptime
             return int(self.cyc / 9600) & 0xFFFF
         if a == 0x48000400:                          # GPIOB_MODER: PB1 an input
@@ -175,7 +178,10 @@ class Emu:
         elif name == "ms":
             ret = int(self.cyc / 96000)
         elif name == "key_down":
-            us = 60                                  # Aura scans six keypad rows, 5 us waits each
+            us = self.key_us                         # Aura scans six keypad rows, 5 us waits each
+            self.keys += 1
+            if self.stall and self.keys % self.stall[0] == 0:
+                us = self.stall[1]                   # now and then much longer (an interrupt)
         elif name == "scratch":
             if r0:
                 uc.mem_write(r0, (4096).to_bytes(4, "little"))
@@ -207,14 +213,17 @@ class Emu:
         return self.mu.reg_read(A.UC_ARM_REG_R0), used
 
 
-def run_live(mode="4fsk", cn0=46.0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, cpi=1.5, seed=1):
-    """-> (return value, the module's lines, stack bytes used, the FD6818 writes)"""
+def run_live(mode="4fsk", cn0=46.0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, cpi=1.5, seed=1,
+             fdma=None, stall=None):
+    """-> (return value, the module's lines, stack bytes used, the FD6818 writes). fdma: the
+    DMA's rate (S/s; the module starts on its KS0 and must find it); stall (every, us): every
+    so many key checks one takes that long (an interrupt, a slow scan)"""
     defs = []
     if steps != 10 or seg_s != 6.0 or lead_s != 1.5:
         defs = [("NG", steps), ("STEP_MS", f"{int(seg_s * 1000)}u"), ("LEAD_MS", f"{int(lead_s * 1000)}u")]
     code, entry = build(mode, defs)
-    ib, on_at, fdma = stream(mode, cn0, f_off, steps, seg_s, lead_s, seed)
-    e = Emu(code, entry, ib, on_at, fdma, cpi)
+    ib, on_at, fdma = stream(mode, cn0, f_off, steps, seg_s, lead_s, seed, fdma=fdma)
+    e = Emu(code, entry, ib, on_at, fdma, cpi, stall=stall)
     r = e.run()
     ret, used = r if r else (None, None)
     return ret, e.said, used, e.writes
@@ -262,6 +271,8 @@ def main():
     ap.add_argument("--seg", type=float, default=6.0)
     ap.add_argument("--lead", type=float, default=1.5)
     ap.add_argument("--cpi", type=float, default=1.5)
+    ap.add_argument("--fdma", type=float, help="the DMA's rate, S/s (default the model's 5.49e6)")
+    ap.add_argument("--stall", help="EVERY,US: every so many key checks one takes US microseconds")
     ap.add_argument("--module", help="run this module's source instead (e.g. c/k6/mod/gp0dma.c)")
     ap.add_argument("--profile", action="store_true", help="with --module: the time in each function "
                     "(a module's polling loop counts as its own function's time)")
@@ -278,7 +289,9 @@ def main():
             if x >= 0.001:
                 print(f"{nm:16s} {100 * x:5.1f}%")
         return
-    ret, said, used, _ = run_live(a.mode, a.cn0, a.off, a.steps, a.seg, a.lead, a.cpi)
+    stall = tuple(int(x) for x in a.stall.split(",")) if a.stall else None
+    ret, said, used, _ = run_live(a.mode, a.cn0, a.off, a.steps, a.seg, a.lead, a.cpi,
+                                  fdma=a.fdma, stall=stall)
     for ln in said:
         print("K6 MOD say", ln)
     print(f"ret={ret} stack={used} B")

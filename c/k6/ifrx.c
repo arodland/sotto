@@ -77,8 +77,19 @@ IFRX_NOINLINE static void ifrx_zero(void *p, uint32_t n) {
   while (n--) ((volatile uint32_t *)p)[n] = 0;
 }
 
-void ifrx_init(ifrx_t *s, int mode, uint32_t ks) {
+void ifrx_rate(ifrx_t *s, uint32_t ks16) {
   uint32_t q;
+  if (ks16 < 3400 * 16) ks16 = 3400 * 16;
+  s->pc_q16 = ifrx_udiv(ks16 * 160u, 3); /* ks * 1000 / 64 / 1200 counts a symbol */
+  s->pc_q8 = s->pc_q16 >> 8;
+  s->step_q16 = ifrx_udiv(s->pc_q16, IFRX_TL);
+  q = ifrx_udiv(0xFFFFFFFFu, ks16);
+  s->dphi_if = ifrx_udiv(q * 52000u, 3); /* (26e6 / 1536) * 64 / (ks * 1000) turns */
+  s->dphi_max = (int32_t)(q * 1536u);    /* 1.5 kHz */
+  s->k_afc = ifrx_udiv(85445660u >> 5, s->pc_q8);
+}
+
+void ifrx_init(ifrx_t *s, int mode, uint32_t ks16) {
   ifrx_zero(s, sizeof(*s) / 4);
 #ifdef IFRX_ONLY
   (void)mode;
@@ -100,14 +111,7 @@ void ifrx_init(ifrx_t *s, int mode, uint32_t ks) {
 #endif
   s->gain_sh = 6;  /* 1/64 */
   s->afc_sh = 5;   /* 1/32 */
-  if (ks < 3400) ks = 3400;
-  s->pc_q16 = ifrx_udiv(ks * 2560u, 3);  /* ks * 1000 / 64 / 1200 counts a symbol */
-  s->pc_q8 = s->pc_q16 >> 8;
-  s->step_q16 = ifrx_udiv(s->pc_q16, IFRX_TL);
-  q = ifrx_udiv(0xFFFFFFFFu, ks);
-  s->dphi_if = ifrx_udiv(q * 3250u, 3);  /* (26e6 / 1536) * 64 / (ks * 1000) turns */
-  s->dphi_max = (int32_t)(q * 96u);      /* 1.5 kHz */
-  s->k_afc = ifrx_udiv(85445660u >> s->afc_sh, s->pc_q8);
+  ifrx_rate(s, ks16);
   s->tau = IFRX_NT;
   s->th_tau = IFRX_NT * s->dphi_if;
   s->prev = -9;

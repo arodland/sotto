@@ -267,6 +267,60 @@ Now 4FSK leaves 52% idle and FFSK 63%, with no counts lost. Over the full 10-ste
 is 2.3 KB. The module is 3994 B (4FSK) and
 3846 B (FFSK) of 4072. The counting is the largest remaining cost.
 
+## First runs on the bench (2026-11-06, 21:03-21:22 UTC)
+
+The K6 only received; the IC-7100 sent everything on 440.850 (FM-D, 12 kHz passband), with
+the pager image 888ccb0 and its CI modules.
+
+**`gp0cap` (ret 2):** all 206 captures whole. The IF detector beats the discriminator at every
+level. FFSK has no errors in either detector down to -72 dBm (C/N0 50.7 dB-Hz). 4FSK has an
+error floor of 6-8% (IF) and 8-10% (discriminator) at every level, even -23 dBm, so it isn't
+noise. Nearly all the IF detector's errors are an inner tone read as the outer tone next to
+it: 1500 as 900 (SER 0.25) and 2100 as 2700 (0.26). The outer tones are nearly clean (0.025,
+0.009), and the error doesn't depend on the tone before. That fits the IC-7100's TX chain
+(about +5 dB/octave of pre-emphasis, limiting near ±4.3 kHz in run 9) squeezing the deviation
+spacing, which 0.12 peak puts at or past the limiter at 2700 Hz. Next: the 4FSK pass at a
+lower level, and pre-distorted tone levels (sender side only). The noise floor with no
+carrier is 0.062 rms in the study's units (it assumed 0.03-0.06).
+
+**`iflive` 4FSK (hung):** it timed the DMA at **5875 kS/s** (gp0dma saw 5490, gp0cap 5555
+the same evening), printed its first line, and then went silent until the K6 was power cycled.
+Two faults:
+
+- **The DMA's rate moves with what the CPU does.** gp0dma's probe (run 8) already saw 5.47 to
+  5.80 M transfers/s depending on what the CPU was doing, and iflive measured it while only
+  polling the ring. The receiver can't take that error: on the model it acquires only within
+  about ±0.05% of the true rate (a sweep's 384 symbols drift past the ±1-offset agreement),
+  though once locked the timing loop holds 1% easily. So the module now measures the rate as
+  it decodes, every 131 ms of TIM17 (at 1 MHz), and hands it to the receiver
+  (`ifrx_rate`). Each step starts on the last step's rate, and the first on `KS0` (5530).
+  The step line now ends `k=` (kS/s).
+- **A look at the ring more than a lap late broke the count index.** The ring's laps were
+  counted from the DMA pointer wrapping, so a gap longer than the ring (186 us) lost a lap.
+  Then `produced < consumed`, the next overrun skip asked the receiver to pass over about 2^26
+  counts (about a second of `advance` calls), and that stall lost laps again: the likely
+  hang. The module now checks the time between looks: past `STALL_US` (120 us) it works out
+  the laps from TIM17 and the rate, so nothing worse than an overrun skip can follow. The key
+  and deadline checks also run when no counts come for a while, and after at most 1024 counts
+  even if the receiver never reaches its check point.
+
+On the emulator (`tests/k6_live_emu.py --fdma 5.875e6 --stall 40,400`), 10 steps at 48 dB-Hz
+164 Hz off lock every step at 5490 and at 5875 kS/s, at about 0.15% BER, the latter with a
+400 us stall every 40 key checks. FFSK at 45 dB-Hz: 10 of 10 at 0.1-0.5%. The module is
+4042 B (4FSK) and 3894 B (FFSK). The rate measurement is kept off the key check (its
+divisions take about 25 us), and the head line `live ks=... rx=...` is gone: the module ran
+out of room. The emulator's idle reads 46% (4FSK) and 56% (FFSK), against 52% and 63% before:
+partly TIM17's coarser 1 us tick in the idle count, not yet pinned down.
+
+**`afsweep` (ret -6):** the FM pass finished (AF 0-15 look alike in RSSI, noise, glitch and
+AF level; only AF 15 peaks higher), but with the AM register set-up (REG_14 0, the AM REG_49,
+AFC off) the K6's RSSI never reached floor+15 on the IC-7100's AM-D carrier, which read -23 dBm
+in FM. So the USB pass never ran. Something in that set-up kills the RSSI reading (or the
+front end); it needs a module change before a rerun.
+
+The sender tools now put the IC-7100 in FM-D with the 12 kHz filter: `rigctl M PKTFM 0`
+selects the 6 kHz one, at about half the deviation.
+
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
 Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential
