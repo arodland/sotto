@@ -167,6 +167,14 @@ three AG7EW CW IDs on 440.850. Log: `~/sotto-work/runs/explore-bench-1/serial.lo
   - Two decodes of the same call on separate listens didn't confirm. The decoded call carried
     stack bytes after its NUL, and the app compared all 11 bytes. Now xlisten zero-fills the
     call and the app compares up to the NUL.
+  - One held EXIT left EXPLORE and its key repeat opened it again from VOICE MSG, wiping the
+    list. EXIT now counts presses, not repeats, both in EXPLORE and in VOICE MSG.
+
+Then (18:19-18:22) Save wrote 440.850 to the table (2 of 32 erases), 7 dumped the list (7
+candidates: 443.525 and 440.925 heard on their own, 440.862 graded s as the ID's skirt), and the
+rtls module, sent by the IC-7100 (18 of 18 chunks in 23.6 s), read the table back from the K6:
+`RT live=1 ... RT 1 440850000 5000000 T0 - r -21`. The call is `-` because of the confirm bug
+above.
 
 ## Not built yet
 

@@ -239,10 +239,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..7b98ac3
+index 0000000..a30ead6
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3834 @@
+@@ -0,0 +1,3835 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -2961,9 +2961,10 @@ index 0000000..7b98ac3
 +            exit(app, syst);
 +            return;
 +        }
-+        // the explore image: EXIT opens EXPLORE again (EXIT twice there comes back here)
++        // the explore image: EXIT opens EXPLORE again (EXIT twice there comes back here); a
++        // press, not the repeat of the EXIT that just left it
 +        #[cfg(feature = "explore")]
-+        KeyId::Exit => {
++        KeyId::Exit if matches!(ev.kind, KeyEventKind::Single) => {
 +            explore::enter(app, syst);
 +            return;
 +        }
@@ -4079,10 +4080,10 @@ index 0000000..7b98ac3
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..b9b80b5
+index 0000000..1c6eb40
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1106 @@
+@@ -0,0 +1,1111 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4633,6 +4634,11 @@ index 0000000..b9b80b5
 +
 +pub(super) fn dispatch(app: &mut App, syst: &mut SYST, ev: KeyEvent) {
 +    if !matches!(ev.kind, KeyEventKind::Single | KeyEventKind::Repeat) {
++        return;
++    }
++    // EXIT counts presses, not repeats: on the bench one held EXIT armed, left, and its next
++    // repeat opened EXPLORE again from VOICE MSG (2026-11-07 18:20)
++    if ev.key == KeyId::Exit && !matches!(ev.kind, KeyEventKind::Single) {
 +        return;
 +    }
 +    let t = st();
