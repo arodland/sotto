@@ -52,7 +52,8 @@ enum { XS_RUN = 0, XS_ROW = 1, XS_KEY = 2 };
 
 typedef struct {
   /* set up by the caller before xs_init (xs_defaults fills the usual values) */
-  uint8_t nseg, wide, noise_db, hit_db, refine, say_rows, quiet, pad0;
+  uint8_t nseg, wide, noise_db, hit_db, refine, say_rows, quiet;
+  uint8_t refloor_s;         /* read a segment's floor again this often (0: only at the start) */
   uint16_t quick_us, confirm_us, hot_ms, spur_s;
   xs_seg_t seg[XS_NSEG];
   /* the rest is the sweep's */
@@ -62,6 +63,7 @@ typedef struct {
   uint8_t *row;              /* the waterfall row of the segment being swept: dB over the floor */
   uint32_t sweeps, bins, rev, t0;
   uint8_t sfl[XS_NSEG], qfl[XS_NSEG];
+  uint32_t fl_t[XS_NSEG];    /* ms each segment's floor was last read */
   /* where the sweep is */
   uint8_t phase, g, cols, last_g;   /* last_g: the segment whose row is complete (XS_ROW) */
   uint16_t b, base;          /* the bin in segment g, segment g's first bin in fl */

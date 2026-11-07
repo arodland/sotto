@@ -51,6 +51,8 @@ static void say(xs_t *s, char *p) {
 
 static int rssi(const k6_api_t *api) { return KM_RSSI_DBM(api->fd_read(0x67)); }
 static int key(const k6_api_t *api) { return api->level >= 4 ? api->key_poll() : api->key_down(); }
+#define XS_CONFIRMS 6
+
 static uint8_t st8(int dbm) { return (uint8_t)(dbm < -174 ? 0 : dbm > 81 ? 255 : dbm + 174); }
 static int dbm8(uint8_t v) { return (int)v - 174; }
 
@@ -60,6 +62,7 @@ void xs_defaults(xs_t *s) {
   for (i = 0; i < sizeof *s; i++) d[i] = 0;
   s->wide = 1, s->noise_db = 6, s->hit_db = 10, s->refine = 1;
   s->quick_us = 1500, s->confirm_us = 12000, s->hot_ms = 100, s->spur_s = 60;
+  s->refloor_s = 60;
 }
 
 static uint32_t cols_of(const xs_seg_t *g) { return g->nbins < XS_COLS ? g->nbins : XS_COLS; }
@@ -220,7 +223,13 @@ static void revisit(xs_t *s) {
       }
       h->last = now, h->miss = 0;
       if (v < h->lo) h->lo = v;
-      if (v > h->hi) h->hi = v;
+      if (v > h->hi) {
+        /* louder than at its start (a transmitter still coming up): read its level again, so
+           the over carries its real level (the skirt cue compares them) */
+        int l = full(s, 0, s->quick_us);
+        h->hi = v;
+        if (st8(l) > h->lvl) h->lvl = st8(l);
+      }
       if (now - h->up > (uint32_t)s->spur_s * 1000u && h->hi - h->lo <= SPUR_DB) {
         h->spur = 1;
         if (s->ex) ex_spur(s->ex, h->hz);
@@ -257,11 +266,39 @@ static void floors(xs_t *s, int g) {
       else if (v < b[j]) b[j] = v;
     }
     s->qfl[g] = (uint8_t)(b[0] + 3), s->sfl[g] = b[1];
+    s->fl_t[g] = api->ms();
     p = num(num(num(s->line, "F", g, 0), " ", dbm8(b[1]), 0), " q", dbm8(b[0]), 0);
     *p++ = ':';
     for (i = 0; i < 8; i++) p = num(p, " ", dbm8(rd[i]), 0);
     say(s, p);
   }
+}
+
+/* Read segment g's floor again before its sweep, every refloor_s. A strong carrier pulls the
+   reads down while it's up (desense: the bench's own -23 dBm ID did it in explorer-scan-6), and
+   the floors follow them down but have nothing to bring them back while the band is quiet, so a
+   bin at the old floor looked 13 dB up for 20 minutes. Not while a carrier 30 dB over the floor
+   is up in the segment (that's when the reads are low), unless that has put it off 4 times. */
+static int refloor_due(xs_t *s) {
+  const xs_seg_t *G = &s->seg[s->g];
+  uint32_t age = s->api->ms() - s->fl_t[s->g], every = s->refloor_s * 1000u, top = G->lo_hz + G->nbins * G->step_hz;
+  const xs_hot_t *h = s->hot;
+  int i;
+  if (!every || age < every) return 0;
+  if (age >= 4 * every) return 1;
+  for (i = 0; i < XS_HOT; i++, h++)
+    if (h->up && h->hz >= G->lo_hz && h->hz < top && h->lvl >= s->sfl[s->g] + 30) return 0;
+  return 1;
+}
+
+/* no bin's floor more than 6 dB under the segment's quick floor just read */
+static void refloor(xs_t *s) {
+  uint8_t *fl = s->fl + s->base, lo;
+  uint32_t b;
+  floors(s, s->g);
+  lo = (uint8_t)(s->qfl[s->g] > 9 ? s->qfl[s->g] - 9 : 0);
+  for (b = 0; b < s->seg[s->g].nbins; b++)
+    if (fl[b] < lo) fl[b] = lo;
 }
 
 /* the start of segment g's sweep: clear its row and park on its first bin */
@@ -306,7 +343,7 @@ int xs_step(xs_t *s) {
   const k6_api_t *api = s->api;
   const xs_seg_t *G;
   uint8_t *fl;
-  uint32_t n, end, step;
+  uint32_t n, end, step, nc = 0;
   if (key(api)) return XS_KEY;
   if (s->phase == XS_FLOORS) {
     floors(s, s->g);
@@ -314,6 +351,11 @@ int xs_step(xs_t *s) {
     s->t0 = s->rev = api->ms();
     s->phase = XS_SWEEP;
     s->g = 0, s->base = 0;
+    sweep_start(s);
+    return XS_RUN;
+  }
+  if (!s->b && refloor_due(s)) {
+    refloor(s);
     sweep_start(s);
     return XS_RUN;
   }
@@ -338,8 +380,9 @@ int xs_step(xs_t *s) {
     } else if (!near(s, hz, step + (step >> 1), 1)) {
       int lvl = full(s, hz, s->quick_us), sf = s->sf;
       s->conf++;
+      if (++nc >= XS_CONFIRMS) end = s->b + 1;   /* 12 ms each: a step holds at most a few */
       if (lvl >= sf + s->hit_db) {
-        s->hits++;
+        s->hits++, end = s->b + 1;   /* a hit's refine is ~100 ms: end the step here */
         if (!new_hit(s, s->g, s->base + b, hz, lvl, dbm8((uint8_t)r))) fl[b] = (uint8_t)(r - 3);
         r = lvl - sf + f;
       } else {

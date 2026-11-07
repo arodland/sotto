@@ -4079,7 +4079,7 @@ index 0000000..7b98ac3
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..66a2c61
+index 0000000..0285080
 --- /dev/null
 +++ b/src/app/pager/explore.rs
 @@ -0,0 +1,1085 @@
@@ -4220,7 +4220,7 @@ index 0000000..66a2c61
 +        pub refine: u8,
 +        pub say_rows: u8,
 +        pub quiet: u8,
-+        pub pad0: u8,
++        pub refloor_s: u8,
 +        pub quick_us: u16,
 +        pub confirm_us: u16,
 +        pub hot_ms: u16,

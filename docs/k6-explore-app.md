@@ -16,7 +16,7 @@ EXPLORE has an image of its own:
 
 | | aura-explore | aura-pager-lr (for comparison) |
 |---|---|---|
-| flash | 97,216 of 122,880 B (25.6 KB free) | 105,680 B (17.2 KB free) |
+| flash | 97,632 of 122,880 B (25.2 KB free) | 105,680 B (17.2 KB free) |
 | static RAM | 9,668 B (8.0 KB of stack) | 10,580 B (7.1 KB) |
 | starts in | EXPLORE | VOICE MSG |
 | voice | none (the decoder is left out) | sotto 1200 |
@@ -39,7 +39,11 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
   the CPU back about every 80 ms. Each over that ends goes to the candidate list and out on the
   serial report as the module's `H` line. `k6_explore.py replay` and `k6_scan.py decode` read a
   serial log of the app the same way they read the module's (tests/test_k6_xscan.py replays one
-  and gets the same list).
+  and gets the same list). A step also ends after a new hit or 6 confirms, so it never holds
+  the CPU much over 100 ms. Each segment's floor is read again every minute (`F` lines): a
+  strong carrier pulls the floors down while it's up, and on the bench they stayed 15 dB low
+  for 20 minutes after our own ID (explorer-scan-6, docs/k6-scan.md). An over that gets louder
+  after its first read takes a full read again, so it carries its real level.
 - **Candidates** (`c/k6/explore.c`): the grades R / r / s / ? from the cues in
   k6-explorer-next.md: same level each over, the band plan, the ID rhythm, a CW ID, spurs and
   skirts.
@@ -145,7 +149,7 @@ apart.
 - Being on frequency before a repeater's 10-minute ID timer is due (remember each one's last ID
   time).
 - The spectrum and waterfall screen. The rows are already computed (the sweep's `row`, the
-  module's R lines); the image has 25 KB free for it.
+  module's R lines); the image has 25.2 KB free for it.
 - Try with transmit: this image has no VFO or PTT path, so Try only listens. That waits for
   EXPLORE in full Aura.
 - A saved list that survives a power-off without Save: the list is RAM only, by Jeff's rule

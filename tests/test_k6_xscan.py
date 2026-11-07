@@ -60,8 +60,15 @@ class Seg(ctypes.Structure):
 class XsHead(ctypes.Structure):
     """the settings at the start of xs_t (xscan.h)"""
     _fields_ = [("nseg", U8), ("wide", U8), ("noise_db", U8), ("hit_db", U8), ("refine", U8),
-                ("say_rows", U8), ("quiet", U8), ("pad0", U8), ("quick_us", U16), ("confirm_us", U16),
+                ("say_rows", U8), ("quiet", U8), ("refloor_s", U8), ("quick_us", U16), ("confirm_us", U16),
                 ("hot_ms", U16), ("spur_s", U16), ("seg", Seg * 4)]
+
+
+class XsFloors(ctypes.Structure):
+    """xs_t up to its floors, to drag them down as a strong carrier did on air"""
+    _fields_ = [("head", XsHead), ("api", ctypes.c_void_p), ("ex", ctypes.c_void_p), ("fl", ctypes.c_void_p),
+                ("row", ctypes.c_void_p), ("sweeps", U32), ("bins", U32), ("rev", U32), ("t0", U32),
+                ("sfl", U8 * 4), ("qfl", U8 * 4), ("fl_t", U32 * 4)]
 
 
 class XsInfo(ctypes.Structure):
@@ -176,7 +183,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
         text, data, bss = (int(x) for x in size.split()[:3])
         assert data == 0 and bss == 0
         sizes[f] = text
-    assert sizes["xscan.c"] < 4300 and sizes["xlisten.c"] < 1700, sizes
+    assert sizes["xscan.c"] < 4450 and sizes["xlisten.c"] < 1700, sizes
 
 
 def test_finds_a_repeater_feeds_the_list_and_the_log_replays_the_same(lib):
@@ -243,6 +250,63 @@ def test_the_field_test_bands_fit_the_borrowed_ram(lib):
     assert L.xs_mem_bytes(buf) + L.xl_state_bytes() <= 2560
     # the state and 64 candidates go in the 4 KB message store
     assert L.xs_state_bytes() + 12 + 64 * 48 <= 4096, L.xs_state_bytes()
+
+
+def test_floors_dragged_down_by_a_strong_carrier_come_back(lib):
+    """explorer-scan-6 on the bench: the IC-7100's own ID (-23 dBm on 440.850) pulled 70 cm's
+    floor from -104 to -119, and with the band quiet afterwards nothing brought it back, so three
+    bins at the old floor read 13 dB up and stayed 'keyed' for the last 20 minutes. The sweep now
+    reads each segment's floor again every refloor_s (60 s) and lifts any bin's floor that sits
+    under it, so they end. Here the floors are dragged 15 dB down by hand at 20 s."""
+    L, kxl = lib
+    segs = [(146_400_000, 10_000, 60, 5_000), (146_600_000, 10_000, 80, 5_000)]
+
+    def run(refloor_s):
+        radio = Radio(Receiver([]))
+        buf, mem, ex = explorer(L, kxl, segs, radio)
+        head = XsHead.from_buffer(buf)
+        head.refloor_s = refloor_s
+        assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+        run_steps(L, buf, radio, 20)
+        st = XsFloors.from_buffer(buf)
+        for g in range(2):
+            st.sfl[g] -= 15
+        for b in range(140):
+            mem[b] = bytes([max(0, mem[b][0] - 15)])
+        res = run_steps(L, buf, radio, 160)
+        info = XsInfo()
+        L.xs_info(buf, ctypes.byref(info))
+        return info, ex, radio, res
+
+    def tally(radio):
+        said = lambda k: {l.split()[5] for l in radio.lines if f" say {k} " in l}
+        return said("N"), said("H"), said("X")
+
+    # the old way: the phantoms stay up until they pass for spurs (on air, 20 minutes up)
+    _, _, radio0, _ = run(0)
+    n, h, x = tally(radio0)
+    assert len(n) >= 5 and not h and x == n
+    info, ex, radio, res = run(60)
+    n, h, x = tally(radio)
+    assert len(n) >= 5 and h == n and not x and info.up == 0, (n, h, x)   # every phantom ends
+    assert all(-140 <= info.floor_dbm[g] <= -134 for g in range(2)), list(info.floor_dbm)
+    assert 2 not in res and radio.longest < 200_000, radio.longest   # the re-read is a step of its own
+    assert len([l for l in radio.lines if " F0 " in l]) >= 3            # at the start and every minute
+
+
+def test_an_over_carries_its_level_after_the_transmitter_comes_up(lib):
+    """explorer-scan-6: the 13:23 ID's first read caught the IC-7100 coming up (-72 dBm, not
+    -23), so its skirts weren't 25 dB under it and listed as stations. A quick read above the
+    over's highest takes a full read again."""
+    L, kxl = lib
+    hz = 146_940_000
+    model = Receiver([(hz, -72, [(s_(5), s_(15))]), (hz, -25, [(s_(5.6), s_(15))])])
+    radio = Radio(model)
+    buf, mem, ex = explorer(L, kxl, [(146_600_000, 10_000, 80, 5_000)], radio)
+    assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+    run_steps(L, buf, radio, 25)
+    overs = k6_scan.decode("\n".join(radio.lines))["overs"]
+    assert [o["lvl"] for o in overs if o["f"] == hz] and all(abs(o["lvl"] + 25) <= 2 for o in overs if o["f"] == hz), overs
 
 
 class Detector:
