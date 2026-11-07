@@ -260,8 +260,8 @@ def fb_hiss8(X, y8, n16, k, seed=0, order=3, pair=False, hop2=False):
     n8 = n16 // 2
     G = fb_gains(X, k)
     c = H // 2 * np.arange(len(X)) + N // 4
-    if hop2:                                  # gains every other frame (stages A and B at 20 ms)
-        G, c = G[::2], c[::2]
+    if hop2:                                  # gains every other frame (stages A and B at 20 ms): the
+        G, c = G[1::2], c[1::2]               # odd ones, whose centres fall on the core's block edges
     w = np.random.default_rng(seed + 7).standard_normal(n8)
     s = np.zeros(n8)
     alt = (-1.0) ** np.arange(n8)
