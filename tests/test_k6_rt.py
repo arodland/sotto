@@ -292,3 +292,44 @@ def test_cw_id_policy(lib):
     assert t.find(rx=146_940_000)[1].call == b"VE9QRP/RPT"
     assert [L.rt_cw_byte(f, w) for f, w in ((600, 13), (1350, 35), (800, 1), (2000, 99))] == \
         [0x40, 0xBF, 0x14, 0xFF]
+
+
+# ---- rtls (c/k6/mod/rtls.c): the table read by a RAM module through API level 5 ----
+
+def test_rtls_module_lists_the_table_on_an_emulated_m0(lib):
+    if not (shutil.which("clang") and shutil.which("ld.lld")):
+        pytest.skip("needs clang and ld.lld")
+    import sys
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    from modem import k6mod
+    from test_k6_i2s import START, run
+    src = os.path.join(K6, "mod", "rtls.c")
+    code, entry = k6mod.build(src)
+    assert k6mod.source_level(src) == 5 and 16 + len(code) + 8 <= 4096, len(code)
+    # an empty (erased) region: an empty table, nothing written
+    fl = {}
+    ret, said, _, _ = run(START, src=src, level=5, flash=fl, code=(code, entry), spare=4072 - len(code))
+    assert ret == 0 and said == ["RT live=0 dead=0 free=960 spare=15 repairs=0 r=0"], said
+    assert fl["progs"] == fl["erases"] == fl["refused"] == 0
+    # a table the host library wrote: the module reads the same entries
+    t = Table(lib)
+    t.mount()
+    t.put(146_940_000, b"Lynden", call=b"W7ABC/R")
+    t.put(443_100_000, b"")
+    mem = bytearray(b"\xff" * (0x200000 - BASE))
+    mem[:16 * 4096] = t.mem()
+    fl = {"mem": mem}
+    ret, said, _, _ = run(START, src=src, level=5, flash=fl, code=(code, entry), spare=4072 - len(code))
+    assert ret == 2 and said[0].startswith("RT live=2 dead=0") and said[0].endswith("r=2"), said
+    assert said[1:] == ["RT 1 146940000 0 T0 W7ABC/R - -200 Lynden", "RT 2 443100000 0 T0 - - -200"], said
+    assert fl["progs"] == fl["erases"] == 0
+    # an image below level 5 is refused before any flash call
+    ret, said, _, _ = run(START, src=src, level=4, flash={}, code=(code, entry))
+    assert ret == -3 and said == []
+    # a region that holds something else is left alone
+    mem = bytearray(b"\xff" * (0x200000 - BASE))
+    mem[100:104] = b"AURA"
+    fl = {"mem": mem}
+    ret, said, _, _ = run(START, src=src, level=5, flash=fl, code=(code, entry), spare=4072 - len(code))
+    assert ret == -5 and fl["progs"] == fl["erases"] == 0

@@ -5,6 +5,10 @@ module (tools/k6_scan.py) and the CW ID listener and see which frequencies it ca
                                                        lines from the scan, CWID ok from cwlisten)
   python3 tools/k6_explore.py replay LOG --all        every candidate, not only the first 20
   python3 tools/k6_explore.py plan                    the band plan rows it grades against
+  python3 tools/k6_explore.py score LOG --truth CSV   Phase 4: the EXPLORE app's list (its K6 CAND
+                                                       lines, key 7) against a repeater list: how
+                                                       many listed outputs it found, how many of
+                                                       its R entries are real
 
 It runs the same C as the radio will (built here with cc, no radio needed), so a replayed log is
 a test of the scoring. The scan's telemetry keeps only the newest lines, so give it serial logs
@@ -34,7 +38,8 @@ class Cand(ctypes.Structure):
                 ("tone", ctypes.c_uint16), ("lo", ctypes.c_int16), ("hi", ctypes.c_int16),
                 ("prev_start", ctypes.c_uint32), ("ids", ctypes.c_uint8), ("skirts", ctypes.c_uint8),
                 ("flags", ctypes.c_uint8),
-                ("score", ctypes.c_int8), ("grade", ctypes.c_char), ("call", ctypes.c_char * 10)]
+                ("score", ctypes.c_int8), ("grade", ctypes.c_char), ("call", ctypes.c_char * 10),
+                ("listens", ctypes.c_uint8)]
 
 
 class Ex(ctypes.Structure):
@@ -77,6 +82,8 @@ def load(so=None):
     L.ex_rank.argtypes = [P, ctypes.c_uint]
     L.ex_rank.restype = ctypes.POINTER(Cand)
     L.ex_to_rt.argtypes = [ctypes.POINTER(Cand), ctypes.POINTER(Rec)]
+    L.ex_pick_id.argtypes = [P, ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint]
+    L.ex_pick_id.restype = ctypes.POINTER(Cand)
     return L
 
 
@@ -173,6 +180,51 @@ def row_text(c):
             f"(spread {c.hi - c.lo} dB), ids {c.ids}")
 
 
+CAND = re.compile(r"K6 CAND \d+ (\S) (\d+) off=(-?\d+) tone=(\d+) call=(\S*) score=(-?\d+) overs=(\d+)")
+
+
+def cands_of(text):
+    """the EXPLORE app's K6 CAND lines (the last dump in the log wins): [dict]"""
+    out = []
+    for ln in text.splitlines():
+        if re.search(r"K6 CAND band=", ln):
+            out = []
+        elif m := CAND.search(ln):
+            g, hz, off, tone, call, score, overs = m.groups()
+            out.append({"grade": g, "hz": int(hz), "off": int(off), "tone": int(tone), "call": call,
+                        "score": int(score), "overs": int(overs)})
+    return out
+
+
+def truth_of(text):
+    """a repeater list: CSV or plain lines whose first number in 18-1000 is the output in MHz (a
+    RepeaterBook export works: its Frequency / Output column comes first in a row)"""
+    out = []
+    for ln in text.splitlines():
+        for tok in re.split(r"[,;\t ]+", ln):
+            try:
+                f = float(tok.strip('"'))
+            except ValueError:
+                continue
+            if 18 <= f <= 1000:
+                out.append(round(f * 1e6))
+                break
+    return sorted(set(out))
+
+
+def score(cands, truth, tol_hz=5000, lo=0, hi=10**10):
+    """recall over the truth outputs inside [lo, hi] (found as R or r), precision of the R entries"""
+    truth = [f for f in truth if lo <= f <= hi]
+    rep = [c for c in cands if c["grade"] in "Rr"]
+    near = lambda f, cs: [c for c in cs if abs(c["hz"] - f) <= tol_hz]  # noqa: E731
+    found = [f for f in truth if near(f, rep)]
+    big_r = [c for c in cands if c["grade"] == "R"]
+    real = [c for c in big_r if any(abs(c["hz"] - f) <= tol_hz for f in truth)]
+    return {"truth": len(truth), "found": len(found), "missed": [f for f in truth if f not in found],
+            "heard_any": [f for f in truth if near(f, cands)], "R": len(big_r), "R_real": len(real),
+            "R_false": [c["hz"] for c in big_r if c not in real]}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -181,7 +233,28 @@ def main(argv=None):
     r.add_argument("--cap", type=int, default=64, help="candidates kept (the core plans 64)")
     r.add_argument("--all", action="store_true")
     sub.add_parser("plan", help="the band plan rows")
+    sc = sub.add_parser("score", help="Phase 4: the app's list against a repeater list")
+    sc.add_argument("log")
+    sc.add_argument("--truth", required=True, help="repeater list (CSV, output MHz first)")
+    sc.add_argument("--tol-khz", type=float, default=5)
+    sc.add_argument("--band", nargs=2, type=float, metavar=("LO", "HI"), help="only outputs in LO-HI MHz")
     a = ap.parse_args(argv)
+    if a.cmd == "score":
+        with open(a.log, errors="replace") as fh:
+            cands = cands_of(fh.read())
+        with open(a.truth, errors="replace") as fh:
+            truth = truth_of(fh.read())
+        lo, hi = (round(a.band[0] * 1e6), round(a.band[1] * 1e6)) if a.band else (0, 10**10)
+        r = score(cands, truth, round(a.tol_khz * 1000), lo, hi)
+        print(f"{len(cands)} candidates; {r['truth']} listed outputs")
+        print(f"recall: {r['found']} of {r['truth']} listed outputs graded R or r "
+              f"({len(r['heard_any'])} heard at all)")
+        print(f"precision: {r['R_real']} of {r['R']} R entries are listed repeaters")
+        for f in r["missed"]:
+            print(f"  missed {f / 1e6:.4f}" + ("  (heard, graded lower)" if f in r["heard_any"] else ""))
+        for f in r["R_false"]:
+            print(f"  R not on the list {f / 1e6:.4f}")
+        return 0
     L = load()
     if a.cmd == "plan":
         for lo, hi, off, simplex in plan_rows(L):

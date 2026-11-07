@@ -113,3 +113,37 @@ def test_recorder_marks_by_samples_written(tmp_path):
     assert rec.samples() == 0 and len(rec.audio()) == 0
     np.arange(48000 * 2, dtype=np.int16).tofile(rec.path)
     assert rec.samples() == 96000 and len(rec.audio(rec.samples() - 100)) == 100
+
+
+@need_host
+def test_listen_decodes_the_tail_of_a_long_recording(tmp_path):
+    """explorer-scan-6: after 30 minutes, decoding the whole recording each pass never reached the
+    report. tail_reports decodes the last minute, keeps what it saw before, and counts nothing
+    twice."""
+    img = fake_module(300)
+    pk = k6mod.packets(img, 7, 64, arq=True)
+    _, status, text = run_host_reports(pk)
+    a = types.SimpleNamespace(dry_run=True, phy="F", baud=1800)
+    rec = k6_upload.Recorder(a, str(tmp_path))
+    early = air([status])                                    # a report near the start
+    gap = np.zeros(48000 * 300)                              # five quiet minutes
+    late = air([status, text])
+    calls = []
+    real = k6mod.reports
+    k6mod.reports = lambda x, *r: calls.append(len(x)) or real(x, *r)
+    try:
+        reps = []
+        for part in (early, gap, late):
+            with open(rec.path, "ab") as f:
+                f.write((part * 32767).astype(np.int16).tobytes())
+            reps = k6_upload.tail_reports(a, rec, 0, reps)
+        reps = k6_upload.tail_reports(a, rec, 0, reps)           # one more pass: nothing doubles
+    finally:
+        k6mod.reports = real
+    assert max(calls) <= 48000 * k6_upload.TAIL_S
+    kinds = [r["kind"] for _, r in reps]
+    assert kinds.count("status") == 2 and kinds.count("text") >= 1, reps
+    t = [t for t, _ in reps]
+    assert t[0] < 2 and t[1] > 300
+    st, joined = k6mod.collect([(t, r) for t, r in reps if t > 300])
+    assert st["xfer"] == 7 and joined == "hello\n"

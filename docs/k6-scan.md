@@ -226,6 +226,32 @@ keeper's at 0.5 s in and ours at 40.5 s. Logs: `~/sotto-work/runs/explorer-scan-
 So on the bench, Phase 1 now does what it should: the right floor, the CW ID found as one
 repeater-like entry, and about 1 s a sweep.
 
+## Sixth bench run (2026-11-07 13:14-13:44 UTC): 30 minutes of 70 cm
+
+The module was mod-scan.bin from CI on main 5cde22e (3,532 B), on the K6's usual image 4709d7e.
+It swept 440-445 MHz in 12.5 kHz bins for 1,800 s: `Z sw=1450 bins=580000 ms=1800805 bps=322
+hot=10`, sweep median 1,221 ms, settled floor -104 dBm, stack_free 1,052 B, 10 candidates and no
+spurs. Logs: `~/sotto-work/runs/explorer-scan-6/` (serial log, replay.txt, wf.svg, hits.csv).
+
+- **Real signals: two.** 440.925 at -90 to -92 dBm keyed every 2-5 minutes (13:17, 13:19, 13:29,
+  13:34, 13:39; 7 overs, graded r), and 442.025 at -82 once (13:29, 2.6 s). Neither is ours.
+- **Everything around 440.850 was us.** 440.837, .850, .862, .887, .900 and .912 line up to the
+  second with the upload at 13:14 and the keeper's ID at 13:23: the IC-7100 and its skirts.
+  Only 440.862 was marked as a skirt. The 13:23 ID's first read caught the IC-7100 coming up
+  (-72 dBm, against -23 at 13:14), so the others weren't 25 dB under it. xscan now reads an
+  over's level again when it gets louder. The skirt cue itself still counts only overs that end
+  with the louder one's, so a skirt that flickers on and off isn't caught: that's still open.
+- **The floor stuck low.** During the 13:23 ID, 440.0-440.1's floor was dragged from -104 to
+  -119 dBm, and with the band quiet afterwards (c0 on every sweep) nothing brought it back.
+  440.037, .062 and .112 read 13 dB "up" and stayed keyed for the last 1,232 s, graded `?`.
+  The EXPLORE sweep (c/k6/xscan.c) now reads each segment's floor again every 60 s and lifts any
+  bin's floor more than 6 dB under it (tests/test_k6_xscan.py drags the floors 15 dB down and
+  sees every phantom end). The scan module still has the old floor logic.
+- **The report was missed, then heard on the resend.** `k6_upload.py listen()` decoded the whole
+  recording every second, which after 30 minutes was too slow to reach the 13:44:21 report
+  before its window closed. It now decodes only the last minute (`tail_reports`), and
+  `Recorder.audio()` reads from an offset instead of loading the whole file.
+
 ## Next bench run
 
 Away from the bench: a 30-minute 70 cm scan somewhere quieter than the PC, fed to `k6_explore.py
