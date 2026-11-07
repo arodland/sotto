@@ -31,11 +31,11 @@ jobs:
         run: |
           make -C c VARIANT=v3.7 fixed PYTHON=false
           make -C c/k6
-          python -m pytest -q tests/test_k6_pager.py tests/test_k6_harness.py tests/test_k6_mod.py tests/test_k6_cb.py tests/test_k6_cwid.py tests/test_k6_air.py tests/test_k6_ifcap.py tests/test_k6_ifrx.py tests/test_k6_ifpager.py tests/test_k6_vlr.py tests/test_k6_sweep.py
+          python -m pytest -q tests/test_k6_pager.py tests/test_k6_harness.py tests/test_k6_mod.py tests/test_k6_cb.py tests/test_k6_cwid.py tests/test_k6_air.py tests/test_k6_ifcap.py tests/test_k6_ifrx.py tests/test_k6_ifpager.py tests/test_k6_vlr.py
       - name: FT8 receiver and transmitter (host core, GP0 path sim, ft8wf and ft8tx on an emulated M0)
         run: python -m pytest -q tests/test_k6_ft8.py tests/test_k6_ft8tx.py
       - name: modules on an emulated M0 (the transmit rules for every module that keys up, the IF tap, calibration) and upload ARQ
-        run: python -m pytest -q tests/test_k6_txrules.py tests/test_k6_cwkey.py tests/test_k6_i2s.py tests/test_k6_ifcal.py tests/test_k6_arq.py tests/test_k6_rxmap.py tests/test_k6_bench.py tests/test_k6_update.py
+        run: python -m pytest -q tests/test_k6_txrules.py tests/test_k6_cwkey.py tests/test_k6_i2s.py tests/test_k6_ifcal.py tests/test_k6_arq.py tests/test_k6_rxmap.py tests/test_k6_bench.py tests/test_k6_update.py tests/test_k6_sweep.py
 
   aura-pager:
     runs-on: ubuntu-latest

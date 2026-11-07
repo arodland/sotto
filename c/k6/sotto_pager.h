@@ -176,25 +176,6 @@ int sp_auto_gain_q8(void);
    what the radio's playback loop calls for each 20 ms. Returns as sp_play_frame. */
 int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int emphasis);
 
-/* Speaker sweep (control action "sweep"): PWM compare values for a list of steady tones, to
-   measure the K6's audio chain (PWM pin, RC filter, amplifier, speaker) with a microphone.
-   The radio plays them with TIM1 updating at SP_SWEEP_RATE (RCR 2: 16 kHz, twice the pager's
-   8 kHz), so the tones reach 7.5 kHz. Schedule: SP_SWEEP_LEAD_MS of silence (the noise
-   floor), then each of the SP_SWEEP_N tones sp_sweep_hz[] for SP_SWEEP_TONE_MS followed by
-   SP_SWEEP_GAP_MS of silence; all at the same level, top / 8 peak (about 7 dB above speech at
-   the pager's usual gain), with no pre-emphasis. The PWM's sample-and-hold takes
-   20 log10(sinc(f / SP_SWEEP_RATE)) off each tone (-3.4 dB at 7.5 kHz): the analysis adds it
-   back. sp_sweep_start resets it; sp_sweep_pwm fills n values and returns 1, or 0 once the
-   schedule has ended (out is then silence). */
-#define SP_SWEEP_RATE 16000
-#define SP_SWEEP_N 14
-#define SP_SWEEP_LEAD_MS 1000
-#define SP_SWEEP_TONE_MS 1000
-#define SP_SWEEP_GAP_MS 250
-extern const uint16_t sp_sweep_hz[SP_SWEEP_N];
-void sp_sweep_start(void);
-int sp_sweep_pwm(uint16_t *out, int n, unsigned top);
-
 /* Profile L test packet 0 of the spec's section 10 (70-frame test message, msg_id 0x42),
    whitened, for the calibration transmit key. */
 void sp_test_packet(uint8_t out[SP_PAYLOAD_L]);

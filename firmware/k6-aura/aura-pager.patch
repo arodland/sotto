@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..7072045
+index 0000000..02b399b
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3729 @@
+@@ -0,0 +1,3660 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -341,8 +341,6 @@ index 0000000..7072045
 +        pub fn sp_rebuilt() -> i32;
 +        pub fn sp_play_start();
 +        pub fn sp_play_pwm(out: *mut u16, top: u32, gain_q8: i32, emphasis: i32) -> i32;
-+        pub fn sp_sweep_start();
-+        pub fn sp_sweep_pwm(out: *mut u16, n: i32, top: u32) -> i32;
 +        pub fn sp_play_pos() -> i32;
 +        pub fn sp_pcm_hash(samples: *mut u32) -> u32;
 +        pub fn sp_set_stream(on: i32);
@@ -1020,9 +1018,6 @@ index 0000000..7072045
 +/// reads, takes GP0 code 13's stream, decodes each packet with the soft Viterbi decoder into the
 +/// message store, and plays the message when the burst is over. Receive only
 +const CTL_ACT_IFRX: u8 = 10;
-+/// Action 11 (images that aren't lean): the speaker sweep (sotto_pager.h sp_sweep_pwm): 14 steady
-+/// tones, 250 Hz to 7.5 kHz, on the speaker at 16 kHz updates, to measure the audio chain
-+const CTL_ACT_SWEEP: u8 = 11;
 +/// the session waits this long for the lead (it follows the control packet by about 0.5 s)
 +const IFRX_WAIT_MS: u32 = 6000;
 +/// streaming: the sender has stopped after this long with no good packet
@@ -1208,8 +1203,6 @@ index 0000000..7072045
 +    pub status: SpStatus,
 +    pub store_frames: u16,
 +    pub play_pending: bool,
-+    /// control action 11 asked for the speaker sweep (play() runs it)
-+    pub sweep_pending: bool,
 +    pub cal_pending: bool,
 +    /// a control record (magic, seq, mask, values, var|vol<<4, action) waiting for poll
 +    ctl: Option<[u8; 6]>,
@@ -1339,7 +1332,6 @@ index 0000000..7072045
 +            status: ffi::EMPTY,
 +            store_frames: 0,
 +            play_pending: false,
-+            sweep_pending: false,
 +            cal_pending: false,
 +            ctl: None,
 +            ctl_seq: -1,
@@ -2944,11 +2936,6 @@ index 0000000..7072045
 +    }
 +    match action {
 +        1 if app.pager.status.have != 0 => app.pager.play_pending = true,
-+        #[cfg(not(feature = "lean"))]
-+        CTL_ACT_SWEEP if !stream_on() => {
-+            app.pager.sweep_pending = true;
-+            app.pager.play_pending = true; // main runs play(), which runs the sweep
-+        }
 +        2 => clear_store(app),
 +        CTL_ACT_STREAM_ON | CTL_ACT_STREAM_OFF => {
 +            let on = action == CTL_ACT_STREAM_ON;
@@ -3088,68 +3075,12 @@ index 0000000..7072045
 +
 +// ---- playback ----
 +
-+/// Control action 11: the speaker sweep, blocking (about 19 s), with the radio not listening.
-+/// The PWM ring's 160-value segments last 10 ms at the sweep's 16 kHz. The power switch stops it.
-+/// Not in the lean images (no room in the codebook install image).
-+#[cfg(not(feature = "lean"))]
-+#[inline(never)]
-+fn sweep(app: &mut App, syst: &mut SYST, power: &PowerSwitch) {
-+    disarm(app, syst);
-+    app.radio
-+        .fd6818
-+        .set_af_out(syst, AfOutState::Mute, true, Modulation::Fm);
-+    let s = unsafe { &mut *addr_of_mut!(STREAM) };
-+    unsafe { ffi::sp_sweep_start() };
-+    for i in 0..pwm_audio::NSEG {
-+        let seg = s.audio.segment(i);
-+        unsafe { ffi::sp_sweep_pwm(seg.as_mut_ptr(), pwm_audio::SEG as i32, pwm_audio::TOP as u32) };
-+    }
-+    report_line(format_args!("K6 SWEEP start rate=16000 tones=14"));
-+    s.audio.start_every(3);
-+    delay::ms(syst, 30); // as stock: the RC filter settles before the amplifier opens
-+    app.radio.set_speaker(true);
-+    let (mut wr, mut more, mut tail, mut aborted) = (0usize, 1i32, 0usize, false);
-+    while tail < pwm_audio::NSEG {
-+        if s.audio.play_segment() == wr {
-+            delay::us(syst, 500);
-+            continue;
-+        }
-+        let seg = s.audio.segment(wr);
-+        if more != 0 {
-+            more = unsafe { ffi::sp_sweep_pwm(seg.as_mut_ptr(), pwm_audio::SEG as i32, pwm_audio::TOP as u32) };
-+        } else {
-+            seg.fill(pwm_audio::MID);
-+            tail += 1;
-+        }
-+        wr = (wr + 1) % pwm_audio::NSEG;
-+        if power.switch_off_raw() {
-+            aborted = true;
-+            break;
-+        }
-+    }
-+    app.radio.set_speaker(false);
-+    delay::ms(syst, 20);
-+    s.audio.stop();
-+    report_line(format_args!("K6 SWEEP done aborted={}", aborted as u8));
-+    app.pager.idle_ticks = 0;
-+    app.pager.last_tick = uptime::now();
-+    if app.mode == Mode::Pager && app.pager.chip_ok {
-+        arm(app, syst);
-+    }
-+}
-+
 +/// Plays the message through PWM, blocking (up to the message length), with the radio not
 +/// listening: MENU, or EXIT in the full image, stops it; the power switch stops it too, so main
 +/// can shut down. The same playback as streaming (stream_begin, stream_fill, stream_tick).
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn play(app: &mut App, syst: &mut SYST, power: &PowerSwitch) {
 +    app.pager.play_pending = false;
-+    #[cfg(not(feature = "lean"))]
-+    if app.pager.sweep_pending {
-+        app.pager.sweep_pending = false;
-+        sweep(app, syst, power);
-+        return;
-+    }
 +    refresh_status(app);
 +    if app.pager.status.have == 0 || stream_on() {
 +        return;
@@ -3991,10 +3922,10 @@ index 57e9999..3717bb7 100644
  pub mod timer;
 diff --git a/src/hal/pwm_audio.rs b/src/hal/pwm_audio.rs
 new file mode 100644
-index 0000000..356056b
+index 0000000..25274cb
 --- /dev/null
 +++ b/src/hal/pwm_audio.rs
-@@ -0,0 +1,161 @@
+@@ -0,0 +1,155 @@
 +//! 8 kHz PCM out of the MCU's PWM pin, the path the stock firmware uses for
 +//! its voice prompts: PA11 = TIM1_CH4 (AF2) -> two RC poles (4.7k/3.9n,
 +//! 4.7k/22n) -> 22k -> the speaker amplifier's input, summed with the RF
@@ -4086,20 +4017,14 @@ index 0000000..356056b
 +
 +    /// Starts playing the ring from segment 0 (fill it first).
 +    pub fn start(&mut self) {
-+        self.start_every(6);
-+    }
-+
-+    /// `start` with a DMA update every `periods` 48 kHz PWM periods: 6 is the pager's 8 kHz,
-+    /// 3 the speaker sweep's 16 kHz.
-+    pub fn start_every(&mut self, periods: u32) {
 +        modify(RCC_AHBENR, 0, 1 << 0);
 +        modify(RCC_APB2ENR, 0, 1 << 11);
 +
-+        // TIM1: 48 kHz PWM on CH4, update (and DMA request) every `periods` periods.
++        // TIM1: 48 kHz PWM on CH4, update (and DMA request) every 6 periods.
 +        wr(TIM_CR1, 0);
 +        wr(TIM_PSC, 0);
 +        wr(TIM_ARR, TOP as u32);
-+        wr(TIM_RCR, periods - 1);
++        wr(TIM_RCR, 5);
 +        wr(TIM_CCR4, MID as u32);
 +        // OC4M = 110 (PWM mode 1), OC4PE preload; channel 3 untouched (unused).
 +        modify(TIM_CCMR2, 0xFF00, (0b110 << 12) | (1 << 11));

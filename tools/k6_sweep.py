@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """The K6's speaker sweep, measured: the level of each tone in a recording of the K6's speaker.
 
-  python3 -m modem.k6 ctl --action sweep ...      (the K6 plays it; record its speaker)
+  python3 -m modem.k6 mod OUT.wav mod-spksweep.bin ...   (the K6 plays it; record its speaker)
   python3 tools/k6_sweep.py REC.wav [REC2.wav ...] [--json OUT.json] [--plot OUT.png]
 
-The sweep (c/k6/sotto_pager.h, sp_sweep_pwm) is 1 s of silence, then 14 tones of 1 s at
+The sweep (the RAM module c/k6/mod/spksweep.c) is 1 s of silence, then 14 tones of 1 s at
 250 Hz to 7.5 kHz with 0.25 s between, all at the same PWM level, at 16 kHz updates. This finds
 the sweep in the recording (the schedule that best fits the tones' energy over time), measures
 each tone over the middle 0.6 s of its second (a narrow band around it, so the PWM's images
@@ -20,7 +20,7 @@ import sys
 import numpy as np
 
 HZ = [250, 400, 630, 1000, 1600, 2000, 2500, 3150, 4000, 5000, 5600, 6300, 7000, 7500]
-RATE = 16000                    # the sweep's PWM update rate (SP_SWEEP_RATE)
+RATE = 16000                    # the sweep's PWM update rate (spksweep.c RATE)
 LEAD, TONE, GAP = 1.0, 1.0, 0.25
 
 
