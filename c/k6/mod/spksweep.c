@@ -154,9 +154,12 @@ int k6_main(const k6_api_t *api) {
   /* step -1: the lead silence; then tone j = step / 2 when step is even, its gap when odd */
   for (step = -1; step < 2 * NT; step++) {
     int tone = step >= 0 && !(step & 1);
-    if (!tone && api->key_down()) {  /* ~60 us: in a silence a missed update can't be heard */
-      ret = -2;
-      break;
+    if (!tone) {                     /* in a silence, where a missed update can't be heard: */
+      api->ticks();                  /* keeps the core's ms count (it wraps unseen in 6.5 s) */
+      if (api->key_down()) {         /* ~60 us */
+        ret = -2;
+        break;
+      }
     }
     n = step < 0 ? LEAD : tone ? TONE : GAP;
     step_inc = tone ? inc[step >> 1] : 0;

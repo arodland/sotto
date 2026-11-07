@@ -16,7 +16,6 @@ import k6_sweep  # noqa: E402
 
 SRC = os.path.join(ROOT, "c", "k6", "mod", "spksweep.c")
 TIM1, RCC, GPIOA = 0x40012C00, 0x40021000, 0x48000000
-UPDATE_US = 1e6 / 16000
 AT_START = {"rcc": {0x18: 0x0000_0201}, "gpioa": {0x00: 0x2800_0000, 0x08: 0x0C00_0000, 0x24: 0x0000_0110}}
 
 
@@ -32,7 +31,7 @@ def emulate(keys=(), tim_busy=False, regs=None):
                 log["armed"] = True
                 return 0
             log["updates"] += 1           # the next: an update event
-            st["us"] += UPDATE_US
+            st["us"] += 62 + (log["updates"] & 1)   # 62.5 us an update, in whole us
             return 1
         return log["tim"].get(off, 0)
 
