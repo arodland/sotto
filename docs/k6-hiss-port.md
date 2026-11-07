@@ -107,7 +107,7 @@ interpolator instead of two.
 
 ## Proposed steps
 
-1. **Python prototype of the light layer** (steps 2-5), on the 16 held-out voices. Measure:
+1. **Done: Python prototype of the light layer** (steps 2-5; see below). It scores within 0.01 of the full layer. The plan was to measure, on the 16 held-out voices:
    - PESQ-WB and the fricative hiss error against the full v3.8 layer;
    - a blind pair at the clips' fricative spots.
 
@@ -117,6 +117,53 @@ interpolator instead of two.
 3. **A store-size decision with Jeff.** That's his call, since it shortens the longest message.
 4. **One image** with 16 kHz PWM, the hook and the layer. First a RAM module to check the 16 kHz
    PWM path on air.
+
+## The light layer in Python (2026-11-07)
+
+Steps 2-5 are decoder options of `SottoV38` in `sim/hiss_band.py`:
+
+- `vowel_src="model"`: the vowel predictor reads the decoded model (`model_bands`,
+  `fine_levels_model`). The harmonic amplitudes become a power density on 50 Hz bins, and the
+  same ridge weights are applied. `MODEL_REF_DB` (−27.6 dB) puts that density on the STFT's
+  scale. It was measured on four Codec 2 clips outside the test voices.
+- `synth8=True`: the hiss is made at 8 kHz and folded in (`fold8`).
+- `uv50=False`: v3.7's unvoiced halves.
+- `hb_max_hz`: no hiss above that frequency.
+
+The encoder and the bits are unchanged.
+
+**The model and the STFT agree.** On three test voices, the predictor's 16 vowel-layer levels from
+the model are within 1.9-2.9 dB rms of those from the STFT, frame by frame. The model's mean is
+0.7-1.4 dB lower. Model frame t + 2 lines up best with STFT frame t, as `HB_LAG` says. The folded
+synthesis matches the 320-point one's spectrum within 0.5 dB across 4.5-7.9 kHz.
+
+**Scores.** `tools/eval_k6_hiss.py`, the 16 held-out voices, each encoded once by the hiss encoder,
+then decoded by each variant (`docs/results/k6_hiss_light.json`). The band errors are 4-8 kHz level
+errors per 10 ms against the original. The fricative error is the one `tools/eval_lr_hiss.py`
+reports. The vowel error is the same on frames whose 0-4 kHz band is at least 20 dB over 4-8 kHz.
+
+| | PESQ-NB | PESQ-WB | Fricative error, rms / bias dB | Vowel error, rms / bias dB |
+|---|---:|---:|---:|---:|
+| **sotto 600**, full v3.8 layer | 2.113 | 1.354 | 8.56 / −3.43 | 14.59 / −8.73 |
+| light (model, folded, v3.7 halves) | 2.104 | 1.345 | 8.41 / −3.17 | 14.45 / −8.50 |
+| light, no hiss above 7 kHz | 2.104 | 1.358 | 11.78 / −6.26 | 15.97 / −10.60 |
+| plain decoder (what the K6 plays now) | 2.113 | 1.399 | 64.66 / −59.70 | 31.64 / −28.26 |
+| **sotto 400**, full | 1.854 | 1.256 | 11.70 / −6.27 | 14.53 / −8.55 |
+| light | 1.852 | 1.255 | 11.53 / −5.95 | 14.38 / −8.27 |
+| **sotto 1200**, full | 2.544 | 1.555 | 5.25 / −1.14 | 13.39 / −7.80 |
+| light | 2.533 | 1.550 | 5.28 / −0.70 | 13.25 / −7.58 |
+
+Each step taken alone moves the scores by 0.01 or less, and the band errors by 0.3 dB or less
+(see the json). So the light layer sounds like the full one by these measures, at about a third
+of the CPU.
+
+Two notes on the table:
+
+- The 7 kHz cap costs about 3 dB of band error, because that measure counts the missing 7-8 kHz
+  band. On the K6 those frequencies are 11-14 dB down in the speaker anyway, and the PWM image
+  would land above them.
+- PESQ-WB scores the plain decoder higher than any hiss layer, as it did for sotto 1200 hiss.
+  Listening rounds 19 and 21 went the other way, so PESQ-WB isn't the judge here.
 
 ## The resampler change (exact)
 
