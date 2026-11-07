@@ -27,8 +27,10 @@ radio today, and what is still waiting on a bench run, a firmware change or a de
   CN87` at s=-16, including all three frames sent 14 dB down. The K6 listened; the IC-7100
   sent. Runs 1-4 found and fixed a ring overrun (a stop-key scan in the hot loop) and the chip's
   AFC chasing the tones (REG_73 bit 4 only takes hold after RXON). With the AFC off the K6 sits
-  145 Hz low at 440.850, so the PC aims the audio at `--f0 1624`. Drift was a few Hz a minute.
-  See "Bench run 5".
+  145 Hz low at 440.850, so the PC aimed the audio at `--f0 1624`. Drift was a few Hz a minute.
+  See "Bench run 5". Since 2026-11-07 the modules read that offset from the K6's calibration
+  record instead (written once by `ifcal`, docs/k6-modules.md "Calibration"), so the PC plays at
+  the true audio frequency, `--f0 1480`.
 - **FT8 transmit works on air (bench run 6, 2026-11-06): the K6 sent `CQ AG7EW CN87` itself and
   the IC-7100 decoded it at snr -14.** `ft8tx` (1.4 KB) sends one frame as audio FSK on FM from
   the chip's tone oscillator (REG_70/71, 5 ms GFSK steps), then AG7EW in MCW, in 16.6 s under
@@ -154,7 +156,8 @@ A decode in `ft8rx` adds a short burst; its pause is zero-filled like any other.
 **Its serial lines:**
 
 ```
-ft8wf start nb=32 f=1500 inv=0 afc=4691                 (afc = REG_73 after the RXON)
+ft8wf start nb=32 f=1500 inv=0 cal=-16596              (cal = the IF offset applied, 0.01 Hz;
+                                                    runs 2-6 printed afc= REG_73 here)
 ft8wf gain rms=4.7 g=03ff rms=9.1 r2=27 ks=5490     (noise rms at the AGC, at the gain chosen)
 w 0 <44 base64 chars>                              (two 80 ms rows of 16 bytes, numbered)
 ft8wf st t=15 lost=0 ks=5492 flo=812 idle=30       (every 15 s; lost = DMA ring overruns,
@@ -324,9 +327,14 @@ The run needs no keys on the K6 itself. It sends one module and plays FT8 from t
 USB on 440.850; Jeff OK'd PKTUSB on 440.850 on 2026-11-06 for the AF sweep. Bench rules: never
 write to ttyUSB2, the CW ID keeper runs, and one thread is on the bench at a time.
 
-1. **Find the K6's frequency offset.** Run 5 settled it: with the AFC off, the carrier sits at
-   IF 16,781.6 Hz, 145 Hz low, which gives `--f0 1624`. To re-measure (another radio, a cold
-   K6), send `gp0cap_afc`, play 48 s tones at 1,490 and 1,990 Hz in PKTUSB, and run
+1. **Find the K6's frequency offset.** On a level 4 image the K6 keeps it in its calibration
+   record (SPI flash 0x10F000, `c/k6/mod/k6_cal.h`), which `ifcal` writes once (docs/k6-modules.md,
+   "Calibration"; Jeff's K6 has one since 2026-11-06 20:51: -165.8 Hz). ft8wf, ft8wf_inv and
+   ft8rx move their mixer by it, and the start line says so: `ft8wf start ... cal=-16596`
+   (0.01 Hz; `cal=0` means no record or an image below level 4). With a record, play at
+   `--f0 1480` (the default). Without one, aim the audio by hand: run 5 found the carrier at
+   IF 16,781.6 Hz, 145 Hz low, which gave `--f0 1624`. To measure that way (another radio, a
+   cold K6), send `gp0cap_afc`, play 48 s tones at 1,490 and 1,990 Hz in PKTUSB, and run
    `python3 tools/k6_ft8.py tone LOG --hz 1490 1990 --each`. It prints the carrier and the
    `--f0` to use. The AFC must be off (ft8wf and gp0cap_afc do that, then RXON), or the chip
    pulls the tones toward the IF centre over about 30 s.
@@ -336,13 +344,13 @@ write to ttyUSB2, the CW ID keeper runs, and one thread is on the bench at a tim
    leave chunks missing, resend them with `--only N --serial S --xfer X`.
 3. **Play FT8 in USB.** When the log says `ft8wf start`, switch the IC-7100 to PKTUSB
    (`rigctl M PKTUSB 0`), key up and play
-   `python3 tools/k6_ft8.py wav ft8.wav --f0 <step 1> --repeat 4` (60 s). Then key down and go
+   `python3 tools/k6_ft8.py wav ft8.wav --f0 <step 1> --repeat 4` (60 s: 1480 with a record). Then key down and go
    back to FM with `rigctl M PKTFM 12000`. A passband of 0 selects the IC-7100's 6 kHz filter,
    too narrow for the module uploads (found by the softmodem thread, PR #81). Leave a full
    15 s slot between any steady tone and the first frame.
 4. **Decode:** `python3 tools/k6_ft8.py decode ~/sotto-work/logs/<log>`.
    - If nothing decodes, `rows` dumps the waterfall. A tone outside the window means the offset
-     in step 1 is wrong.
+     in step 1 is wrong (or, with `cal=` set, the record is stale: run `ifcal` again).
    - The `ft8wf gain` line shows whether the noise-filling gain engaged.
 5. **Sweep the level** (optional). Repeat at lower IC-7100 power or MOD level, with the decode
    rate against `s=`.

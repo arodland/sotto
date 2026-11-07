@@ -3,7 +3,13 @@
    gp0dma does (PR #69); a 96 MHz clock kept unwrapped from TIM17 and Aura's 100 us TIM14; counts
    of 64 samples handed to ft8k's mixer with their real-time phase; the noise-filling gain set-up.
    Include it after k6_mod.h and ft8k.c, with FT8_AUDIO (the window's centre, Hz), FT8_INV,
-   FT8_RMS_LO and FT8_RMS_HI defined. SPDX-License-Identifier: MIT */
+   FT8_RMS_LO and FT8_RMS_HI defined.
+
+   The mixer follows the radio's calibration record (k6_cal.h, written once by ifcal): on an
+   image at API level 4 or above with a good record, rx_setup moves it by the record's IF
+   offset at rx_hz, so the sender plays FT8 at its true audio frequency (--f0 1480, not 1624).
+   On an older image or with no record it mixes at the nominal IF, as before (r->cal = 0).
+   GP0_CAL 0 builds it without. SPDX-License-Identifier: MIT */
 #ifndef GP0RX_H
 #define GP0RX_H
 #define GPIOB 0x48000400u
@@ -31,6 +37,12 @@
 #define FMIX_MHZ (FT8_INV ? 16927083ull - FT8_AUDIO * 1000ull : 16927083ull + FT8_AUDIO * 1000ull)
 #define KMIX ((uint32_t)((FMIX_MHZ << 32) / 96000000000ull))
 #define ROW_CYC 3840000u /* 40 ms */
+#ifndef GP0_CAL
+#define GP0_CAL 1
+#endif
+#if GP0_CAL
+#include "k6_cal.h"
+#endif
 
 static uint32_t rd(uint32_t a) { return *(volatile uint32_t *)a; }
 static void wr(uint32_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
@@ -93,6 +105,8 @@ typedef struct {
   uint32_t lost, rows;
   uint32_t tc, tcok;             /* the next count's time, once the receiver has had one */
   uint32_t tp, idle, was_idle;   /* the last poll's time; cycles spent waiting for the DMA */
+  uint32_t kmix;                 /* the mixer's step a 96 MHz cycle: KMIX plus the calibration */
+  int32_t cal;                   /* the IF offset applied, 0.01 Hz (0: no record) */
 } rx_t;
 
 /* ft8k's first CIC for counts of LCNT samples: 1024 / LCNT, and the shift that keeps its output
@@ -168,7 +182,7 @@ static uint32_t drain(rx_t *r, fk_t *k, uint32_t *sq) {
       if (gap < (int32_t)(cpc << 12))
         for (; gap > (int32_t)(cpc >> 1); gap -= (int32_t)cpc) fk_in(k, 0, 0);
     }
-    ph = KMIX * tx, dph = KMIX * cpc;
+    ph = r->kmix * tx, dph = r->kmix * cpc;
   }
   while (P - r->consumed >= LCNT) {
     const uint8_t *q = r->ring + (r->consumed & (RSZ - 1));
@@ -239,6 +253,23 @@ static void teardown(const k6_api_t *api, const saved_t *sv) {
 }
 
 
+/* the mixer's step: the nominal IF +- FT8_AUDIO, moved by the calibration record's offset at
+   rx_hz when the image has one (either sideband: the carrier moves both ways alike) */
+static void rx_cal(const k6_api_t *api, rx_t *r) {
+  r->kmix = KMIX, r->cal = 0;
+#if GP0_CAL
+  {
+    k6_cal_t c;
+    int32_t off;
+    if (k6cal_get(api, &c)) return;
+    off = k6cal_off_chz(&c, api->rx_hz());
+    r->kmix = KMIX + (uint32_t)k6cal_kmix(off), r->cal = off;
+  }
+#else
+  (void)api;
+#endif
+}
+
 /* clocks, GP0 on PB1, AFC off, TIM17 counting, the DMA running; 0 or the module's error */
 static int rx_setup(const k6_api_t *api, saved_t *sv, rx_t *r, uint8_t *ring) {
   uint32_t i = api->ms();
@@ -286,6 +317,7 @@ static int rx_setup(const k6_api_t *api, saved_t *sv, rx_t *r, uint8_t *ring) {
   r->t = 0, r->c17 = rd(TIM17_CNT) & 0xFFFF, r->c14 = rd(TIM14_CNT) & 0xFFFF;
   r->lost = r->rows = r->tcok = r->idle = r->was_idle = 0;
   r->ring = ring;
+  rx_cal(api, r);
   dma_on(ring);
   return 0;
 }

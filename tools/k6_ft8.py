@@ -233,6 +233,9 @@ def cmd_tone(a):
     print("slope %+.3f: the upper sideband is %s the IF; carrier at IF %.1f Hz (nominal %.1f)"
           % (r["slope"], "below (mirrored)" if r["inv"] else "above", r["carrier"], FIF))
     print("FT8: send mod-%s.bin and play tools/k6_ft8.py wav --f0 %d" % (r["module"], r["f0"]))
+    print("     (that's for a K6 without a calibration record: one with a record (ft8wf start ... "
+          "cal=<not 0>) moves its window by the carrier's %+.1f Hz itself, so play --f0 1480)"
+          % (r["carrier"] - FIF))
 
 
 def cmd_tonewav(a):

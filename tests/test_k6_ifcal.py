@@ -98,15 +98,40 @@ def test_refuses_a_wandering_carrier_and_old_images(tmp_path):
     assert ret == -3
 
 
-@pytest.mark.parametrize("hz,off", [(440_850_000, -14550), (146_520_000, None)])
-def test_offset_scales_with_frequency(hz, off):
-    """k6cal_off_chz's integer scaling, as k6_cal.h does it"""
-    ppb = -330
-    stored_hz = 440_850_000
-    if hz == stored_hz:
-        got = off
-    else:
-        v = (ppb * (hz >> 14)) >> 6
-        got = (v * 107) >> 10
-    want = ppb * 1e-9 * hz * 100 if off is None else off
-    assert abs(got - want) <= abs(want) * 0.005 + 1
+@pytest.mark.parametrize("hz", [440_850_000, 430_000_000, 449_975_000, 223_500_000, 146_520_000])
+@pytest.mark.parametrize("ppb", [-376, -330, 120, 4500, -4500])
+def test_offset_scales_with_frequency(hz, ppb):
+    """k6cal_off_chz's integer scaling, as k6_cal.h does it: within 0.15% (+ 1 for the floors)
+    of ppb x hz, and inside 32 bits all the way"""
+    v = (ppb * (hz >> 14)) >> 6
+    assert abs(v * 215) < 2 ** 31
+    got = (v * 215) >> 11
+    want = ppb * 1e-9 * hz * 100
+    assert abs(got - want) <= abs(want) * 0.0015 + 1.5, (got, want)
+
+
+@need_clang
+@pytest.mark.parametrize("junk", [b"\x00" * 32, b"\xff" * 31 + b"\x7f", b"SSTV" + b"\xff" * 28])
+def test_leaves_a_sector_that_is_not_ours(tmp_path, junk):
+    """the calibration sector holds neither 0xFF nor a K6CL record: something else uses it, so
+    ifcal returns -11 before it measures, and never calls cal_write (which erases the sector)"""
+    mmio, *_ = dma_bench(f_if=if_of(-145.5), dev=0.0)
+    regs = {**START, 0x73: 0x4682, 0x43: 0x3028,
+            0x67: lambda us: rssi_reg(-41 if us >= 3_000_000 else -118)}
+    cal = {"flash": junk + b"\xff" * 32}
+    ret, said, regs2, writes = run(regs, src=small(tmp_path), spare=800, mmio=mmio, level=4, cal=cal)
+    assert ret == -11 and "writes" not in cal and cal["flash"][:32] == junk, said
+    assert not writes, writes                       # no chip register touched either
+
+
+@need_clang
+def test_overwrites_a_damaged_record_of_its_own(tmp_path):
+    """a K6CL record with a bad check word is ours: ifcal measures and writes a good one over it"""
+    mmio, *_ = dma_bench(f_if=if_of(-145.5), dev=0.0)
+    regs = {**START, 0x73: 0x4682, 0x43: 0x3028,
+            0x67: lambda us: rssi_reg(-41 if us >= 3_000_000 else -118)}
+    bad = b"K6CL" + b"\x01\x00\x01\x00" + b"\x00" * 24
+    cal = {"flash": bad + b"\xff" * 32}
+    ret, said, *_ = run(regs, src=small(tmp_path), spare=800, mmio=mmio, level=4, cal=cal)
+    assert said[1].endswith("old=none") and len(cal["writes"]) == 1, said
+    assert record(cal["flash"])["magic"] == b"K6CL" and abs(ret + 1455) < 10
