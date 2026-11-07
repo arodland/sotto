@@ -53,8 +53,8 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
   up, the sweep goes and listens to it (quietly, with the speaker off). If several are up at
   once, it picks the one listened to fewest times (`ex_pick_id`), and every listen moves that
   one to the back, so two repeaters that ID together take turns and neither starves. It stays
-  while the carrier is up, then 3 s more, 2 minutes at most, and then leaves 5 s of sweeping
-  before the next listen. A call heard once is kept, and a second decode alike, on the same
+  while the carrier is up, then 3 s more, 2 minutes at most. The next pick waits for a full
+  pass over the band set and takes the loudest of those listened to fewest times. A call heard once is kept, and a second decode alike, on the same
   listen or a later one, confirms it. Spurs, skirts, simplex frequencies, ignored candidates and
   's' grades are never picked. Key 1 turns it off and on.
 - **The table** (`c/k6/rt.c`): Save writes one 64-byte record in SPI flash at 0x0F0000-0x0FFFFF,
