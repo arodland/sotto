@@ -4179,10 +4179,10 @@ index 0000000..677b2f7
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..88cf97e
+index 0000000..678fe03
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1158 @@
+@@ -0,0 +1,1171 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -5150,15 +5150,20 @@ index 0000000..88cf97e
 +    D: DrawTarget<Color = BinaryColor>,
 +{
 +    if r == 0 {
-+        Rectangle::new(Point::new(0, 0), Size::new(128, 10))
-+            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-+            .draw(lcd)
-+            .ok();
++        fill(lcd, 0, 10, BinaryColor::On);
 +        let st = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
 +        Text::with_baseline(t, Point::new(1, 0), st, Baseline::Top).draw(lcd).ok();
 +        return;
 +    }
 +    row(lcd, if r >= FOOT { 58 } else { 11 + 6 * (r - 1) }, t);
++}
++
++/// full-width rows y..y+h lit or dark
++fn fill<D>(lcd: &mut D, y: i32, h: u32, c: BinaryColor)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    Rectangle::new(Point::new(0, y), Size::new(128, h)).into_styled(PrimitiveStyle::with_fill(c)).draw(lcd).ok();
 +}
 +
 +/// a 4x6 line with its top at y
@@ -5228,18 +5233,15 @@ index 0000000..88cf97e
 +            for k in 0..ROWS as u32 {
 +                let Some(c) = cand(top + k) else { break };
 +                let known = c.flags & EX_F_KNOWN != 0;
-+                if known && was_new && shift == 0 {
-+                    Rectangle::new(Point::new(0, 11 + 6 * k as i32), Size::new(128, 1))
-+                        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
-+                        .draw(lcd)
-+                        .ok();
++                let ruled = known && was_new && shift == 0;
++                if ruled {
++                    fill(lcd, 11 + 6 * k as i32, 1, BinaryColor::On);
 +                    shift = 2;
 +                }
 +                was_new = !known;
 +                let mut b: TextBuf<32> = TextBuf::new();
-+                let mark = if top + k == t.sel as u32 { '>' } else { ' ' };
 +                let g = if c.flags & EX_F_IGNORED != 0 { 'x' } else { c.grade as char };
-+                write!(b, "{}{} ", mark, g).ok();
++                write!(b, "{} ", g).ok();
 +                mhz(&mut b, c.hz);
 +                write!(b, " ").ok();
 +                off_text(&mut b, c);
@@ -5248,7 +5250,18 @@ index 0000000..88cf97e
 +                if c.call[0] != 0 {
 +                    write!(b, " {}", cstr(&c.call)).ok();
 +                }
-+                row(lcd, 11 + 6 * k as i32 + shift, b.as_str());
++                let y = 11 + 6 * k as i32 + shift;
++                if top + k == t.sel as u32 {
++                    // the selected row inverted (Jeff 2026-11-07, for the column a '>' took): a
++                    // lit bar from the blank pixel row above, unless that touches the header
++                    // or the rule
++                    let up = if k == 0 || ruled { 0 } else { 1 };
++                    fill(lcd, y - up, 6 + up as u32, BinaryColor::On);
++                    let st = MonoTextStyle::new(&FONT_4X6, BinaryColor::Off);
++                    Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
++                } else {
++                    row(lcd, y, b.as_str());
++                }
 +            }
 +            let mut b: TextBuf<24> = TextBuf::new();
 +            if let Some(c) = cand(t.sel as u32) {

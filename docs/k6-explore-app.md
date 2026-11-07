@@ -81,14 +81,16 @@ a header in the 6x10 font, dark on a lit bar (21 characters), then 7 candidate r
 footer in the 4x6 font (32 characters a row, so a row also shows its callsign once heard).
 New repeaters are listed first. A thin rule separates them from the known ones under it: the
 frequencies already saved in the table (read at the start, and added on each Save). The rows
-under the rule move down 2 px. On serial, a known candidate has flag 0x20 in its K6 CAND line.
+under the rule move down 2 px. The selected row is drawn inverted, dark on a lit bar (Jeff's
+idea: no '>' column). Grades: R likely a repeater (score 6 or more), r maybe one, ? not seen
+enough yet, s simplex or a spur or a louder signal's skirt, x ignored with *. On serial, a known candidate has flag 0x20 in its K6 CAND line.
 
 ```text
 EX ALL 11 2.3s UP          band set, candidates, one pass, UP while something is keyed
->R 146.940 -0.6  -80 W7ABC grade, MHz, offset (S simplex), loudest level, call
- r 443.100 +5.0  -85
- ? 440.850 +5.0  -22
- s 146.520   S   -70
+R 146.940 -0.6  -80 W7ABC  grade, MHz, offset (S simplex), loudest level, call
+r 443.100 +5.0  -85        (the selected row is drawn inverted)
+? 440.850 +5.0  -22
+s 146.520   S   -70
 n4 sc8 W7ABC/R             the selected row: overs, score, call (or ids)
 ```
 
