@@ -76,6 +76,9 @@ mounts the table and says one `RT` line per entry, so the table can be read over
 
 ## The screen and keys
 
+The screens use the 5x8 font (Jeff, 2026-11-07): 8 rows of 25 characters, with 6 candidates on
+the list at a time.
+
 ```text
 EX ALL 11 2.3s UP          band set, candidates, one pass, UP while something is keyed
 >R 146.940 -0.6  -80       grade, MHz, offset (S simplex), loudest level
@@ -142,6 +145,27 @@ with repeaters in range, then count how many of the area's listed repeaters it g
 Expected false positive: a fixed simplex station that IDs on a schedule (like the bench's
 AG7EW keeper on 440.850) grades R. The input-hop cue (not built yet) is what will tell them
 apart.
+
+## First bench check (2026-11-07 17:53-18:03 UTC, main ac2acdd)
+
+The flash took one OTA reset and booted into EXPLORE. The K6 only received; the IC-7100 sent
+three AG7EW CW IDs on 440.850. Log: `~/sotto-work/runs/explore-bench-1/serial.log` on hamlet.
+
+- **Sweep:** 70CM (928 bins) at about 1.1 s a pass, floors -104 to -111 dBm.
+- **Automatic Listen for ID:** it went to 440.850 by itself on the second and third IDs and
+  decoded "AG7EW SOTTO TEST" both times. On its own it also found 440.925 (-93 dBm, the signal
+  from explorer-scan-6) and listened to it.
+- **What went wrong, fixed since:**
+  - On ALL it listened to 144.000, the K6's own 24 MHz clock harmonic. Now the automatic
+    listener only picks repeater output sub-bands, and a candidate within 2.5 kHz of n x 24 MHz
+    is a spur from the start.
+  - On the first ID it went to 440.900, the IC-7100's -81 dBm sideband next to the -24 dBm
+    carrier, because 440.850 had no candidate until its first over ended. Now `xs_up` leaves
+    out a carrier 20 dB under one up within 100 kHz, and `ex_pick_id` makes the candidate for a
+    carrier keyed for the first time.
+  - Two decodes of the same call on separate listens didn't confirm. The decoded call carried
+    stack bytes after its NUL, and the app compared all 11 bytes. Now xlisten zero-fills the
+    call and the app compares up to the NUL.
 
 ## Not built yet
 

@@ -183,7 +183,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
         text, data, bss = (int(x) for x in size.split()[:3])
         assert data == 0 and bss == 0
         sizes[f] = text
-    assert sizes["xscan.c"] < 4450 and sizes["xlisten.c"] < 1700, sizes
+    assert sizes["xscan.c"] < 4600 and sizes["xlisten.c"] < 1700, sizes
 
 
 def test_finds_a_repeater_feeds_the_list_and_the_log_replays_the_same(lib):
@@ -307,6 +307,22 @@ def test_an_over_carries_its_level_after_the_transmitter_comes_up(lib):
     run_steps(L, buf, radio, 25)
     overs = k6_scan.decode("\n".join(radio.lines))["overs"]
     assert [o["lvl"] for o in overs if o["f"] == hz] and all(abs(o["lvl"] + 25) <= 2 for o in overs if o["f"] == hz), overs
+
+
+def test_up_list_leaves_out_a_louder_carrier_s_skirts(lib):
+    """the EXPLORE bench run (17:57): the -24 dBm ID showed at 440.900 too (-81), and the
+    automatic listener went there; xs_up now leaves out what's 20 dB under one up within 100 kHz"""
+    L, kxl = lib
+    L.xs_up.argtypes = [ctypes.c_void_p, ctypes.POINTER(U32), ctypes.c_uint]
+    L.xs_up.restype = ctypes.c_uint
+    on = [(s_(5), s_(25))]
+    radio = Radio(Receiver([(440_850_000, -24, on), (440_900_000, -81, on), (442_000_000, -85, on)]))
+    buf, mem, ex = explorer(L, kxl, [(440_000_000, 12_500, 240, 12_500)], radio)
+    assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+    run_steps(L, buf, radio, 15)
+    up = (U32 * 10)()
+    n = L.xs_up(buf, up, 10)
+    assert sorted(up[:n]) == [440_850_000, 442_000_000], list(up[:n])
 
 
 class Detector:

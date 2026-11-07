@@ -226,6 +226,24 @@ def test_listen_for_id_takes_turns_and_skips_the_ones_with_a_call(lib):
     assert x.find(146_520_000).listens == 0
 
 
+def test_listen_for_id_picks_a_first_key_up_and_only_repeater_outputs(lib):
+    # the EXPLORE bench run (2026-11-07 17:56): the listener went to 144.000, the K6's own 24 MHz
+    # harmonic, and a carrier keyed for the first time had no candidate yet, so it couldn't be
+    # picked until its over ended
+    x = List(lib)
+    up = (ctypes.c_uint32 * 3)(144_000_000, 446_000_000, 440_850_000)
+    p = lib.ex_pick_id(ctypes.byref(x.e), up, 3)
+    assert p and p.contents.hz == 440_850_000 and p.contents.listens == 1 and p.contents.overs == 0
+    c = x.find(440_850_000)
+    x.over(440_850_000, 5000, 9000, -24)                       # its first over ends: the same entry
+    assert x.find(440_850_000).overs == 1 and x.find(440_850_000).first_ms == 5000
+    assert x.find(144_000_000) is None and x.find(446_000_000) is None
+    assert c is not None
+    # an over at n x 24 MHz is the K6's own clock: a spur from the start, ranked last
+    x.over(144_000_000, 0, 60_000, -72)
+    assert x.find(144_000_000).flags & kx.F_SPUR
+
+
 def test_scores_the_app_s_list_against_a_repeater_list(tmp_path):
     log = "\n".join([
         "12:00:00 K6 CAND band=ALL n=9 sweeps=1 bins=860 ms=2300",       # an older dump: replaced

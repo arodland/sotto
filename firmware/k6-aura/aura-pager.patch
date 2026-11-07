@@ -4079,10 +4079,10 @@ index 0000000..7b98ac3
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..0285080
+index 0000000..59868a8
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1085 @@
+@@ -0,0 +1,1087 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4121,7 +4121,7 @@ index 0000000..0285080
 +use core::fmt::Write as _;
 +use core::ptr::{addr_of, addr_of_mut, null_mut};
 +use cortex_m::peripheral::SYST;
-+use embedded_graphics::mono_font::{ascii::FONT_6X10, MonoTextStyle};
++use embedded_graphics::mono_font::{ascii::FONT_5X8, MonoTextStyle};
 +use embedded_graphics::pixelcolor::BinaryColor;
 +use embedded_graphics::prelude::*;
 +use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
@@ -4320,7 +4320,7 @@ index 0000000..0285080
 +const XL_TIME: i32 = 2;
 +/// redraw at most this often while sweeping (100 us ticks): a draw takes 30-50 ms
 +const DRAW_TICKS: u16 = 4000;
-+const ROWS: usize = 4;
++const ROWS: usize = 6;
 +
 +/// The band sets, # cycles them: (name, segments (lo, step, bins, snap)). Each set's floors and
 +/// row fit the PWM ring with Listen for ID's state (tests/test_k6_xscan.py).
@@ -4792,7 +4792,7 @@ index 0000000..0285080
 +        let mut info: XlInfo = unsafe { core::mem::zeroed() };
 +        unsafe { ffi::xl_info(t.xl, &mut info) };
 +        if info.call[0] != 0 {
-+            let same = t.once.iter().any(|(hz, call)| *hz == t.hz && call[..] == info.call[..]);
++            let same = t.once.iter().any(|(hz, call)| *hz == t.hz && cstr(call) == cstr(&info.call));
 +            if same {
 +                listen_end(app, syst, XL_OK);
 +                return;
@@ -5007,11 +5007,13 @@ index 0000000..0285080
 +
 +// ---- the screen ----
 +
-+fn line<D>(lcd: &mut D, y: i32, t: &str)
++/// row r of 8 (5x8, Jeff 2026-11-07: "we need a smaller font"): 25 characters a row, the top
++/// row the title, the bottom one the hint or the selected row's detail
++fn line<D>(lcd: &mut D, r: i32, t: &str)
 +where
 +    D: DrawTarget<Color = BinaryColor>,
 +{
-+    Text::new(t, Point::new(1, y), MonoTextStyle::new(&FONT_6X10, BinaryColor::On)).draw(lcd).ok();
++    Text::new(t, Point::new(1, 7 + 8 * r), MonoTextStyle::new(&FONT_5X8, BinaryColor::On)).draw(lcd).ok();
 +}
 +
 +/// MHz with 3 decimals, as 146.940
@@ -5062,7 +5064,7 @@ index 0000000..0285080
 +                )
 +                .ok();
 +            }
-+            line(lcd, 9, b.as_str());
++            line(lcd, 0, b.as_str());
 +            // keep the selected row on screen
 +            let top = (t.sel as usize).saturating_sub(ROWS - 1) as u32;
 +            for k in 0..ROWS as u32 {
@@ -5075,7 +5077,7 @@ index 0000000..0285080
 +                write!(b, " ").ok();
 +                off_text(&mut b, c);
 +                write!(b, " {:>4}", c.hi).ok();
-+                line(lcd, 19 + 10 * k as i32, b.as_str());
++                line(lcd, 1 + k as i32, b.as_str());
 +            }
 +            let mut b: TextBuf<24> = TextBuf::new();
 +            if let Some(c) = cand(t.sel as u32) {
@@ -5088,7 +5090,7 @@ index 0000000..0285080
 +            } else {
 +                write!(b, "listening...").ok();
 +            }
-+            line(lcd, 60, b.as_str());
++            line(lcd, 7, b.as_str());
 +        }
 +        View::Try => {
 +            if !msg {
@@ -5099,16 +5101,16 @@ index 0000000..0285080
 +                    write!(b, " {}{}.{}", if t.off < 0 { '-' } else { '+' }, a / 10, a % 10).ok();
 +                }
 +            }
-+            line(lcd, 9, b.as_str());
++            line(lcd, 0, b.as_str());
 +            let mut b: TextBuf<24> = TextBuf::new();
 +            write!(b, "now {} dBm", t.level).ok();
-+            line(lcd, 19, b.as_str());
++            line(lcd, 1, b.as_str());
 +            let mut i = 0;
 +            while let Some(c) = cand(i) {
 +                if c.hz == t.hz {
 +                    let mut b: TextBuf<24> = TextBuf::new();
 +                    write!(b, "{} sc{} n{} {}s", c.grade as char, c.score, c.overs, c.on_ms / 1000).ok();
-+                    line(lcd, 29, b.as_str());
++                    line(lcd, 2, b.as_str());
 +                    let mut b: TextBuf<24> = TextBuf::new();
 +                    if c.call[0] != 0 {
 +                        write!(b, "{}", cstr(&c.call)).ok();
@@ -5118,17 +5120,17 @@ index 0000000..0285080
 +                    if c.flags & EX_F_OFF_HEARD != 0 {
 +                        write!(b, " in heard").ok();
 +                    }
-+                    line(lcd, 39, b.as_str());
++                    line(lcd, 3, b.as_str());
 +                    if c.tone != 0 {
 +                        let mut b: TextBuf<24> = TextBuf::new();
 +                        write!(b, "tone {}.{}", c.tone / 10, c.tone % 10).ok();
-+                        line(lcd, 49, b.as_str());
++                        line(lcd, 4, b.as_str());
 +                    }
 +                    break;
 +                }
 +                i += 1;
 +            }
-+            line(lcd, 60, "MENU back 0 ID 5 save");
++            line(lcd, 7, "MENU back 0 ID 5 save");
 +        }
 +        View::Listen => {
 +            let mut info: XlInfo = unsafe { core::mem::zeroed() };
@@ -5139,32 +5141,32 @@ index 0000000..0285080
 +                let s = info.ms / 1000;
 +                write!(b, " {}:{:02}", s / 60, s % 60).ok();
 +            }
-+            line(lcd, 9, b.as_str());
++            line(lcd, 0, b.as_str());
 +            let mut b: TextBuf<24> = TextBuf::new();
 +            write!(b, "tone {} heard {}", if info.keyed != 0 { "ON " } else { "off" }, info.msgs).ok();
-+            line(lcd, 19, b.as_str());
-+            line(lcd, 29, cstr(&info.text));
++            line(lcd, 1, b.as_str());
++            line(lcd, 2, cstr(&info.text));
 +            if info.call[0] != 0 {
 +                let mut b: TextBuf<24> = TextBuf::new();
 +                write!(b, "{} x{}", cstr(&info.call), info.seen).ok();
-+                line(lcd, 39, b.as_str());
++                line(lcd, 3, b.as_str());
 +            }
-+            line(lcd, 60, "any key stops");
++            line(lcd, 7, "any key stops");
 +        }
 +        View::Ask => {
 +            if !msg {
 +                write!(b, "NEW CALL ").ok();
 +                mhz(&mut b, t.hz);
 +            }
-+            line(lcd, 9, b.as_str());
++            line(lcd, 0, b.as_str());
 +            let mut b: TextBuf<24> = TextBuf::new();
 +            write!(b, "heard {}", cstr(&t.heard)).ok();
-+            line(lcd, 19, b.as_str());
++            line(lcd, 1, b.as_str());
 +            let mut b: TextBuf<24> = TextBuf::new();
 +            write!(b, "saved {}", cstr(&t.ask.call)).ok();
-+            line(lcd, 29, b.as_str());
-+            line(lcd, 49, "MENU write new call");
-+            line(lcd, 60, "EXIT keep saved");
++            line(lcd, 2, b.as_str());
++            line(lcd, 4, "MENU write new call");
++            line(lcd, 7, "EXIT keep saved");
 +        }
 +    }
 +}
