@@ -279,8 +279,9 @@ the pager image 888ccb0 and its CI modules.
 **`gp0cap` (ret 2):** all 206 captures whole. The IF detector beats the discriminator at every
 level. FFSK has no errors in either detector down to -72 dBm (C/N0 50.7 dB-Hz). 4FSK has an
 error floor of 6-8% (IF) and 8-10% (discriminator) at every level, even -23 dBm, so it isn't
-noise. (Corrected below: this floor was the analyser's own detector, not the radio. Through
-the MCU receiver's templates the same captures give 0.2-0.8%.) Nearly all the IF detector's
+noise. (A later analysis said this floor was the analyser's own detector; that analysis read
+low. Held out properly, the MCU receiver's templates give 5.7% on these captures: see "The
+rerun".) Nearly all the IF detector's
 errors are an inner tone read as the outer tone next to it: 1500 as 900 (SER 0.25) and 2100 as 2700 (0.26). The outer tones are nearly clean (0.025,
 0.009), and the error doesn't depend on the tone before. That fits the IC-7100's TX chain
 (about +5 dB/octave of pre-emphasis, limiting near ±4.3 kHz in run 9) squeezing the deviation
@@ -339,7 +340,8 @@ step lines are in `tests/data/k6/iflive-20261107.log.gz`, the gp0cap captures of
 - **FFSK:** steps 5-7 had no errors, with the AFC at +5 Hz each time. Steps 1-2 ran at 1.5-1.9%,
   steps 0 and 3 at about 5%, and steps 4 and 8 never locked (nor 9).
 
-**The captures were fine.** `k6_ifcap.py mcu LOG` puts the captures through the MCU receiver's
+**The captures were fine** (wrong: see the correction below; that analysis reads low).
+`k6_ifcap.py mcu LOG` puts the captures through the MCU receiver's
 own templates, made from the model, at the best timing and IF for each capture. FFSK had no
 errors down to -72 dBm, and 4FSK had 0.2-0.8% at every level. Templates trained on the captures
 did no better. So the 6-8% 4FSK floor in the first run's report came from the analyser's
@@ -406,13 +408,49 @@ one notch late, and no setting gets near the captures' 0.4%. So timing isn't 4FS
 **The K6's own C decisions on the captures are fine.** `ifrx.c` built for the host with its
 loops frozen (`ifrx_static`, scratch harness), at the best timing and IF it finds for each
 capture, gives 4FSK 0.32% on the captures, against 0.41% for the float analysis. FFSK has no
-errors either way. So the integer code doesn't make the floor. What's left is something only
+errors either way. So the integer code doesn't make the floor (both figures carry the same selection bias, see
+below, so they compare fairly with each other but not with the bench). What's left is something only
 the live receiver sees: the AFC's settling point (the captures put the AFC detector's zero
 15 Hz off the best), or the stream itself while the receiver runs.
 
 **`iflive_fsweep`** (`c/k6/mod/iflive_fsweep.c`) tries the AFC. Steps 0-4 add
 `((step % 5) - 2) * 240` (Q12, about 27 Hz a notch) to the AFC detector, and steps 5-9 the
 same with tsweep's best timing (+600). Every step runs at gain step 2.
+
+On the K6 (03:25 UTC, receive only) the AFC offset made no difference (3.7-4.1% across ±2
+notches at the plain timing), and the +600 timing took every step down a point (2.5-3.5%, best
+2.47%). The DMA ran at 5454 kS/s, against 5618 for tsweep and 5567 for PR #88's modules: the
+module's code layout alone moves the free-running rate by 3%. On the emulator, though, a DMA 7%
+faster while the CPU polls than while it computes (`tests/k6_live_emu.py --wobble 0.07`, the
+sigma-delta's bits then taken at their own 6.5 MHz clock where the emulated bus puts each read)
+leaves both modes error-free. So the rate's swing within a symbol isn't the floor.
+
+**Correction: the captures don't decode at 0.4%.** `mcu_analyze` picks each capture's timing,
+IF and PN phase as the best of about 900 tries on the same 26 symbols it then counts. That
+reads far too low. `k6_ifcap.py mcu --xval` picks them on one half of each capture (by the
+known symbols' share of the metric) and counts the other half. On the 2026-11-06 captures,
+steps 1-8:
+
+| | held-out BER | errors, sent -> got |
+|---|---|---|
+| FFSK | 0.43% | 1800 Hz as 1200 (9) |
+| 4FSK, model templates | 5.7% | 900 as 1500 (137), 2100 as 2700 (44), 1500 as 2100 (23), 900 as 2700 (16) |
+| 4FSK, templates trained on step 1 (tested on 3-8) | 3.6% | 900 as 1500 (58), 2100 as 2700 (16) |
+
+So the live receiver's 2.5-4.6% is about what these templates get from this signal, and the
+loops were never the main loss. The floor is in the signal and the templates' fit to it. Per
+tone, the IC-7100's deviation on the captures (the IF's instantaneous frequency fitted over
+each known symbol) is about 77% of the model's for 900-2100 Hz and 69% at 2700 Hz:
+
+| tone | 900 | 1500 | 2100 | 2700 |
+|---|---|---|---|---|
+| K6 captures, Hz | 1447 | 2096 | 2541 | 2036 |
+| model, Hz | 1886 | 2702 | 3219 | 2937 |
+
+The receiver's templates expect the model's deviation. Two fixes are open: send louder (the
+sender only, `k6_ifcap.py live 4fsk --levels ...`), or train the templates on the K6's own
+captures. **`iflive_g2`** (`c/k6/mod/iflive_g2.c`) is the plain 4FSK receiver at gain step 2
+on every step, for a level sweep from the sender.
 
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 

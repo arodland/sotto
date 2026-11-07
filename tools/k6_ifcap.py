@@ -76,14 +76,21 @@ def pass_audio(mode, secs=PASS_S):
 LIVE_SEGS, LIVE_SEG_S, LIVE_LEAD_S = 10, 6.0, 1.5   # iflive.c's NG, STEP_MS, LEAD_MS
 
 
-def live_audio(mode, segs=LIVE_SEGS, seg_s=LIVE_SEG_S, lead_s=LIVE_LEAD_S):
+def live_audio(mode, segs=LIVE_SEGS, seg_s=LIVE_SEG_S, lead_s=LIVE_LEAD_S, levels=None):
     """iflive's run: segs segments of seg_s, each a lead (tones 0 and M-1 in turn) then PN9, and
-    0.5 s of the last segment's PN9 over (the module's last step ends a little after it)"""
+    0.5 s of the last segment's PN9 over (the module's last step ends a little after it).
+    levels: each segment's tone level in turn (peak, as Mode's level), repeated as needed"""
     nseg, nlead = int(seg_s * mode.baud), int(lead_s * mode.baud) // 2 * 2
     lead = np.tile([0, mode.M - 1], nlead // 2)
     seg = np.concatenate([lead, np.resize(pn_symbols(mode), nseg - nlead)])
     syms = np.concatenate([np.tile(seg, segs), seg[nlead:nlead + int(0.5 * mode.baud)]])
     x, _ = mode.audio(syms)
+    if levels:
+        g = np.ones(len(x))
+        n = int(round(seg_s * FSA))
+        for i in range(segs + 1):
+            g[i * n:(i + 1) * n] = levels[min(i, segs - 1) % len(levels)] / mode.level
+        x = x * g
     return x
 
 
@@ -144,7 +151,7 @@ def cw_id(a, d):
 def cmd_live(a):
     name = a.mode
     mode = next(m for n, m in PASSES.values() if n == name)
-    x = live_audio(mode)
+    x = live_audio(mode, levels=[float(v) for v in a.levels.split(",")] if a.levels else None)
     if a.wav:
         write(a.wav, x)
         print("wrote", a.wav, f"({len(x) / FSA:.1f} s)")
@@ -463,7 +470,7 @@ def mcu_fit(c, T, ref, offs=np.arange(-300, 301, 25)):
 def mcu_analyze(caps, out=print, train_gain=None):
     """the MCU receiver's templates (made from the model, as in c/k6/ifrx_tables.h) against
     templates trained on the strong captures themselves, both at the data-aided best timing
-    and IF offset: per pass and gain step, the bit error rate of each, and how alike the two
+    and IF offset (picked on the very symbols it counts, so it reads low: see mcu_xval): per pass and gain step, the bit error rate of each, and how alike the two
     template sets are. Returns {pass: trained templates}"""
     from sim.k6if import mcu
     from sim.k6if import modes as md
@@ -540,8 +547,61 @@ def mcu_analyze(caps, out=print, train_gain=None):
     return res
 
 
+def mcu_xval(caps, out=print, templates=None, steps=(1, 8)):
+    """the captures' BER with no selection bias: each capture's timing and IF are picked on
+    one half of its symbols (by the known symbols' share of the metric) and its errors counted
+    on the other half, both ways round. The PN phase comes from mcu_fit on the whole capture.
+    mcu_analyze's best fit, picked on the same symbols it counts, reads far too low for 4FSK
+    (0.4% on the 2026-11-06 captures, against 5.9% held out). templates: {pass: T} in place
+    of the model's (e.g. mcu_analyze's trained ones). Returns {pass: (BER, bits, confusion)}"""
+    from sim.k6if import mcu
+    from sim.k6if import modes as md
+    res = {}
+    for pas, (name, mode) in PASSES.items():
+        m = md.Mode(*md.MODES[name + "1200"])
+        T = (templates or {}).get(pas)
+        if T is None:
+            T = mcu.make_templates(m)[0]
+        ref, b = pn_symbols(mode), m.bits_of
+        e = nb = 0
+        conf = np.zeros((m.M, m.M), int)
+        for c in (x for x in caps if x["lost"] == 0 and x["pass_"] == pas
+                  and steps[0] <= x["gain"] <= steps[1]):
+            fc = c["ks"] * 1000.0 / 64
+            pc = fc / 1200.0
+            y = signal.lfilter(mcu.taps(fc=fc), 1, c["x"] - c["x"].mean())
+            n = int((len(y) - mcu.NT - 2 * pc) // pc) - 1
+            p = mcu_fit(c, T, ref)[3]
+            kn = ref[(p + np.arange(n)) % len(ref)]
+            k = np.arange(len(y))
+            tries = []
+            for f in np.arange(-300, 301, 25):
+                z = y * np.exp(-2j * np.pi * (st.fe.FIF + f) * k / fc)
+                for t0 in mcu.NT + np.arange(0, pc, pc / 36):
+                    sy, met, _ = mcu_decide(z, T, t0, pc, n)
+                    tries.append((sy, met[np.arange(n), kn] / (met.sum(1) + 1e-12)))
+            h = n // 2
+            for A, B in ((slice(0, h), slice(h, n)), (slice(h, n), slice(0, h))):
+                sy = max(tries, key=lambda r: r[1][A].mean())[0]
+                e += int(np.sum(b[sy[B]] != b[kn[B]]))
+                nb += len(sy[B]) * m.k
+                for u, v in zip(kn[B], sy[B]):
+                    conf[u, v] += 1
+        if nb:
+            res[pas] = (e / nb, nb, conf)
+            errs = ", ".join(f"{i}->{j}:{conf[i, j]}" for i in range(m.M) for j in range(m.M)
+                             if i != j and conf[i, j])
+            out(f"pass {pas} ({name}), steps {steps[0]}-{steps[1]}: held-out BER {e / nb:.4f} "
+                f"({nb} bits); symbol errors sent->got {errs}")
+    return res
+
+
 def cmd_mcu(a):
-    mcu_analyze(parse(open(a.log, errors="replace")), train_gain=a.train_step)
+    caps = parse(open(a.log, errors="replace"))
+    if a.xval:
+        mcu_xval(caps)
+        return
+    mcu_analyze(caps, train_gain=a.train_step)
 
 
 def cmd_analyze(a):
@@ -559,6 +619,8 @@ def main():
         if nm == "live":
             r.add_argument("mode", choices=["4fsk", "ffsk"])
             r.add_argument("--wav", help="write the audio here instead of sending it")
+            r.add_argument("--levels", help="each segment's tone level in turn, e.g. 0.10,0.12,0.14 "
+                           "(peak; the mode's own is 0.14 FFSK, 0.12 4FSK), repeated over the 10")
         r.add_argument("--freq", type=int, default=440850000)
         r.add_argument("--rigctld", default="localhost:4532")
         r.add_argument("--device", default="alsa_output.usb-Burr-Brown_from_TI_USB_Audio_CODEC-00.analog-stereo")
@@ -575,6 +637,7 @@ def main():
     mc = sub.add_parser("mcu")
     mc.add_argument("log")
     mc.add_argument("--train-step", type=int, help="the gain step to train on (default the second)")
+    mc.add_argument("--xval", action="store_true", help="the held-out BER (no selection bias) instead")
     mc.set_defaults(fn=cmd_mcu)
     sl = sub.add_parser("simlog")
     sl.add_argument("out")
