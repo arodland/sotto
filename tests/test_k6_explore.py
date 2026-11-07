@@ -15,7 +15,7 @@ K6 = os.path.join(ROOT, "c", "k6")
 MIN = 60_000
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import k6_explore as kx  # noqa: E402
-from k6_explore import F_IGNORED, F_OFF_HEARD, F_SIMPLEX, F_SPUR, F_TRIED, Rec  # noqa: E402
+from k6_explore import F_IGNORED, F_KNOWN, F_OFF_HEARD, F_SIMPLEX, F_SPUR, F_TRIED, Rec  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -44,7 +44,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
     assert und == [], und
     size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
     text, data, bss = (int(x) for x in size.split()[:3])
-    assert text < 2048 and data == 0 and bss == 0
+    assert text < 2304 and data == 0 and bss == 0   # 2194 with the known list (2026-11-07)
 
 
 def test_a_repeater_output_grades_up_with_its_cw_id(lib):
@@ -147,6 +147,25 @@ def test_rank_by_score_then_overs_and_ignored_last(lib):
     assert y.ranked() == [433_500_000, 433_600_000, 433_700_000]
 
 
+def test_known_repeaters_rank_after_the_new_ones(lib):
+    """Jeff 2026-11-07: new repeaters above a rule, the saved table's below"""
+    x = List(lib)
+    x.know(443_100_000)                                     # saved before this candidate shows up
+    for k in range(3):
+        x.over(443_100_000, k * MIN, 5000, -80)             # +3, known from the start
+        x.over(442_375_000, k * MIN, 5000, -80)             # +3
+        x.over(146_520_000, k * MIN, 5000, -60 - 15 * k)    # simplex: -5
+    x.over(443_100_000, 4 * MIN, 5000, -80)                 # more overs: would rank first
+    assert x.find(443_100_000).flags & F_KNOWN
+    assert x.ranked() == [442_375_000, 146_520_000, 443_100_000]
+    x.know(442_375_000)                                     # Save: marked now, still once listed
+    x.know(442_376_000)
+    assert x.e.known_n == 2
+    assert x.ranked() == [146_520_000, 443_100_000, 442_375_000]
+    x.find(146_520_000).flags |= F_IGNORED                  # ignored: last of the new ones
+    assert x.ranked()[0] == 146_520_000
+
+
 def test_a_full_list_drops_the_weakest_but_keeps_ignored_and_tried(lib):
     x = List(lib, cap=3)
     for k in range(2):
@@ -224,6 +243,24 @@ def test_listen_for_id_takes_turns_and_skips_the_ones_with_a_call(lib):
     x.cw(second, b"W7XYZ")
     assert pick() is None                                       # nothing left; never the simplex
     assert x.find(146_520_000).listens == 0
+
+
+def test_listen_for_id_picks_a_first_key_up_and_only_repeater_outputs(lib):
+    # the EXPLORE bench run (2026-11-07 17:56): the listener went to 144.000, the K6's own 24 MHz
+    # harmonic, and a carrier keyed for the first time had no candidate yet, so it couldn't be
+    # picked until its over ended
+    x = List(lib)
+    up = (ctypes.c_uint32 * 3)(144_000_000, 446_000_000, 440_850_000)
+    p = lib.ex_pick_id(ctypes.byref(x.e), up, 3)
+    assert p and p.contents.hz == 440_850_000 and p.contents.listens == 1 and p.contents.overs == 0
+    c = x.find(440_850_000)
+    x.over(440_850_000, 5000, 9000, -24)                       # its first over ends: the same entry
+    assert x.find(440_850_000).overs == 1 and x.find(440_850_000).first_ms == 5000
+    assert x.find(144_000_000) is None and x.find(446_000_000) is None
+    assert c is not None
+    # an over at n x 24 MHz is the K6's own clock: a spur from the start, ranked last
+    x.over(144_000_000, 0, 60_000, -72)
+    assert x.find(144_000_000).flags & kx.F_SPUR
 
 
 def test_scores_the_app_s_list_against_a_repeater_list(tmp_path):

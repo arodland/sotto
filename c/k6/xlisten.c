@@ -50,6 +50,10 @@ static int report(xl_t *x) {
   uint32_t sum = 0, top = 0;
   uint8_t fl = 0;
   int i, ok = 0, n = cw_call(c->text, call, &fl);
+  /* no stack bytes after the call's NUL: they're copied out whole, and the app compares the
+     calls of two listens byte for byte (on the bench the same AG7EW never matched) */
+  for (i = 0; i < 11 && call[i]; i++) {}
+  for (; i < 11; i++) call[i] = 0;
   for (i = 0; i < CW_TEXT; i++) x->text[i] = c->text[i];
   if (!n && c->nd < LISTEN_MIN) {
     ok = -1;

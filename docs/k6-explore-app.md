@@ -76,13 +76,24 @@ mounts the table and says one `RT` line per entry, so the table can be read over
 
 ## The screen and keys
 
+The screen layout is Jeff's pick from the font sheet (2026-11-07, /mnt/project-files/k6-fonts/):
+a header in the 6x10 font, dark on a lit bar (21 characters), then 7 candidate rows and a
+footer in the 4x6 font (32 characters a row, so a row also shows its callsign once heard).
+New repeaters are listed first. A thin rule separates them from the known ones under it: the
+frequencies already saved in the table (read at the start, and added on each Save). The rows
+under the rule move down 2 px. The selected row is drawn inverted, dark on a lit bar (Jeff's
+idea: no '>' column). Grades: R likely a repeater (score 6 or more), r maybe one, ? not seen
+enough yet, s simplex or a spur or a louder signal's skirt, x ignored with *. The level bar
+(Jeff's "4 revised", 2026-11-07) is 2 px of loudest level, 5 dB a pixel from -120 dBm (21 px
+full), over a dotted line for the score (10 points full). On serial, a known candidate has flag 0x20 in its K6 CAND line.
+
 ```text
 EX ALL 11 2.3s UP          band set, candidates, one pass, UP while something is keyed
->R 146.940 -0.6  -80       grade, MHz, offset (S simplex), loudest level
- r 443.100 +5.0  -85
- ? 440.850 +5.0  -22
- s 146.520   S   -70
-n4 sc8 W7ABC/R             the selected row: overs, score, call (or ids)
+R 146.940 -0.6 ====  W7ABC  grade, MHz, offset (S simplex), level bar, call
+r 443.100 +5.0 ===         (the selected row is drawn inverted)
+? 440.850 +5.0 ========
+s 146.520   S  ======
+-80 dBm  score 8  4 overs  the selected row: loudest level, score, overs
 ```
 
 | Key | In the list |
@@ -142,6 +153,35 @@ with repeaters in range, then count how many of the area's listed repeaters it g
 Expected false positive: a fixed simplex station that IDs on a schedule (like the bench's
 AG7EW keeper on 440.850) grades R. The input-hop cue (not built yet) is what will tell them
 apart.
+
+## First bench check (2026-11-07 17:53-18:03 UTC, main ac2acdd)
+
+The flash took one OTA reset and booted into EXPLORE. The K6 only received; the IC-7100 sent
+three AG7EW CW IDs on 440.850. Log: `~/sotto-work/runs/explore-bench-1/serial.log` on hamlet.
+
+- **Sweep:** 70CM (928 bins) at about 1.1 s a pass, floors -104 to -111 dBm.
+- **Automatic Listen for ID:** it went to 440.850 by itself on the second and third IDs and
+  decoded "AG7EW SOTTO TEST" both times. On its own it also found 440.925 (-93 dBm, the signal
+  from explorer-scan-6) and listened to it.
+- **What went wrong, fixed since:**
+  - On ALL it listened to 144.000, the K6's own 24 MHz clock harmonic. Now the automatic
+    listener only picks repeater output sub-bands, and a candidate within 2.5 kHz of n x 24 MHz
+    is a spur from the start.
+  - On the first ID it went to 440.900, the IC-7100's -81 dBm sideband next to the -24 dBm
+    carrier, because 440.850 had no candidate until its first over ended. Now `xs_up` leaves
+    out a carrier 20 dB under one up within 100 kHz, and `ex_pick_id` makes the candidate for a
+    carrier keyed for the first time.
+  - Two decodes of the same call on separate listens didn't confirm. The decoded call carried
+    stack bytes after its NUL, and the app compared all 11 bytes. Now xlisten zero-fills the
+    call and the app compares up to the NUL.
+  - One held EXIT left EXPLORE and its key repeat opened it again from VOICE MSG, wiping the
+    list. EXIT now counts presses, not repeats, both in EXPLORE and in VOICE MSG.
+
+Then (18:19-18:22) Save wrote 440.850 to the table (2 of 32 erases), 7 dumped the list (7
+candidates: 443.525 and 440.925 heard on their own, 440.862 graded s as the ID's skirt), and the
+rtls module, sent by the IC-7100 (18 of 18 chunks in 23.6 s), read the table back from the K6:
+`RT live=1 ... RT 1 440850000 5000000 T0 - r -21`. The call is `-` because of the confirm bug
+above.
 
 ## Not built yet
 

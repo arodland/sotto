@@ -454,9 +454,20 @@ void xs_info(const xs_t *s, xs_info_t *o) {
   }
 }
 
+/* up now, not a spur, and not within XS_SKIRT_HZ of one up XS_SKIRT_DB louder: the bench's
+   -24 dBm ID showed up at 440.900 too (-81), and that's where the automatic listener went */
+#define XS_SKIRT_HZ 100000u
+#define XS_SKIRT_DB 20
 unsigned xs_up(const xs_t *s, uint32_t *out, unsigned max) {
-  unsigned i, n = 0;
-  for (i = 0; i < XS_HOT && n < max; i++)
-    if (s->hot[i].hz && s->hot[i].up && !s->hot[i].spur) out[n++] = s->hot[i].hz;
+  unsigned i, j, n = 0;
+  for (i = 0; i < XS_HOT && n < max; i++) {
+    const xs_hot_t *h = &s->hot[i], *o;
+    if (!h->hz || !h->up || h->spur) continue;
+    for (j = 0, o = s->hot; j < XS_HOT; j++, o++)
+      if (o != h && o->hz && o->up && (o->hz > h->hz ? o->hz - h->hz : h->hz - o->hz) <= XS_SKIRT_HZ &&
+          o->lvl >= h->lvl + XS_SKIRT_DB)
+        break;
+    if (j == XS_HOT) out[n++] = h->hz;
+  }
   return n;
 }

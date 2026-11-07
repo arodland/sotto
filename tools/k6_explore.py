@@ -29,7 +29,7 @@ K6 = os.path.join(ROOT, "c", "k6")
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import k6_scan  # noqa: E402
 
-F_IGNORED, F_TRIED, F_OFF_HEARD, F_SIMPLEX, F_SPUR = 1, 2, 4, 8, 16
+F_IGNORED, F_TRIED, F_OFF_HEARD, F_SIMPLEX, F_SPUR, F_KNOWN = 1, 2, 4, 8, 16, 32
 
 
 class Cand(ctypes.Structure):
@@ -44,7 +44,8 @@ class Cand(ctypes.Structure):
 
 class Ex(ctypes.Structure):
     _fields_ = [("c", ctypes.POINTER(Cand)), ("n", ctypes.c_uint16), ("cap", ctypes.c_uint16),
-                ("tol_hz", ctypes.c_uint32)]
+                ("tol_hz", ctypes.c_uint32), ("known", ctypes.POINTER(ctypes.c_uint32)),
+                ("known_n", ctypes.c_uint16), ("known_cap", ctypes.c_uint16)]
 
 
 class Plan(ctypes.Structure):
@@ -77,6 +78,8 @@ def load(so=None):
     L.ex_input.argtypes = [P, ctypes.c_uint32, ctypes.c_int32]
     L.ex_tone.argtypes = [P, ctypes.c_uint32, ctypes.c_uint16]
     L.ex_cw.argtypes = [P, ctypes.c_uint32, ctypes.c_char_p]
+    L.ex_known_store.argtypes = [P, ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint]
+    L.ex_know.argtypes = [P, ctypes.c_uint32]
     L.ex_find.argtypes = [P, ctypes.c_uint32]
     L.ex_find.restype = ctypes.POINTER(Cand)
     L.ex_rank.argtypes = [P, ctypes.c_uint]
@@ -93,6 +96,8 @@ class Explorer:
     def __init__(self, L, cap=64):
         self.L, self.store, self.e = L, (Cand * cap)(), Ex()
         L.ex_init(ctypes.byref(self.e), self.store, cap)
+        self.known = (ctypes.c_uint32 * 16)()
+        L.ex_known_store(ctypes.byref(self.e), self.known, 16)
 
     def over(self, hz, t, dur, lvl):
         p = self.L.ex_over(ctypes.byref(self.e), hz, t, dur, lvl)

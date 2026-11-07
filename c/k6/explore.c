@@ -26,6 +26,18 @@ static void zero(void *p, unsigned n) {
 
 void ex_init(ex_t *e, ex_cand_t *store, unsigned cap) {
   e->c = store, e->n = 0, e->cap = (uint16_t)cap, e->tol_hz = 5000;
+  e->known = 0, e->known_n = e->known_cap = 0;
+}
+
+void ex_known_store(ex_t *e, uint32_t *buf, unsigned cap) {
+  e->known = buf, e->known_n = 0, e->known_cap = (uint16_t)cap;
+}
+
+static int known(const ex_t *e, uint32_t hz) {
+  unsigned i;
+  for (i = 0; i < e->known_n; i++)
+    if (dist(e->known[i], hz) <= e->tol_hz) return 1;
+  return 0;
 }
 
 ex_cand_t *ex_find(ex_t *e, uint32_t hz) {
@@ -91,19 +103,38 @@ static ex_cand_t *slot(ex_t *e) {
   return w;
 }
 
+/* the K6's own MCU clock: 24 MHz harmonics, 72-336 MHz seen on rxmap, 144.000 at -72 dBm the
+   loudest (the HF thread, 2026-11-07). Nobody transmits on exactly n x 24 MHz, and no repeater
+   output sits there. (The FD6818's 13 / 26 MHz family is left alone: 442.000 is a channel.) */
+static int own_clock(uint32_t hz) {
+  uint32_t f;
+  for (f = 24000000u; f < 1000000000u; f += 24000000u)
+    if (dist(hz, f) <= 2500) return 1;
+  return 0;
+}
+
 static ex_cand_t *get(ex_t *e, uint32_t hz, uint32_t t) {
   ex_cand_t *c = ex_find(e, hz);
   if (c) return c;
   if (!(c = slot(e))) return 0;
   zero(c, sizeof *c);
   c->hz = hz, c->first_ms = c->last_ms = t, c->grade = '?';
+  if (own_clock(hz)) c->flags = EX_F_SPUR;
+  if (known(e, hz)) c->flags |= EX_F_KNOWN;
   return c;
+}
+
+void ex_know(ex_t *e, uint32_t hz) {
+  ex_cand_t *c = ex_find(e, hz);
+  if (c) c->flags |= EX_F_KNOWN;
+  if (!known(e, hz) && e->known_n < e->known_cap) e->known[e->known_n++] = hz;
 }
 
 ex_cand_t *ex_over(ex_t *e, uint32_t hz, uint32_t start_ms, uint32_t dur_ms, int level) {
   ex_cand_t *c = get(e, hz, start_ms);
   unsigned i;
   if (!c) return 0;
+  if (!c->overs) c->first_ms = start_ms;   /* ex_pick_id may have made it before its first over */
   if (!c->overs || level < c->lo) c->lo = (int16_t)level;
   if (!c->overs || level > c->hi) c->hi = (int16_t)level;
   /* a short over 5-20 min after the last short one: an ID's rhythm */
@@ -153,7 +184,9 @@ void ex_cw(ex_t *e, uint32_t hz, const char *call) {
 
 /* is a ranked before b? */
 static int before(const ex_cand_t *a, const ex_cand_t *b) {
+  int ka = (a->flags & EX_F_KNOWN) != 0, kb = (b->flags & EX_F_KNOWN) != 0;
   int ia = (a->flags & EX_F_IGNORED) != 0, ib = (b->flags & EX_F_IGNORED) != 0;
+  if (ka != kb) return kb;
   if (ia != ib) return ib;
   if (a->score != b->score) return a->score > b->score;
   if (a->overs != b->overs) return a->overs > b->overs;
@@ -184,8 +217,12 @@ ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n) {
   ex_cand_t *best = 0;
   unsigned i;
   for (i = 0; i < n; i++) {
-    ex_cand_t *c = ex_find(e, up_hz[i]);
-    if (!c || c->call[0] || c->grade == 's' || (c->flags & (EX_F_SPUR | EX_F_IGNORED | EX_F_SIMPLEX)) ||
+    const ex_plan_t *p = plan_row(up_hz[i]);
+    ex_cand_t *c;
+    /* only a repeater output (144.000, the K6's own 24 MHz harmonic, was picked on the bench);
+       a carrier keyed for the first time has no over yet: it gets its candidate now */
+    if (!p || p->simplex || !(c = get(e, up_hz[i], 0))) continue;
+    if (c->call[0] || c->grade == 's' || (c->flags & (EX_F_SPUR | EX_F_IGNORED | EX_F_SIMPLEX)) ||
         (c->overs && c->skirts >= c->overs))
       continue;
     if (!best || c->listens < best->listens || (c->listens == best->listens && before(c, best))) best = c;

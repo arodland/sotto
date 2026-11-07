@@ -47,6 +47,7 @@ extern "C" {
 #define EX_F_OFF_HEARD 0x04      /* the offset comes from ex_input, not the plan */
 #define EX_F_SIMPLEX 0x08        /* in a simplex range */
 #define EX_F_SPUR 0x10
+#define EX_F_KNOWN 0x20          /* in the saved repeater table (ex_know): listed after the new ones */
 #define EX_SKIRT_HZ 100000       /* a carrier this close and EX_SKIRT_DB louder, ending with it: a skirt */
 #define EX_SKIRT_DB 25
 
@@ -72,6 +73,8 @@ typedef struct {
   ex_cand_t *c;
   uint16_t n, cap;
   uint32_t tol_hz;               /* overs within this of a candidate are its own (default 5 kHz) */
+  uint32_t *known;               /* the saved table's frequencies (ex_know), known_cap of them */
+  uint16_t known_n, known_cap;
 } ex_t;
 
 /* band plan rows: an output range, its usual offset, and whether it is a simplex range */
@@ -90,10 +93,15 @@ void ex_input(ex_t *e, uint32_t hz, int32_t off_hz);       /* a user heard at hz
 void ex_tone(ex_t *e, uint32_t hz, uint16_t tone);
 void ex_cw(ex_t *e, uint32_t hz, const char *call);
 ex_cand_t *ex_find(ex_t *e, uint32_t hz);
+/* Known repeaters (Jeff 2026-11-07: new ones above a rule, known ones below): ex_known_store
+   hands over room for cap frequencies (ex_init leaves none), ex_know adds one (Save, a CW write,
+   each saved entry at the start) and marks its candidate, now and when it first appears */
+void ex_known_store(ex_t *e, uint32_t *buf, unsigned cap);
+void ex_know(ex_t *e, uint32_t hz);
 /* rescore one (after any event the caller adds itself) */
 void ex_grade(ex_cand_t *c);
-/* the i-th best (0 first) by score, then most overs, then most recent; 0 past the end. Ignored
-   candidates come last. */
+/* the i-th best (0 first) by score, then most overs, then most recent; 0 past the end. New
+   candidates come before known ones (EX_F_KNOWN), and in each group the ignored ones last. */
 ex_cand_t *ex_rank(ex_t *e, unsigned i);
 /* Which of the frequencies up now (up_hz, n of them: the scan's hot entries that are keyed) the
    automatic Listen for ID should go to, by Jeff's rule (2026-11-07): only candidates still

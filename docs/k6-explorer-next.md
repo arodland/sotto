@@ -6,6 +6,13 @@ off the radio today, and the steps to the EXPLORE core image (Phase 3). The phas
 master plan's: 0 settle-time meter, 1 fast sweep, 2 explorer core, 3 core image and library,
 4 field test.
 
+**Update 2026-11-07 15:02: Phase 3 is built and merged (PR #114).** The EXPLORE app runs as its own
+image, `aura-explore.bin`, and API level 5 is in every pager image. What it does, its keys and the
+Phase 4 field test are in [k6-explore-app.md](k6-explore-app.md). The sections below are the road
+as planned. Where the build differs: the scan engine is c/k6/xscan.c (from flash, not copied to
+RAM), Listen for ID is c/k6/xlisten.c, the screens are the list, Try and Listen (no waterfall
+yet), and Try only listens.
+
 ## The pieces
 
 | Piece | Where | Size on the M0 | State |
@@ -45,7 +52,7 @@ module. On the radio, "a CW ID fills in the saved entry's call" needs both cwlis
 once, so that has to wait for the core. Before that, the host can carry the result from one
 module to the next.
 
-### API level 5 (proposed)
+### API level 5 (built, PR #114)
 
 These calls are appended to `k6_api_t`, so level 1-4 modules keep working:
 
@@ -178,11 +185,12 @@ can be one `k6_update.py` run, as with the pager images.
 
 ## Next bench steps (70 cm only, receive except for the CW ID)
 
-1. **Second scan run** (in progress, image on the radio, no flash): 2 m for 90 s, then 70a for
-   120 s with a CW ID 40 s in. This confirms the bin-0 park and the off-round floor reads.
-2. **A 30-minute 70a scan with the ID keeper running.** Feed the serial log to
-   `k6_explore.py replay` and check the ID-rhythm cue on real data. Expect AG7EW on 440.850 to
-   grade R, as above.
+1. **Second scan run:** done (docs/k6-scan.md, runs 2-5).
+2. **A 30-minute 70a scan with the ID keeper running:** done 2026-11-07 13:14-13:44
+   (explorer-scan-6, docs/k6-scan.md). Two real signals, 440.925 and 442.025. It also showed
+   the floor sticking low after our own ID, now fixed in xscan.
 3. **Tone probe** (above), receive only, the IC-7100 sending tones on 440.850.
-4. After level 5: `rtcw` against the ID keeper. The first run fills a blank entry. A second run
+4. The EXPLORE image on the bench: boot, the list, automatic Listen for ID catching the
+   keeper, Save, key 7, and `rtls` over the air. Then Jeff's field test.
+5. After level 5: `rtcw` against the ID keeper. The first run fills a blank entry. A second run
    with a different call asks, and a third with `confirmed` writes.
