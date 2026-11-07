@@ -59,11 +59,22 @@ SEGMENTS = {
     "2m": (144_000_000, 50_000, 80, 12_500, "2 m in detail"),
     "70cm": (420_000_000, 375_000, 80, 12_500, "70 cm in detail"),
     "gap": (600_000_000, 2_000_000, 125, 25_000, "600-850 MHz: where the synthesizer stops"),
+    # below the FD6818's 18 MHz spec (docs/k6-hf.md): does the synthesizer follow? Its own clock
+    # harmonics (12, 13 MHz ...) and WWV / CHU carriers say, by turning up at their own frequency
+    "hf": (8_000_000, 250_000, 88, 5_000, "8-30 MHz in 250 kHz bins: 18 MHz spec edge, 20 m, WWV 10/15/20/25"),
+    "hflo": (1_000_000, 250_000, 28, 5_000, "1-8 MHz: far under the spec (a hung PLL shows as a flat floor)"),
 }
 
 # what may be on the air there (US / BC, Pacific Northwest); a label for the table, not a claim
 SERVICES = [
-    (26.96, 27.41, "CB"), (28.0, 29.7, "10 m"), (50.0, 54.0, "6 m"), (54.0, 88.0, "VHF-lo TV / land mobile"),
+    (2.495, 2.505, "WWV 2.5"), (3.33, 3.331, "CHU 3.330"), (3.5, 4.0, "80 m"), (4.995, 5.005, "WWV 5"),
+    (5.9, 6.2, "49 m broadcast"), (7.0, 7.3, "40 m"), (7.3, 7.6, "41 m broadcast"), (7.85, 7.851, "CHU 7.850"),
+    (9.4, 9.9, "31 m broadcast"), (9.995, 10.005, "WWV 10"), (10.1, 10.15, "30 m"),
+    (11.6, 12.1, "25 m broadcast"), (13.57, 13.87, "22 m broadcast"), (14.0, 14.35, "20 m"),
+    (14.67, 14.671, "CHU 14.670"), (14.995, 15.005, "WWV 15"), (15.1, 15.8, "19 m broadcast"),
+    (17.48, 17.9, "16 m broadcast"), (18.068, 18.168, "17 m"), (19.995, 20.005, "WWV 20"),
+    (21.0, 21.45, "15 m"), (21.45, 21.85, "13 m broadcast"), (24.89, 24.99, "12 m"), (24.995, 25.005, "WWV 25"),
+    (25.67, 26.1, "11 m broadcast"), (26.96, 27.41, "CB"), (28.0, 29.7, "10 m"), (50.0, 54.0, "6 m"), (54.0, 88.0, "VHF-lo TV / land mobile"),
     (88.0, 108.0, "FM broadcast"), (108.0, 118.0, "VOR / ILS"), (118.0, 137.0, "airband (AM)"),
     (137.0, 138.0, "weather satellites"), (144.0, 148.0, "2 m"), (148.0, 162.4, "land mobile"),
     (162.4, 162.56, "NOAA weather"), (162.56, 174.0, "land mobile"), (174.0, 216.0, "VHF TV"),
@@ -77,7 +88,7 @@ SERVICES = [
 ]
 # where the K6 should hear, as far as we know (unverified on the FD6818: the run settles it)
 REGIONS = [
-    (18, 136, "below the VHF filter"), (136, 174, "VHF filter"), (174, 300, "above the VHF filter"),
+    (1, 18, "below the 18 MHz spec"), (18, 30, "HF top (above spec)"), (30, 136, "below the VHF filter"), (136, 174, "VHF filter"), (174, 300, "above the VHF filter"),
     (300, 400, "below the UHF filter"), (400, 520, "UHF filter"), (520, 630, "above the UHF filter"),
     (630, 840, "synthesizer gap?"), (840, 1300, "synth top band"),
 ]
