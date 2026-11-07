@@ -39,11 +39,11 @@ MAGIC = b"SWEEP v1"
 FMT = "<8sBBBBBB2xHHHHH4H4HH4I4I"     # par_t in scan.c, 76 bytes
 NSEG = 4
 STORE = 4072                         # the module store: code + scratch
-SW_T, HOT_T, HOT = 180, 28, 12       # sw_t, hot_t and HOT in scan.c
+SW_T, HOT_T, HOT = 180, 28, 11       # sw_t, hot_t and HOT in scan.c
 FLMAX = 1024                         # bins in all: their floors live on the module's stack
 TLM_BYTES = 12 * 57
 PAGER_HZ = 440_850_000
-TUNE_US = 2300                       # a tune and a read, as rxmap's first run found (2026-11-07)
+TUNE_US = 920                        # a tune and a read: the first scan run, 2026-11-07 (403 bins/s)
 
 F_REFINE, F_ROWS = 2, 4
 
@@ -62,12 +62,12 @@ SEGMENTS = {
 
 
 def code_size():
-    """scan.c's built size, or the last build's (3308 B, 2026-11-07) without clang"""
+    """scan.c's built size, or the last build's (3436 B, 2026-11-07) without clang"""
     try:
         from modem import k6mod
         return len(k6mod.build(SRC)[0])
     except Exception:
-        return 3308
+        return 3436
 
 
 def row_room(code=None):
@@ -162,8 +162,13 @@ def decode(text):
     r = {"floors": [], "sweeps": [], "new": [], "overs": [], "spurs": [], "summary": [], "z": None}
     rows = {}
     for t, ln in lines_of(text):
-        if m := re.fullmatch(r"F((?: -?\d+)+)", ln):
+        if m := re.fullmatch(r"F((?: -?\d+)+)", ln):         # the first run's form
             r["floors"] = [int(x) for x in m.group(1).split()]
+        elif m := re.fullmatch(r"F(\d) (-?\d+) q(-?\d+):((?: -?\d+)*)", ln):
+            g = int(m.group(1))
+            r["floors"][g:g + 1] = [int(m.group(2))]
+            r.setdefault("quick_floors", {})[g] = int(m.group(3))
+            r.setdefault("floor_reads", {})[g] = [int(x) for x in m.group(4).split()]
         elif m := re.fullmatch(r"R(\d) (\d+) ([0-o]*)", ln):
             g, at = int(m.group(1)), int(m.group(2))
             row = rows.setdefault(g, [])
@@ -189,9 +194,10 @@ def decode(text):
     return r
 
 
-def bin_cost_us(res, segs, quick_us=1500):
-    """us a coarse bin costs beyond quick_us (tune, read, loop): from sweeps with no confirms"""
-    xs = [s["ms"] * 1000 / segs[s["seg"]][2] - quick_us for s in res["sweeps"]
+def bin_cost_us(res, segs, quick_us=1500, confirm_us=12000):
+    """us a coarse bin costs beyond quick_us (tune, read, loop): from sweeps with no confirms, less
+    the park on the first bin (a tune and confirm_us) each sweep starts with"""
+    xs = [(s["ms"] * 1000 - confirm_us) / segs[s["seg"]][2] - quick_us for s in res["sweeps"]
           if s["c"] == 0 and s["n"] > 0 and s["seg"] < len(segs)]
     return sorted(xs)[len(xs) // 2] if xs else None
 
@@ -325,8 +331,8 @@ def watch_line(ln, pending, out=print):
         pending[:] = [x for x in pending if x[1] != m.group(1)]
         if sw:
             out(f"{sw[0]['seg']} |{text_row(sw[0]['row'])}| {sw[0]['ms']:>5} ms c{sw[0]['c']}")
-    elif ln[:2] in ("N ", "H ", "X ", "F "):
-        out({"N ": "  new  ", "H ": "  over ", "X ": "  spur ", "F ": "  floors "}[ln[:2]] + ln[2:])
+    elif ln[:2] in ("N ", "H ", "X ", "F ") or re.match(r"F\d ", ln):
+        out({"N ": "  new  ", "H ": "  over ", "X ": "  spur "}.get(ln[:2], "  floors ") + ln[2:].lstrip())
     elif ln.startswith(("T ", "Z ")):
         out(ln)
         return ln.startswith("Z ")
@@ -360,7 +366,7 @@ def cmd_plan(a):
         ok = fits([(lo, step, n, snap)], code=c)
         print(f"{name:<6} {mhz(lo):>8}-{mhz(lo + n * step):<10} {n:>4} {step / 1e3:>5g}k "
               f"{estimate(n):>7.2f} {'yes' if ok else 'NO':>4}  {what}")
-    print(f"\nsweep s: bins x (1.5 ms quick read + {TUNE_US / 1000:g} ms a tune and read, rxmap's figure; "
+    print(f"\nsweep s: bins x (1.5 ms quick read + {TUNE_US / 1000:g} ms a tune and read, measured 2026-11-07; "
           "the S lines measure it)")
 
 

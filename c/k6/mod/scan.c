@@ -24,7 +24,8 @@
                 (X line), never visited again.
    Lines (the serial report, K6 MOD say ...; the telemetry keeps the newest 684 bytes, so the
    summary comes last):
-     F -137 -136                            each segment's settled floor at the start
+     F0 -137 q-160: -137 -136 ...           a segment's settled and quick floors at the start,
+                                            then its 8 full reads
      N 146.940 -71 fl-137 z0 b123           a new hit: centre, level, segment floor, REG 0x63, bin
      H 146.940 2030 -71 n3                  an over ended: centre, ms up, level, overs so far
      X 146.940 -61                          a spur
@@ -74,7 +75,7 @@ static const volatile par_t PAR = {
     {'S', 'W', 'E', 'E', 'P', ' ', 'v', '1'}, 1, 1, 6, 10, 128, 6, {0, 0}, 1500, 12000, 60, 100, 60,
     {400}, {5000}, 0, {144000000u}, {10000u}};
 
-#define HOT 12
+#define HOT 11
 #define FLMAX 1024      /* bins, all segments: their floors live on the stack (3.5 KB free at the call) */
 #define BLOCK 32
 #define CLEAR_DBM (-100)
@@ -198,7 +199,7 @@ static void starts(hot_t *h, uint32_t now, int lvl, int r) {
 
 static void ends(sw_t *s, hot_t *h) {
   char *p;
-  uint32_t dur = h->last - h->up;
+  uint32_t dur = h->last > h->up ? h->last - h->up : 0;
   h->on += dur, h->up = 0;
   if (h->overs == 1 || h->lvl < h->olo) h->olo = h->lvl;
   if (h->overs == 1 || h->lvl > h->ohi) h->ohi = h->lvl;
@@ -282,6 +283,10 @@ static int sweep(sw_t *s, int g, uint8_t *fl) {
   char *p;
   if (!cols || cols > n) cols = n;
   for (b = 0; b < cols; b++) s->row[b] = 0;
+  /* park on the first bin first: the first run (2026-11-07) read bin 0 hot after every wrap from
+     the segment's top, a 4 MHz jump on 2 m */
+  api->tune(hz, s->q.wide);
+  api->delay_us(s->q.confirm_us);
   for (b = 0; b < n; b++, hz += step) {
     int r, v, f = fl[b];
     if ((b & (BLOCK - 1)) == 0) {
@@ -367,13 +372,13 @@ int k6_main(const k6_api_t *api) {
     api->delay_us(10000);
   }
   api->delay_us(200000);
-  /* each segment's floors: quick and full reads on 8 of its bins, the second lowest of each.
-     The first sweep caps a bin's quick floor 3 dB over the quick one, so a carrier that's up
-     all through it still shows. */
-  p = put(s->line, "F");
+  /* each segment's floors: quick and full reads on 8 of its bins, off the round frequencies
+     (the K6's clock harmonics), the second lowest of each. The first sweep caps a bin's quick
+     floor 3 dB over the quick one, so a carrier that's up all through it still shows. */
   for (g = 0; g < s->q.nseg; g++) {
-    uint32_t k = s->q.nbins[g] >> 3, f = s->q.lo_hz[g];
+    uint32_t k = s->q.nbins[g] >> 3, f = s->q.lo_hz[g] + ((k >> 1) + 3) * s->q.step_hz[g];
     uint8_t a[2] = {255, 255}, b[2] = {255, 255};
+    p = put(s->line + 20, ":");
     for (i = 0; i < 16; i++) {
       uint8_t v;
       int j = i & 1;
@@ -383,15 +388,21 @@ int k6_main(const k6_api_t *api) {
         v = st8(rssi(api));
       } else {
         v = st8(full(s, f, s->q.quick_us));
+        p = num(p, " ", dbm8(v), 0);
         f += k * s->q.step_hz[g];
       }
       if (v < a[j]) b[j] = a[j], a[j] = v;
       else if (v < b[j]) b[j] = v;
     }
     s->qfl[g] = b[0] + 3, s->sfl[g] = b[1];
-    p = num(p, " ", dbm8(b[1]), 0);
+    {
+      /* "F0 -137 q-160" then the 8 full reads, written past it above: close the gap */
+      char *e = p, *src = s->line + 20;
+      p = num(num(num(s->line, "F", g, 0), " ", dbm8(b[1]), 0), " q", dbm8(b[0]), 0);
+      while (src < e) *p++ = *src++;
+      say(s, p);
+    }
   }
-  say(s, p);
   t0 = s->rev = api->ms();
   for (;;) {
     uint8_t *fl = s->fl;

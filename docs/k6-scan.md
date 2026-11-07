@@ -25,7 +25,7 @@ Each bin of a segment:
 4. **Refine** (new hits only). Narrow-filter reads every 2.5 kHz over ±(step + 5 kHz), the middle
    of those within 3 dB of the loudest, snapped to the segment's channel raster, then a full read
    there for its level.
-5. **Revisit.** Hits go on a hot list of 12 entries, visited between blocks of 32 bins, every
+5. **Revisit.** Hits go on a hot list of 11 entries, visited between blocks of 32 bins, every
    100 ms. A quick read says up or down. An over starts with a full read (its level) and ends
    after two down reads, with one `H` line. An entry up for longer than `spur_s` (60 s) within
    3 dB is a spur: it gets one `X` line and is never visited again. Bins within 1.5 steps of an
@@ -57,7 +57,7 @@ Segments (`plan` lists them): `2m` 144-148 at 10 kHz, `2mo`/`2mr` the 2 m repeat
 
 | Line | Meaning |
 |---|---|
-| `F -137 -136` | each segment's settled floor at the start |
+| `F0 -137 q-160: -137 -136 ...` | a segment's settled and quick floors at the start, then its 8 full reads (taken off the round frequencies) |
 | `N 146.940 -71 fl-137 z0 b123` | a new hit: centre, level, segment floor, REG 0x63 noise indicator, bin |
 | `H 146.940 2030 -71 n3` | an over ended: centre, ms up, level, overs so far |
 | `X 146.940 -61` | a spur |
@@ -69,13 +69,12 @@ Segments (`plan` lists them): `2m` 144-148 at 10 kHz, `2mo`/`2mr` the 2 m repeat
 The `T` and `Z` lines come last so the telemetry (the newest 684 bytes) always holds them.
 `decode` also works out what a coarse bin really costs from the `S` lines of sweeps with no
 confirms: their time over their bins, less `quick_us`. That is the number the explorer design
-still lacks. rxmap's first run implied about 2.3 ms for a tune and a read, against the
-emulator's 0.42 ms and the 0.25 ms the design assumed.
+still lacks (the first run: 0.92 ms; the emulator charges 0.42 ms, the design assumed 0.25 ms).
 
 ## Memory
 
-The module is 3.3 KB of the 4 KB store. The scratch RAM after it holds the state (180 B), the hot
-list (12 × 28 B) and the row (up to 248 columns). The floors, one byte a bin and up to 1,024 bins
+The module is 3.4 KB of the 4 KB store. The scratch RAM after it holds the state (180 B), the hot
+list (11 × 28 B) and the row (up to 148 columns). The floors, one byte a bin and up to 1,024 bins
 in all, live on the stack: Phase 0's run measured 3,504 B of stack room at a module's call, and
 this module takes about 1.2 KB of it. So 2 m plus 70 cm 440-445 fit in one run (800 bins).
 `K6 MOD ret ... stack_free=` on the first run will show the real margin.
@@ -89,10 +88,27 @@ times (three `H` lines at the right length and level), a weak station 5 kHz off 
 waterfall column, two segments in turn, the bin cost from the `S` lines, the key, bad blocks, and
 both memory limits.
 
-## First bench run (to do)
+## First bench run (2026-11-07 08:03 UTC)
 
-Receive only, nothing flashed: `run 2m --seconds 120`, then `run 70a --seconds 120` with the
-IC-7100 keying its CW ID on 440.850 (it falls inside 70a) as the known signal. What to read off:
+Image keyed-lr-45c23e0 on the radio, nothing flashed; the module (d18bdc9, then still called
+sweep) sent from hamlet, 2 m for 90 s, wide, 1.5 ms quick reads. All 28 chunks in one send.
+
+- **403 bins a second**: 91 sweeps of 400 bins, 968-971 ms each, against the design's estimate of
+  0.75 s and `plan`'s 1.52 s. A coarse bin costs about 0.92 ms beyond its 1.5 ms read: a tune
+  and a register read take under 1 ms, not the 2.3 ms that rxmap's run time implied (rxmap's
+  overhead is elsewhere: its lines and full reads).
+- The module returned in 92.9 s with 1,140 B of stack never touched, so the floors on the stack
+  leave a margin.
+- One candidate, `T 144.000 n90 t0 -71 d1`: bin 0, hot on all 90 sweeps for a moment and gone at
+  the revisit. 144.000 is a 24 MHz harmonic (rxmap saw those), but the R rows show it only at
+  bin 0, right after the jump from 147.99 back to 144.00. Since then each sweep parks on its
+  first bin for confirm_us before it starts; the next run tells the two causes apart.
+
+## Next bench run
+
+Receive only, nothing flashed: `run 2m --seconds 90` again (does bin 0 still show?), then
+`run 70a --seconds 120` with the IC-7100 keying its CW ID on 440.850 (it falls inside 70a) as the
+known signal. What to read off:
 
 - the real bin cost and bins a second (`Z`, `decode`), against the design's 0.75 s for 2 m;
 - whether the CW ID shows as one entry with one `H` line per ID, at the IC-7100's level;

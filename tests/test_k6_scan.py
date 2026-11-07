@@ -146,9 +146,9 @@ def test_a_carrier_that_never_moves_is_a_spur():
     assert ret == 1
     # once it's a spur, the revisits stop: in the last 8 s it's tuned once a sweep, as any bin
     late = [hz for hz, _, us in m.tunes if us > s_(22)]
-    assert late.count(146_800_000) <= late.count(146_600_000) + 1
+    assert late.count(146_800_000) <= late.count(146_610_000) + 1
     early = [hz for hz, _, us in m.tunes if s_(6) < us < s_(14)]
-    assert early.count(146_800_000) > early.count(146_600_000) + 10    # revisited while it was up
+    assert early.count(146_800_000) > early.count(146_610_000) + 10    # revisited while it was up
 
 
 @need_clang
@@ -174,7 +174,7 @@ def test_cost_of_a_bin_comes_out_of_the_sweep_lines():
     assert ret == 0 and res["summary"] == []
     # the emulator charges 400 us a tune and 20 us a read: what the decoder must find
     assert abs(sw.bin_cost_us(res, segs) - 420) < 40
-    assert res["z"]["bps"] == pytest.approx(1e6 / (1500 + 420), rel=0.1)
+    assert res["z"]["bps"] == pytest.approx(80e6 / (80 * 1920 + 12400), rel=0.1)   # with the park
 
 
 @need_clang
@@ -228,4 +228,8 @@ def test_watch_shows_a_row_a_sweep():
                "Z sw=4 bins=320 ms=700 bps=457 hot=1"]:
         sw.watch_line(ln, pending, shown.append)
     assert shown[0] == "  floors -137" and shown[1].startswith("  new  146.940")
+    res = sw.decode("K6 MOD say F0 -120 q-160: -121 -120 -93 -119 -118 -122 -120 -117\n"
+                    "K6 MOD say F1 -137 q-161: -137 -138 -136 -135 -137 -139 -140 -137")
+    assert res["floors"] == [-120, -137] and res["quick_floors"] == {0: -160, 1: -161}
+    assert res["floor_reads"][0][2] == -93
     assert shown[2] == "0 |  :@|   160 ms c1" and shown[-1].startswith("Z ") and pending == []
