@@ -4179,10 +4179,10 @@ index 0000000..677b2f7
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..678fe03
+index 0000000..4be0757
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1171 @@
+@@ -0,0 +1,1178 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -5139,6 +5139,10 @@ index 0000000..678fe03
 +
 +// ---- the screen ----
 +
++/// the level bar's column on the list (after "r 443.525 +5.0 ") and its full width
++const BAR_X: i32 = 1 + 15 * 4;
++const BAR_W: u32 = 21;
++
 +/// the footer's row number for line()
 +const FOOT: i32 = 8;
 +
@@ -5245,32 +5249,35 @@ index 0000000..678fe03
 +                mhz(&mut b, c.hz);
 +                write!(b, " ").ok();
 +                off_text(&mut b, c);
-+                write!(b, " {:>4}", c.hi).ok();
-+                // 4x6 rows have room for the call (32 characters)
-+                if c.call[0] != 0 {
-+                    write!(b, " {}", cstr(&c.call)).ok();
-+                }
 +                let y = 11 + 6 * k as i32 + shift;
-+                if top + k == t.sel as u32 {
++                let sel = top + k == t.sel as u32;
++                if sel {
 +                    // the selected row inverted (Jeff 2026-11-07, for the column a '>' took): a
 +                    // lit bar from the blank pixel row above, unless that touches the header
 +                    // or the rule
 +                    let up = if k == 0 || ruled { 0 } else { 1 };
 +                    fill(lcd, y - up, 6 + up as u32, BinaryColor::On);
-+                    let st = MonoTextStyle::new(&FONT_4X6, BinaryColor::Off);
-+                    Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
-+                } else {
-+                    row(lcd, y, b.as_str());
++                }
++                let ink = if sel { BinaryColor::Off } else { BinaryColor::On };
++                let st = MonoTextStyle::new(&FONT_4X6, ink);
++                Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
++                // the loudest over as a bar (Jeff's pick A, 2026-11-07): 5 dB a pixel from
++                // -120 dBm, in the 5 columns the number took; the number is in the footer
++                let w = ((c.hi as i32 + 120) / 5).clamp(0, BAR_W as i32) as u32;
++                if w > 0 {
++                    Rectangle::new(Point::new(BAR_X, y + 1), Size::new(w, 3))
++                        .into_styled(PrimitiveStyle::with_fill(ink))
++                        .draw(lcd)
++                        .ok();
++                }
++                if c.call[0] != 0 {
++                    let x = BAR_X + BAR_W as i32 + 3;
++                    Text::with_baseline(cstr(&c.call), Point::new(x, y), st, Baseline::Top).draw(lcd).ok();
 +                }
 +            }
-+            let mut b: TextBuf<24> = TextBuf::new();
++            let mut b: TextBuf<32> = TextBuf::new();
 +            if let Some(c) = cand(t.sel as u32) {
-+                write!(b, "n{} sc{} ", c.overs, c.score).ok();
-+                if c.call[0] != 0 {
-+                    write!(b, "{}", cstr(&c.call)).ok();
-+                } else if c.ids > 0 {
-+                    write!(b, "ids{}", c.ids).ok();
-+                }
++                write!(b, "{} dBm  score {}  {} overs", c.hi, c.score, c.overs).ok();
 +            } else {
 +                write!(b, "listening...").ok();
 +            }
