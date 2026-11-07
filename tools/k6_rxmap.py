@@ -425,13 +425,15 @@ def cmd_cal(a):
         psk = psk31.modulate(psk31.repeat_to(HF_TEXT, hold), up.FS, TONE_HZ, level=0.3)
         hold = len(psk) / up.FS
     k6hz = {f: f + TONE_HZ if a.hf else f for f in points}     # where the K6 listens for each point
-    uniq = list(dict.fromkeys([k6hz[f] for f in points] + [PAGER_HZ]))
+    # --hf leaves 440.850 out: the closing CW ID there must not count as "seen" (run 2, 2026-11-07)
+    uniq = list(dict.fromkeys([k6hz[f] for f in points] + ([] if a.hf else [PAGER_HZ])))
     if len(uniq) > NCAL:
         sys.exit(f"at most {NCAL - 1} points besides 440.850")
     sched = cal_schedule(points, powers)
     per = hold + (2.6 if a.id_each else 0) + a.gap + 0.6
     total = len(sched) * per
-    blk = pack(PAGER_HZ, 0, 0, 0, mode=1, cal=uniq, quiet_s=12, max_s=int(total + 120), det_db=a.det_db,
+    max_s = int(total + (40 if a.hf else 120))   # the K6 gives up this long after it starts
+    blk = pack(PAGER_HZ, 0, 0, 0, mode=1, cal=uniq, quiet_s=12, max_s=max_s, det_db=a.det_db,
                wide=0 if a.narrow else 1)
     ns = SimpleNamespace(rigctld=a.rigctld, dry_run=a.dry_run, device=up.PLAY, rec_device=up.REC, phy="F",
                          baud=1800.0, payload="XL", level=0.3, telemetry=12, api_level=2, key_file=a.key_file,
@@ -467,6 +469,7 @@ def cmd_cal(a):
                 w = os.path.join(d, f"up{rnd}.wav")
                 note(f"upload {rnd}: {len(todo)} of {count} chunks; {up.mod_wav(ns, w, serial, xfer, todo)}")
                 up.key_and_play(ns, w)
+                t_run = time.time()                       # the K6 starts once it holds every chunk
                 since = rec.samples()
                 st, _, _ = up.listen(ns, rec, since, xfer, 12.0)
                 if st is None:
@@ -515,7 +518,8 @@ def cmd_cal(a):
         try:
             note("back on 440.850; waiting for the K6's report")
             since = rec.samples()
-            st, text, _ = up.listen(ns, rec, since, xfer, 60.0)
+            # it reports 12 s after the last carrier it saw, or at max_s if it saw none: wait for both
+            st, text, _ = up.listen(ns, rec, since, xfer, max(60.0, t_run + max_s + 30 - time.time()))
             if st is not None:
                 note(f"K6: {st['state']}, returned {st['ret']} in {st['ms']} ms")
             out.write("K6 telemetry:\n" + (text or "") + "\n")
