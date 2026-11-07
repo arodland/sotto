@@ -2,6 +2,7 @@
 through the pager's reassembly and its Cortex-M0 decoder path, and must play exactly what the
 fixed-point M0 decoder plays from the same frames and good flags. Needs make -C c/k6 and
 make -C c VARIANT=v3.7 fixed. SPDX-License-Identifier: MIT"""
+from dataclasses import replace
 import os
 import subprocess
 import sys
@@ -114,21 +115,23 @@ def test_store_truncates_long_message():
 
 
 def test_profile_xl():
-    """128-byte packets, 20 frames each: the same header as L, frames g*160 + s*8 + k"""
+    """128-byte packets, 20 frames each: the same header as L, frames g*160 + s*8 + k; the
+    short last group's 140 frames take 7 packets, frames 160 + s*7 + k"""
     sys.path.insert(0, ROOT)
     from modem import pager
     fr = frames_of(300, 6)
     px = pager.XL.pack(b"".join(fr), 7)
-    assert len(px) == 16 and all(len(p) == 128 for p in px)
+    assert len(px) == 15 and all(len(p) == 128 for p in px)
+    assert pager.XL.packet_frames(13, 300)[:3] == [165, 172, 179]
     lost = {2, 13}
     keep = [p for i, p in enumerate(px) if i not in lost]
     st, pcm = run_host(keep, xl=True)
     good = [1] * 300
     for seq in lost:
-        for f in pager.XL.packet_frames(seq):
+        for f in pager.XL.packet_frames(seq, 300):
             if f < 300:
                 good[f] = 0
-    assert st["total"] == "300" and st["of"] == "16" and st["packets"] == "14" and st["complete"] == "0"
+    assert st["total"] == "300" and st["of"] == "15" and st["packets"] == "13" and st["complete"] == "0"
     assert st["got"] == str(sum(good))
     assert np.array_equal(pcm[160:], run_dec(fr, good))
 
@@ -141,7 +144,7 @@ def test_xl_and_l_play_the_same():
     x = pager.XL.pack(b"".join(fr), 4)
     l = ref.pack_message(fr, 4)
     st, pcm_x = run_host(x, xl=True)
-    assert st["complete"] == "1" and st["of"] == "8"
+    assert st["complete"] == "1" and st["of"] == "4" == str(len(x))     # one short group of 4
     st, pcm_l = run_host(l)
     assert st["complete"] == "1" and st["of"] == "16"
     assert np.array_equal(pcm_x, pcm_l)          # the same frames play the same
@@ -181,7 +184,7 @@ def test_bit_errors_against_test_message(prof):
     sys.path.insert(0, ROOT)
     from modem import pager
     fr = b"".join(bytes([f & 0xFF, f >> 8, 0x11, 0x22, 0x33, 0x44]) for f in range(70))
-    pk = pager.PROFILES[prof].pack(fr, 0x42)
+    pk = replace(pager.PROFILES[prof], short_last=False).pack(fr, 0x42)   # the spec's layout
     assert len(pk) == (16 if prof == "L" else 8)
     n = len(pk[0])
 
@@ -289,7 +292,7 @@ def test_lr_pager_plays_what_the_m0_decoder_plays(name, lost):
     st, pcm = _run(HOST_LR, sent, xl=name == "XL")
     good = [1] * len(fr)
     for q in lost:
-        for f in prof.packet_frames(q):
+        for f in prof.packet_frames(q, len(fr)):
             if f < len(fr):
                 good[f] = 0
     ref_pcm = _dec_lr(fr, good)
@@ -417,7 +420,10 @@ def test_interleave_depth_in_the_header(name, depth):
     prof = pager.profile(name, "1200", depth)
     fr = b"".join(frames_of(203, seed=2))
     pk = prof.pack(fr, msg_id=5)
-    assert len(pk) == prof.n_packets(203) == -(-203 // (prof.slots * depth)) * depth
+    g_full, rem = divmod(203, prof.slots * depth)
+    m = -(-rem // prof.slots)
+    assert len(pk) == prof.n_packets(203) == g_full * depth + m
+    assert prof.unpack(pk[-1])["short"] == (m < depth) and not prof.unpack(pk[0])["short"]
     q = prof.unpack(pk[depth + 1])
     assert q["seq"] == depth + 1 and q["depth"] == depth
     g, k = divmod(depth + 1, depth)
@@ -450,7 +456,7 @@ def test_depth_plays_what_the_m0_decoder_plays(name, depth, lost):
     st, pcm = _run(HOST_LR, pk, xl=name == "XL", store=200000)
     good = [1] * len(fr)
     for q in lost:
-        for f in prof.packet_frames(q):
+        for f in prof.packet_frames(q, len(fr)):
             if f < len(fr):
                 good[f] = 0
     assert int(st["got"]) == sum(good) and int(st["of"]) == len(prof.pack(b"".join(fr)))
@@ -488,3 +494,59 @@ def test_pcmhash_takes_the_depth():
     st, _ = _stream(HOST_LR, [p for i, p in enumerate(pk) if i != 6], 32)
     assert k6_pcmhash.reference(fr, "1200", "XL", [6], depth=4)[0] == st["pcm"]
     assert k6_pcmhash.reference(fr, "1200", "XL", [6])[0] != st["pcm"]
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+@pytest.mark.parametrize("name,depth,n,lost", [("XL", 8, 300, []), ("XL", 8, 300, [13]), ("XL", 8, 210, [8, 9]),
+                                               ("XL", 4, 203, [10]), ("L", 8, 70, [8]), ("L", 4, 203, [24]),
+                                               ("XL", 2, 203, [10])])
+def test_short_last_group_plays_what_the_m0_decoder_plays(name, depth, n, lost):
+    """The short last group (seq bit 13, m = ceil(rem / F) packets, frames g*F*D + s*m + k) lands
+    where the sender put it, store-then-play and streaming alike, and a packet of it lost is
+    concealed frame by frame as sotto_dec_fx_m0 -1200 does."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    prof = pager.profile(name, "1200", depth)
+    fr = frames_of(n, seed=11)
+    pk = prof.pack(b"".join(fr), msg_id=21)
+    first, m = prof.last_group(n)
+    assert first is not None and m < depth and len(pk) == first + m == prof.n_packets(n)
+    good = [1] * n
+    for q in lost:
+        for f in prof.packet_frames(q, n):
+            if f < n:
+                good[f] = 0
+    sent = [p for i, p in enumerate(pk) if i not in lost]
+    st, pcm = _run(HOST_LR, sent, xl=name == "XL", store=200000)
+    assert int(st["of"]) == len(pk) and int(st["got"]) == sum(good)
+    assert np.array_equal(pcm, _dec_lr(fr, good))
+    st, spcm = _stream(HOST_LR, sent, 32, xl=name == "XL")
+    assert np.array_equal(spcm, pcm) and int(st["overruns"]) == 0
+
+
+@pytest.mark.skipif(not os.path.exists(HOST_LR), reason="needs make -C c/k6")
+def test_old_layout_and_bad_short_packets():
+    """A sender's old padded layout (short_last=False) still plays the same; a packet that claims
+    to be in the short group but isn't (k >= m, or not the last group) is dropped."""
+    sys.path.insert(0, ROOT)
+    from modem import pager
+    fr = frames_of(300, seed=12)
+    new = pager.profile("XL", "1200").pack(b"".join(fr), msg_id=22)
+    old = pager.profile("XL", "1200", short_last=False).pack(b"".join(fr), msg_id=22)
+    assert len(new) == 15 and len(old) == 16
+    st_new, pcm_new = _run(HOST_LR, new, xl=True, store=200000)
+    st_old, pcm_old = _run(HOST_LR, old, xl=True, store=200000)
+    assert np.array_equal(pcm_new, pcm_old) and st_old["of"] == "16" and st_new["of"] == "15"
+    st, _ = _run(HOST_LR, old[:3], xl=True, store=200000)      # before the last group: presumed short
+    assert st["of"] == "15" and st["missing"] == "12:" + ",".join(map(str, range(3, 11)))
+
+    def forge(p, seq):
+        q = bytearray(pager._whiten(p))
+        q[2], q[3] = (q[2] & 0xC0) | 0x20 | seq >> 8, seq & 0xFF
+        c = pager.crc16_ccitt(q[:-2])
+        q[-2:] = c.to_bytes(2, "big")
+        return pager._whiten(bytes(q))
+    bad = [forge(new[14], 15), forge(new[3], 3)]   # k = 7 of m = 7; group 0 isn't the last
+    st, _ = _run(HOST_LR, new[:1] + bad, xl=True, store=200000)
+    assert [x for x in st["results"].split(",") if x][1:] == ["0", "0"]   # SP_DUP: nothing stored
+    assert int(st["got"]) == 20

@@ -13,9 +13,11 @@
  * group g of 8 carries frames g*64 + s*8 + k, s = 0..7. Profile XL: the same 6-byte header,
  * 20 frames, no reserved bytes, CRC (128 bytes); packet k of group g carries frames
  * g*160 + s*8 + k, s = 0..19. The top 2 bits of seq give the interleave depth D (0: 8, 1: 4,
- * 2: 2, 3: 1 packets per group; seq is the low 14 bits), and with it packet k of group g carries
- * frames g*F*D + s*D + k (F frames per packet). (Profile S, 16 bytes, is no longer taken: the
- * radio reads 64-byte packets fine.)
+ * 2: 2, 3: 1 packets per group; seq is the low 13 bits), and with it packet k of group g carries
+ * frames g*F*D + s*D + k (F frames per packet). Seq bit 13 marks a short last group (senders
+ * from 2026-11-07): its rem < F*D frames take m = ceil(rem / F) packets instead of D, packet k
+ * carrying frames g*F*D + s*m + k; m comes from total. (Profile S, 16 bytes, is no longer
+ * taken: the radio reads 64-byte packets fine.)
  *
  * No heap, no floating point, no 64-bit division: everything lives in the caller's buffer
  * (sp_init) and in this library's static decoder state (about 0.9 KB plus a 2 KB cos/sin
