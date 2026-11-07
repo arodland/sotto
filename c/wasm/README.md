@@ -47,9 +47,11 @@ process does, so the result doesn't depend on what the page encoded before.
 `encode16` takes an `Int16Array` of 16 kHz speech and returns a `Uint8Array` of 6-byte frames, the
 same bytes as `c/sotto_enc -16 IN.raw OUT.bit`, except that a last partial 20 ms frame is padded
 with silence and encoded (`sotto_enc` drops it). The encoder works best with speech at -26 dBFS;
-`levelTo(float32, -26)` scales float samples to that and returns `{ pcm, gainDb }`. The two libms
-differ in the last bit of a few results, which can flip a near-tie in the pitch tracker or the VQ
-search, so 98-100% of frames match the native encoder (measured on the ten page clips).
+`levelTo(float32, -26)` scales float samples to that and returns `{ pcm, gainDb }`. Every frame
+matches the native encoder on the ten page clips. (The two libms may differ in the last bit of a
+few results, which could flip a near-tie, so the check allows 3% of frames to differ. The 98-100%
+measured before came from Codec 2's random generator carrying over from the page's earlier
+decodes; each call now restarts it.)
 
 The page saves these frames as `.sot` files: raw frames, 6 bytes each (300, 150, 75 or 50 bytes a
 second), no header, so the native tools decode them and the page's "Play a .sot file" button reads

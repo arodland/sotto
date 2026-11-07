@@ -65,9 +65,10 @@ for (const f of readdirSync(dir).filter(f => f.endsWith(".bit")).sort()) {
   console.log(`${f}: ${w.length} vs ${c.length} samples, identical ${(100 * same / n).toFixed(2)}%, ` +
               `max diff ${maxd}, SNR ${snr === Infinity ? "inf" : snr.toFixed(1)} dB`);
 }
-// encoder: same 16-bit input to both encoders. The two libms differ in the last bit of a few
-// results, which can flip a near-tie in the pitch tracker or the VQ search and change a run of
-// frames, so the check asks for 97% identical frames (measured: 98-100%).
+// encoder: same 16-bit input to both encoders. The two libms may differ in the last bit of a
+// few results, which could flip a near-tie in the pitch tracker or the VQ search and change a run
+// of frames, so the check asks for 97% identical frames. Measured: 100% on every clip, now that
+// each call restarts Codec 2's random generator (before, frames after a decode differed: 98-100%).
 for (const f of readdirSync(dir).filter(f => f.endsWith("__original16.flac")).sort()) {
   const raw = join(tmp, "in.raw"), bit = join(tmp, "out.bit");
   try {
