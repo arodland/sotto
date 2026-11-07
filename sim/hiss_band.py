@@ -190,6 +190,96 @@ def fold8(y8, X, n16):
     return resample_poly(y8 - s, 2, 1) + st
 
 
+def fb_edges(k):
+    return np.linspace(4000, 8000, k + 1)
+
+
+def fb_hiss(X, n16, k, seed=0, order=2, inband=True):
+    """The hiss of the 4-8 kHz STFT X made without an inverse FFT: band j's power per frame is
+    2 / N^2 times its bins' |X|^2 (istft's power with the sqrt-Hann at 50%), and k bandpass
+    filters on one white noise, each scaled to unit power, take its root, linear between frame
+    centres (frame t centred on sample H t + N / 2)."""
+    from scipy.signal import butter, sosfilt, sosfreqz
+    nfr = len(X)
+    if not nfr:
+        return np.zeros(n16)
+    e = fb_edges(k)
+    w = np.random.default_rng(seed + 7).standard_normal(n16 + 2000)
+    c = H * np.arange(nfr) + N / 2
+    out = np.zeros(n16)
+    P = np.abs(X) ** 2
+    for j in range(k):
+        lo, hi = e[j], e[j + 1]
+        sel = (FR >= lo) & (FR < hi) if j < k - 1 else (FR >= lo)
+        g = np.sqrt(2 * P[:, sel].sum(1)) / N
+        sos = butter(order, lo, "high", fs=16000, output="sos") if hi >= 8000 else \
+            butter(order, [lo, hi], "band", fs=16000, output="sos")
+        u = sosfilt(sos, w)[2000:]
+        u /= np.sqrt((u ** 2).mean())
+        if inband:                    # unit power inside the band: the skirts are extra
+            f, h = sosfreqz(sos, 4096, fs=16000)
+            a = np.abs(h) ** 2
+            u /= np.sqrt(a[(f >= lo) & (f < hi + (hi >= 8000))].sum() / a.sum())
+        out += np.interp(np.arange(n16), c, g) * u
+    return out
+
+
+def fb_gains(X, k):
+    """per frame the k bands' root power (16 kHz output samples) for fb_hiss / fb_hiss8"""
+    e, P = fb_edges(k), np.abs(X) ** 2
+    G = np.zeros((len(X), k))
+    for j in range(k):
+        sel = (FR >= e[j]) & (FR < e[j + 1]) if j < k - 1 else (FR >= e[j])
+        G[:, j] = np.sqrt(2 * P[:, sel].sum(1)) / N
+    return G
+
+
+def fb_filters8(k, order=3):
+    """the k bands' filters at 8 kHz on the mirror (band [lo, hi] of 4-8 kHz -> [8000 - hi,
+    8000 - lo]), each with its unit in-band power gain: [(sos, scale)]"""
+    from scipy.signal import butter, sosfilt, sosfreqz
+    e, out = fb_edges(k), []
+    w = np.random.default_rng(12345).standard_normal(1 << 17)
+    for j in range(k):
+        lo, hi = 8000 - e[j + 1], 8000 - e[j]
+        sos = butter(order, hi, "low", fs=8000, output="sos") if lo <= 0 else \
+            butter(order, lo, "high", fs=8000, output="sos") if hi >= 4000 else \
+            butter(order, [lo, hi], "band", fs=8000, output="sos")
+        f, h = sosfreqz(sos, 4096, fs=8000)
+        a = np.abs(h) ** 2
+        frac = a[(f >= lo) & (f <= hi)].sum() / a.sum()
+        u = sosfilt(sos, w)
+        out.append((sos, 1 / np.sqrt((u ** 2).mean() * frac)))
+    return out
+
+
+def fb_hiss8(X, y8, n16, k, seed=0, order=3, pair=False, hop2=False):
+    """fb_hiss made the K6's way: k filters at 8 kHz on one white noise make the mirror s,
+    gains linear between frame centres (8 kHz sample 80 t + 80), folded in as fold8 does"""
+    from scipy.signal import sosfilt
+    n8 = n16 // 2
+    G = fb_gains(X, k)
+    c = H // 2 * np.arange(len(X)) + N // 4
+    if hop2:                                  # gains every other frame (stages A and B at 20 ms)
+        G, c = G[::2], c[::2]
+    w = np.random.default_rng(seed + 7).standard_normal(n8)
+    s = np.zeros(n8)
+    alt = (-1.0) ** np.arange(n8)
+    F = fb_filters8(k, order)
+    for j, (sos, sc) in enumerate(F):
+        if not len(X):
+            break
+        if pair and j >= k // 2:              # the mirror band's filter output, (-1)^n modulated
+            u = alt * sosfilt(F[k - 1 - j][0], w) * F[k - 1 - j][1]
+        else:
+            u = sosfilt(sos, w) * sc
+        s += np.interp(np.arange(n8), c, G[:, j]) * u
+    y8 = np.pad(y8, (0, max(0, n8 - len(y8))))[:n8]
+    st = np.zeros(n16)
+    st[0::2] = 2 * s
+    return resample_poly(y8 - s, 2, 1) + st
+
+
 def fine_speaker(x16, y16, nfr):
     """Encoder side: the speaker's mean miss over vowel frames, as 3 PCA coefficients."""
     F = fine_model()
@@ -282,7 +372,7 @@ class SottoV38(vl.SottoV37):
     UU_WO_GUARD = True      # UU frames' pitch field is a hiss index: never interpolate from it
 
 
-    def __init__(self, model=MODEL, vowel=None, voiced_trim=0.0, texture="noise", pulse=1.0, vowel_shape=False, smooth_ms=30.0, peak_hz=None, peak_db=9.0, peak_bw=250.0, peak_floor=4.0, spk_pc=None, blend=False, whisper=False, release_ms=20.0, vsmooth=False, keep_mixed=False, sib_db=None, sib_voiced=False, whisper_lag=None, vowel_src="stft", synth8=False, hb_max_hz=None, uv50=True, **kw):
+    def __init__(self, model=MODEL, vowel=None, voiced_trim=0.0, texture="noise", pulse=1.0, vowel_shape=False, smooth_ms=30.0, peak_hz=None, peak_db=9.0, peak_bw=250.0, peak_floor=4.0, spk_pc=None, blend=False, whisper=False, release_ms=20.0, vsmooth=False, keep_mixed=False, sib_db=None, sib_voiced=False, whisper_lag=None, vowel_src="stft", synth8=False, hb_max_hz=None, uv50=True, fb=None, fb_order=2, fb_inband=True, causal=None, fb_pair=False, fb_hop2=False, **kw):
         """vowel: None (no high band in voiced frames), "guess" (voiced frames at the guess
         - 3 dB) or "adaptive" (voiced and mixed frames at the guess + a per-speaker offset
         sent one bit per UU frame; the UU index is then 6 bits)."""
@@ -304,6 +394,15 @@ class SottoV38(vl.SottoV37):
         # predictor reads the decoded model), synth8 (hiss made at 8 kHz and folded in),
         # hb_max_hz (no hiss above it), uv50=False (v3.7's unvoiced halves, no 50 Hz spacing)
         self.vowel_src, self.synth8, self.hb_max_hz, self.uv50 = vowel_src, synth8, hb_max_hz, uv50
+        # fb=K: no inverse FFT; the frame's spectrum X sets K band gains, and K bandpass filters
+        # on one white noise make the hiss, gains interpolated sample by sample (a K6 playback
+        # interrupt could run this beside the 1:2 interpolator, with no audio buffers of its own)
+        self.fb, self.fb_order, self.fb_inband = fb, fb_order, fb_inband
+        self.fb_pair, self.fb_hop2 = fb_pair, fb_hop2    # cheaper K6 variants of fb_hiss8
+        # causal: no look at later frames' voicing (hiss made in the synthesis pass, frame by
+        # frame): "none" drops blend's flicker fill, "hold" keeps the vowel layer wanted for 4
+        # frames after it ends instead of filling only gaps the vowel comes back from
+        self.causal = causal
         if model:                                       # None while training the guess
             z = np.load(model, allow_pickle=True)
             self.W, self.cb = z["W"].item(), z["cb"]
@@ -610,7 +709,8 @@ class SottoV38(vl.SottoV37):
         for t in range(nfr):
             src = f[t] if uu[t] else None
             if src is None and v[t] == 0:               # unvoiced half of an edge frame
-                src = next((g for g in (f[t] - 1, f[t] + 1) if 0 <= g < len(code) and code[g] == 0), None)
+                near = (f[t] - 1,) if self.causal == "strict" else (f[t] - 1, f[t] + 1)
+                src = next((g for g in near if 0 <= g < len(code) and code[g] == 0), None)
             if src is not None:
                 p[t] += self._uu_res(b2, src)
                 mask[t] = 1
@@ -649,7 +749,12 @@ class SottoV38(vl.SottoV37):
             a = np.exp(-10.0 / self.smooth_ms)
             lv, wv = vt.copy(), np.zeros(nfr)
             want = ((v == 1) | (v == 2)) & (mask != 1)
-            if self.blend:
+            if self.blend and self.causal == "hold":
+                w0, since = want.copy(), 99
+                for g0 in range(nfr):
+                    since = 0 if w0[g0] else since + 1
+                    want[g0] = since <= 4
+            elif self.blend and self.causal not in ("none", "strict"):
                 # a short unvoiced flicker (<= 40 ms) inside a vowel keeps the vowel layer on
                 w0 = want.copy()
                 for g0 in range(1, nfr):
@@ -698,6 +803,10 @@ class SottoV38(vl.SottoV37):
             return y16 + hu + hv * (env / rms) ** self.pulse
         if self.hb_max_hz:
             X = X * (FR <= self.hb_max_hz)[None, :]
+        if self.fb and self.synth8:
+            return fb_hiss8(X, y8, len(y16), self.fb, seed, self.fb_order, self.fb_pair, self.fb_hop2)
+        if self.fb:
+            return y16 + fb_hiss(X, len(y16), self.fb, seed, self.fb_order, self.fb_inband)
         if self.synth8:
             return fold8(y8, X, len(y16))
         return y16 + istft(X, len(y16))

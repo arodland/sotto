@@ -5,10 +5,14 @@
 Each clip is encoded once by the normal hiss encoder (sotto 600 / 400 / 1200 hiss) and decoded
 by the full layer and by the light variants, which differ only in the decoder:
   full        the v3.8 layer as the C port runs it
-  model       the vowel predictor reads the decoded model, not an STFT of the decoded audio
-  model8      + the hiss made at 8 kHz and folded in through the interpolator
-  model8_37   + v3.7's unvoiced halves (no 50 Hz spacing): what the K6 decoder has now
-  k6          + no hiss above 7 kHz (the K6's PWM image)
+  light       the vowel predictor reads the decoded model, not an STFT of the decoded audio; the
+              hiss made at 8 kHz and folded in through the interpolator; v3.7's unvoiced halves
+  insynth     the light layer with no inverse FFT: 4 band gains a frame and four order-3 filters
+              at 8 kHz on one noise, no look at later frames' audio (made with the core's output,
+              -DFX_HISS_FB)
+  pair        + the 6-8 kHz bands reuse the 4-6 kHz filters' output, (-1)^n modulated (half
+              the filters)
+  hop2        + band gains every 20 ms instead of 10
   plain       the plain 8 kHz decoder reading the same bits (what the K6 plays today)
 Scores as tools/eval_lr_hiss.py (PESQ-NB / ESTOI on 0-4 kHz, PESQ-WB, fricative 4-8 kHz band
 error), plus vowel_rms_db / vowel_bias_db: the 4-8 kHz band error on vowel frames (0-4 kHz at
@@ -30,10 +34,11 @@ import sotto_vlr as vr                                     # noqa: E402
 import sotto_vlr_hiss as vh                                # noqa: E402
 from eval_lr_hiss import up, score                         # noqa: E402
 
-LIGHT = {"full": {}, "model": dict(vowel_src="model"),
-         "model8": dict(vowel_src="model", synth8=True),
-         "model8_37": dict(vowel_src="model", synth8=True, uv50=False),
-         "k6": dict(vowel_src="model", synth8=True, uv50=False, hb_max_hz=7000)}
+LIGHT = {"full": {},
+         "light": dict(vowel_src="model", synth8=True, uv50=False),
+         "insynth": dict(vowel_src="model", uv50=False, fb=4, fb_order=3, causal="none", synth8=True),
+         "pair": dict(vowel_src="model", uv50=False, fb=4, fb_order=3, causal="none", synth8=True, fb_pair=True),
+         "hop2": dict(vowel_src="model", uv50=False, fb=4, fb_order=3, causal="none", synth8=True, fb_hop2=True)}
 
 
 def vowel_err(x16, y16):
