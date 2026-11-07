@@ -241,9 +241,55 @@ overhead. Ways to get ahead of it, roughly in order of cost:
   overrun at rate 2/3 showed was needed.
 - **A shorter lead.** The session now starts at the control packet: a 1 s lead (`--g-lead 1.0`)
   locked on air and played 13/14 twice (the first packet failed its CRC each time); try 1.5 s.
-- **A faster symbol rate.** 1600 or 1800 baud 4FSK, with the tones re-spaced to fit the IC-7100's
-  3.1 kHz passband. That needs new templates (TL, taps) and costs CPU at the K6's margin; MSK 2400
-  already failed on this transmitter.
+- **A faster symbol rate**: receiver and live test modules done (see below), not on air yet.
+
 - **Play while receiving** (stream mode), so a long message starts after its first interleave
   group, and its length is no longer limited by the store. That needs the decoder to share the
   CPU with the receiver: the yield hook, or decoding in the receiver's idle time.
+
+## A faster 4FSK: four tones on a half-baud grid
+
+The IF model (sim/k6if, the float receiver `mcu.Rx`), 1% information bit errors after the rate
+1/2 code, and the raw rate at which 3% of bits are wrong, in dB-Hz:
+
+| Baud | Tones (Hz) | Start phases | Raw 3% | Rate 1/2, 1% | Net bit/s at rate 1/2 |
+|---|---|---|---|---|---|
+| 1200 | 900, 1500, 2100, 2700 (today) | 4 | 43.7 | 42.0 | 1200 |
+| 1200 | 600, 1200, 1800, 2400 | 2 | 42.4 | 40.2 | 1200 |
+| 1440 | 720, 1440, 2160, 2880 | 2 | 43.2 | 41.4 | 1440 |
+| 1500 | 750, 1500, 2250, 3000 | 2 | 43.7 | 41.3 | 1500 |
+| 1600 | 800, 1600, 2400, 3200 | 2 | 44.4 | 42.1 | 1600 |
+| 1600 | 900, 1500, 2100, 2700 | 16 | 47.8 | 44.4 | 1600 |
+| 1800 | 750, 1450, 2150, 2850 | 12 | 49.6 | 46.1 | 1800 |
+| 1800 | 900, 1500, 2100, 2700 | 6 | (5% floor) | 47.1 | 1800 |
+| 2400 | 900, 1500, 2100, 2700 | | fails | fails | |
+
+- **The tone plan matters more than the rate.** Tones at baud/2, baud, 3 baud/2 and 2 baud (a
+  modulation index of 1/2) start every symbol on audio phase 0 or a half turn, so the receiver
+  needs one template a tone (the other phase is its conjugate) against two today. That is 1.8 dB
+  better at 1200 baud. 1500 baud carries 25% more and is still 0.7 dB better than today's
+  mode; 1600 baud carries a third more for the same C/N0. At rate 2/3, 1600 baud nets about
+  2130 bit/s.
+- **1800 baud and up hit the IC-7100's 3.1 kHz edge**: the half-baud grid would need 3600 Hz,
+  and the plans that fit leave a floor of symbol errors (intersymbol interference through the
+  transmitter's low-pass and pre-emphasis). 2400 baud fails, as MSK 2400 did.
+- **The model's sender had a bug at these rates**: it changed tone on a whole sample (48 kHz),
+  so at 1440 or 1800 baud (33.3 and 26.7 samples a symbol) each start phase wandered off its class
+  and the trained templates blurred (15-20% errors). `modes.Mode.audio` now runs the phase in
+  continuous time. A real sender must do the same (PHY G's `k6g.audio` is exact only at 1200).
+- **The receiver**: `IFRX_ONLY = IFRX_4H` with `IFRX_BAUD` 1200, 1500 or 1600 (c/k6/ifrx.h);
+  12 samples a symbol above 1200 baud (still about 4 counts apart; the sweep needs a multiple of
+  6, so 8 clock offsets), the model's templates in c/k6/ifrx_tables_4h.h (`python3 -m
+  sim.k6if.mcu --tables-4h`). On the model the C receiver makes 0.2%, 0.35% and 0.8% bit errors
+  at 46 dB-Hz (1200, 1500, 1600 baud), against 0.8% for today's 4FSK.
+- **CPU**: fewer templates and fewer samples a second than today's mode. The live modules
+  idle 51-53% on the emulated M0 against 46% for iflive (the trellis would add a third more steps
+  at 1600 baud, as rate 2/3 did at 1200).
+- **Bench test without a flash**: the RAM modules `iflive_h1200`, `iflive_h1500` and
+  `iflive_h1600` (level 2, 3974-4014 B) measure the live bit error rate as iflive does, against
+  `python3 tools/k6_ifcap.py live 4h1500` (or `4h1200`, `4h1600`). Their templates are the
+  model's: on air the model's 4FSK templates gave 3.6-5% where ones trained on the K6's captures
+  gave 2.2-2.8%, so a capture and training pass comes next if the rate looks good. The IC-7100's
+  deviation falls off faster than the model's above 2.7 kHz (69% of the model's there), which
+  could cost the 3000 and 3200 Hz tones.
+

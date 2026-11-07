@@ -42,7 +42,8 @@ CHUNK = 256
 def build(mode, defs=(), src=None):
     """the module's code and entry, with #defines (name, value) ahead of its source (src: a
     variant of the mode's module, e.g. c/k6/mod/iflive_tsweep.c)"""
-    src = os.path.abspath(src) if src else LIVE if mode == "4fsk" else LIVE_FFSK
+    src = os.path.abspath(src) if src else LIVE if mode == "4fsk" else LIVE_FFSK if mode == "ffsk" else \
+        os.path.join(os.path.dirname(LIVE), f"iflive_h{mode[2:]}.c")
     if not defs:
         return k6mod.build(src)
     with tempfile.TemporaryDirectory() as d:
@@ -62,7 +63,7 @@ def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=
     fall where the emulated bus puts them (Emu's wobble); the rate returned is still fdma"""
     import k6_ifcap as ic
     from sim.k6if import mcu, study as st
-    m = next(mm for n, mm in ic.PASSES.values() if n == mode)
+    m = ic.LIVE[mode]
     a = ic.live_audio(m, steps, seg_s, lead_s)
     n0 = int(0.2 * st.FSA)                      # key_and_play: carrier 0.2 s before the audio
     s = st.fm(st.ic7100(np.concatenate([np.zeros(n0), a])), f_off)
@@ -347,7 +348,7 @@ def run_module(path, cpi=1.5, seconds=14.0, profile=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("mode", nargs="?", default="4fsk", choices=["4fsk", "ffsk"])
+    ap.add_argument("mode", nargs="?", default="4fsk", choices=["4fsk", "ffsk", "4h1200", "4h1500", "4h1600"])
     ap.add_argument("--cn0", type=float, default=46.0)
     ap.add_argument("--off", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=10)

@@ -18,8 +18,7 @@ class Mode:
         self.M = len(tones)
         self.k = int(np.log2(self.M))
         self.baud = baud
-        self.sps = int(round(FS4 / baud))
-        assert abs(self.sps * baud - FS4) < 1e-6
+        self.sps = int(round(FS4 / baud))  # the study's samples a symbol (Run needs it whole)
         self.level = level
         self.name = name or f"{self.M}FSK {baud:.0f} baud ({','.join(f'{t:.0f}' for t in tones)})"
         # Gray map: symbol index -> bits
@@ -29,16 +28,19 @@ class Mode:
                                  for m in range(self.M)])
 
     def audio(self, syms):
-        """symbols -> sender audio and each symbol's audio phase class at its start"""
-        spa = st.FSA / self.baud
-        n = int(round(len(syms) * spa))
-        idx = np.minimum((np.arange(n) / spa).astype(int), len(syms) - 1)
-        f = self.tones[syms][idx]
-        ph = 2 * np.pi * np.cumsum(f) / st.FSA
-        x = np.sin(np.concatenate([[0], ph[:-1]])) * self.level
-        # the phase at each symbol start, in cycles mod 1, quantised to 1/24
-        starts = np.concatenate([[0], np.cumsum(self.tones[syms] / self.baud)[:-1]]) % 1
-        cls = np.round(starts * 24).astype(int) % 24
+        """symbols -> sender audio and each symbol's audio phase class at its start (1/24 turn).
+        The tone changes at t = k / baud exactly and the phase runs on in continuous time, so a
+        rate that isn't a whole number of samples (1500 baud is 32 at 48 kHz, 1440 is 33.3)
+        still starts each symbol on its class: with the change rounded to a sample, as before,
+        the start phases wandered off their classes and the templates blurred (15% bit errors
+        at 1440 baud on the model)"""
+        n = int(round(len(syms) * st.FSA / self.baud))
+        t = np.arange(n) / st.FSA
+        k = np.minimum((t * self.baud).astype(int), len(syms) - 1)
+        f = self.tones[syms]
+        starts = np.concatenate([[0], np.cumsum(f / self.baud)[:-1]])   # turns at each start
+        x = np.sin(2 * np.pi * (starts[k] + f[k] * (t - k / self.baud))) * self.level
+        cls = np.round((starts % 1) * 24).astype(int) % 24
         return x, cls
 
 
@@ -46,6 +48,7 @@ class Run:
     """one mode over the link: random symbols, the clean capture for training and timing"""
 
     def __init__(self, mode, nsym, seed=7, lead=32, floor=0.05, ideal=False):
+        assert abs(mode.sps * mode.baud - FS4) < 1e-6, "the study's grid needs whole samples a symbol"
         self.m, self.floor, self.ideal = mode, floor, ideal
         rng = np.random.default_rng(seed)
         self.syms = rng.integers(0, mode.M, nsym)
@@ -168,6 +171,11 @@ def threshold(cn0, ber, target=0.01):
 
 MODES = {"ffsk1200": ([1200, 1800], 1200, 0.14), "4fsk1200": ([900, 1500, 2100, 2700], 1200, 0.12),
          "msk2400": ([1200, 2400], 2400, 0.14)}
+# four tones on a half-baud grid (baud/2 .. 2 baud: docs/k6-if-fec.md "A faster 4FSK"): every
+# symbol starts on audio phase 0 or a half turn, so one template a tone; the 1200 baud set is
+# 1.8 dB better than 4fsk1200 on the model (rate 1/2 coded), 1500 baud 0.5 dB, 1600 baud even
+for _b in (1200, 1440, 1500, 1600):
+    MODES[f"4h{_b}"] = ([_b / 2, _b, 1.5 * _b, 2 * _b], _b, 0.12)
 
 
 def table(names, floor=0.05, ideal=False, nsym=6000, cn0=(36, 38, 40, 42, 44, 46, 48, 50, 52, 54)):

@@ -46,6 +46,22 @@ def lib():
     return L
 
 
+@pytest.fixture(scope="module")
+def lib4h():
+    """the receiver built for four tones on a half-baud grid, one library a baud rate"""
+    if not shutil.which("cc"):
+        pytest.skip("needs a C compiler")
+    d, out = tempfile.mkdtemp(), {}
+    for b in (1200, 1500, 1600):
+        so = os.path.join(d, f"libifrx_h{b}.so")
+        subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-DIFRX_ONLY=2",
+                        f"-DIFRX_BAUD={b}", os.path.join(K6, "ifrx_host.c"), "-o", so], check=True)
+        L = ctypes.CDLL(so)
+        L.ifrx_run.argtypes = [P, I, I, ctypes.c_uint, I, I, I, P, P, P, P, I, P, P]
+        out[b] = L
+    return out
+
+
 def mode_of(name):
     tones, baud, lv = md.MODES[name]
     return md.Mode(tones, baud, lv)
@@ -103,6 +119,25 @@ def test_ber_on_the_model(lib, name, cn0, off, limit):
     sym, gap, taus, info = run(lib, lk.counts(cn0, seed=5), m, start=int(0.02 * mcu.FC))
     assert info[5] == 2 and info[3] == 0, info          # tracking, no acquisition thrown out
     assert ber(lk, sym) < limit
+
+
+@pytest.mark.parametrize("baud,cn0,limit", [(1200, 46, 0.004), (1500, 46, 0.007), (1600, 46, 0.012),
+                                             (1600, 48, 0.002)])
+@pytest.mark.parametrize("off", [0, -164])
+def test_faster_4fsk_on_the_model(lib4h, baud, cn0, off, limit):
+    """four tones on a half-baud grid (IFRX_ONLY = IFRX_4H, IFRX_BAUD): 12 samples a symbol at
+    1500 and 1600 baud, one template a tone. At 46 dB-Hz 4fsk1200 makes about 0.8% (the test
+    above at 47 holds it under that), 1200 baud on this grid 0.2%, 1500 0.35%, 1600 0.8%; a
+    1.5 s lead, 164 Hz off; and no lock on a bare carrier"""
+    m = mode_of(f"4h{baud}")
+    lk = mcu.Link(m, 2400, lead=int(1.5 * baud), f_off=off, pre=0.3, seed=3)
+    sym, gap, taus, info = run(lib4h[baud], lk.counts(cn0, seed=5), m, start=int(0.02 * mcu.FC))
+    assert info[5] == 2 and info[3] == 0, info
+    assert ber(lk, sym) < limit
+    if off == 0 and cn0 == 46:
+        lk = mcu.Link(m, 200, lead=2, pre=3.0, seed=4)
+        sym, gap, taus, info = run(lib4h[baud], lk.counts(55, seed=55)[:int(2.9 * mcu.FC)], m)
+        assert len(sym) == 0 and info[2] >= 6, info
 
 
 # the detectors' noise on Jeff's K6 (tests/data/k6/gp0cap-20261106.log.gz, steps 1-8, at the
@@ -172,7 +207,8 @@ def test_lost_counts_keep_the_clock(lib, name):
 
 
 @need_clang
-@pytest.mark.parametrize("src", ["iflive.c", "iflive_ffsk.c", "iflive_tsweep.c", "iflive_fsweep.c", "iflive_g2.c", "iflive_k6t.c"])
+@pytest.mark.parametrize("src", ["iflive.c", "iflive_ffsk.c", "iflive_tsweep.c", "iflive_fsweep.c", "iflive_g2.c", "iflive_k6t.c",
+                                 "iflive_h1200.c", "iflive_h1500.c", "iflive_h1600.c"])
 def test_live_module_builds_fits_level_2(src):
     path = os.path.join(K6, "mod", src)
     code, entry = k6mod.build(path)
@@ -182,7 +218,8 @@ def test_live_module_builds_fits_level_2(src):
 
 @need_clang
 @pytest.mark.parametrize("mode,cn0,fdma,stall", [("4fsk", 47.0, None, None), ("ffsk", 45.0, None, None),
-                                                 ("4fsk", 50.0, 5.875e6, (40, 400))])
+                                                 ("4fsk", 50.0, 5.875e6, (40, 400)), ("4h1600", 47.0, None, None),
+                                                 ("4h1500", 50.0, 5.875e6, (40, 400))])
 def test_live_module_on_m0(mode, cn0, fdma, stall):
     """two 3.5 s steps (a 1.5 s lead each, then PN9) 164 Hz off: both lock and decode, no
     counts lost, CPU to spare, the stack well inside the 3.5 KB the K6 has at a module's call.
