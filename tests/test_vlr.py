@@ -196,3 +196,33 @@ def test_c_hiss_encoder_follows_python(mode, monkeypatch):
     bc = ch.c_encode(x16, mode)
     assert bc.shape == bp.shape
     assert np.all(bp == bc, 1).mean() >= 0.95
+
+
+def _hiss_burst_db(mode, clip="kristoff", **cfg):
+    """Speech plus 4-8 kHz noise as loud as the speech (Ragtime's extreme input) through sotto
+    600 / 400 hiss: the worst 120 ms of decoded 4-8 kHz level over the input's (dB)."""
+    import sotto_vlr_hiss as vh
+    from scipy.signal import butter, lfilter, resample_poly, sosfilt
+    x = resample_poly(np.fromfile(os.path.join(ROOT, "codec", "codec2", "raw", f"{clip}.raw"), "<i2") / 32768.0, 2, 1)
+    x = x / np.sqrt(np.mean(x ** 2)) * 10 ** (-26 / 20)
+    n = lfilter(*butter(4, 0.5, "high"), np.random.default_rng(1).standard_normal(len(x)))
+    x = (x + n * np.sqrt(np.mean(x ** 2) / np.mean(n ** 2)))[:len(x) // 640 * 640]
+    b = vh.SottoVLRHiss(mode).encode(x)
+    d = vh.SottoVLRHiss(mode)
+    for k, v in cfg.items():
+        setattr(d, k, v)
+    y = d.decode_audio16(b, n16=len(x))
+    hi = butter(8, 4200 / 8000, "high", output="sos")
+
+    def lv(v):
+        return np.mean(v[:len(v) // 320 * 320].reshape(-1, 320) ** 2, 1) + 1e-12
+    r = lv(sosfilt(hi, y)) / lv(sosfilt(hi, x))
+    return 10 * np.log10(np.convolve(r, np.ones(6) / 6, "valid").max())
+
+
+def test_hiss_no_bits_frames_stay_level_in_background_hiss():
+    """A no-bits frame's hiss is a residual over its own guess, which follows the 0-4 kHz band;
+    at a voiced onset in steady background hiss it used to jump with that band (Ragtime: sotto
+    400 about 10 dB too loud). The decoder now caps it at the last coded frame's level."""
+    assert _hiss_burst_db("400", CAP_DB=1e9, RES_CAP=1e9) > 9    # the old decoder
+    assert _hiss_burst_db("400") < 6

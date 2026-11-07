@@ -242,6 +242,12 @@ struct sotto_dec16 {
   long kmax;                                /* model frames known: 0 .. kmax */
   int code[GRING], run[GRING];              /* per codec frame */
   double res[GRING][4];                     /* its coded 4-band hiss correction (unvoiced frames) */
+  /* sotto 600 / 400 hiss, a frame with no hiss bits of its own (vlr_dec_hook): 1 + the coded
+     frame whose level caps its hiss (0: no cap), and what the cap adds to that level */
+  long cap[GRING], capn;                    /* capn, capxn: for the next frame pushed */
+  double capx[GRING][4], capxn[4];
+  double lvl[GRING][4];                     /* the hiss level last given an STFT frame from frame g */
+  long lvlf[GRING];                         /* 1 + the frame lvl[] holds */
   double pc[GRING][3];
   /* side channel reader (hiss_band._read_pc) */
   double cur[3];
@@ -328,7 +334,12 @@ static void dec_stage_a(struct sotto_dec16 *d, long t) {
   guess(v, E, s->p);
   s->mask = 0;
   if (src >= 0) {
+    long h = d->cap[src % GRING] - 1;
     for (int b = 0; b < 4; b++) s->p[b] += d->res[src % GRING][b];
+    if (h >= 0 && d->lvlf[h % GRING] == h + 1)  /* hiss_band._uu_cap: no louder than frame h */
+      for (int b = 0; b < 4; b++) s->p[b] = fmin(s->p[b], d->lvl[h % GRING][b] + d->capx[src % GRING][b]);
+    memcpy(d->lvl[src % GRING], s->p, sizeof s->p);
+    d->lvlf[src % GRING] = src + 1;
     s->mask = 1;
   } else if (v == 2) {
     for (int b = 0; b < 4; b++) s->p[b] += MIXED_DB;
@@ -455,6 +466,9 @@ static void dec_push(struct sotto_dec16 *d, const short *y8, const sotto_dec_inf
   }
   d->code[n % GRING] = code;
   memcpy(d->res[n % GRING], res, sizeof d->res[0]);
+  d->cap[n % GRING] = d->capn;
+  memcpy(d->capx[n % GRING], d->capxn, sizeof d->capxn);
+  d->capn = 0;
   d->run[n % GRING] = run;
   if (n % WIN_FRAMES == 0) d->ngot = 0, d->ok = 1;
   memcpy(d->pc[n % GRING], d->cur, sizeof d->cur);
@@ -1226,11 +1240,17 @@ int sotto_lr_enc16_flush(struct sotto_lr_enc16 *L, unsigned char out[SOTTO_BYTES
  * neighbours' hiss. Kind 2, two or more (and lost superframes): the neighbours' hiss plus k2.
  * The neighbours' hiss of frame g is the mean of the nearest kind-0 frame before and after
  * within 2 superframes (SottoVLRHiss._base), h0 when there is none. One side bit per kind 0
- * or 1 superframe, in its first unvoiced frame (the "carrier"). */
+ * or 1 superframe, in its first unvoiced frame (the "carrier"). A kind-2 frame's hiss is a
+ * residual over its own guess, which follows the 0-4 kHz band; so that it can't jump with that
+ * band (a voiced onset in steady background hiss), v3.8's layer caps its level at the last
+ * frame before it with hiss bits (vlr_back) + k2 + VLR_CAP_DB, and with no such frame its
+ * residual at k2 + VLR_RES_CAP (decoder only: the bits are unchanged). */
 #include "sotto_vlr.h"
 #include "sotto_vlr_tables.h"
 
 #define VLR_REACH 2                         /* SottoVLRHiss.REACH, superframes */
+#define VLR_CAP_DB 4.0                      /* SottoVLRHiss.CAP_DB */
+#define VLR_RES_CAP 4.0                     /* SottoVLRHiss.RES_CAP */
 
 typedef struct {                            /* a superframe's hiss fields */
   int good, kind, v, wc, ws;
@@ -1291,6 +1311,17 @@ static int vlr_base(const vlr_hf_t *ring, int rsz, long nsf, const vlr_mode_t *m
   return nx;
 }
 
+/* SottoVLRHiss._back: the nearest unvoiced frame before g, within reach and in an earlier
+   superframe, that has hiss bits (a received kind-0 or kind-1 superframe); -1 if none */
+static long vlr_back(const vlr_hf_t *ring, int rsz, const vlr_mode_t *m, long g) {
+  long n = m->n;
+  for (long h = g - 1; h >= 0 && g - h <= VLR_REACH * n; h--) {
+    const vlr_hf_t *f = &ring[(h / n) % rsz];
+    if (h / n != g / n && f->good && f->kind <= 1 && !m->vpat[f->v * n + h % n]) return h;
+  }
+  return -1;
+}
+
 /* ------------------------------------------------------------------ decoder */
 #define VRING 8                             /* superframes received (s - 2 .. s + 2 are needed) */
 #define VQ (3 * VLR_MAX_N)                  /* 20 ms blocks out */
@@ -1334,6 +1365,13 @@ static void vlr_dec_hook(void *ctx, int g, int code, int run, int avail, int reb
                            : nx ? base[b] + sotto_vlr_hiss_k2[mi * 4 + b] : sotto_vlr_hiss_h0[mi * 4 + b];
     }
     if (kind <= 1 && !V->taken) carrier = V->taken = 1, side = (kind == 0 ? f->wc : f->ws) & 1;
+    if (kind == 2) {                        /* no bits: SottoVLRHiss.decode_audio16's cap */
+      d->capn = vlr_back(V->sf, VRING, m, g) + 1;
+      for (int b = 0; b < 4; b++) {
+        d->capxn[b] = sotto_vlr_hiss_k2[mi * 4 + b] + VLR_CAP_DB;
+        if (!d->capn) res[b] = fmin(res[b], sotto_vlr_hiss_k2[mi * 4 + b] + VLR_RES_CAP);
+      }
+    }
   }
   short blk[N16];
   long n = d->n;

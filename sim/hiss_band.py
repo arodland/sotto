@@ -682,6 +682,11 @@ class SottoV38(vl.SottoV37):
         """The coded 4-band correction to the guess for unvoiced frame g (dB)."""
         return self.cb[index_of(rows[g], self.nb)]
 
+    def _uu_cap(self, g):
+        """(h, x): unvoiced frame g's hiss is at most the level of coded frame h plus x dB;
+        (None, None): no cap (every frame here has its own hiss bits)."""
+        return None, None
+
     def decode_audio16(self, bits, good=None, n16=None, seed=0):
         bits = np.asarray(bits)
         good = np.ones(len(bits), bool) if good is None else np.asarray(good, bool)
@@ -706,6 +711,7 @@ class SottoV38(vl.SottoV37):
                 pcs = win[np.minimum(f, len(win) - 1)]
             vt = fine_levels_model(m, nfr, pcs) if self.vowel_src == "model" else fine_levels(y16, nfr, pcs)
         mask = np.zeros(nfr)
+        plv = {}                                        # the level last given a frame from src
         for t in range(nfr):
             src = f[t] if uu[t] else None
             if src is None and v[t] == 0:               # unvoiced half of an edge frame
@@ -713,6 +719,10 @@ class SottoV38(vl.SottoV37):
                 src = next((g for g in near if 0 <= g < len(code) and code[g] == 0), None)
             if src is not None:
                 p[t] += self._uu_res(b2, src)
+                h, x = self._uu_cap(src)
+                if h is not None and h in plv:          # no louder than the coded frame h (+ x)
+                    p[t] = np.minimum(p[t], plv[h] + x)
+                plv[src] = p[t].copy()
                 mask[t] = 1
             elif self.vowel == "adaptive" and v[t] in (1, 2):
                 o = off[f[t] // WIN_FRAMES][v[t]]

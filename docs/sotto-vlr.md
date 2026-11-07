@@ -398,6 +398,59 @@ Python with the C's fixed-lag tracker and whisper look-ahead):
   8 kHz. If hiss streams become what we send it, it could switch on the .inc's zero-slope rule
   for one-pitched-frame superframes (`sf_pitch`, now tied to the hook).
 
+### Background hiss as loud as the speech (decoder fix)
+
+*2026-11-07, from Ragtime's review: "with hiss as loud as the speech, sotto 400 came out about
+10 dB too loud; 1200 and 600 were fine".*
+
+Reproduced with the 16 test voices plus 4-8 kHz noise (4th-order high-pass white noise) at
+the speech's level: sotto 400 hiss played 120 ms stretches 10 to 17 dB louder in the 4-8 kHz
+band than the input (up to -5 dBFS), sotto 600 at most 6.5 dB, 1200 and 2400 none.
+
+**Cause.** A frame with no hiss bits of its own (an unvoiced frame in a superframe with two or
+more pitched frames, "kind 2") gets its neighbours' hiss as a *residual over its own guess*,
+and the guess follows the decoded 0-4 kHz envelope. In steady background hiss the coded
+residuals are large (+15 to +30 dB: the noise is far above what the low band predicts), so
+when the low band jumps at a voiced onset the carried hiss jumps with it, 15-25 dB, although
+the noise itself is steady. sotto 400 has this more often than 600: its 6-frame patterns put
+three unvoiced frames before an onset in one kind-2 superframe (pattern U U U M' M V), and
+the neighbour's level is the edge of a 6-frame slope, extrapolated furthest.
+
+**Fix (decoder only; the bits, the encoder and the K6 are unchanged).** A kind-2 frame's hiss
+level is capped at the level v3.8's layer gave the last frame before it that has hiss bits
+(an unvoiced frame of a received kind-0 or kind-1 superframe, within the 2 superframes
+`_base` searches), plus `k2` and `CAP_DB` = 4 dB. With no such frame (the neighbours' hiss
+comes only from ahead, after a long voiced run) its residual is clamped to `k2` + `RES_CAP`
+= 4 dB. The cap needs the level of an earlier frame, which the streaming decoder already has
+(`dec_stage_a` runs in time order); a frame ahead isn't synthesised yet, hence the clamp.
+Python: `SottoVLRHiss.decode_audio16` / `_back` and a `_uu_cap` hook in
+`hiss_band.SottoV38.decode_audio16` (a no-op for v3.8 and sotto 1200 hiss). C: `vlr_back`,
+`vlr_dec_hook` and `dec_stage_a` in `c/sotto_hiss.c`. The C and Python decoders still agree
+(4-8 kHz level within the random-phase spread, max 2.6-4.0 dB per 10 ms on hissy and clean
+clips; without the rule in the Python they differ by up to 31 dB). `docs/sotto.wasm` is
+rebuilt, so the page's 600 / 400 hiss decoder has it.
+
+Worst 120 ms of decoded 4-8 kHz level over the input's (dB), 16 voices, sotto 400 hiss (mean
+over voices / worst voice):
+
+| Input | before | after |
+|---|---:|---:|
+| speech + 4-8 kHz noise at the speech's level | 9.5 / 16.6 | 7.2 / 10.2 |
+| the same, noise 6 dB below the speech | 11.6 / 17.2 | 8.4 / 15.6 |
+| the same, noise 6 dB above the speech | 7.0 / 10.8 | 6.8 / 9.3 |
+| speech + white noise at the speech's level | 4.3 / 8.4 | 3.8 / 7.1 |
+
+sotto 600 at the speech's level: 4.8 / 6.5 -> 4.2 / 5.0. Clean speech (7 wideband clips:
+p047, LibriSpeech 251, the two vowel pairs, the three vowel recordings in vocoder/bench): PESQ-NB,
+ESTOI and PESQ-WB unchanged; the fricative hiss error rises 8.09 -> 8.25 dB rms at 600 and
+12.03 -> 12.50 at 400 (some fricatives that grow past their coded neighbour now stop 4 dB
+above it). Capping at the neighbour's level itself (`CAP_DB` 0, also the one-pitched-frame
+superframes) brings the worst voice to 8.8 dB but costs 1.1 dB of fricative error at 400.
+
+What is left is in frames that have bits: a kind-0 superframe's level slope extrapolated to
+its edge frames (6 frames at 400) and the kind-1 offsets, both chosen by the encoder. A
+follow-up could weigh too-loud errors more in the encoder's slope search.
+
 ## Use
 
 ```sh
