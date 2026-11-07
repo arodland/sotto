@@ -268,14 +268,14 @@
   // Four rates: one original per voice encoded at each rate (docs/samples/rates, made by
   // tools/render_page_rates.py; narrowband PESQ from docs/results/page_rates.json)
   const rateVoices = [
-    { id: "female_libri198_14s", name: "Female voice (LibriSpeech reader 198, 14 s)", s: { 2400: 2.72, 1200: 2.45, 600: 2.01, 400: 1.64 } },
-    { id: "male_libri3436_15s", name: "Male voice (LibriSpeech reader 3436, 15 s)", s: { 2400: 3.33, 1200: 3.00, 600: 2.47, 400: 2.00 } },
-    { id: "librispeech_3536_f", name: "Female voice (LibriSpeech reader 3536, 12 s)", s: { 2400: 2.83, 1200: 2.62, 600: 2.00, 400: 1.70 } },
-    { id: "librispeech_8842_f", name: "Female voice (LibriSpeech reader 8842, 12 s)", s: { 2400: 2.60, 1200: 2.29, 600: 1.84, 400: 1.68 } },
-    { id: "librispeech_777_m", name: "Male voice (LibriSpeech reader 777, 12 s)", s: { 2400: 3.03, 1200: 2.81, 600: 2.35, 400: 1.95 } },
-    { id: "librispeech_251_m", name: "Male voice (LibriSpeech reader 251, 12 s)", s: { 2400: 2.83, 1200: 2.44, 600: 2.04, 400: 1.75 } },
+    { id: "female_libri198_14s", name: "Female voice (LibriSpeech reader 198, 14 s)", s: { 2400: 2.72, 1200: 2.51, 600: 2.06, 400: 1.66 } },
+    { id: "male_libri3436_15s", name: "Male voice (LibriSpeech reader 3436, 15 s)", s: { 2400: 3.33, 1200: 3.03, 600: 2.46, 400: 2.03 } },
+    { id: "librispeech_3536_f", name: "Female voice (LibriSpeech reader 3536, 12 s)", s: { 2400: 2.83, 1200: 2.65, 600: 2.09, 400: 1.81 } },
+    { id: "librispeech_8842_f", name: "Female voice (LibriSpeech reader 8842, 12 s)", s: { 2400: 2.60, 1200: 2.27, 600: 1.89, 400: 1.72 } },
+    { id: "librispeech_777_m", name: "Male voice (LibriSpeech reader 777, 12 s)", s: { 2400: 3.03, 1200: 2.74, 600: 2.35, 400: 2.05 } },
+    { id: "librispeech_251_m", name: "Male voice (LibriSpeech reader 251, 12 s)", s: { 2400: 2.83, 1200: 2.52, 600: 2.09, 400: 1.83 } },
   ];
-  const rateMean = { 2400: 2.89, 1200: 2.60, 600: 2.12, 400: 1.79 };
+  const rateMean = { 2400: 2.89, 1200: 2.62, 600: 2.16, 400: 1.85 };
   for (const r in rateMean) document.getElementById(`rates-${r}`).textContent = rateMean[r].toFixed(2);
   const rhost = document.getElementById("rategrid");
   for (const v of rateVoices) {
