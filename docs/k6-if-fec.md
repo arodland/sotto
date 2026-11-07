@@ -68,10 +68,11 @@ it:
 
 It prints two lines:
 
-    K6 IFP ret=15 ms=16930 syncs=15 syms=20510 lost=0 q=88 rej=0 afc=-160 idle=43 ks=5900 ram=388 gap=139@1 lag=86 stack_free=600
+    K6 IFP ret=15 r23=0 ms=16930 syncs=15 syms=20510 lost=0 q=88 rej=0 afc=-160 idle=43 ks=5900 ram=388 gap=139@1 lag=86 stack_free=600
     K6 IFP pkts=15 r=222111111111113 miss=000100000000000
 
 - `ret` is the number of packets handed over: -2 a key, -6 no lock.
+- `r23` is 1 for a rate 2/3 session.
 - `lost` is the counts lost to ring overruns.
 - `q` is the lead fit, out of 256.
 - `afc` is the AFC offset in Hz.
