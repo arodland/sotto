@@ -67,6 +67,7 @@ typedef struct {
   char grade;                    /* '?' 'R' 'r' 's' */
   char call[10];                 /* from ex_cw, NUL padded */
   uint8_t listens;               /* times Listen for ID went to it on its own (ex_pick_id) */
+  uint16_t heard_s;              /* seconds those listens lasted (ex_heard) */
 } ex_cand_t;
 
 typedef struct {
@@ -81,7 +82,8 @@ typedef struct {
 typedef struct {
   uint32_t lo_hz, hi_hz;
   int32_t off_hz;                /* 0 for a simplex row */
-  uint8_t simplex;
+  uint8_t simplex, pad;
+  uint16_t raster_khz;           /* the usual channel raster from lo_hz (0: any) */
 } ex_plan_t;
 
 void ex_init(ex_t *e, ex_cand_t *store, unsigned cap);
@@ -105,13 +107,26 @@ void ex_grade(ex_cand_t *c);
 /* the i-th best (0 first) by score, then most overs, then most recent; 0 past the end. New
    candidates come before known ones (EX_F_KNOWN), and in each group the ignored ones last. */
 ex_cand_t *ex_rank(ex_t *e, unsigned i);
+/* the same, leaving out skirts (every over a louder neighbour's: Jeff 2026-11-07, "lump close
+   together signals together"), for the list on the screen; and how many that leaves */
+ex_cand_t *ex_view(ex_t *e, unsigned i);
+unsigned ex_view_n(const ex_t *e);
+/* on its band plan row's channel raster (within 1 kHz), or on a row without one, or off the plan */
+int ex_on_raster(uint32_t hz);
 /* Which of the frequencies up now (up_hz, n of them: the scan's hot entries that are keyed) the
    automatic Listen for ID should go to, by Jeff's rule (2026-11-07): only candidates still
    without a callsign that could be repeaters (not a spur, a skirt, a simplex frequency, an
-   ignored or an 's' one); of those the one listened to fewest times, then the best ranked.
-   Its listens count goes up, so it moves to the back: two repeaters that ID at the same time
-   take turns and neither starves. 0: none to listen to. */
+   ignored or an 's' one); of those the one listened to fewest times, then the first in up_hz
+   (xs_up gives them loudest first: Jeff 2026-11-07, strongest first). Its listens count goes
+   up, so it moves to the back: the next loudest goes when it's up again, and two repeaters that
+   ID at the same time take turns and neither starves. 0: none to listen to. */
 ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n);
+/* The automatic listen's cap, by Jeff's rule (2026-11-07: "reduces the time spent listening for
+   CW the longer a given station has actually been listened to"): max_s halved for each
+   EX_HEARD_STEP_S already spent on it, min_s at least; ex_heard adds a listen's seconds. */
+#define EX_HEARD_STEP_S 60
+unsigned ex_listen_cap(const ex_cand_t *c, unsigned max_s, unsigned min_s);
+void ex_heard(ex_t *e, uint32_t hz, unsigned s);
 /* a repeater table record from a candidate, for Save (id 0: rt_put makes it a new entry) */
 void ex_to_rt(const ex_cand_t *c, rt_rec_t *r);
 

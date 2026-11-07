@@ -39,7 +39,8 @@ class Cand(ctypes.Structure):
                 ("prev_start", ctypes.c_uint32), ("ids", ctypes.c_uint8), ("skirts", ctypes.c_uint8),
                 ("flags", ctypes.c_uint8),
                 ("score", ctypes.c_int8), ("grade", ctypes.c_char), ("call", ctypes.c_char * 10),
-                ("listens", ctypes.c_uint8)]
+                ("listens", ctypes.c_uint8),
+                ("heard_s", ctypes.c_uint16)]
 
 
 class Ex(ctypes.Structure):
@@ -50,7 +51,7 @@ class Ex(ctypes.Structure):
 
 class Plan(ctypes.Structure):
     _fields_ = [("lo_hz", ctypes.c_uint32), ("hi_hz", ctypes.c_uint32), ("off_hz", ctypes.c_int32),
-                ("simplex", ctypes.c_uint8)]
+                ("simplex", ctypes.c_uint8), ("pad", ctypes.c_uint8), ("raster_khz", ctypes.c_uint16)]
 
 
 class Rec(ctypes.Structure):
@@ -82,9 +83,16 @@ def load(so=None):
     L.ex_know.argtypes = [P, ctypes.c_uint32]
     L.ex_find.argtypes = [P, ctypes.c_uint32]
     L.ex_find.restype = ctypes.POINTER(Cand)
-    L.ex_rank.argtypes = [P, ctypes.c_uint]
-    L.ex_rank.restype = ctypes.POINTER(Cand)
+    L.ex_rank.argtypes = L.ex_view.argtypes = [P, ctypes.c_uint]
+    L.ex_rank.restype = L.ex_view.restype = ctypes.POINTER(Cand)
+    L.ex_view_n.argtypes = [P]
+    L.ex_view_n.restype = ctypes.c_uint
+    L.ex_on_raster.argtypes = [ctypes.c_uint32]
     L.ex_to_rt.argtypes = [ctypes.POINTER(Cand), ctypes.POINTER(Rec)]
+    L.ex_listen_cap.argtypes = [ctypes.POINTER(Cand), ctypes.c_uint, ctypes.c_uint]
+    L.ex_listen_cap.restype = ctypes.c_uint
+    L.ex_heard.argtypes = [P, ctypes.c_uint32, ctypes.c_uint]
+    L.ex_heard.restype = None
     L.ex_pick_id.argtypes = [P, ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint]
     L.ex_pick_id.restype = ctypes.POINTER(Cand)
     return L

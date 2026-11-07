@@ -5,15 +5,15 @@
 /* US: ARRL 2 m and 1.25 m repeater outputs and simplex, WWARA 70 cm (440-445 outputs +5 MHz in
    the Pacific Northwest), the 70 cm simplex calling range. From memory: check before a release. */
 const ex_plan_t ex_plan_us[] = {
-    {145100000u, 145500000u, -600000, 0},
-    {146400000u, 146580000u, 0, 1},
-    {146610000u, 146970000u, -600000, 0},
-    {147000000u, 147390000u, 600000, 0},
-    {147420000u, 147570000u, 0, 1},
-    {223400000u, 223520000u, 0, 1},
-    {223850000u, 224980000u, -1600000, 0},
-    {440000000u, 445000000u, 5000000, 0},
-    {445950000u, 446100000u, 0, 1},
+    {145100000u, 145500000u, -600000, 0, 0, 0},
+    {146400000u, 146580000u, 0, 1, 0, 0},
+    {146610000u, 146970000u, -600000, 0, 0, 0},
+    {147000000u, 147390000u, 600000, 0, 0, 0},
+    {147420000u, 147570000u, 0, 1, 0, 0},
+    {223400000u, 223520000u, 0, 1, 0, 0},
+    {223850000u, 224980000u, -1600000, 0, 0, 0},
+    {440000000u, 445000000u, 5000000, 0, 0, 25},
+    {445950000u, 446100000u, 0, 1, 0, 0},
 };
 const unsigned ex_plan_us_n = sizeof ex_plan_us / sizeof ex_plan_us[0];
 
@@ -195,11 +195,14 @@ static int before(const ex_cand_t *a, const ex_cand_t *b) {
   return (int32_t)(a->last_ms - b->last_ms) > 0;
 }
 
-/* the i-th by selection: no sorting in place, so a pointer the caller holds stays put */
-ex_cand_t *ex_rank(ex_t *e, unsigned i) {
-  unsigned k, j;
+static int skirt(const ex_cand_t *c) { return c->overs && c->skirts >= c->overs; }
+
+/* the i-th by selection (skirts left out unless all): no sorting in place, so a pointer the
+   caller holds stays put */
+static ex_cand_t *nth(ex_t *e, unsigned i, int all) {
+  unsigned k = 0, j;
   ex_cand_t *prev = 0;
-  for (k = 0; k <= i; k++) {
+  for (;;) {
     ex_cand_t *best = 0;
     for (j = 0; j < e->n; j++) {
       ex_cand_t *c = &e->c[j];
@@ -211,8 +214,29 @@ ex_cand_t *ex_rank(ex_t *e, unsigned i) {
     }
     if (!best) return 0;
     prev = best;
+    if (all || !skirt(best)) {
+      if (k == i) return best;
+      k++;
+    }
   }
-  return prev;
+}
+
+ex_cand_t *ex_rank(ex_t *e, unsigned i) { return nth(e, i, 1); }
+ex_cand_t *ex_view(ex_t *e, unsigned i) { return nth(e, i, 0); }
+
+unsigned ex_view_n(const ex_t *e) {
+  unsigned j, n = 0;
+  for (j = 0; j < e->n; j++) n += !skirt(&e->c[j]);
+  return n;
+}
+
+int ex_on_raster(uint32_t hz) {
+  const ex_plan_t *p = plan_row(hz);
+  uint32_t r, d;
+  if (!p || !p->raster_khz) return 1;
+  r = p->raster_khz * 1000u, d = hz - p->lo_hz;
+  while (d >= r) d -= r;   /* at most a few hundred: no division on the M0 */
+  return d <= 1000 || r - d <= 1000;
 }
 
 ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n) {
@@ -227,10 +251,21 @@ ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n) {
     if (c->call[0] || c->grade == 's' || (c->flags & (EX_F_SPUR | EX_F_IGNORED | EX_F_SIMPLEX)) ||
         (c->overs && c->skirts >= c->overs))
       continue;
-    if (!best || c->listens < best->listens || (c->listens == best->listens && before(c, best))) best = c;
+    if (!best || c->listens < best->listens) best = c;   /* a tie: the first, the loudest (xs_up) */
   }
   if (best && best->listens < 255) best->listens++;
   return best;
+}
+
+unsigned ex_listen_cap(const ex_cand_t *c, unsigned max_s, unsigned min_s) {
+  unsigned t;
+  for (t = c->heard_s; t >= EX_HEARD_STEP_S && max_s > min_s; t -= EX_HEARD_STEP_S) max_s >>= 1;
+  return max_s < min_s ? min_s : max_s;
+}
+
+void ex_heard(ex_t *e, uint32_t hz, unsigned s) {
+  ex_cand_t *c = ex_find(e, hz);
+  if (c) c->heard_s = (uint16_t)(c->heard_s + s > 0xffffu ? 0xffffu : c->heard_s + s);
 }
 
 void ex_to_rt(const ex_cand_t *c, rt_rec_t *r) {

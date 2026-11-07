@@ -184,12 +184,12 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
                         os.path.join(K6, f), "-o", o], check=True)
         und = set(subprocess.run(["llvm-nm", "-u", o], capture_output=True, text=True, check=True).stdout.split())
         und -= {"U"}
-        assert und <= {"ex_over", "ex_spur", "ex_own_clock", "cw_call", "cw_div", "cw_feed", "cw_flush", "cw_init", "cw_utoa"}, und
+        assert und <= {"ex_over", "ex_spur", "ex_own_clock", "ex_on_raster", "cw_call", "cw_div", "cw_feed", "cw_flush", "cw_init", "cw_utoa"}, und
         size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
         text, data, bss = (int(x) for x in size.split()[:3])
         assert data == 0 and bss == 0
         sizes[f] = text
-    assert sizes["xscan.c"] < 4900 and sizes["xlisten.c"] < 1700, sizes
+    assert sizes["xscan.c"] < 5120 and sizes["xlisten.c"] < 1700, sizes
 
 
 def test_finds_a_repeater_feeds_the_list_and_the_log_replays_the_same(lib):
@@ -436,7 +436,8 @@ def test_an_over_carries_its_level_after_the_transmitter_comes_up(lib):
 
 def test_up_list_leaves_out_a_louder_carrier_s_skirts(lib):
     """the EXPLORE bench run (17:57): the -24 dBm ID showed at 440.900 too (-81), and the
-    automatic listener went there; xs_up now leaves out what's 20 dB under one up within 100 kHz"""
+    automatic listener went there; xs_up now leaves out what's 20 dB under one up within 100 kHz,
+    and what's under 15 dB over its floor"""
     L, kxl = lib
     L.xs_up.argtypes = [ctypes.c_void_p, ctypes.POINTER(U32), ctypes.c_uint]
     L.xs_up.restype = ctypes.c_uint
@@ -448,6 +449,24 @@ def test_up_list_leaves_out_a_louder_carrier_s_skirts(lib):
     up = (U32 * 10)()
     n = L.xs_up(buf, up, 10)
     assert sorted(up[:n]) == [440_850_000, 442_000_000], list(up[:n])
+    # bench 5 sat 2 minutes on a steady carrier only 10 dB over its floor: with 442.000 (-85)
+    # judged against a floor read 12 dB under it, it isn't picked
+    st = XsFloors.from_buffer(buf)
+    st.sfl[0] = 174 - 85 - 12
+    n = L.xs_up(buf, up, 10)
+    assert list(up[:n]) == [440_850_000], list(up[:n])
+    # off the 25 kHz raster it takes 10 dB more (Jeff 2026-11-07): 20 dB up on 442.000 is
+    # picked, 24 dB up on 441.0125 isn't
+    radio = Radio(Receiver([(441_012_500, -106, on), (442_000_000, -110, on)]))
+    buf, mem, ex = explorer(L, kxl, [(440_000_000, 12_500, 240, 12_500)], radio)
+    assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+    run_steps(L, buf, radio, 15)
+    XsFloors.from_buffer(buf).sfl[0] = 174 - 110 - 20
+    n = L.xs_up(buf, up, 10)
+    assert list(up[:n]) == [442_000_000], list(up[:n])
+    XsFloors.from_buffer(buf).sfl[0] = 174 - 110 - 27
+    assert list(up[:L.xs_up(buf, up, 10)]) == [441_012_500, 442_000_000]   # loudest first
+    assert list(up[:L.xs_up(buf, up, 1)]) == [441_012_500]
 
 
 class Detector:
