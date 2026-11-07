@@ -108,6 +108,27 @@ def two_m(seconds=40, **kw):
     return sw.pack([(146_600_000, 10_000, 80, 5_000)], seconds=seconds, **kw)
 
 
+class Jumpy(Receiver):
+    """quick reads (under 3 ms after a tune) on a third of the bins jump 4-9 dB half the time"""
+
+    def rssi(self, us):
+        v = super().rssi(us)
+        if us - self.t < 3000 and (self.f // 10000) % 3 == 0 and self.rnd.random() < 0.5:
+            v += 2 * self.rnd.randint(4, 9)       # the register counts 0.5 dB
+        return v
+
+
+@need_clang
+def test_quick_reads_that_jump_are_confirmed_less_and_less():
+    # 70 cm on air (2026-11-07) fell to 114 bins/s confirming bins that never made a hit
+    ret, said, *_ = go(two_m(20), Jumpy([]))
+    res = sw.decode("\n".join(said))
+    conf = [s["c"] for s in res["sweeps"]]
+    assert ret == 0 and not res["new"]
+    assert sum(conf[-20:]) / 20 <= 6, conf
+    assert res["z"]["bps"] >= 320, res["z"]
+
+
 @need_clang
 def test_finds_overs_refines_and_reports():
     # a repeater on 146.940 keyed for 3 s three times at -70, a weak simplex station on 146.715

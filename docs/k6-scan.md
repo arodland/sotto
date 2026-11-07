@@ -109,13 +109,51 @@ sweep) sent from hamlet, 2 m for 90 s, wide, 1.5 ms quick reads. All 28 chunks i
   bin 0, right after the jump from 147.99 back to 144.00. Since then each sweep parks on its
   first bin for confirm_us before it starts; the next run tells the two causes apart.
 
+## Second bench run (2026-11-07 08:19-08:26 UTC)
+
+Same image, nothing flashed. The module came from CI run 42354372005 (aae8956, 3,476 B), which
+had room for only 108 columns, so both runs used `--cols 108`. 29 of 29 chunks went in each
+time with no resends, and the ARQ report was heard both times.
+
+**2 m, 90 s:** `Z sw=90 bins=36000 ms=90131 bps=399 hot=1`, so the speed held at 399 bins/s.
+**Bin 0 still lights up on every sweep, park or not.** The line is `T 144.000 n89 t0 -71 d1`,
+with 89 overs of 0 ms each. It reads -71 at the confirm, 12 ms after the tune, and is gone at
+the revisit. So it isn't the 4 MHz jump, since the park now comes between the jump and the read.
+What comes just before bin 0 every sweep is the burst of serial lines (R and S, about 150-200 B,
+13-17 ms at 115,200 baud). If the UART is still sending during the park and the read, that
+would explain it. The next run tests this with `--no-rows`.
+
+**70 cm (70a, 440-445), 120 s, CW ID at 40.7 s:**
+
+- **The CW ID was seen.** `N 440.850 -22 fl-106 b68`, then `H 440.850 7955 -22`: one over of
+  8.0 s at the IC-7100's level, as it should be. Bins next to it were also flagged during the
+  key-up (440.862 at -59, 440.900 at -81, 440.912 at -74), as was 444.6-444.98 at -105 to -117.
+  None of them stayed up.
+- **The segment floor started 35 dB high:** `fl-106` at the ID, then -141/-143 from the next
+  confirm on. The floors are read right after the module waits out the upload's own -22 dBm
+  carrier on 440.850. On 70 cm the receiver seems not to have recovered 0.2 s later. The wait is
+  now 1 s.
+- **With the floor right, a weak steady signal showed up:** nine bins in 440.000-440.525 at -104
+  to -106, up for the remaining 91-95 s. 440.000 and 440.525 were marked spurs. That's about
+  35 dB over the floor, so it's real energy, most likely from the bench (the IC-7100 or the PC
+  next to the K6). A drive away from the bench will tell.
+- **Bins a second fell to 114** once the confirms started: `Z sw=36 bins=14400 ms=125773
+  bps=114 hot=9`. That's about 3.5 s a sweep instead of 1. The emulator puts nine up entries at
+  about 20 % of the time, so most of the loss must be confirms that never make a hit. A bin whose
+  quick read passes the noise test but whose confirm fails now has its quick floor raised to 3 dB
+  under that read. It is confirmed again only if it gets louder, or after its floor has fallen
+  back. In the emulator, with quick reads that jump 4-9 dB on a third of the bins, that takes
+  the rate from 276 to 345 bins/s (`test_quick_reads_that_jump_are_confirmed_less_and_less`).
+
+The logs are on hamlet in `~/sotto-work/runs/explorer-scan-2/`.
+
 ## Next bench run
 
-Receive only, nothing flashed: `run 2m --seconds 90` again (does bin 0 still show?), then
-`run 70a --seconds 120` with the IC-7100 keying its CW ID on 440.850 (it falls inside 70a) as the
-known signal. What to read off:
+Receive only, nothing flashed, with the module built from the branch head (3,480 B, 136 B of
+scratch to spare):
 
-- the real bin cost and bins a second (`Z`, `decode`), against the design's 0.75 s for 2 m;
-- whether the CW ID shows as one entry with one `H` line per ID, at the IC-7100's level;
-- whether `stack_free` on the `K6 MOD ret` line leaves a margin;
-- what the K6 itself puts on 2 m and 70 cm (spurs: rxmap found 13, 6 and 25 MHz harmonics).
+1. `run 2m --seconds 60 --no-rows`: if bin 0 is clean without the R lines, the serial burst is
+   the cause, and the fix is a park long enough for the UART to drain.
+2. `run 70a --seconds 120` with the CW ID about 40 s in, with the serial log started *before* the
+   upload so the `F` line is in it. Check whether the F floor now reads about -141, the `c`
+   counts on the S lines, and bins a second.

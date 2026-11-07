@@ -315,6 +315,9 @@ static int sweep(sw_t *s, int g, uint8_t *fl) {
         if (lvl < sf) sf = lvl;
         else if ((conf & 3) == 0) sf++;
         s->sfl[g] = st8(sf);
+        /* no hit: raise this bin's quick floor to 3 dB under the read, so a bin whose quick
+           reads jump about (70 cm, 2026-11-07: 114 bins/s) isn't confirmed every sweep */
+        fl[b] = (uint8_t)(r - 3);
       }
     }
     v = r - fl[b];
@@ -373,7 +376,9 @@ int k6_main(const k6_api_t *api) {
     if (key(api)) return 0;
     api->delay_us(10000);
   }
-  api->delay_us(200000);
+  /* 1 s for the receiver to recover from the upload's carrier: on 70 cm (2026-11-07) the floors
+     read at 0.2 s came out 35 dB high and stayed until a strong signal reset them */
+  api->delay_us(1000000);
   /* each segment's floors: quick and full reads on 8 of its bins, off the round frequencies
      (the K6's clock harmonics), the second lowest of each. The first sweep caps a bin's quick
      floor 3 dB over the quick one, so a carrier that's up all through it still shows. */

@@ -301,7 +301,7 @@ def code_of(a):
 def blk_of(a, code_len):
     segs = [parse_seg(s) for s in a.segments]
     blk = pack(segs, seconds=a.seconds, quick_us=a.quick_us, wide=0 if a.narrow else 1, cols=a.cols,
-               refine=not a.no_refine)
+               refine=not a.no_refine, rows=not a.no_rows)
     if not fits(segs, a.cols, code_len):
         sys.exit(f"too many bins: {FLMAX} in all, and the row at most {row_room(segs)} columns here "
                  f"(module {code_len} B, {spare(code_len)} B of scratch to spare)")
@@ -395,6 +395,7 @@ def main():
     r.add_argument("--cols", type=int, default=128)
     r.add_argument("--narrow", action="store_true")
     r.add_argument("--no-refine", action="store_true")
+    r.add_argument("--no-rows", action="store_true", help="no R lines (the waterfall), only S and the rest")
     r.add_argument("--rigctld", default="localhost:4532")
     r.add_argument("--out", default=".", help="where the log goes (on hamlet: a run folder in ~/sotto-work/runs)")
     r.add_argument("--dry-run", action="store_true")
@@ -415,6 +416,7 @@ def main():
     p.add_argument("--cols", type=int, default=128)
     p.add_argument("--narrow", action="store_true")
     p.add_argument("--no-refine", action="store_true")
+    p.add_argument("--no-rows", action="store_true")
     a = ap.parse_args()
     if a.cmd == "run":
         a.key_file = os.path.abspath(os.path.expanduser(a.key_file))
