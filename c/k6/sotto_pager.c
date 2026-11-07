@@ -609,6 +609,66 @@ int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int e
   return 1;
 }
 
+/* ---- speaker sweep (sotto_pager.h) ---- */
+
+const uint16_t sp_sweep_hz[SP_SWEEP_N] = {250, 400, 630, 1000, 1600, 2000, 2500, 3150, 4000, 5000,
+                                          5600, 6300, 7000, 7500};
+/* sin(pi / 2 * i / 64), Q15 */
+static const int16_t quarter_sin[65] = {
+  0, 804, 1608, 2410, 3212, 4011, 4808, 5602, 6393, 7179, 7962, 8739, 9512, 10278, 11039, 11793,
+  12539, 13279, 14010, 14732, 15446, 16151, 16846, 17530, 18204, 18868, 19519, 20159, 20787, 21403,
+  22005, 22594, 23170, 23731, 24279, 24811, 25329, 25832, 26319, 26790, 27245, 27683, 28105, 28510,
+  28898, 29268, 29621, 29956, 30273, 30571, 30852, 31113, 31356, 31580, 31785, 31971, 32137, 32285,
+  32412, 32521, 32609, 32678, 32728, 32757, 32767};
+static struct { int k; uint32_t left, ph, inc; } sw;
+
+/* sin(2 pi ph / 2^32), Q15: the quarter table, linearly interpolated */
+static int32_t sin_q15(uint32_t ph) {
+  uint32_t q = ph >> 30, x = (ph >> 14) & 0xFFFF;   /* quadrant; 16 bits within it */
+  uint32_t i, f;
+  int32_t a, v;
+  if (q & 1) x = 0x10000 - x;
+  i = x >> 10, f = x & 1023;
+  a = quarter_sin[i];
+  v = i < 64 ? a + (int32_t)(((quarter_sin[i + 1] - a) * (int32_t)f) >> 10) : a;
+  return q & 2 ? -v : v;
+}
+
+void sp_sweep_start(void) {
+  sw.k = -1, sw.ph = 0, sw.inc = 0;
+  sw.left = (uint32_t)SP_SWEEP_LEAD_MS * (SP_SWEEP_RATE / 1000);
+}
+
+int sp_sweep_pwm(uint16_t *out, int n, unsigned top) {
+  int32_t half = (int32_t)(top / 2), amp = (int32_t)(top / 8);
+  int i;
+  for (i = 0; i < n; i++) {
+    /* steps: k = -1 the lead silence; tone j = k / 2 when k is even, its gap when odd */
+    while (!sw.left && sw.k < 2 * SP_SWEEP_N) {
+      sw.k++;
+      if (sw.k >= 2 * SP_SWEEP_N) break;
+      if (sw.k & 1) sw.left = (uint32_t)SP_SWEEP_GAP_MS * (SP_SWEEP_RATE / 1000);
+      else {
+        sw.left = (uint32_t)SP_SWEEP_TONE_MS * (SP_SWEEP_RATE / 1000);
+        sw.ph = 0;
+        /* 2^32 / 16000 = 268435.456 per Hz, in 32-bit arithmetic */
+        sw.inc = sp_sweep_hz[sw.k / 2] * 268435u + sp_sweep_hz[sw.k / 2] * 456u / 1000u;
+      }
+    }
+    if (sw.k >= 2 * SP_SWEEP_N) {
+      for (; i < n; i++) out[i] = (uint16_t)half;
+      return 0;
+    }
+    if (sw.k >= 0 && !(sw.k & 1)) {
+      out[i] = (uint16_t)(half + ((sin_q15(sw.ph) * amp) >> 15));
+      sw.ph += sw.inc;
+    } else
+      out[i] = (uint16_t)half;
+    sw.left--;
+  }
+  return 1;
+}
+
 /* packet seq of the spec's 70-frame test message (section 10: frame f is f as 16 bits little
    endian, then 11 22 33 44; msg_id 0x42) in profile L or XL (len bytes), whitened */
 static void test_packet(uint8_t *out, int len, int seq) {

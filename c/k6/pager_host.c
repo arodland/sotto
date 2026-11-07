@@ -20,7 +20,8 @@
  * (pager_host_vlr*, -DSP_VLR) also print vlr= (sp_vlr_setup's result) after cb=, and with their
  * tables in SPI flash take -V IMAGE (put at SP_VLR_ADDR) and -X FILE (that region written out
  * after the setup), and print vlr_reads= after cb_reads=. pager_host -e [-x] PACKETS.bin prints, for each packet,
- * sp_test_errors: errors seq swap invert and the eight block counts.
+ * sp_test_errors: errors seq swap invert and the eight block counts. pager_host -w OUT.u16 writes
+ * the speaker sweep (sp_sweep_pwm, top 2000, SP_SWEEP_RATE values a second) as uint16.
  * SPDX-License-Identifier: MIT */
 #include <stdio.h>
 #include <stdlib.h>
@@ -42,6 +43,19 @@ int main(int argc, char **argv) {
   FILE *in, *out;
   const char *cb_load = 0, *cb_save = 0, *vlr_load = 0, *vlr_save = 0;
   unsigned cb_bench = 0;
+  if (argc == 3 && !strcmp(argv[1], "-w")) {          /* the speaker sweep's PWM values */
+    uint16_t seg[160];
+    int more = 1, tail = 0;
+    if (!(out = fopen(argv[2], "wb"))) { perror("pager_host"); return 1; }
+    sp_sweep_start();
+    while (more || !tail) {
+      more = sp_sweep_pwm(seg, 160, 2000);
+      if (!more) tail = 1;
+      fwrite(seg, 2, 160, out);
+    }
+    fclose(out);
+    return 0;
+  }
   if (argc == 2 && !strcmp(argv[1], "-t")) {          /* the calibration test packet, hex */
     int i;
     sp_test_packet(pkt);

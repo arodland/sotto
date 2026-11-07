@@ -422,9 +422,13 @@ CTL_MAGIC = 0xA8
 CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, "vol": 64,
             "idlekeep": 128}
 CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 5, "boot": 6,
-               "reset": 7, "stream-on": 8, "stream-off": 9, "ifrx": 10}
+               "reset": 7, "stream-on": 8, "stream-off": 9, "ifrx": 10,
+               "sweep": 11}
 # "ifrx" (images from 2026-11-07 that aren't lean): a coded 4FSK receive session on the IF for up
 # to byte 4 x 2 s (modem/k6g.py, PHY G): the burst follows the control packet on the same carrier
+# "sweep" (images built after 2026-11-07 07:30): the K6 plays its speaker sweep (c/k6/sotto_pager.h
+# sp_sweep_pwm: 1 s silence, then 14 tones of 1 s, 250 Hz to 7.5 kHz, 0.25 s apart, at 16 kHz PWM
+# updates), printing `K6 SWEEP start` and `K6 SWEEP done`; record the speaker, run tools/k6_sweep.py
 # "stream-on" / "stream-off" (images with streaming): sotto 1200 messages play while their later
 # interleave groups arrive (the sotto 1200 image's default), or store then play as before; from
 # the next new message, RAM only
