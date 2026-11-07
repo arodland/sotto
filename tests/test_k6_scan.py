@@ -121,8 +121,9 @@ def test_finds_overs_refines_and_reports():
     assert 146_940_000 in news and 146_715_000 in news, res["new"]
     overs = [o for o in res["overs"] if o["f"] == 146_940_000]
     assert len(overs) == 3, overs
-    for o in overs:
+    for o, start in zip(overs, (4000, 12000, 22000)):
         assert 2600 <= o["ms"] <= 3400 and abs(o["lvl"] + 70) <= 2, o
+        assert abs(o["at"] - start) <= 1500, o          # when it started, for the explorer's ID cue
     t = {e["f"]: e for e in res["summary"]}
     assert t[146_940_000]["overs"] == 3 and t[146_940_000]["spread"] <= 2 and not t[146_940_000]["spur"]
     assert t[146_715_000]["overs"] == 1
@@ -214,11 +215,13 @@ def test_pack_parse_and_decode():
            "12:00:02 K6 MOD say S0 1 160 c0 h0\n"
            "12:00:02 K6 MOD say N 146.940 -70 fl-137 z0 b34\n"
            "12:00:05 K6 MOD say H 146.940 3010 -70 n1\n"
+           "12:00:06 K6 MOD say H 146.940 900 -71 a5120\n"
            "12:00:09 K6 MOD say T 146.940 n1 t3 -70 d0\n"
            "12:00:09 K6 MOD say Z sw=20 bins=1600 ms=8000 bps=200 hot=1\n")
     res = sw.decode(log)
     assert res["sweeps"][0]["row"] == [0, 0, 0, 5] and res["sweeps"][0]["t"] == "12:00:02"
     assert res["overs"][0] == {"f": 146_940_000, "ms": 3010, "lvl": -70, "n": 1, "t": "12:00:05"}
+    assert res["overs"][1] == {"f": 146_940_000, "ms": 900, "lvl": -71, "at": 5120, "t": "12:00:06"}
     assert res["z"]["bps"] == 200 and res["summary"][0]["overs"] == 1
 
 

@@ -18,6 +18,7 @@
      a short regular over                  +1      3+ overs of 2-15 s, 5-20 min apart (like an
                                                     ID every 10 minutes)
 
+   A spur scores -100: it ranks last and is the first to go when the list is full.
    Grades: 's' a spur, a simplex frequency or under 0 points; '?' fewer than EX_MIN_OVERS overs
    with no input heard and no call; 'R' 6 points or more; otherwise 'r'. The offset comes from ex_input when there is one, else
    from the band plan row the output falls in.

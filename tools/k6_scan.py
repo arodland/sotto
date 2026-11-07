@@ -39,7 +39,7 @@ MAGIC = b"SWEEP v1"
 FMT = "<8sBBBBBB2xHHHHH4H4HH4I4I"     # par_t in scan.c, 76 bytes
 NSEG = 4
 STORE = 4072                         # the module store: code + scratch
-SW_T, HOT_T, HOT = 180, 28, 11       # sw_t, hot_t and HOT in scan.c
+SW_T, HOT_T, HOT = 180, 28, 10       # sw_t, hot_t and HOT in scan.c
 FLMAX = 1024                         # bins in all: their floors live on the module's stack
 TLM_BYTES = 12 * 57
 PAGER_HZ = 440_850_000
@@ -62,12 +62,12 @@ SEGMENTS = {
 
 
 def code_size():
-    """scan.c's built size, or the last build's (3436 B, 2026-11-07) without clang"""
+    """scan.c's built size, or the last build's (3460 B, 2026-11-07) without clang"""
     try:
         from modem import k6mod
         return len(k6mod.build(SRC)[0])
     except Exception:
-        return 3436
+        return 3460
 
 
 def row_room(code=None):
@@ -181,9 +181,13 @@ def decode(text):
         elif m := re.fullmatch(r"N (\d+\.\d{3}) (-?\d+) fl(-?\d+) z(\d+) b(\d+)", ln):
             r["new"].append({"f": _hz(m.group(1)), "lvl": int(m.group(2)), "fl": int(m.group(3)),
                              "z": int(m.group(4)), "bin": int(m.group(5)), "t": t})
-        elif m := re.fullmatch(r"H (\d+\.\d{3}) (\d+) (-?\d+) n(\d+)", ln):
-            r["overs"].append({"f": _hz(m.group(1)), "ms": int(m.group(2)), "lvl": int(m.group(3)),
-                               "n": int(m.group(4)), "t": t})
+        elif m := re.fullmatch(r"H (\d+\.\d{3}) (\d+) (-?\d+) (?:n(\d+)|a(\d+))", ln):
+            o = {"f": _hz(m.group(1)), "ms": int(m.group(2)), "lvl": int(m.group(3)), "t": t}
+            if m.group(4):                                   # the first run's form: overs so far
+                o["n"] = int(m.group(4))
+            else:                                            # when it started, module ms
+                o["at"] = int(m.group(5))
+            r["overs"].append(o)
         elif m := re.fullmatch(r"X (\d+\.\d{3}) (-?\d+)", ln):
             r["spurs"].append({"f": _hz(m.group(1)), "lvl": int(m.group(2)), "t": t})
         elif m := re.fullmatch(r"T (\d+\.\d{3}) n(\d+) t(\d+) (-?\d+) d(\d+)( s)?", ln):
@@ -269,11 +273,11 @@ def svg(res, segs, path, seg=0, px=4):
 def write_csv(res, path):
     with open(path, "w", newline="") as fh:
         w = csv.writer(fh)
-        w.writerow(["kind", "time", "MHz", "dBm", "ms_up", "overs", "floor", "z"])
+        w.writerow(["kind", "time", "MHz", "dBm", "ms_up", "overs", "floor", "z", "start_ms"])
         for e in res["new"]:
             w.writerow(["new", e["t"] or "", mhz(e["f"]), e["lvl"], "", "", e["fl"], e["z"]])
         for e in res["overs"]:
-            w.writerow(["over", e["t"] or "", mhz(e["f"]), e["lvl"], e["ms"], e["n"], "", ""])
+            w.writerow(["over", e["t"] or "", mhz(e["f"]), e["lvl"], e["ms"], e.get("n", ""), "", "", e.get("at", "")])
         for e in res["spurs"]:
             w.writerow(["spur", e["t"] or "", mhz(e["f"]), e["lvl"], "", "", "", ""])
 

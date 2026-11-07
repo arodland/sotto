@@ -27,7 +27,8 @@
      F0 -137 q-160: -137 -136 ...           a segment's settled and quick floors at the start,
                                             then its 8 full reads
      N 146.940 -71 fl-137 z0 b123           a new hit: centre, level, segment floor, REG 0x63, bin
-     H 146.940 2030 -71 n3                  an over ended: centre, ms up, level, overs so far
+     H 146.940 2030 -71 a61250              an over ended: centre, ms up, level, when it
+                                            started (module ms; T has the overs)
      X 146.940 -61                          a spur
      R0 0 0000a30000...                     (flags bit 2) a sweep's row, max-pooled to cols
                                             columns (0: one a bin): '0' + dB over the floor, 0..63
@@ -75,7 +76,7 @@ static const volatile par_t PAR = {
     {'S', 'W', 'E', 'E', 'P', ' ', 'v', '1'}, 1, 1, 6, 10, 128, 6, {0, 0}, 1500, 12000, 60, 100, 60,
     {400}, {5000}, 0, {144000000u}, {10000u}};
 
-#define HOT 11
+#define HOT 10
 #define FLMAX 1024      /* bins, all segments: their floors live on the stack (3.5 KB free at the call) */
 #define BLOCK 32
 #define CLEAR_DBM (-100)
@@ -199,13 +200,13 @@ static void starts(hot_t *h, uint32_t now, int lvl, int r) {
 
 static void ends(sw_t *s, hot_t *h) {
   char *p;
-  uint32_t dur = h->last > h->up ? h->last - h->up : 0;
+  uint32_t a = h->up, dur = h->last > a ? h->last - a : 0;
   h->on += dur, h->up = 0;
   if (h->overs == 1 || h->lvl < h->olo) h->olo = h->lvl;
   if (h->overs == 1 || h->lvl > h->ohi) h->ohi = h->lvl;
   p = num(fq(s->line, "H ", h->hz), " ", (int)dur, 0);
   p = num(p, " ", dbm8(h->lvl), 0);
-  say(s, num(p, " n", h->overs, 0));
+  say(s, num(p, " a", (int)a, 0));
 }
 
 /* a confirmed bin: an entry's next over, or (refined, read again at its centre) a new entry */

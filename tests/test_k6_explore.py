@@ -6,87 +6,31 @@ import ctypes
 import os
 import shutil
 import subprocess
+import sys
 
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 K6 = os.path.join(ROOT, "c", "k6")
 MIN = 60_000
-F_IGNORED, F_TRIED, F_OFF_HEARD, F_SIMPLEX, F_SPUR = 1, 2, 4, 8, 16
-
-
-class Cand(ctypes.Structure):
-    _fields_ = [("hz", ctypes.c_uint32), ("first_ms", ctypes.c_uint32), ("last_ms", ctypes.c_uint32),
-                ("on_ms", ctypes.c_uint32), ("off_hz", ctypes.c_int32), ("overs", ctypes.c_uint16),
-                ("tone", ctypes.c_uint16), ("lo", ctypes.c_int16), ("hi", ctypes.c_int16),
-                ("prev_start", ctypes.c_uint32), ("ids", ctypes.c_uint8), ("flags", ctypes.c_uint8),
-                ("score", ctypes.c_int8), ("grade", ctypes.c_char), ("call", ctypes.c_char * 10)]
-
-
-class Ex(ctypes.Structure):
-    _fields_ = [("c", ctypes.POINTER(Cand)), ("n", ctypes.c_uint16), ("cap", ctypes.c_uint16),
-                ("tol_hz", ctypes.c_uint32)]
-
-
-class Rec(ctypes.Structure):
-    _fields_ = [("state", ctypes.c_uint16), ("seq", ctypes.c_uint16), ("rx_hz", ctypes.c_uint32),
-                ("tx_off", ctypes.c_int32), ("rx_tone", ctypes.c_uint16), ("tx_tone", ctypes.c_uint16),
-                ("flags", ctypes.c_uint16), ("best_rssi", ctypes.c_uint8), ("score", ctypes.c_uint8),
-                ("last_heard", ctypes.c_uint32), ("name", ctypes.c_char * 16), ("call", ctypes.c_char * 10),
-                ("call_flags", ctypes.c_uint8), ("cw", ctypes.c_uint8), ("group", ctypes.c_uint8),
-                ("spare0", ctypes.c_uint8), ("id", ctypes.c_uint16), ("wseq", ctypes.c_uint32),
-                ("crc", ctypes.c_uint32)]
+sys.path.insert(0, os.path.join(ROOT, "tools"))
+import k6_explore as kx  # noqa: E402
+from k6_explore import F_IGNORED, F_OFF_HEARD, F_SIMPLEX, F_SPUR, F_TRIED, Rec  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def lib(tmp_path_factory):
     if not shutil.which("cc"):
         pytest.skip("needs a C compiler")
-    so = str(tmp_path_factory.mktemp("ex") / "libex.so")
-    subprocess.run(["cc", "-O1", "-g", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-o", so,
-                    os.path.join(K6, "explore.c")], check=True)
-    L = ctypes.CDLL(so)
-    P = ctypes.POINTER(Ex)
-    L.ex_init.argtypes = [P, ctypes.POINTER(Cand), ctypes.c_uint]
-    L.ex_over.argtypes = [P, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_int]
-    L.ex_over.restype = ctypes.POINTER(Cand)
-    L.ex_spur.argtypes = [P, ctypes.c_uint32]
-    L.ex_input.argtypes = [P, ctypes.c_uint32, ctypes.c_int32]
-    L.ex_tone.argtypes = [P, ctypes.c_uint32, ctypes.c_uint16]
-    L.ex_cw.argtypes = [P, ctypes.c_uint32, ctypes.c_char_p]
-    L.ex_find.argtypes = [P, ctypes.c_uint32]
-    L.ex_find.restype = ctypes.POINTER(Cand)
-    L.ex_rank.argtypes = [P, ctypes.c_uint]
-    L.ex_rank.restype = ctypes.POINTER(Cand)
-    L.ex_to_rt.argtypes = [ctypes.POINTER(Cand), ctypes.POINTER(Rec)]
-    return L
+    return kx.load(str(tmp_path_factory.mktemp("ex") / "libex.so"))
 
 
-class List:
+class List(kx.Explorer):
     def __init__(self, L, cap=16):
-        self.L, self.store, self.e = L, (Cand * cap)(), Ex()
-        L.ex_init(ctypes.byref(self.e), self.store, cap)
-
-    def over(self, hz, t, dur, lvl):
-        p = self.L.ex_over(ctypes.byref(self.e), hz, t, dur, lvl)
-        return p.contents if p else None
-
-    def find(self, hz):
-        p = self.L.ex_find(ctypes.byref(self.e), hz)
-        return p.contents if p else None
+        super().__init__(L, cap)
 
     def ranked(self):
-        out, i = [], 0
-        while True:
-            p = self.L.ex_rank(ctypes.byref(self.e), i)
-            if not p:
-                return out
-            out.append(p.contents.hz)
-            i += 1
-
-    def __getattr__(self, name):
-        f = getattr(self.L, "ex_" + name)
-        return lambda *a: f(ctypes.byref(self.e), *a)
+        return [c.hz for c in super().ranked()]
 
 
 def test_builds_for_the_m0_without_library_calls(tmp_path):
@@ -136,7 +80,7 @@ def test_one_over_is_unknown_and_a_spur_stays_a_spur(lib):
     x.spur(442_500_000)
     for k in range(5):
         c = x.over(442_500_000, (k + 1) * MIN, 30_000, -90)
-    assert c.grade == b"s" and c.flags & F_SPUR
+    assert c.grade == b"s" and c.flags & F_SPUR and c.score == -100     # last in the list
 
 
 def test_an_input_heard_at_the_offset_wins_over_the_plan(lib):
@@ -216,3 +160,23 @@ def test_a_full_list_drops_the_weakest_but_keeps_ignored_and_tried(lib):
     x.find(433_500_000).flags |= F_TRIED
     x.find(433_700_000).flags |= F_TRIED
     assert x.over(445_000_000, 6 * MIN, 5000, -80) is None
+
+
+def test_replays_a_scan_and_cwlisten_log(lib):
+    log = "\n".join([
+        "08:10:00 K6 MOD say H 146.940 20000 -80 a10000",
+        "08:13:00 K6 MOD say H 146.940 30000 -81 a190000",
+        "08:16:00 K6 MOD say H 146.940 25000 -79 a370000",
+        "08:10:20 K6 MOD say H 146.520 8000 -60 n1",         # the first run's form: timed by the log
+        "08:10:40 K6 MOD say H 146.520 8000 -95 n2",
+        "08:11:00 K6 MOD say H 146.520 8000 -70 n3",
+        "08:11:00 K6 MOD say X 146.610 -100",
+        "08:20:00 K6 MOD say CWID ok W7ABC/R fl=4 rx=146940000 tone=800 wpm=20"])
+    x = kx.Explorer(lib)
+    assert kx.replay(x, log) == [6, 1, 1]
+    rows = x.ranked()
+    assert [(c.hz, c.grade) for c in rows] == [(146_940_000, b"R"), (146_520_000, b"s"), (146_610_000, b"s")]
+    assert rows[1].first_ms == (8 * 3600 + 10 * 60 + 12) * 1000
+    assert kx.row_text(rows[0]).startswith("R  146.9400 -0.6 MHz W7ABC/R  score 8, 3 overs")
+    assert kx.row_text(rows[2]).endswith("spur")
+    assert kx.plan_rows(lib)[2] == (146_610_000, 146_970_000, -600_000, False)

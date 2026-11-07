@@ -25,7 +25,7 @@ Each bin of a segment:
 4. **Refine** (new hits only). Narrow-filter reads every 2.5 kHz over ±(step + 5 kHz), the middle
    of those within 3 dB of the loudest, snapped to the segment's channel raster, then a full read
    there for its level.
-5. **Revisit.** Hits go on a hot list of 11 entries, visited between blocks of 32 bins, every
+5. **Revisit.** Hits go on a hot list of 10 entries, visited between blocks of 32 bins, every
    100 ms. A quick read says up or down. An over starts with a full read (its level) and ends
    after two down reads, with one `H` line. An entry up for longer than `spur_s` (60 s) within
    3 dB is a spur: it gets one `X` line and is never visited again. Bins within 1.5 steps of an
@@ -59,7 +59,7 @@ Segments (`plan` lists them): `2m` 144-148 at 10 kHz, `2mo`/`2mr` the 2 m repeat
 |---|---|
 | `F0 -137 q-160: -137 -136 ...` | a segment's settled and quick floors at the start, then its 8 full reads (taken off the round frequencies) |
 | `N 146.940 -71 fl-137 z0 b123` | a new hit: centre, level, segment floor, REG 0x63 noise indicator, bin |
-| `H 146.940 2030 -71 n3` | an over ended: centre, ms up, level, overs so far |
+| `H 146.940 2030 -71 a61250` | an over ended: centre, ms up, level, when it started (module ms). The first run printed the overs so far (`n3`) instead; `decode` reads both |
 | `X 146.940 -61` | a spur |
 | `R0 0 0000a3...` | one sweep's row, max-pooled to `cols` (128) columns: `'0'` + dB over the bin's floor |
 | `S0 12 702 c14 h1` | segment 0, sweep 12: 702 ms, 14 confirms, 1 hit |
@@ -74,7 +74,7 @@ still lacks (the first run: 0.92 ms; the emulator charges 0.42 ms, the design as
 ## Memory
 
 The module is 3.4 KB of the 4 KB store. The scratch RAM after it holds the state (180 B), the hot
-list (11 × 28 B) and the row (up to 148 columns). The floors, one byte a bin and up to 1,024 bins
+list (10 × 28 B) and the row (up to 152 columns). The floors, one byte a bin and up to 1,024 bins
 in all, live on the stack: Phase 0's run measured 3,504 B of stack room at a module's call, and
 this module takes about 1.2 KB of it. So 2 m plus 70 cm 440-445 fit in one run (800 bins).
 `K6 MOD ret ... stack_free=` on the first run will show the real margin.

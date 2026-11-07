@@ -69,6 +69,7 @@ void ex_grade(ex_cand_t *c) {
   }
   if (c->ids >= 2) s += 1;
   if (!(c->flags & EX_F_OFF_HEARD)) c->off_hz = p && !p->simplex ? p->off_hz : 0;
+  if (c->flags & EX_F_SPUR) s = -100;    /* last in the list, and the first to make room */
   c->score = (int8_t)(s < -100 ? -100 : s > 100 ? 100 : s);
   if (c->flags & EX_F_SPUR) c->grade = 's';
   else if (c->overs < EX_MIN_OVERS && !(c->flags & EX_F_OFF_HEARD) && !c->call[0]) c->grade = '?';
