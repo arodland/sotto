@@ -1,6 +1,25 @@
 /* ifrx: the K6's IF matched-filter receiver (ifrx.h). SPDX-License-Identifier: MIT */
 #include "ifrx.h"
-#include "ifrx_tables.h"
+#include "ifrx_tables.h" /* the filter; FFSK's and 4FSK's templates (1200 baud) */
+#if defined(IFRX_ONLY) && IFRX_ONLY == IFRX_4H
+#include "ifrx_tables_4h.h"
+#elif IFRX_BAUD != 1200
+#error FFSK and 4FSK (900 .. 2700 Hz) are 1200 baud only
+#endif
+
+/* counts a symbol, Q16, per ks16 (kS/s x 16): 1000 / 64 / IFRX_BAUD x 65536 / 16 = 64000 / IFRX_BAUD */
+#if IFRX_BAUD == 1200
+#define IFRX_PC_N 160u
+#define IFRX_PC_D 3u
+#elif IFRX_BAUD == 1500
+#define IFRX_PC_N 128u
+#define IFRX_PC_D 3u
+#elif IFRX_BAUD == 1600
+#define IFRX_PC_N 40u
+#define IFRX_PC_D 1u
+#else
+#error IFRX_BAUD: 1200, 1500 or 1600
+#endif
 
 /* sin(2 pi k / 64), Q14, k = 0..16 (a quarter turn) */
 static const int16_t ifrx_qs[17] = {0,     1606,  3196,  4756,  6270,  7723,  9102,  10394, 11585,
@@ -43,6 +62,9 @@ static IFRX_SIN_INL int32_t ifrx_sin(const int16_t *qs, uint32_t k) {
 #if defined(IFRX_ONLY) && IFRX_ONLY == IFRX_4FSK
 #define IFRX_MM(s) 4
 #define IFRX_HSH(s) 1
+#elif defined(IFRX_ONLY) && IFRX_ONLY == IFRX_4H
+#define IFRX_MM(s) 4
+#define IFRX_HSH(s) 0
 #elif defined(IFRX_ONLY)
 #define IFRX_MM(s) 2
 #define IFRX_HSH(s) 0
@@ -118,7 +140,7 @@ IFRX_NOINLINE static void ifrx_zero(void *p, uint32_t n) {
 void ifrx_rate(ifrx_t *s, uint32_t ks16) {
   uint32_t q;
   if (ks16 < 3400 * 16) ks16 = 3400 * 16;
-  s->pc_q16 = ifrx_udiv(ks16 * 160u, 3); /* ks * 1000 / 64 / 1200 counts a symbol */
+  s->pc_q16 = ifrx_udiv(ks16 * IFRX_PC_N, IFRX_PC_D); /* ks * 1000 / 64 / IFRX_BAUD counts a symbol */
   s->pc_q8 = s->pc_q16 >> 8;
   s->step_q16 = ifrx_udiv(s->pc_q16, IFRX_TL);
   q = ifrx_udiv(0xFFFFFFFFu, ks16);
@@ -134,6 +156,9 @@ void ifrx_init(ifrx_t *s, int mode, uint32_t ks16) {
 #if IFRX_ONLY == IFRX_4FSK
   s->tm = &ifrx_t_4fsk[0][0][0];
   s->M = 4, s->hsh = 1, s->k = 2;
+#elif IFRX_ONLY == IFRX_4H
+  s->tm = &ifrx_t_4h[0][0][0];
+  s->M = 4, s->hsh = 0, s->k = 2;
 #else
   s->tm = &ifrx_t_ffsk[0][0][0];
   s->M = 2, s->hsh = 0, s->k = 1;
@@ -339,7 +364,7 @@ IFRX_NOINLINE static void finish(ifrx_t *s) {
     if (fr > 0 && s->afc_sh && s->prev < 0) {
       while (fr > 0x3FFFF) fr >>= 1, fi >>= 1;
       fi = ifrx_sdiv(clampi(fi, fr) << 12, (uint32_t)fr); /* radians a sample, Q12 */
-      s->dphi_f = clampi(s->dphi_f + ((fi * (int32_t)s->k_afc * 9) >> 1), s->dphi_max);
+      s->dphi_f = clampi(s->dphi_f + ((fi * (int32_t)s->k_afc * (IFRX_TL / 2)) >> 1), s->dphi_max);
     }
     advance(s, (int32_t)s->pc_q16 + sweep(s));
     return;

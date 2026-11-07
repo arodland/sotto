@@ -1,4 +1,5 @@
-/* ifrx: the K6's IF matched-filter receiver for audio-tone FSK (FFSK and 4FSK at 1200 baud),
+/* ifrx: the K6's IF matched-filter receiver for audio-tone FSK (FFSK and 4FSK at 1200 baud, and
+   built with IFRX_ONLY = IFRX_4H, 4FSK at 1200, 1500 or 1600 baud on a half-baud tone grid),
    working on GP0 code 13's counts (2 * ones - 64 per 64 DMA samples of PB1, ~85.8 kHz).
    docs/k6-if-modem.md has the study; sim/k6if/mcu.py is this receiver in float.
 
@@ -31,11 +32,18 @@
 extern "C" {
 #endif
 
-#define IFRX_TL 18          /* samples a symbol (template length) */
+#ifndef IFRX_BAUD
+#define IFRX_BAUD 1200      /* symbols a second: 1200, or (IFRX_ONLY == IFRX_4H) 1500 or 1600 */
+#endif
+#if IFRX_BAUD == 1200
+#define IFRX_TL 18          /* samples a symbol (template length), about 4 counts apart */
+#else
+#define IFRX_TL 12
+#endif
 #define IFRX_NT 24          /* filter taps */
 #define IFRX_RING 128       /* counts kept */
 #define IFRX_MAXS 8         /* kept templates: tones x start phases / 2 */
-#define IFRX_HYP 12         /* symbol clock offsets a sweep tries */
+#define IFRX_HYP (IFRX_TL * 2 / 3) /* symbol clock offsets a sweep tries */
 #define IFRX_HSYMS 32       /* symbols on each */
 #define IFRX_ACQ_Q 48       /* the least lead fit a sweep's best takes (share of 256; a bare carrier makes <= 36) */
 #define IFRX_LEAD_SYMS 256  /* symbols steered on the known lead after acquisition */
@@ -48,6 +56,7 @@ extern "C" {
 
 #define IFRX_FFSK 0
 #define IFRX_4FSK 1
+#define IFRX_4H 2 /* four tones on a half-baud grid, baud/2 .. 2 baud (only as IFRX_ONLY) */
 enum { IFRX_ACQ = 0, IFRX_LEAD = 1, IFRX_TRACK = 2 };
 
 typedef struct ifrx_s {

@@ -11,7 +11,8 @@ the IF matched filter, so the two meet the same samples.
                                                 model (sim/k6if) at stepped C/N0: checks analyze
   python3 tools/k6_ifcap.py live 4fsk|ffsk      key the IC-7100 for the iflive module (c/k6/mod/
         [--dry-run] [--wav OUT]                 iflive.c, iflive_ffsk.c): 10 segments of 6 s, each
-                                                a 1.5 s lead then PN9, one a gain step
+                                                a 1.5 s lead then PN9, one a gain step; 4h1200,
+                                                4h1500, 4h1600: iflive_h<baud>.c's faster 4FSK
   python3 tools/k6_ifcap.py livelog LOG         iflive's lines as a table: BER, lock, AFC, CPU
   python3 tools/k6_ifcap.py mcu LOG             gp0cap's captures through the MCU receiver's
                                                 templates (the model's) and ones trained on them
@@ -51,6 +52,10 @@ TOOL = "k6_ifcap"
 FSA = 48000
 PASSES = {1: ("ffsk", Mode([1200, 1800], 1200, 0.14)),
           2: ("4fsk", Mode([900, 1500, 2100, 2700], 1200, 0.12))}
+# the live runs' modes (iflive.c, iflive_ffsk.c, and iflive_h<baud>.c for four tones on a
+# half-baud grid: baud/2 .. 2 baud, sim/k6if/modes.py's "4h<baud>")
+LIVE = dict(PASSES.values())
+LIVE.update({f"4h{b}": Mode([b / 2, b, 1.5 * b, 2 * b], b, 0.12) for b in (1200, 1500, 1600)})
 PASS_S, LEAD_S = 65.0, 1.0
 FS_GRID = st.FDMA / 64          # the study's 86.4 kHz grid (18 samples a symbol at 21.6 kHz)
 
@@ -150,7 +155,7 @@ def cw_id(a, d):
 
 def cmd_live(a):
     name = a.mode
-    mode = next(m for n, m in PASSES.values() if n == name)
+    mode = LIVE[name]
     x = live_audio(mode, levels=[float(v) for v in a.levels.split(",")] if a.levels else None)
     if a.wav:
         write(a.wav, x)
@@ -696,7 +701,7 @@ def main():
             r.add_argument("--level", type=float, help="the 4FSK pass's tone level (peak; its own "
                            "is 0.12); the FFSK pass stays at its own")
         if nm == "live":
-            r.add_argument("mode", choices=["4fsk", "ffsk"])
+            r.add_argument("mode", choices=sorted(LIVE))
             r.add_argument("--wav", help="write the audio here instead of sending it")
             r.add_argument("--levels", help="each segment's tone level in turn, e.g. 0.10,0.12,0.14 "
                            "(peak; the mode's own is 0.14 FFSK, 0.12 4FSK), repeated over the 10")

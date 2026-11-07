@@ -30,7 +30,13 @@ D = 4
 FS = FC / D                 # ~21.45 kHz
 NT = 24                     # decimating filter taps
 CUT = 7000.0                # its edge
-TL = 18                     # template length (samples)
+TL = 18                     # template length (samples) at 1200 baud
+
+
+def tl_of(baud):
+    """samples a symbol: 18 at 1200 baud, 12 faster (about 4 counts apart either way; the
+    acquisition's sweep needs TL a multiple of 6)"""
+    return TL if baud <= 1200 else 12
 
 
 def alias():
@@ -55,10 +61,10 @@ def front(c, g, f_off=0.0):
     return y * np.exp(-2j * np.pi * (st.fe.FIF + f_off) * n / FC)
 
 
-def grid(start, pc, i):
+def grid(start, pc, i, tl=TL):
     """the counts sampled for symbol positions i (0..TL-1, -1 and TL for early/late), a symbol
     starting at count `start` (float), pc counts a symbol"""
-    return np.floor(start + np.asarray(i) * pc / TL + 0.5).astype(int)
+    return np.floor(start + np.asarray(i) * pc / tl + 0.5).astype(int)
 
 
 class Link:
@@ -88,10 +94,10 @@ class Link:
         return self.t0 + (self.lead + k) / self.m.baud
 
 
-def _templates(lk, z, starts, pc, classes):
-    seg = z[grid(starts[:, None], pc, np.arange(TL)[None, :])]
+def _templates(lk, z, starts, pc, classes, tl=TL):
+    seg = z[grid(starts[:, None], pc, np.arange(tl)[None, :], tl)]
     seg = seg / (seg[:, :1] / (np.abs(seg[:, :1]) + 1e-12))
-    T = np.zeros((lk.m.M, len(classes), TL), complex)
+    T = np.zeros((lk.m.M, len(classes), tl), complex)
     for i in range(lk.m.M):
         for j, c in enumerate(classes):
             sel = (lk.syms == i) & (lk.cls == c)
@@ -99,13 +105,14 @@ def _templates(lk, z, starts, pc, classes):
     return T, seg
 
 
-def make_templates(mode, nsym=3000, seed=11):
+def make_templates(mode, nsym=3000, seed=11, tl=None):
     """templates (M, P, TL): each tone at each audio start phase present, averaged over a clean
     capture, each segment turned so its first sample has phase 0. P = the distinct start
     phases (2 for FFSK, 4 for these 4FSK tones). The segments start where the symbols arrive:
     the sender's filters delay them, so the offset (counts, after the filter's own delay) is
     the one whose templates tell the symbols apart best. Returns the templates, the classes and
     that offset (the receiver's timing is relative to it)."""
+    tl = tl or tl_of(mode.baud)
     lk = Link(mode, nsym, seed=seed)
     z = front(lk.counts(None), taps())
     pc = FC / mode.baud
@@ -113,8 +120,8 @@ def make_templates(mode, nsym=3000, seed=11):
     classes = sorted(set(lk.cls.tolist()))
     best = None
     for o in range(-8, int(2 * pc), 2):
-        T, seg = _templates(lk, z, base + o, pc, classes)
-        m = np.abs(seg @ np.conj(T.reshape(-1, TL)).T).reshape(nsym, mode.M, -1).max(2)
+        T, seg = _templates(lk, z, base + o, pc, classes, tl)
+        m = np.abs(seg @ np.conj(T.reshape(-1, tl)).T).reshape(nsym, mode.M, -1).max(2)
         srt = np.sort(m, 1)
         score = np.mean(srt[:, -1] - srt[:, -2]) * (np.mean(m.argmax(1) == lk.syms))
         if best is None or score > best[0]:
@@ -128,7 +135,8 @@ class Rx:
     def __init__(self, mode, T, gain=1 / 64, acq=None, afc=1 / 32, pull=(0, 1 / 8)):
         self.m, self.T, self.gain, self.afc = mode, T, gain, afc
         self.pull = pull                         # (symbols, gain): a faster loop at the start
-        self.Tf = T.reshape(-1, TL)              # (M*P, TL)
+        self.tl = T.shape[2]
+        self.Tf = T.reshape(-1, self.tl)         # (M*P, TL)
         self.P = T.shape[1]
         self.acq = acq
 
@@ -137,13 +145,13 @@ class Rx:
         off by up to half a symbol when the lead's search is on). Returns metrics (nsym, M),
         the timing the loop ended on and the offset the AFC found (Hz)."""
         pc = FC / self.m.baud if pc is None else pc
-        tau = t_first
+        tau, TL = t_first, self.tl
         if self.acq is not None:
             # the lead: the best of 2 TL offsets (half-samples) by the mean winning metric
             best = None
             for o in np.arange(-TL, TL) * pc / TL / 2:
                 s = tau + o + (np.arange(self.acq) - self.acq) * pc
-                seg = z[grid(s[:, None], pc, np.arange(TL)[None, :])]
+                seg = z[grid(s[:, None], pc, np.arange(TL)[None, :], TL)]
                 v = np.abs(seg @ np.conj(self.Tf).T).max(1).mean()
                 if best is None or v > best[0]:
                     best = (v, o)
@@ -153,7 +161,7 @@ class Rx:
         h = TL // 2
         f = 0.0
         for k in range(nsym):
-            n = grid(tau, pc, idx)
+            n = grid(tau, pc, idx, TL)
             w = z[n] * np.exp(-2j * np.pi * f * n / FC)
             seg = w[1:-1]
             c = np.abs(self.Tf @ np.conj(seg))       # |seg . t*|, all templates
@@ -252,9 +260,42 @@ def c_tables(t4_k6=None, t4_k6_note=""):
     return "\n".join(out)
 
 
+H_BAUDS = (1200, 1500, 1600)
+
+
+def c_tables_4h():
+    """c/k6/ifrx_tables_4h.h: the model's templates for the four-tones-on-a-half-baud-grid sets
+    (modes.MODES "4h<baud>"), one a tone (every symbol starts on audio phase 0 or a half turn,
+    the conjugate), one set a baud rate chosen by IFRX_BAUD in a build with IFRX_ONLY = IFRX_4H"""
+    out = ["/* ifrx_tables_4h.h: made by `python3 -m sim.k6if.mcu --tables-4h` (sim/k6if/mcu.py) from the",
+           "   K6 GP0 model: the IF templates of the 4FSK sets with four tones on a half-baud grid",
+           "   (baud/2, baud, 3 baud/2, 2 baud), for builds with IFRX_ONLY == IFRX_4H, one set a",
+           "   rate (IFRX_BAUD). SPDX-License-Identifier: MIT */",
+           "#ifndef IFRX_TABLES_4H_H", "#define IFRX_TABLES_4H_H", "#include <stdint.h>"]
+    for b in H_BAUDS:
+        tones, baud, lv = md.MODES[f"4h{b}"]
+        mode = md.Mode(tones, baud, lv)
+        tl = tl_of(baud)
+        T, classes, o = make_templates(mode, tl=tl)
+        assert classes == [0, 12], classes
+        T = T[:, :1]
+        q = np.round(T / np.max(np.abs(np.concatenate([T.real.ravel(), T.imag.ravel()]))) * 7)
+        q = ((q.real.astype(int) & 15) << 4) | (q.imag.astype(int) & 15)
+        out += ["", f"#if IFRX_BAUD == {b}",
+                f"/* {mode.name}: [tone][audio start phase 0, half a turn on as its conjugate][sample], re in the high",
+                "   4 bits, im in the low, each -7..7 */",
+                f"static const uint8_t ifrx_t_4h[4][1][{tl}] = {{"]
+        for i in range(4):
+            out.append("  {{" + ", ".join(f"0x{int(v):02x}" for v in q[i, 0]) + "}},")
+        out += ["};", "#endif"]
+    out += ["", "#endif", ""]
+    return "\n".join(out)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
     ap.add_argument("--tables", action="store_true", help="print c/k6/ifrx_tables.h")
+    ap.add_argument("--tables-4h", action="store_true", help="print c/k6/ifrx_tables_4h.h")
     ap.add_argument("modes", nargs="*", default=["ffsk1200", "4fsk1200"])
     ap.add_argument("--off", type=float, default=0.0, help="carrier offset, Hz")
     ap.add_argument("--nt", type=int, default=NT)
@@ -262,6 +303,9 @@ def main():
     a = ap.parse_args()
     if a.tables:
         print(c_tables(), end="")
+        return
+    if a.tables_4h:
+        print(c_tables_4h(), end="")
         return
     for name in a.modes:
         tones, baud, lv = md.MODES[name]
