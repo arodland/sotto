@@ -4179,10 +4179,10 @@ index 0000000..677b2f7
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..1a84526
+index 0000000..9b6ae15
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1310 @@
+@@ -0,0 +1,1311 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -5241,11 +5241,12 @@ index 0000000..1a84526
 +        Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
 +        if bird {
 +            // a birdie or other spur: a gull in the grade column and the space after it
-+            const GULL: [u8; 2] = [0x36, 0x49];
++            // Jeff's pick "A" (2026-11-07): 5 wide, 2 high
++            const GULL: [u8; 2] = [0x0a, 0x15];
 +            for (r, &m) in GULL.iter().enumerate() {
-+                for c in 0..7 {
-+                    if m & (0x40 >> c) != 0 {
-+                        Pixel(Point::new(1 + c, y + 2 + r as i32), ink).draw(lcd).ok();
++                for c in 0..5 {
++                    if m & (0x10 >> c) != 0 {
++                        Pixel(Point::new(1 + c, y + 1 + r as i32), ink).draw(lcd).ok();
 +                    }
 +                }
 +            }
