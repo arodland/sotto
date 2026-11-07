@@ -348,7 +348,7 @@ def run_module(path, cpi=1.5, seconds=14.0, profile=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("mode", nargs="?", default="4fsk", choices=["4fsk", "ffsk", "4h1200", "4h1500", "4h1600"])
+    ap.add_argument("mode", nargs="?", default="4fsk", choices=["4fsk", "ffsk", "4h1200", "4h1350", "4h1440", "4h1500", "4h1600"])
     ap.add_argument("--cn0", type=float, default=46.0)
     ap.add_argument("--off", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=10)

@@ -293,3 +293,27 @@ The IF model (sim/k6if, the float receiver `mcu.Rx`), 1% information bit errors 
   deviation falls off faster than the model's above 2.7 kHz (69% of the model's there), which
   could cost the 3000 and 3200 Hz tones.
 
+### On air, 2026-11-07 20:09 (RAM modules, no flash)
+
+The K6 received only (EXPLORE image bc7e44a in VOICE MSG); the IC-7100 sent each module's live
+run (`k6_ifcap.py live`, nine 6 s steps at stepped front-end gains), all with the model's
+templates:
+
+| Module, sender | Bit errors (steps 0-8) | Notes |
+|---|---|---|
+| iflive, `4fsk` (today's 900-2700 Hz, 1200 baud) | 4.7-6.4% (11% step 0) | lost 15-30 counts on 5 steps, idle 60% |
+| iflive_h1500, `4h1500` (750-3000 Hz) | 5.5-7.4% | idle 71% |
+| iflive_h1600, `4h1600` (800-3200 Hz) | 6.0-6.4%, PN9 sync lost on several steps | idle 68% |
+| iflive_h1200, `4h1200` (600-2400 Hz) | **0 in 80,400 bits** | idle 71% |
+
+- Four tones on the half-baud grid at 1200 baud make no errors at all on this link with the
+  model's templates, where today's tones made 5-6% in the same session (2.2-2.8% with templates
+  trained on the K6). That is the mode for PHY G, and its margin can buy speed through a lighter
+  code (rate 3/4: 1800 bit/s before packet overhead).
+- 1500 and 1600 baud are no better than today's mode: their top tones (3000, 3200 Hz) sit where
+  the IC-7100's deviation falls off. The next tries keep the top tone at today's 2700 Hz or a
+  little over: 1350 baud (675, 1350, 2025, 2700 Hz) and 1440 baud (720-2880 Hz), modules
+  `iflive_h1350` and `iflive_h1440` (`k6_ifcap.py live 4h1350`, `4h1440`). On the model they need
+  41.0 and 41.4 dB-Hz at rate 1/2 (1200 on this grid 40.2), and both lock with no counts lost on
+  the emulated M0 (idle 52-54%).
+

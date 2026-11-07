@@ -174,7 +174,7 @@ MODES = {"ffsk1200": ([1200, 1800], 1200, 0.14), "4fsk1200": ([900, 1500, 2100, 
 # four tones on a half-baud grid (baud/2 .. 2 baud: docs/k6-if-fec.md "A faster 4FSK"): every
 # symbol starts on audio phase 0 or a half turn, so one template a tone; the 1200 baud set is
 # 1.8 dB better than 4fsk1200 on the model (rate 1/2 coded), 1500 baud 0.5 dB, 1600 baud even
-for _b in (1200, 1440, 1500, 1600):
+for _b in (1200, 1350, 1440, 1500, 1600):
     MODES[f"4h{_b}"] = ([_b / 2, _b, 1.5 * _b, 2 * _b], _b, 0.12)
 
 

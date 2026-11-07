@@ -12,7 +12,7 @@ the IF matched filter, so the two meet the same samples.
   python3 tools/k6_ifcap.py live 4fsk|ffsk      key the IC-7100 for the iflive module (c/k6/mod/
         [--dry-run] [--wav OUT]                 iflive.c, iflive_ffsk.c): 10 segments of 6 s, each
                                                 a 1.5 s lead then PN9, one a gain step; 4h1200,
-                                                4h1500, 4h1600: iflive_h<baud>.c's faster 4FSK
+                                                4h1350 .. 4h1600: iflive_h<baud>.c's faster 4FSK
   python3 tools/k6_ifcap.py livelog LOG         iflive's lines as a table: BER, lock, AFC, CPU
   python3 tools/k6_ifcap.py mcu LOG             gp0cap's captures through the MCU receiver's
                                                 templates (the model's) and ones trained on them
@@ -55,7 +55,7 @@ PASSES = {1: ("ffsk", Mode([1200, 1800], 1200, 0.14)),
 # the live runs' modes (iflive.c, iflive_ffsk.c, and iflive_h<baud>.c for four tones on a
 # half-baud grid: baud/2 .. 2 baud, sim/k6if/modes.py's "4h<baud>")
 LIVE = dict(PASSES.values())
-LIVE.update({f"4h{b}": Mode([b / 2, b, 1.5 * b, 2 * b], b, 0.12) for b in (1200, 1500, 1600)})
+LIVE.update({f"4h{b}": Mode([b / 2, b, 1.5 * b, 2 * b], b, 0.12) for b in (1200, 1350, 1440, 1500, 1600)})
 PASS_S, LEAD_S = 65.0, 1.0
 FS_GRID = st.FDMA / 64          # the study's 86.4 kHz grid (18 samples a symbol at 21.6 kHz)
 

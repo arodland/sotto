@@ -52,7 +52,7 @@ def lib4h():
     if not shutil.which("cc"):
         pytest.skip("needs a C compiler")
     d, out = tempfile.mkdtemp(), {}
-    for b in (1200, 1500, 1600):
+    for b in (1200, 1350, 1440, 1500, 1600):
         so = os.path.join(d, f"libifrx_h{b}.so")
         subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-DIFRX_ONLY=2",
                         f"-DIFRX_BAUD={b}", os.path.join(K6, "ifrx_host.c"), "-o", so], check=True)
@@ -121,8 +121,8 @@ def test_ber_on_the_model(lib, name, cn0, off, limit):
     assert ber(lk, sym) < limit
 
 
-@pytest.mark.parametrize("baud,cn0,limit", [(1200, 46, 0.004), (1500, 46, 0.007), (1600, 46, 0.012),
-                                             (1600, 48, 0.002)])
+@pytest.mark.parametrize("baud,cn0,limit", [(1200, 46, 0.004), (1350, 46, 0.006), (1440, 46, 0.006),
+                                             (1500, 46, 0.007), (1600, 46, 0.012), (1600, 48, 0.002)])
 @pytest.mark.parametrize("off", [0, -164])
 def test_faster_4fsk_on_the_model(lib4h, baud, cn0, off, limit):
     """four tones on a half-baud grid (IFRX_ONLY = IFRX_4H, IFRX_BAUD): 12 samples a symbol at
@@ -208,7 +208,8 @@ def test_lost_counts_keep_the_clock(lib, name):
 
 @need_clang
 @pytest.mark.parametrize("src", ["iflive.c", "iflive_ffsk.c", "iflive_tsweep.c", "iflive_fsweep.c", "iflive_g2.c", "iflive_k6t.c",
-                                 "iflive_h1200.c", "iflive_h1500.c", "iflive_h1600.c"])
+                                 "iflive_h1200.c", "iflive_h1350.c", "iflive_h1440.c", "iflive_h1500.c",
+                                 "iflive_h1600.c"])
 def test_live_module_builds_fits_level_2(src):
     path = os.path.join(K6, "mod", src)
     code, entry = k6mod.build(path)
