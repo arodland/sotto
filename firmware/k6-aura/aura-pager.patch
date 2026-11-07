@@ -4179,10 +4179,10 @@ index 0000000..677b2f7
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..4be0757
+index 0000000..f7a5c44
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1178 @@
+@@ -0,0 +1,1183 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -5261,14 +5261,19 @@ index 0000000..4be0757
 +                let ink = if sel { BinaryColor::Off } else { BinaryColor::On };
 +                let st = MonoTextStyle::new(&FONT_4X6, ink);
 +                Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
-+                // the loudest over as a bar (Jeff's pick A, 2026-11-07): 5 dB a pixel from
-+                // -120 dBm, in the 5 columns the number took; the number is in the footer
++                // Jeff's split bar (2026-11-07): the loudest over as a 2 px bar, 5 dB a pixel
++                // from -120 dBm, and under it a dotted line for the score (10 points = full),
++                // in the columns the number took; the numbers are in the footer
 +                let w = ((c.hi as i32 + 120) / 5).clamp(0, BAR_W as i32) as u32;
 +                if w > 0 {
-+                    Rectangle::new(Point::new(BAR_X, y + 1), Size::new(w, 3))
++                    Rectangle::new(Point::new(BAR_X, y), Size::new(w, 2))
 +                        .into_styled(PrimitiveStyle::with_fill(ink))
 +                        .draw(lcd)
 +                        .ok();
++                }
++                let d = (c.score as i32 * BAR_W as i32 / 10).clamp(0, BAR_W as i32);
++                for x in (0..d).step_by(2) {
++                    Pixel(Point::new(BAR_X + x, y + 3), ink).draw(lcd).ok();
 +                }
 +                if c.call[0] != 0 {
 +                    let x = BAR_X + BAR_W as i32 + 3;
