@@ -89,6 +89,24 @@ static char *hex4(char *p, uint32_t v) {
   return p;
 }
 
+/* base64 of n bytes (the report's binary payloads: ft8wf's rows, wspriq's samples) */
+__attribute__((unused)) static char b64(uint32_t v) {
+  v &= 63;
+  return (char)(v < 26 ? 'A' + v : v < 52 ? 'a' + v - 26 : v < 62 ? '0' + v - 52 : v == 62 ? '+' : '/');
+}
+
+__attribute__((unused)) static char *base64(char *p, const uint8_t *b, int n) {
+  int i;
+  for (i = 0; i < n; i += 3) {
+    uint32_t v = (uint32_t)b[i] << 16 | (i + 1 < n ? (uint32_t)b[i + 1] << 8 : 0) |
+                 (i + 2 < n ? b[i + 2] : 0);
+    *p++ = b64(v >> 18), *p++ = b64(v >> 12);
+    *p++ = i + 1 < n ? b64(v >> 6) : '=';
+    *p++ = i + 2 < n ? b64(v) : '=';
+  }
+  return p;
+}
+
 static void say0(const k6_api_t *api, char *line, char *p) {
   *p = 0;
   api->say(line);

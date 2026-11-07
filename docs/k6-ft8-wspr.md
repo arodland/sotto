@@ -35,11 +35,20 @@ radio today, and what is still waiting on a bench run, a firmware change or a de
   the IC-7100 decoded it at snr -14.** `ft8tx` (1.4 KB) sends one frame as audio FSK on FM from
   the chip's tone oscillator (REG_70/71, 5 ms GFSK steps), then AG7EW in MCW, in 16.6 s under
   the level 3 API's 20 s cap. `tx_on`'s REG_30 carries the tone: no firmware change.
-- **WSPR:**
-  - Receive is feasible in RAM and CPU.
-  - At 440 MHz it hinges on drift over 2 minutes. Run 5 measured 0.05-0.17 Hz/s (K6 and
-    IC-7100 together), 5-20 Hz over a WSPR frame, which is marginal. A long run settles it.
-  - Transmit needs about 111 s of keying, more than the 20 s TX limit. That is Jeff's call.
+- **WSPR (2026-11-07, Jeff: "finish out the WSPR beacon and try for receive"): built and
+  emulated, not yet on air.** See "WSPR".
+  - Beacon: `wsprtx` (2.3 KB with its screen) sends `AG7EW CN87 10` as audio 4-FSK on FM
+    from the tone oscillator, with an MCW ID, in 117.4 s. That needs the module TX cap raised
+    from 20 s to 120 s, which means a reflash. `wsprbcn` repeats it every 10 minutes on UTC's
+    2-minute grid from a sync mark the PC keys. On FM the tones come from the FD6818's crystal
+    at 1.5 kHz, so the carrier's drift at 440 MHz never reaches the decoder.
+  - Receive: `wspriq` (4.0 KB with its screen) streams the IF's complex baseband (about
+    199 Hz, +-99 Hz around 1500 Hz) to the PC, and `tools/k6_wspr.py decode` decodes it. The
+    decoder searches drift (+-24 Hz over a frame), so a K6 drifting 5-20 Hz is fine. On an
+    emulated M0 a whole frame through the 1-bit path decodes; on the host, -24 dB with 6 Hz of
+    drift and lost lines decodes.
+  - Screens: module API level 6 (new) lets both modules draw on the K6's display: countdowns,
+    a TX progress bar, and a receive waterfall. See "Screens".
 
 ## The receiver
 
@@ -453,20 +462,139 @@ key-up to a 15 s UTC slot for WSJT-X (the host would schedule the upload).
    `ft8tx sent sym=79 ms=12640 id=52`.
 4. Decode the recording: `python3 -m sim.k6digi.ft8_wav REC.wav --lo 1300 --hi 1800`.
 
-## WSPR (planned)
+## WSPR
 
-- **The mode.** WSPR is 162 4-FSK symbols of 0.683 s with 1.46 Hz spacing (6 Hz in all, 110.6 s
-  long). It carries 50 bits under a K = 32, rate-1/2 convolutional code with a Fano decoder.
-- **Receive fits the K6.** The front end is the same as FT8's, with a second decimation to
-  about 12 Hz. Symbol energies take 162 × 4 bytes and the Fano decoder's state is small, so it
-  fits RAM and CPU easily.
-- **Drift is the problem.** The K6 has a plain 26 MHz crystal. At 440 MHz, 0.1 ppm is 44 Hz, and
-  WSPR's decoder tolerates only a few Hz of drift over a transmission. So the first step is a
-  drift measurement: a bare IC-7100 carrier with the IF frequency logged once a second for 10
-  minutes from a cold start (gp0dma's `if=` already measures it).
-- **Transmit needs a decision from Jeff.** The 110.6 s transmission is longer than the TX API's
-  20 s limit. It would need Jeff's OK for a longer keying limit, on 440.850 with the CW ID. The
-  same drift question applies.
+WSPR is 162 4-FSK symbols of 8192/12000 s (0.683 s) with 1.46 Hz spacing, 6 Hz wide and
+110.6 s long. It carries 50 bits (a callsign, a 4-character grid, power in dBm) under a K = 32,
+rate-1/2 convolutional code, interleaved by bit reversal. Frames start 1 s after an even UTC
+minute.
+
+**Reference** (`sim/k6digi/wsprref.py`, MIT): the encoder (pack, the code, the interleave and
+the sync vector, checked against the protocol's published constants) and a decoder. The decoder
+removes a linear drift (tried from -24 to +24 Hz over the frame in 1 Hz steps), then searches
+start time (quarter symbols) and frequency (half tones) with the sync vector. It takes soft
+symbols from the best candidates and runs a Fano sequential decoder in C
+(`c/k6/wspr/wspr_fano.c`, built for the host through ctypes). It decodes clean audio at -29 dB
+in 2500 Hz, and through 8, 12 and -15 Hz of drift, in about a second.
+
+**Wander tracker** (added after the first bench receive, 2026-11-07, which streamed cleanly but
+wandered about +-1.8 Hz within the frame, more than the 1.46 Hz tone spacing, so the linear
+search found nothing). It now runs first: each symbol's spectrum, padded so that a tone
+spacing is 16 bins of 0.092 Hz, scores every tone-0 frequency by the sync vector's parity (the
+larger of the two tones the sync bit allows, less the larger of the two it doesn't), and a
+Viterbi search finds the best track that moves at most 2 bins a symbol (0.27 Hz/s). The parity
+score is what keeps the track from slipping by a tone. The signal is derotated along the track
+and decoded as if it stood still. On simulated slow random wander of +-1.8 and +-3 Hz it
+decodes at -24 dB (the linear search: not at all at +-1.8 Hz, even at 0 dB); with no wander it
+matches the linear search (-27 dB 4/4, -29 dB 1/4), with no false decodes on noise, in 0.2 s.
+The linear search stays as the fallback for drift faster than 0.27 Hz/s.
+The scores are plain power over the median: on the bench's +37 dB stream both a clip and log
+power lost the track to the skirt the K6's path puts around a strong signal. And since a
+strong signal also decodes from a neighbouring 40 Hz window (through the resampler's skirt,
+25 Hz off), `tools/k6_wspr.py decode` keeps each message's most central decode.
+
+### Beacon: `wsprtx`, `wsprbcn` (level 3)
+
+- **How it sends.** The same tone oscillator path as `ft8tx`: REG_70 = enable | gain,
+  REG_71 = f x 10.32444, one write a symbol (no GFSK: WSPR is plain CPFSK and the
+  oscillator is phase continuous). Symbol k starts at t0 + k x 2048/3 ms, kept in thirds of a
+  ms, so 162 symbols land on 110.592 s. The MCW ID follows, then key-down.
+- **TX length.** `tx_on(117,412 ms)`: the 300 ms lead, the frame, a 400 ms gap, the 3.1 s ID and
+  a 3 s margin (a longer lead when `tx_on` returns quickly). The module TX cap in the Aura patch
+  (`MOD_TX_MAX_MS`) goes from 20 s to 120 s; an older image keys it down at 20 s (-5).
+- **Drift doesn't matter on FM.** The receiver hears audio tones made from the FD6818's
+  crystal, divided down to 1.5 kHz: a 2 ppm error moves them 0.003 Hz. The 440 MHz carrier
+  can drift 20 Hz and the FM discriminator never sees it.
+- **Timing: the K6 has no clock.** Aura has only uptime: TIM14 in 100 us ticks from the 16 MHz
+  crystal and PLL, which modules see as `api->ms()`. The MCU (KD32F328) has an RTC block, but
+  Aura doesn't start it and the board shows no 32 kHz crystal or backup cell, so nothing keeps
+  time with the power off. So `wsprbcn` takes UTC from the PC:
+  `tools/k6_wspr.py sync` keys the IC-7100 (through `k6_bench.py`'s PTT lock) and plays the
+  bench's CW ID (about 9 s), unkeying by the PC's NTP clock 10 s before a slot. The mark is the
+  ID itself: Jeff's rule is that every test transmission carries AG7EW's ident, with no bare
+  carriers, and a separate ID first would be a mark of its own at the wrong time. The module waits up to 150 s for a
+  carrier of at least 0.5 s, timestamps its drop (polled every 5 ms), and starts the first
+  frame's tones 10 s later. Each slot's channel check and key-up come 3.3 s before its tones.
+  Later frames follow every WSPR_EVERY x 2 minutes on the crystal, which holds the grid to a few
+  ms an hour. With no mark it says so and starts at once. `wsprtx` (one frame, no sync) starts
+  3.3 s after the upload's sender unkeys.
+- **Lines:** `wspr AG7EW CN87 10 f=1500 g=60 n=6 rx=440850000`, `wspr sync: waiting for the
+  mark`, `wspr next 10 s`, `wspr sent 1 sym=162 id=52`, `wspr busy, slot skipped`.
+- **Tests** (`tests/test_k6_wsprtx.py`, emulated M0): one frame's REG_71 words played as audio
+  decode with the reference; 162 symbols at 682.67 ms; the beacon keeps the grid (240 s apart
+  with WSPR_EVERY 2); the sync mark puts the first tones 10 s after the drop (within 20 ms);
+  no mark gives the fallback; refusals; key-down on a key or the old 20 s cap.
+
+### Receive: `wspriq` (level 2) and `tools/k6_wspr.py`
+
+The whole decoder needs the whole frame (162 x 4 tone powers) and a Fano decoder over a K = 32
+code: far past the 4 KB store. So the K6 does what `ft8wf` does for FT8: the front end on the
+radio, the decode on the PC.
+
+- **On the K6.** `gp0rx.h`'s front end (GP0 by DMA, the gain set-up, the real-time mixer at the
+  IF + 1500 Hz with the calibration record's offset, two CICs) gives complex samples at about
+  199 Hz. The module sends them as they are: 15 samples a line (I and Q as signed bytes with one
+  shift for the line) and the 96 MHz time of the line's last sample, 53 characters, about 13
+  lines a second (ft8wf's rate). 3.4 KB of code, 4.0 KB with the level 6 screen.
+- **Lines:** `wspriq start f=1500 inv=0 n=15 cal=-16580`, `wspriq gain ...` (as ft8wf),
+  `q 1a2b3c4d 3 <40 base64 chars>`, `wspriq st t=15 lost=0 ks=5492 idle=61`,
+  `wspriq done n=3200 lost=0`. It runs 240 s (two slots, so a frame started anywhere in the first
+  two minutes is caught whole) or until a key.
+- **On the PC.** `tools/k6_wspr.py decode LOG` places each line by its time (lines are a whole
+  number of 15-sample blocks apart, so a lost line becomes 15 zeros), fits the sample rate over
+  all the lines (the DMA's rate moves a few % with the CPU's load), mixes, resamples to 375/8 Hz
+  and runs the reference decoder. By default it searches +-50 Hz around 1500 Hz in three 40 Hz
+  windows. It prints the audio frequency, start (s into the stream), drift and the message.
+- **Drift.** In USB the K6 sees the carrier's drift directly: run 5 measured 0.05-0.17 Hz/s,
+  5-20 Hz over a frame. The first bench receive (2026-11-07) also wandered about +-1.8 Hz
+  within the frame, which the linear search can't follow; the wander tracker (above) does.
+- **Tests** (`tests/test_k6_wspriq.py`): a steady tone on the emulated M0 lands at +10 Hz with
+  the rate fitted to 190-215 Hz; the calibration record moves the mixer; the host decodes
+  -24 dB with 6 Hz of drift and 20 lost lines, and a signal 37 Hz off centre through the CLI.
+  The whole chain (WSPR at the IF through the 1-bit path, the emulated module, its lines, the
+  host decoder) decodes too; it takes 3.5 minutes, so it is opt-in (`K6_SLOW=1`).
+
+### Bench steps
+
+The image must have the 120 s module TX cap (a `tools/k6_update.py` reflash, one time).
+
+**Beacon** (the K6 transmits WSPR in FM; the IC-7100 receives):
+1. IC-7100 in FM on 440.850, its USB audio recording from before the upload.
+2. Send `mod-wsprbcn.bin` (or `mod-wsprtx.bin` for one frame) with `python -m modem.k6 mod`.
+3. `python3 tools/k6_wspr.py sync`. The K6 says `wspr next 10 s`, keys up 3.3 s before the slot,
+   and sends for 117 s (`wspr sent 1 sym=162 id=52`).
+4. `python3 -m sim.k6digi.wsprref decode REC.wav`. WSJT-X on the IC-7100's audio should decode
+   it too, with dt near 0 if the sync held.
+
+**Receive** (the IC-7100 sends WSPR in USB; the K6 receives):
+1. IC-7100 in USB on 440.850. Make the audio: `python3 tools/k6_wspr.py wav wspr.wav --f0 1497`.
+2. Send `mod-wspriq.bin`, then play `wspr.wav` through `k6_bench.py send` within the next 2
+   minutes. The K6's log fills with `q` lines for 4 minutes.
+3. `python3 tools/k6_wspr.py decode K6LOG`.
+
+**Real signals.** `wspriq` only listens, so it can sit on 144.489 MHz (2 m WSPR, USB dial) with
+a matching `rx_hz`, any time, without asking.
+
+### Screens (API level 6)
+
+Modules couldn't draw before; the screen was Aura's. Level 6 (docs/k6-modules.md "API level 6")
+adds `lcd_text`, `lcd_bar`, `lcd_wf` and `lcd_flush`, after level 5's flash calls. Both WSPR
+modules use them only when `api->level` is 6 or more, so the same builds run on older images
+without a screen. Frames the emulated modules drew:
+`/mnt/project-files/k6-wspr/wspr-screens-emulated.png`.
+
+- **Beacon:** the title (`WSPR BEACON  440.850`, or `WSPR TX` for one frame), the message, then
+  by phase: waiting for the sync mark with its 150 s countdown (no redraws while a mark is up,
+  so its drop stays timed to 5 ms); `next slot in 7:58`, redrawn each second; `TX` with a bar
+  over the 162 symbols, every 4 symbols (2.7 s); `ID AG7EW`. Below: frames sent, whether it is
+  on the UTC grid, and "hold a key to stop". 2.3 KB (`wsprbcn` 2.8 KB).
+- **Receive:** `WSPR RX  440850 kHz`, the window and calibration (`1500Hz +-99  cal -166`), a
+  24-row waterfall (0.64 s a row, 15 s in all) and the time and lost lines. Each 40 ms row
+  takes a 32-point DFT of the newest 32 samples (6.2 Hz bins, 4 px each, centre at x = 64),
+  keeping each bin's largest power; every 16 rows the bins become a pixel row, lit from the
+  middle out at 2, 4, 8 and 16 times the row's mean power. ft8k's own DFT rows would cost
+  1.3 KB more, which doesn't fit. Each flush (every 1.3 s) is a 20-40 ms gap the stream
+  zero-fills. `wspriq` is 4,070 B: two bytes under the limit.
 
 ## Files
 
@@ -478,7 +606,11 @@ key-up to a 15 s UTC slot for WSJT-X (the host would schedule the upload).
 - `c/k6/mod/ft8wf.c`, `c/k6/mod/ft8rx.c`: the two receive modules; `gp0cap_afc.c`, the raw-IF
   capture with the AFC off.
 - `c/k6/mod/ft8tx.c` with `ft8tx_msg.h`: the transmit module and its tones.
-- `sim/k6digi/`: `ft8ref.py` (the encoder, GFSK, unpacking), `gp0.py` with `gp0sdm.c` (the K6
+- `c/k6/mod/wsprtx.c` with `wsprtx_msg.h`, `wsprbcn.c`: the WSPR beacon; `wspriq.c`: WSPR receive.
+- `c/k6/wspr/wspr_fano.c`: the Fano decoder (host).
+- `sim/k6digi/`: `wsprref.py` (WSPR's encoder and decoder), `ft8ref.py` (the encoder, GFSK, unpacking), `gp0.py` with `gp0sdm.c` (the K6
   IF and the 1-bit path), `ft8_wav.py` and `ft8_sweep.py`.
-- `tools/k6_ft8.py`: decode, rows, wav, tone, tonewav, track and txhdr.
-- `tests/test_k6_ft8.py`, `tests/test_k6_ft8tx.py`: the tests.
+- `tools/k6_ft8.py`: decode, rows, wav, tone, tonewav, track, txhdr and wsprhdr.
+- `tools/k6_wspr.py`: decode, iq, wav and sync.
+- `tests/test_k6_ft8.py`, `tests/test_k6_ft8tx.py`, `tests/test_k6_wsprtx.py`,
+  `tests/test_k6_wspriq.py`: the tests.
