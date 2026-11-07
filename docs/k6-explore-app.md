@@ -76,12 +76,13 @@ mounts the table and says one `RT` line per entry, so the table can be read over
 
 ## The screen and keys
 
-The screens use the 5x8 font (Jeff, 2026-11-07): 8 rows of 25 characters, with 6 candidates on
-the list at a time.
+The screen layout is Jeff's pick from the font sheet (2026-11-07, /mnt/project-files/k6-fonts/):
+a header in the 6x10 font, dark on a lit bar (21 characters), then 7 candidate rows and a
+footer in the 4x6 font (32 characters a row, so a row also shows its callsign once heard).
 
 ```text
 EX ALL 11 2.3s UP          band set, candidates, one pass, UP while something is keyed
->R 146.940 -0.6  -80       grade, MHz, offset (S simplex), loudest level
+>R 146.940 -0.6  -80 W7ABC grade, MHz, offset (S simplex), loudest level, call
  r 443.100 +5.0  -85
  ? 440.850 +5.0  -22
  s 146.520   S   -70

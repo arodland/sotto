@@ -4079,10 +4079,10 @@ index 0000000..7b98ac3
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..59868a8
+index 0000000..b9b80b5
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1087 @@
+@@ -0,0 +1,1106 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4121,11 +4121,11 @@ index 0000000..59868a8
 +use core::fmt::Write as _;
 +use core::ptr::{addr_of, addr_of_mut, null_mut};
 +use cortex_m::peripheral::SYST;
-+use embedded_graphics::mono_font::{ascii::FONT_5X8, MonoTextStyle};
++use embedded_graphics::mono_font::{ascii::{FONT_4X6, FONT_6X10}, MonoTextStyle};
 +use embedded_graphics::pixelcolor::BinaryColor;
 +use embedded_graphics::prelude::*;
 +use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
-+use embedded_graphics::text::Text;
++use embedded_graphics::text::{Baseline, Text};
 +
 +mod ffi {
 +    use super::pffi::K6Api;
@@ -4320,7 +4320,7 @@ index 0000000..59868a8
 +const XL_TIME: i32 = 2;
 +/// redraw at most this often while sweeping (100 us ticks): a draw takes 30-50 ms
 +const DRAW_TICKS: u16 = 4000;
-+const ROWS: usize = 6;
++const ROWS: usize = 7;
 +
 +/// The band sets, # cycles them: (name, segments (lo, step, bins, snap)). Each set's floors and
 +/// row fit the PWM ring with Listen for ID's state (tests/test_k6_xscan.py).
@@ -5007,22 +5007,37 @@ index 0000000..59868a8
 +
 +// ---- the screen ----
 +
-+/// row r of 8 (5x8, Jeff 2026-11-07: "we need a smaller font"): 25 characters a row, the top
-+/// row the title, the bottom one the hint or the selected row's detail
++/// the footer's row number for line()
++const FOOT: i32 = 8;
++
++/// Jeff's pick (2026-11-07, the font-size sheet's inverted mixed layout): row 0 is a header,
++/// 6x10 drawn dark on a lit bar (21 characters); rows 1-7 are the list in 4x6 (32 characters);
++/// row FOOT is the footer, the hint or the selected row's detail, also 4x6
 +fn line<D>(lcd: &mut D, r: i32, t: &str)
 +where
 +    D: DrawTarget<Color = BinaryColor>,
 +{
-+    Text::new(t, Point::new(1, 7 + 8 * r), MonoTextStyle::new(&FONT_5X8, BinaryColor::On)).draw(lcd).ok();
++    if r == 0 {
++        Rectangle::new(Point::new(0, 0), Size::new(128, 10))
++            .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
++            .draw(lcd)
++            .ok();
++        let st = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
++        Text::with_baseline(t, Point::new(1, 0), st, Baseline::Top).draw(lcd).ok();
++        return;
++    }
++    let y = if r >= FOOT { 58 } else { 11 + 6 * (r - 1) };
++    let st = MonoTextStyle::new(&FONT_4X6, BinaryColor::On);
++    Text::with_baseline(t, Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
 +}
 +
 +/// MHz with 3 decimals, as 146.940
-+fn mhz(b: &mut TextBuf<24>, hz: u32) {
++fn mhz<const N: usize>(b: &mut TextBuf<N>, hz: u32) {
 +    let k = hz / 1000;
 +    write!(b, "{}.{:03}", k / 1000, k % 1000).ok();
 +}
 +
-+fn off_text(b: &mut TextBuf<24>, c: &Cand) {
++fn off_text<const N: usize>(b: &mut TextBuf<N>, c: &Cand) {
 +    if c.flags & EX_F_SIMPLEX != 0 || c.off_hz == 0 {
 +        write!(b, "  S ").ok();
 +    } else {
@@ -5069,7 +5084,7 @@ index 0000000..59868a8
 +            let top = (t.sel as usize).saturating_sub(ROWS - 1) as u32;
 +            for k in 0..ROWS as u32 {
 +                let Some(c) = cand(top + k) else { break };
-+                let mut b: TextBuf<24> = TextBuf::new();
++                let mut b: TextBuf<32> = TextBuf::new();
 +                let mark = if top + k == t.sel as u32 { '>' } else { ' ' };
 +                let g = if c.flags & EX_F_IGNORED != 0 { 'x' } else { c.grade as char };
 +                write!(b, "{}{} ", mark, g).ok();
@@ -5077,6 +5092,10 @@ index 0000000..59868a8
 +                write!(b, " ").ok();
 +                off_text(&mut b, c);
 +                write!(b, " {:>4}", c.hi).ok();
++                // 4x6 rows have room for the call (32 characters)
++                if c.call[0] != 0 {
++                    write!(b, " {}", cstr(&c.call)).ok();
++                }
 +                line(lcd, 1 + k as i32, b.as_str());
 +            }
 +            let mut b: TextBuf<24> = TextBuf::new();
@@ -5090,7 +5109,7 @@ index 0000000..59868a8
 +            } else {
 +                write!(b, "listening...").ok();
 +            }
-+            line(lcd, 7, b.as_str());
++            line(lcd, FOOT, b.as_str());
 +        }
 +        View::Try => {
 +            if !msg {
@@ -5130,7 +5149,7 @@ index 0000000..59868a8
 +                }
 +                i += 1;
 +            }
-+            line(lcd, 7, "MENU back 0 ID 5 save");
++            line(lcd, FOOT, "MENU back 0 ID 5 save");
 +        }
 +        View::Listen => {
 +            let mut info: XlInfo = unsafe { core::mem::zeroed() };
@@ -5151,7 +5170,7 @@ index 0000000..59868a8
 +                write!(b, "{} x{}", cstr(&info.call), info.seen).ok();
 +                line(lcd, 3, b.as_str());
 +            }
-+            line(lcd, 7, "any key stops");
++            line(lcd, FOOT, "any key stops");
 +        }
 +        View::Ask => {
 +            if !msg {
@@ -5166,7 +5185,7 @@ index 0000000..59868a8
 +            write!(b, "saved {}", cstr(&t.ask.call)).ok();
 +            line(lcd, 2, b.as_str());
 +            line(lcd, 4, "MENU write new call");
-+            line(lcd, 7, "EXIT keep saved");
++            line(lcd, FOOT, "EXIT keep saved");
 +        }
 +    }
 +}
