@@ -370,3 +370,86 @@ decodes in 16.1 ms of each 20 ms half with RX running, which leaves about 3.9 ms
 All of this needs measuring on the radio. Both RAM and CPU point to the same next step: the layer
 in the 1200 / 600 / 400 decoders, which the fixed-point port doesn't have yet. The C here is the
 2400 v3.8 layer; its hiss parts are the same.
+
+## The layer in the 1200 / 600 / 400 decoders, and the K6 image (2026-11-07)
+
+The fixed-point sotto 1200, 600 and 400 decoders now carry the `k6` layer (`pair` and `hop2`), and
+a pager build plays all three at 16 kHz. Build flags `-DSP_LR -DSP_VLR -DSP_HISS -DSOTTO_V38
+-DFX_HISS_LIGHT -DFX_HISS_FB -DFX_HISS_NO_ENC`; `tools/k6_build.sh K6_HISS=1` makes the library,
+`HISS=1 sh firmware/k6-aura/build.sh` the image `out/aura-pager-vlrh.bin` (Aura feature `hiss`).
+
+**How the layer hangs off the three decoders.** `c/fixed/sotto_fx_hiss.c` keeps one hiss state
+(`struct sotto_dec16`) that reads the 2400 core's model bands and envelope through
+`sotto_dec_info()` and makes the hiss for each core block as it comes out. The 1200 decoder
+(`sotto_fx_lr.c`) and the 600 / 400 decoder (`sotto_fx_vlr.c`) call it through a hook each time
+they hand a half or a frame to the core (`fx_lr_hiss_hook_t`, `fx_vlr_hiss_hook_t` in
+`fx_internal.h`; the float decoders use the same `LR_HISS_*` / `VLR_HISS_HOOK_T` macros in the
+shared `.inc` files). The side channels are what the float v3.8 port had: 1200 adds its 6-bit
+code's hiss class, 600 / 400 carry `wc` and `ws` in superframes with fewer than two pitched
+frames (`fx_vlr_hiss_slope/off/h0/k2`, dB in Q8, from `tools/gen_fx_tables.py`). The encoder side
+of the file is out of the build (`FX_HISS_NO_ENC`), and the helpers only the full layer needs sit
+behind `FB_ONLY`.
+
+**Delays.** The 16 kHz output runs one 20 ms frame (1200) or two (600 / 400) and 20 samples behind
+the 8 kHz decoder (`SOTTO_LR_DEC16_DELAY_FRAMES`, `SOTTO_VLR_DEC16_DELAY_FRAMES`). The pager skips
+that lead-in so the first frame it plays is the first frame of speech, and `c/sotto_dec -16` does
+the same, so decoder and pager line up sample for sample.
+
+**Bit-exact.** `c/k6/pager_host_vlrh` (the pager's own code on the host) plays what
+`c/fixed/sotto_dec_fx_k6 -16 -{1200,600,400}` decodes for the same superframes and good flags, with
+and without lost packets, streaming through the radio's 2.5 KB store or stored first
+(`tests/test_k6_hiss.py`). The 2400 FB layer's output is unchanged through the refactor (same
+md5 on the reference clip).
+
+**Against the Python.** `sim/sotto_vlr_hiss.py` / `sim/sotto_lr_hiss.py` with the `k6` options on
+the EARS clips (LibriSpeech 3536, EARS p020 / p047), with and without one superframe lost in
+eight: the 4-8 kHz level per 10 ms differs by 0.9-1.1 dB mean, 2.3-2.7 dB at the 95th percentile,
+for all three rates (two noises; the light layer's C and Python differ by the same amount). The
+0-4 kHz band is the fixed-point core against the float one, 13-40 dB SNR as before. The outputs
+line up after the delay above (lag 10 samples at 8 kHz, the interpolator).
+
+**RAM** (the plain 600 / 400 image left 0.66 KB while playing; the layer needed about 2 KB):
+
+| Change | Saved |
+|---|---:|
+| Message store 4 KB -> 2.5 KB (1200 holds 17 s stored; streaming is unchanged) | 1.5 KB |
+| Decoder pool sized to the three states (core 904, 600 / 400 wrapper 592, hiss 736 B on the M0) instead of a round figure | 0.4 KB |
+| Model rings for the two odd halves only (`LM 2`), one 32-sample resampler ring, level ring 13 deep, 5 superframes of side channel | 0.5 KB |
+| PN9 table in flash, `const`; core model bands for half 1 only | 0.1 KB |
+
+Pager static RAM 10852 of 17720 B (6868 left for the stack); boot stack with Aura's `main` and
+`place_app` 6400 B, so 468 B spare at the deepest point measured. The 16 kHz PWM ring is 3 x 320
+samples (1920 B, was 960). Insight 32 in `docs/k6-modules.md`: Aura's `App` lives on the boot
+stack, 3.4 KB of it; moving it to a static would give that back.
+
+**Flash.** 120824 of 122880 B (2056 free) with the layer at
+`-O2 -fno-unroll-loops` (6844 B against 11056 at plain `-O2` and 6388 at `-Os`); `-Os` would give about
+450 B back and runs at the same speed on the model, so it is the fallback when flash runs
+out.
+
+**CPU on the M0 model** (`c/k6/bench_k6.py --hiss`, EARS p047, flash 2 wait states, pager and PWM
+path included; MHz needed to keep up with 20 ms frames):
+
+| | Mean | 99th percentile | Worst frame |
+|---|---:|---:|---:|
+| 1200 plain (what the K6 played) | 52.6 | | 85.4 |
+| 600 plain | 52.8 | 76.7 | 84.1 |
+| 1200 hiss | 67.8 | 91.9 | 144.8 (frame 0) |
+| 600 hiss | 68.5 | 95.4 | 147.0 (frame 0) |
+| 400 hiss | 68.0 | 91.4 | 144.6 (frame 0) |
+
+The layer costs 15.5 MHz mean here against 12.3 MHz decoder-only: the rest is the 16 kHz output
+path (emphasis every other sample, `EMPH_STRIDE 2`, twice the PWM ring copy). Frame 0 is the
+first block through a cold state. On the radio (about 1.29 x the model) the mean is about 88 MHz,
+which the measurements in the sizing section put right at the 20 ms edge with RX running; the
+PWM ring absorbs the 99th-percentile frames. So the image is for listening and for measuring,
+with the pager's late counter telling whether frames ran over. If they do, the next step is the
+hot loops in RAM (9.5 MHz against 12.3 on the model), or the output fold in the PWM interrupt.
+
+**On the bench.** Encode a 16 kHz clip with `c/sotto_enc -16 -600 in.raw out.sot` (also `-1200`,
+`-400`; `make -C c sotto_enc`, VARIANT v3.8), send it with `python -m modem.k6 send ... --codec 600`,
+and check `K6 PLAY pcm=` against `tools/k6_pcmhash.py --hiss --check`, which runs
+`pager_host_vlrh`. The firmware refuses to start a stream whose frame size doesn't match its PWM
+segment (`K6 PWM frame 320 != segment ...`), so a plain image given a hiss stream, or the other
+way round, fails loudly rather than playing at the wrong rate. The serial cable mutes the K6
+speaker; key 4 toggles pre-emphasis as before.

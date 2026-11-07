@@ -16,6 +16,10 @@
 #            there once at power-on (v3.7's codebook must be there already: aura-pager-cbi);
 #            with K6_CB=rom they are linked and read in place from the MCU's flash, as ROM, and
 #            the image never writes the SPI flash (it reads v3.7's codebook there, for sotto 1200).
+#        K6_CODEC=vlr K6_HISS=1 sh tools/k6_build.sh   the hiss band build (docs/k6-hiss-port.md): sotto 1200,
+#            600 and 400 played at 16 kHz through the K6 hiss layer (c/fixed/sotto_fx_hiss.c with
+#            -DFX_HISS_LIGHT -DFX_HISS_FB on the v3.8 core; -DSP_HISS: 320-sample frames) into
+#            c/k6/build-vlrh[-cbs]; the firmware's `hiss` feature matches its PWM ring to it
 #        K6_MOD_KEY_FILE=~/.config/sotto/k6-mod.key sh tools/k6_build.sh   the RAM module loader
 #            (c/k6/k6_mod.c) accepts modules signed with that key (`python -m modem.k6 modkey`
 #            makes one). Without it the loader holds a placeholder and refuses every module
@@ -36,6 +40,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 VLR=
+HISS=
 if [ "${K6_CODEC:-}" = 1200 ]; then
   OUT=${K6_OUT:-"$ROOT/c/k6/build-lr"}
   LR=-DSP_LR
@@ -43,6 +48,11 @@ elif [ "${K6_CODEC:-}" = vlr ]; then
   OUT=${K6_OUT:-"$ROOT/c/k6/build-vlr"}
   LR="-DSP_LR -DSP_VLR"
   VLR=1
+  if [ "${K6_HISS:-0}" = 1 ]; then
+    OUT=${K6_OUT:-"$ROOT/c/k6/build-vlrh"}
+    LR="$LR -DSP_HISS -DSOTTO_V38 -DFX_HISS_LIGHT -DFX_HISS_FB -DFX_HISS_NO_ENC"
+    HISS=1
+  fi
 else
   OUT=${K6_OUT:-"$ROOT/c/k6/build"}
   LR=
@@ -141,6 +151,13 @@ if [ -n "$VLR" ]; then    # once per 20 ms frame, then the v3.7 core's synthesis
   $CC $CFLAGS $VT -c "$ROOT/c/sotto_vlr_tables.c" -o "$OUT/sotto_vlr_tables.o"
   LIBOBJS="$LIBOBJS $OUT/sotto_fx_vlr.o $OUT/sotto_vlr_tables.o"
 fi
+UHISS=
+if [ -n "$HISS" ]; then   # the layer at -O2 without loop unrolling: 6.8 KB of flash (11 KB unrolled, which
+                          # doesn't fit beside the rest), -Os's size at -O2's speed on the M0
+  $CC $CFLAGS -fno-unroll-loops -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_hiss.c" -o "$OUT/sotto_fx_hiss.o"
+  LIBOBJS="$LIBOBJS $OUT/sotto_fx_hiss.o"
+  UHISS="-u sotto_fx_lr_dec16_bytes -u sotto_fx_vlr_dec16_bytes"
+fi
 if [ "${K6_VOICE:-1}" = 0 ]; then
   $CC $CFLAGS -Os -c "$ROOT/c/k6/sp_novoice.c" -o "$OUT/sp_novoice.o"
   LIBOBJS=$(echo $LIBOBJS | sed "s# [^ ]*/sotto_fx_dec.o# $OUT/sp_novoice.o#; s# [^ ]*/fx_math.o##")
@@ -169,6 +186,6 @@ $CC $CFLAGS -fno-builtin -c "$ROOT/c/fixed/cm4/shim.c" -o "$OUT/shim.o"
 $CC $CFLAGS -fno-builtin -c "$ROOT/c/fixed/cm0/rt.c" -o "$OUT/rt.o"
 $CC --target=thumbv6m-none-eabi -mcpu=cortex-m0 -c "$ROOT/c/fixed/cm0/divmod.s" -o "$OUT/divmod.o"
 ld.lld -T "$ROOT/c/fixed/cm4/link.ld" --gc-sections -e sp_init -u sp_packet -u sp_status -u sp_play_start \
-  -u sp_play_frame -u sp_play_pwm -u sp_pcm_to_pwm -u sp_test_packet -u sp_last_packet -u sp_static_bytes -u sotto_fx_dec_bytes -u heap_used -u sp_set_yield -u sp_yield_probe -u sp_set_packet_yield -u sp_set_stream -u sp_cb_setup -u sp_cb_bench -u sp_vlr_setup \
+  -u sp_play_frame -u sp_play_pwm -u sp_pcm_to_pwm -u sp_test_packet -u sp_last_packet -u sp_static_bytes -u sotto_fx_dec_bytes -u heap_used -u sp_set_yield -u sp_yield_probe -u sp_set_packet_yield -u sp_set_stream -u sp_cb_setup -u sp_cb_bench -u sp_vlr_setup $UHISS \
   $LIBOBJS $BENCHCB "$OUT/shim.o" "$OUT/rt.o" "$OUT/divmod.o" -o "$OUT/bench.elf"
 echo "built $OUT/bench.elf"

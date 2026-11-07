@@ -13,6 +13,8 @@
 #                           (-F IMAGE for v3.7's at 0x100000, -V IMAGE for sotto 600 / 400's at 0x108000)
 #   pager_host_vlr_cbi      the same with the sotto 600 / 400 tables linked to install them (SP_VLR_INSTALL)
 #   vlr_image               writes the sotto 600 / 400 codebook image (vlr_image OUT.bin) or its CRC (-c)
+#   pager_host_vlrh         -DSP_LR -DSP_VLR -DSP_HISS: sotto 1200, 600 and 400 at 16 kHz through the K6
+#                           hiss layer (320-sample frames; docs/k6-hiss-port.md); the tables linked
 # Always the v3.7 8 kHz core, whatever VARIANT the rest of c/ is built with: the packet
 # format's magic 0xA7 means v3.7 frames, 0xA9 sotto 1200 (on the v3.7 core).
 # SPDX-License-Identifier: MIT
@@ -25,7 +27,7 @@ OBJS = host/sotto_pager.o host/sotto_fx_dec.o host/sp_cb.o host/sp_vlr.o host/fx
 LR_OBJS = host-lr/sotto_pager.o host-lr/sotto_fx_dec.o host-lr/sotto_fx_lr.o host/sp_cb.o host/sp_vlr.o host/fx_math.o host/fx_tables.o
 
 all: pager_host pager_host_lr km_host cb_image pager_host_cbs pager_host_lr_cbs pager_host_cbi \
-	vlr_image pager_host_vlr pager_host_vlr_cbs pager_host_vlr_cbi
+	vlr_image pager_host_vlr pager_host_vlr_cbs pager_host_vlr_cbi pager_host_vlrh
 km_host: host/km_host.o host/k6_mod_test.o $(OBJS)
 	$(CC) -o $@ $^
 host/k6_mod_test.o: k6_mod.c k6_mod.h sotto_pager.h
@@ -121,6 +123,22 @@ host-vlr/sotto_vlr_tables.o: ../sotto_vlr_tables.c ../sotto_vlr_tables.h
 host-vlr/%.o: ../fixed/%.c $(VLR_FX_HDRS)
 	@mkdir -p host-vlr
 	$(CC) $(CFLAGS) $(K6FLAGS) $(DECFLAGS) $(VLRFLAGS) -c -o $@ $<
+# the hiss band build (SP_HISS on SP_LR SP_VLR): the 16 kHz decoders of c/fixed/sotto_fx_hiss.c
+# (FX_HISS_FB, no encoder) on the v3.8 core; everything built with its flags
+HISSFLAGS = $(VLRFLAGS) -DSP_HISS -DSOTTO_V38 -DFX_HISS_LIGHT -DFX_HISS_FB -DFX_HISS_NO_ENC
+HISS_DEC = sotto_fx_dec.o sotto_fx_lr.o sotto_fx_vlr.o sotto_fx_hiss.o fx_math.o fx_tables.o
+pager_host_vlrh: host-vlrh/pager_host.o host-vlrh/sotto_pager.o host-vlrh/sp_cb.o host-vlrh/sp_vlr.o \
+	$(HISS_DEC:%=host-vlrh/%) host-vlrh/sotto_vlr_tables.o
+	$(CC) -o $@ $^
+host-vlrh/%.o: %.c $(VLR_HDRS)
+	@mkdir -p host-vlrh
+	$(CC) $(CFLAGS) $(K6FLAGS) $(HISSFLAGS) -c -o $@ $<
+host-vlrh/sotto_vlr_tables.o: ../sotto_vlr_tables.c ../sotto_vlr_tables.h
+	@mkdir -p host-vlrh
+	$(CC) $(CFLAGS) $(K6FLAGS) $(HISSFLAGS) -c -o $@ $<
+host-vlrh/%.o: ../fixed/%.c $(VLR_FX_HDRS) ../fixed/sotto_fx_hiss.c
+	@mkdir -p host-vlrh
+	$(CC) $(CFLAGS) $(K6FLAGS) $(DECFLAGS) $(HISSFLAGS) -c -o $@ $<
 VCBSFLAGS = $(VLRFLAGS) $(CBFLAGS) -DVLR_CB_SPI -include host-cb/vlr_crc.h
 host-vlrcbs/%.o: %.c $(VLR_HDRS) host-cb/cb_crc.h host-cb/vlr_crc.h
 	@mkdir -p host-vlrcbs
@@ -144,6 +162,6 @@ host-vlrcbi/%.o: ../fixed/%.c $(VLR_FX_HDRS) host-cb/cb_crc.h
 clean:
 	rm -rf host host-lr pager_host pager_host_lr km_host build build-lr \
 	  host-cb host-cbs host-lrcbs host-cbi cb_image pager_host_cbs pager_host_lr_cbs pager_host_cbi \
-	  host-vlr host-vlrcbs host-vlrcbi vlr_image pager_host_vlr pager_host_vlr_cbs pager_host_vlr_cbi \
+	  host-vlr host-vlrcbs host-vlrcbi vlr_image pager_host_vlr pager_host_vlr_cbs pager_host_vlr_cbi host-vlrh pager_host_vlrh \
 	  build-vlr build-vlr-cbs build-vlr-cbi
 .PHONY: all clean

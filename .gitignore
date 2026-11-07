@@ -50,3 +50,8 @@ c/k6/pager_host_vlr_cbs
 c/k6/pager_host_vlr_cbi
 firmware/k6-aura/out/
 firmware/k6-aura/lib/
+c/k6/build-vlr-rom/
+c/k6/build-vlrh-cbs/
+c/k6/host-vlrh/
+c/k6/pager_host_vlrh
+c/fixed/sotto_dec_fx_k6

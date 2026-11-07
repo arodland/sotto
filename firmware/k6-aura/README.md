@@ -335,6 +335,18 @@ reports `K6 VLR r=1 crc=0884ef5c`. It still reads v3.7's codebook at SPI flash 0
 sotto 1200 (the 30 KB more wouldn't fit beside these tables), and it is `lean` like vlri, which
 also refuses the module API's calibration write. So nothing in it writes the SPI flash.
 
+**Hiss band image (`out/aura-pager-vlrh.bin`, 2026-11-07).** `K6_CODEC=vlr K6_HISS=1` links
+the sotto 1200 + 600 + 400 library with the K6 hiss layer ([`docs/k6-hiss-port.md`](../../docs/k6-hiss-port.md)):
+the same three codecs' messages play at 16 kHz with the 4-8 kHz hiss band the v3.8 decoders
+make, so a message encoded with the hiss bits (`c/sotto_enc -16 -600 IN16K.raw OUT.sot`, then
+`modem.k6 send --codec 600`) sounds as `sotto_dec -16 -600` does on the PC. The PWM ring runs
+at 16 kHz (TIM1 RCR 2) in three 320-sample segments, and the library's frame size is checked
+against it at the start of each playback (`K6 PWM frame 320 != segment ...` on a mismatch). Its
+message store is 2.5 KB (413 slots: 16 s of sotto 1200, 33 s of 600, 50 s of 400; streaming plays
+longer messages as they arrive) to leave the boot's stack 468 B of margin; the pre-emphasis runs
+on every other sample, so 0-4 kHz sounds as the 8 kHz images. `tools/k6_pcmhash.py --hiss` and
+`c/k6/bench_k6.py --hiss` know the build. Codebooks from the SPI flash as `aura-pager-vlr`.
+
 **Codebook in SPI flash (the default since 2026-11-06).** The decoder reads sotto's 30 KB
 codebook from the radio's SPI flash, one 20-byte vector at a time, so the table doesn't need to
 be in the MCU's flash. The images without it have 30 KB free. Flash the install image

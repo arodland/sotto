@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 785c441..0a1e4f7 100644
+index 785c441..6af31c1 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -21,6 +21,18 @@ st7565 = "0.6"
+@@ -21,6 +21,21 @@ st7565 = "0.6"
  embedded-graphics = "0.8"
  profont = "0.7"
  
@@ -17,6 +17,9 @@ index 785c441..0a1e4f7 100644
 +# screen. sotto's build links it with a library that has no voice decoder (K6_VOICE=0), the
 +# room the explorer needs: VOICE MSG keeps its packets, modules and control, but plays nothing
 +explore = ["pager-only"]
++# the hiss band image (docs/k6-hiss-port.md): sotto 1200, 600 and 400 played at 16 kHz through the
++# K6 hiss layer, with a library built K6_HISS=1 (320-sample frames; the PWM ring is 3 of them)
++hiss = []
 +
  [profile.release]
  opt-level = "z"
@@ -239,10 +242,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..677b2f7
+index 0000000..0620a3e
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3934 @@
+@@ -0,0 +1,3947 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -332,7 +335,13 @@ index 0000000..677b2f7
 +{
 +}
 +
++#[cfg(not(feature = "hiss"))]
 +const STORE_BYTES: usize = 4096;
++/// the hiss band image: 2.5 KB (413 slots: 16 s of sotto 1200, 33 s of 600, 50 s of 400; a stream
++/// plays while it arrives, so a message can be longer; two XL interleave groups fit), what its
++/// decoder and 16 kHz ring take, with the boot's stack kept clear of .bss
++#[cfg(feature = "hiss")]
++const STORE_BYTES: usize = 2560;
 +// (The RAM below UserVectors, 0x2000_0000-0x2000_0FFF, is not free: images that put the store
 +// there, even from 0x2000_0100, hung at boot on the radio on 2026-11-04.)
 +static mut STORE: [u32; STORE_BYTES / 4] = [0; STORE_BYTES / 4];
@@ -398,6 +407,7 @@ index 0000000..677b2f7
 +        pub fn sp_rebuilt() -> i32;
 +        pub fn sp_play_start();
 +        pub fn sp_play_pwm(out: *mut u16, top: u32, gain_q8: i32, emphasis: i32) -> i32;
++        pub fn sp_frame_samples() -> i32;
 +        pub fn sp_play_pos() -> i32;
 +        pub fn sp_pcm_hash(samples: *mut u32) -> u32;
 +        pub fn sp_set_stream(on: i32);
@@ -3539,6 +3549,12 @@ index 0000000..677b2f7
 +            Y_SERVICED = 0;
 +            ffi::sp_play_start();
 +        }
++        // the library's frame must be the ring's segment (8 or 16 kHz): else nothing plays
++        let fs = unsafe { ffi::sp_frame_samples() } as usize;
++        if fs != pwm_audio::SEG {
++            report_line(format_args!("K6 PWM frame {} != segment {}", fs, pwm_audio::SEG));
++            s.done = true;
++        }
 +    }
 +    paint_free_ram();
 +    for i in 0..pwm_audio::NSEG {
@@ -5504,11 +5520,11 @@ index 57e9999..3717bb7 100644
  pub mod timer;
 diff --git a/src/hal/pwm_audio.rs b/src/hal/pwm_audio.rs
 new file mode 100644
-index 0000000..25274cb
+index 0000000..c92661e
 --- /dev/null
 +++ b/src/hal/pwm_audio.rs
-@@ -0,0 +1,155 @@
-+//! 8 kHz PCM out of the MCU's PWM pin, the path the stock firmware uses for
+@@ -0,0 +1,168 @@
++//! 8 kHz PCM (16 kHz in the hiss band image) out of the MCU's PWM pin, the path the stock firmware uses for
 +//! its voice prompts: PA11 = TIM1_CH4 (AF2) -> two RC poles (4.7k/3.9n,
 +//! 4.7k/22n) -> 22k -> the speaker amplifier's input, summed with the RF
 +//! chip's AF output. Aura itself never drives PA11.
@@ -5527,9 +5543,22 @@ index 0000000..25274cb
 +
 +pub const TOP: u16 = 2000;
 +pub const MID: u16 = TOP / 2;
-+pub const SEG: usize = 160; // one 20 ms sotto frame
++// one 20 ms sotto frame: 160 samples at 8 kHz, or 320 at 16 kHz in the hiss band image (the
++// decoder's sp_frame_samples() must agree); its ring is 3 frames, not 4, for the RAM
++#[cfg(not(feature = "hiss"))]
++pub const SEG: usize = 160;
++#[cfg(feature = "hiss")]
++pub const SEG: usize = 320;
++#[cfg(not(feature = "hiss"))]
 +pub const NSEG: usize = 4;
++#[cfg(feature = "hiss")]
++pub const NSEG: usize = 3;
 +pub const RING: usize = SEG * NSEG;
++/// TIM1's repetition count: an update (one sample) every RCR + 1 periods of the 48 kHz PWM
++#[cfg(not(feature = "hiss"))]
++const RCR: u32 = 5; // 8 kHz
++#[cfg(feature = "hiss")]
++const RCR: u32 = 2; // 16 kHz
 +
 +const RCC_AHBENR: u32 = 0x4002_1014; // DMAEN bit 0
 +const RCC_APB2ENR: u32 = 0x4002_1018; // TIM1EN bit 11
@@ -5602,11 +5631,11 @@ index 0000000..25274cb
 +        modify(RCC_AHBENR, 0, 1 << 0);
 +        modify(RCC_APB2ENR, 0, 1 << 11);
 +
-+        // TIM1: 48 kHz PWM on CH4, update (and DMA request) every 6 periods.
++        // TIM1: 48 kHz PWM on CH4, update (and DMA request) every RCR + 1 periods.
 +        wr(TIM_CR1, 0);
 +        wr(TIM_PSC, 0);
 +        wr(TIM_ARR, TOP as u32);
-+        wr(TIM_RCR, 5);
++        wr(TIM_RCR, RCR);
 +        wr(TIM_CCR4, MID as u32);
 +        // OC4M = 110 (PWM mode 1), OC4PE preload; channel 3 untouched (unused).
 +        modify(TIM_CCMR2, 0xFF00, (0b110 << 12) | (1 << 11));

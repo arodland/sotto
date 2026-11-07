@@ -351,6 +351,11 @@ int sotto_lr_enc_pop(struct sotto_lr_enc *e, unsigned char out[SOTTO_BYTES_PER_F
 #ifdef SOTTO_V38
 #define LR_HISS                      /* sotto 1200 hiss: sotto_lr_dec16 in sotto_hiss.c hooks in */
 #include "sotto_hiss_tables.h"
+#define LR_HISS_T double
+#define LR_HISS_HOOK_T lr_hiss_hook_t
+#define LR_HISS_CB6(i) sotto_hiss_cb6[i]
+#define LR_HISS_BCB(i) sotto_lr_hiss_bcb[i]
+#define LR_HISS_HALF(x) ((x) / 2)
 #endif
 #define lr_params_t sotto_fparams_t
 #define lr_shape_a a_shape

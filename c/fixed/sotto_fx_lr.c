@@ -73,7 +73,20 @@ static void b_shape(const int32_t *ca, const int32_t *cn, int sb, int32_t *c) {
 
 const char *sotto_lr_format(void) { return LR_FORMAT; }
 
+#ifdef FX_HISS_FB                   /* the K6 hiss layer (sotto_fx_hiss.c) hooks in, dB Q8 */
+#define LR_HISS
+#define LR_HISS_T int32_t
+#define LR_HISS_HOOK_T fx_lr_hiss_hook_t
+#define LR_HISS_CB6(i) fx_hs_cb6[i]
+#define LR_HISS_BCB(i) fx_lr_hiss_bcb[i]
+#define LR_HISS_HALF(x) fx_rshr32(x, 1)
+#endif
 #define lr_params_t fx_fparams_t
 #define lr_shape_a a_shape
 #define lr_shape_b b_shape
 #include "../sotto_lr_dec.inc"
+
+#ifdef LR_HISS
+void sotto_lr_dec_set_hook(struct sotto_lr_dec *d, fx_lr_hiss_hook_t hook, void *ctx) { d->hook = hook, d->hctx = ctx; }
+const struct sotto_dec *sotto_lr_dec_core(const struct sotto_lr_dec *d) { return d->core; }
+#endif

@@ -52,7 +52,16 @@ extern "C" {
 #define SP_PLAY_MAGIC SP_MAGIC
 #endif
 #define SP_FRAME_BYTES 6
+/* -DSP_HISS (with SP_LR, SP_VLR): the hiss band build, which plays sotto 1200, 600 and 400 at
+   16 kHz through the K6 hiss layer (c/fixed/sotto_fx_hiss.c, built with -DFX_HISS_LIGHT
+   -DFX_HISS_FB -DSOTTO_V38; docs/k6-hiss-port.md): every 20 ms frame is 320 samples */
+#ifdef SP_HISS
+#define SP_FRAME_SAMPLES 320      /* 20 ms at 16 kHz */
+#define SP_RATE 16000
+#else
 #define SP_FRAME_SAMPLES 160      /* 20 ms at 8 kHz */
+#define SP_RATE 8000
+#endif
 #define SP_GAP_MS 3000            /* play after this long with no packet for the message */
 
 /* sp_packet results */
@@ -113,7 +122,8 @@ int sp_rebuilt(void);
 int sp_missing(uint16_t *out, int max);
 
 /* Playback. sp_play_start resets the decoder and starts at frame 0 (it can be called again
-   to replay). sp_play_frame decodes the next 20 ms into pcm (160 samples, 8 kHz) and returns
+   to replay). sp_play_frame decodes the next 20 ms into pcm (SP_FRAME_SAMPLES: 160 at 8 kHz,
+   320 at 16 kHz with SP_HISS) and returns
    1, or returns 0 once the message and the decoder's 20 ms delay are done. Frames that never
    arrived are concealed. With -DSP_LR (sotto 1200) each stored slot is 40 ms, played as two
    calls of 20 ms (sotto_lr_decode_half), the decoder's 80 ms of delay dropped at the start; a
@@ -180,6 +190,8 @@ int sp_auto_gain_q8(void);
 /* sp_play_frame then sp_pcm_to_pwm in one call, with the PCM in this library's buffer:
    what the radio's playback loop calls for each 20 ms. Returns as sp_play_frame. */
 int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int emphasis);
+/* SP_FRAME_SAMPLES of this build (the firmware checks its PWM ring's segment against it) */
+int sp_frame_samples(void);
 
 /* Profile L test packet 0 of the spec's section 10 (70-frame test message, msg_id 0x42),
    whitened, for the calibration transmit key. */

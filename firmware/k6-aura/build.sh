@@ -204,6 +204,14 @@ if [ "${VLR:-1}" = 1 ]; then
   variant aura-pager-vlr-rom "pager-only image, sotto 1200 + 600 + 400, sotto 600 / 400's codebooks in MCU flash (no SPI writes)" \
     --features pager-only,lean
 fi
+# the hiss band image (docs/k6-hiss-port.md): sotto 1200, 600 and 400 at 16 kHz through the K6
+# hiss layer, codebooks in SPI flash (HISS=0 skips it)
+if [ "${HISS:-1}" = 1 ]; then
+  K6_CODEC=vlr K6_CB=spi K6_HISS=1 sh "$ROOT/tools/k6_build.sh"
+  lib build-vlrh-cbs
+  variant aura-pager-vlrh "pager-only image, sotto 1200 + 600 + 400 with the hiss band (16 kHz), codebooks in SPI flash" \
+    --features pager-only,hiss
+fi
 if [ "${INSTALL:-1}" = 1 ]; then
   K6_CB=install sh "$ROOT/tools/k6_build.sh"
   lib build-cbi

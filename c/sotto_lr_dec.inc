@@ -27,23 +27,25 @@ struct sotto_lr_dec {
   int pend, pend_s, pend_u, avail_u;   /* the second half to come: superframe s, has A(s + 1) */
 #ifdef LR_HISS
   /* sotto 1200 hiss (sim/sotto_lr_hiss.py decode_audio16): the 4-band hiss correction of
+     (LR_HISS_T: double in dB, or int32_t in dB Q8 for the fixed-point K6 layer, which also sets
+     LR_HISS_HOOK_T, LR_HISS_CB6, LR_HISS_BCB and LR_HISS_HALF)
      A(s) and A(u), A(u)'s side bit and whether its superframe arrived, and the hook that
      gets every frame the core synthesises */
-  double hra[4], hran[4];
+  LR_HISS_T hra[4], hran[4];
   int hsu, hsgu;
-  lr_hiss_hook_t hook;
+  LR_HISS_HOOK_T hook;
   void *hctx;
 #endif
 };
 
 #ifdef LR_HISS
 /* Sotto1200Hiss._b_base: the mean of the corrections of the unvoiced anchors, else 0 */
-static void h_base(const double *x, int hx, const double *y, int hy, double *o) {
-  for (int b = 0; b < 4; b++) o[b] = hx && hy ? (x[b] + y[b]) / 2 : hx ? x[b] : hy ? y[b] : 0.0;
+static void h_base(const LR_HISS_T *x, int hx, const LR_HISS_T *y, int hy, LR_HISS_T *o) {
+  for (int b = 0; b < 4; b++) o[b] = hx && hy ? LR_HISS_HALF(x[b] + y[b]) : hx ? x[b] : hy ? y[b] : 0;
 }
 
-static void h_cb6(int wa, double *o) {
-  for (int b = 0; b < 4; b++) o[b] = sotto_hiss_cb6[(wa >> 1) * 4 + b];
+static void h_cb6(int wa, LR_HISS_T *o) {
+  for (int b = 0; b < 4; b++) o[b] = LR_HISS_CB6((wa >> 1) * 4 + b);
 }
 #endif
 
@@ -94,7 +96,7 @@ static int half0(struct sotto_lr_dec *d, short *out) {
     if (an->code == 0) {
       if (reb) {                /* rebuilt: halfway between A(s)'s and A(u + 1)'s */
         const lr_fields_t *fn = &d->in[(u + 1) & 3];
-        double q[4];
+        LR_HISS_T q[4];
         if (fn->ca == 0) h_cb6(fn->wa, q);
         h_base(d->hra, d->a.code == 0, q, fn->ca == 0, d->hran);
       } else {                  /* the 6-bit index and the side bit in A's pitch field */
@@ -112,12 +114,12 @@ static int half0(struct sotto_lr_dec *d, short *out) {
     sotto_dec_frame(d->core, &b, run, out);
 #ifdef LR_HISS
     if (d->hook) {              /* B: the anchors' mean plus a 2-bit level, and a side bit */
-      double r[4];
+      LR_HISS_T r[4];
       int side = 0;
       h_base(d->hra, d->a.code == 0, d->hran, have_u && an->code == 0, r);
       if (b.code != 0) memset(r, 0, sizeof r);
       else if (!rb) {
-        for (int k = 0; k < 4; k++) r[k] += sotto_lr_hiss_bcb[(f->dw >> 1) * 4 + k];
+        for (int k = 0; k < 4; k++) r[k] += LR_HISS_BCB((f->dw >> 1) * 4 + k);
         side = f->dw & 1;
       }
       d->hook(d->hctx, b.code, r, side, is_good(d, s), run, out, 0);

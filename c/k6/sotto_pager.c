@@ -1,6 +1,7 @@
 /* sotto voice pager: packet reassembly in RAM and playback. See sotto_pager.h.
  * SPDX-License-Identifier: MIT */
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include "sotto_pager.h"
 #include "sp_cb.h"
@@ -12,18 +13,40 @@
 #error "SP_VLR builds on SP_LR: the image plays sotto 1200, 600 and 400"
 #endif
 #endif
+#ifdef SP_HISS
+#if !defined(SP_LR) || !defined(FX_HISS_FB)
+#error "SP_HISS builds on SP_LR with the K6 hiss layer: -DFX_HISS_LIGHT -DFX_HISS_FB -DSOTTO_V38"
+#endif
+#endif
 #include "../fixed/fx.h"            /* FX_OA_PACKED: whether fx_cs512's 2 KB table is in RAM */
 
 /* ---- the decoder's allocations: sotto_fx_dec.c (and sotto_fx_lr.c) are built with
    -Dcalloc=sp_calloc -Dfree=sp_free, so their state lives here instead of on a heap: one
    block for v3.7 (the core), two for sotto 1200 (its own state, then the core). A bump pool,
    emptied when every block is freed ---------------------------------------------------- */
+#ifdef SP_HISS
+/* the hiss band build: the core with the odd half's 16 model bands (sotto_fx_dec_bytes(): 900 on
+   the M0, 964 on a 64-bit host), sotto 600 / 400's decoder, and the layer's state with its
+   hooks (sotto_fx_vlr_dec16_bytes(): 720 on the M0, 904 on the host; sotto 1200's is smaller) */
+#if UINTPTR_MAX > 0xFFFFFFFFu
+#define SP_DEC_CORE 992
+#define SP_DEC_VLR 640
+#define SP_DEC_HISS 928
+#else
+#define SP_DEC_CORE 904
+#define SP_DEC_VLR 592
+#define SP_DEC_HISS 736
+#endif
+#else
 #define SP_DEC_CORE 864              /* sotto_fx_dec_bytes(): 836 on the M0 and x86 */
+#define SP_DEC_VLR 640               /* struct sotto_vlr_dec (sotto_vlr_dec_bytes(): 580 B on the M0) */
+#define SP_DEC_HISS 0
+#endif
 #if defined(SP_VLR)
-#define SP_DEC_MAX (SP_DEC_CORE + 640)  /* + struct sotto_vlr_dec (sotto_vlr_dec_bytes(): 580 B on
-                                           the M0), or struct sotto_lr_dec: one at a time */
+#define SP_DEC_MAX (SP_DEC_CORE + SP_DEC_VLR + SP_DEC_HISS)  /* sotto 600 / 400's decoder or sotto 1200's
+                                                              (300 B on the M0): one at a time */
 #elif defined(SP_LR)
-#define SP_DEC_MAX (SP_DEC_CORE + 320)  /* + struct sotto_lr_dec (300 B on the M0) */
+#define SP_DEC_MAX (SP_DEC_CORE + 320 + SP_DEC_HISS)  /* + struct sotto_lr_dec (300 B on the M0) */
 #else
 #define SP_DEC_MAX SP_DEC_CORE
 #endif
@@ -65,18 +88,20 @@ void sp_free(void *p) {
 #define TEST_FRAMES 70            /* the spec's test message (section 10) */
 #define PARITY 0x10               /* magic | PARITY: an interleave group's XOR parity packet (spec 14) */
 
-static uint8_t pn9[SP_PAYLOAD_MAX];
+/* the PN9 whitening bytes (spec 5): the low byte of the x^9 + x^5 + 1 shift register from 0x1FF,
+   stepped 8 times a byte; a table in flash (128 B of RAM saved on the K6) */
+static const uint8_t pn9[SP_PAYLOAD_MAX] = {
+  0xFF, 0xE1, 0x1D, 0x9A, 0xED, 0x85, 0x33, 0x24, 0xEA, 0x7A, 0xD2, 0x39, 0x70, 0x97, 0x57, 0x0A,
+  0x54, 0x7D, 0x2D, 0xD8, 0x6D, 0x0D, 0xBA, 0x8F, 0x67, 0x59, 0xC7, 0xA2, 0xBF, 0x34, 0xCA, 0x18,
+  0x30, 0x53, 0x93, 0xDF, 0x92, 0xEC, 0xA7, 0x15, 0x8A, 0xDC, 0xF4, 0x86, 0x55, 0x4E, 0x18, 0x21,
+  0x40, 0xC4, 0xC4, 0xD5, 0xC6, 0x91, 0x8A, 0xCD, 0xE7, 0xD1, 0x4E, 0x09, 0x32, 0x17, 0xDF, 0x83,
+  0xFF, 0xF0, 0x0E, 0xCD, 0xF6, 0xC2, 0x19, 0x12, 0x75, 0x3D, 0xE9, 0x1C, 0xB8, 0xCB, 0x2B, 0x05,
+  0xAA, 0xBE, 0x16, 0xEC, 0xB6, 0x06, 0xDD, 0xC7, 0xB3, 0xAC, 0x63, 0xD1, 0x5F, 0x1A, 0x65, 0x0C,
+  0x98, 0xA9, 0xC9, 0x6F, 0x49, 0xF6, 0xD3, 0x0A, 0x45, 0x6E, 0x7A, 0xC3, 0x2A, 0x27, 0x8C, 0x10,
+  0x20, 0x62, 0xE2, 0x6A, 0xE3, 0x48, 0xC5, 0xE6, 0xF3, 0x68, 0xA7, 0x04, 0x99, 0x8B, 0xEF, 0xC1};
 static uint8_t last_pkt[SP_PAYLOAD_MAX];
 
 static int fpp_of(int len) { return len == SP_PAYLOAD_XL ? FPP_XL : FPP_L; }
-
-static void pn9_init(void) {
-  unsigned s = 0x1FF, i, b;
-  for (i = 0; i < SP_PAYLOAD_MAX; i++) {
-    pn9[i] = (uint8_t)s;
-    for (b = 0; b < 8; b++) s = (s >> 1) | (((s ^ (s >> 5)) & 1u) << 8);
-  }
-}
 
 /* CRC-16/CCITT-FALSE a nibble at a time (16 entries): about 4x the bitwise loop's speed, so a
    packet's CRC takes ~30 us on the K6, not ~115 (the IF receiver checks packets between its
@@ -111,11 +136,42 @@ typedef struct {
 
 static store_t S;
 #ifdef SP_LR
-static struct sotto_lr_dec *dec;
+/* the decoders: at 8 kHz, or (SP_HISS) the 16 kHz ones with the hiss layer, which take the same
+   calls a half / a frame at a time and run SOTTO_*_DEC16_DELAY_FRAMES more 20 ms frames behind */
+#ifdef SP_HISS
+#define LR_DEC struct sotto_lr_dec16
+#define lr_create sotto_lr_dec16_create
+#define lr_destroy sotto_lr_dec16_destroy
+#define lr_decode_half sotto_lr_decode16_half
+#define lr_flush_half sotto_lr_dec16_flush_half
+#define LR_SKIP (2 * SOTTO_LR_DEC_DELAY + SOTTO_LR_DEC16_DELAY_FRAMES)
+#define VLR_DEC struct sotto_vlr_dec16
+#define vlr_create sotto_vlr_dec16_create
+#define vlr_destroy sotto_vlr_dec16_destroy
+#define vlr_samples sotto_vlr_samples16
+#define vlr_decode_frame sotto_vlr_decode16_frame
+#define vlr_flush_frame sotto_vlr_dec16_flush_frame
+#define VLR_SKIP(n) ((n) * SOTTO_VLR_DEC_DELAY + SOTTO_VLR_DEC16_DELAY_FRAMES)
+#else
+#define LR_DEC struct sotto_lr_dec
+#define lr_create sotto_lr_dec_create
+#define lr_destroy sotto_lr_dec_destroy
+#define lr_decode_half sotto_lr_decode_half
+#define lr_flush_half sotto_lr_dec_flush_half
+#define LR_SKIP (2 * SOTTO_LR_DEC_DELAY)
+#define VLR_DEC struct sotto_vlr_dec
+#define vlr_create sotto_vlr_dec_create
+#define vlr_destroy sotto_vlr_dec_destroy
+#define vlr_samples sotto_vlr_samples
+#define vlr_decode_frame sotto_vlr_decode_frame
+#define vlr_flush_frame sotto_vlr_dec_flush_frame
+#define VLR_SKIP(n) ((n) * SOTTO_VLR_DEC_DELAY)
+#endif
+static LR_DEC *dec;
 static int play_half;               /* sotto 1200: which 20 ms half of the slot comes next */
 static int play_skip;               /* halves still to drop: the decoder's delay, silent */
 #ifdef SP_VLR
-static struct sotto_vlr_dec *vdec;  /* a sotto 600 / 400 message's decoder (dec is then 0) */
+static VLR_DEC *vdec;               /* a sotto 600 / 400 message's decoder (dec is then 0) */
 static int play_k, play_n;          /* the next 20 ms of the slot, of play_n */
 #endif
 #else
@@ -173,14 +229,21 @@ uint32_t sp_pcm_hash(unsigned *samples) {
   if (samples) *samples = pcm_n;
   return pcm_hash;
 }
-static int32_t emph1, emph2;
+/* the pre-emphasis filter's last two inputs; at 16 kHz (SP_HISS) it runs on every other sample
+   (two interleaved filters), so its response over 0-4 kHz is the 8 kHz build's; over 4-8 kHz it
+   mirrors (the boost falls from 11 dB at 4 kHz to none at 8 kHz) */
+#ifdef SP_HISS
+#define EMPH_STRIDE 2
+#else
+#define EMPH_STRIDE 1
+#endif
+static int32_t emph1[EMPH_STRIDE], emph2[EMPH_STRIDE];
 
 
 int sp_init(void *mem, unsigned bytes) {
   /* per frame: 6 bytes, 1 good bit, 1/2 seen bit (room for 2-frame packets, as the retired
      profile S had; the store size stays as it was) */
   unsigned n = (bytes * 16u) / (6u * 16u + 2u + 1u);
-  pn9_init();
   memset(&S, 0, sizeof S);
   memset(mem, 0, bytes);          /* the good/seen bitmaps start clear (the K6 keeps mem in NOLOAD RAM) */
   n &= ~15u;                      /* the bitmaps round evenly */
@@ -359,7 +422,6 @@ static int parity(uint8_t *p, int fpp, uint8_t profile) {
 int sp_packet(const uint8_t *payload, int len) {
   int i, r;
   if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return SP_BAD_LENGTH;
-  if (!pn9[0]) pn9_init();
   for (i = 0; i < len; i++) {
     last_pkt[i] = payload[i] ^ pn9[i];
     PK_YIELD(i, 31);
@@ -383,7 +445,6 @@ int sp_check(const uint8_t *payload, int len) {
   int i;
   unsigned c = 0xFFFF;
   if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return 0;
-  if (!pn9[0]) pn9_init();
   if (!pager_magic(payload[0] ^ pn9[0])) return 0;
   for (i = 0; i < len - 2; i++)       /* the CRC as crc16(), de-whitening on the way: no copy */
     c = crc_byte(c, (unsigned)(payload[i] ^ pn9[i]));
@@ -394,7 +455,6 @@ int sp_control(const uint8_t *payload, int len, uint8_t rec[6]) {
   int how, o, i;
   uint8_t r[SP_CTL_REC];
   if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return 0;
-  if (!pn9[0]) pn9_init();
   for (how = 0; how < 4; how++)
     for (o = 0; o + SP_CTL_REC <= len; o += SP_CTL_REC) {
       for (i = 0; i < SP_CTL_REC; i++)
@@ -410,7 +470,6 @@ int sp_control(const uint8_t *payload, int len, uint8_t rec[6]) {
 const uint8_t *sp_last_packet(void) { return last_pkt; }
 
 const uint8_t *sp_pn9(void) {
-  if (!pn9[0]) pn9_init();
   return pn9;
 }
 
@@ -448,21 +507,21 @@ int sp_missing(uint16_t *out, int max) {
 
 void sp_play_start(void) {
 #ifdef SP_LR
-  if (dec) sotto_lr_dec_destroy(dec);
+  if (dec) lr_destroy(dec);
   dec = 0;
 #ifdef SP_VLR
-  if (vdec) sotto_vlr_dec_destroy(vdec);
+  if (vdec) vlr_destroy(vdec);
   vdec = 0;
   play_k = 0;
   if (S.st.have && MSG_VLR) {
-    vdec = sotto_vlr_dec_create(S.magic == SP_MAGIC_600 ? 600 : 400);
-    play_n = vdec ? sotto_vlr_samples(vdec) / SP_FRAME_SAMPLES : 0;
-    play_skip = play_n * SOTTO_VLR_DEC_DELAY;
+    vdec = vlr_create(S.magic == SP_MAGIC_600 ? 600 : 400);
+    play_n = vdec ? vlr_samples(vdec) / SP_FRAME_SAMPLES : 0;
+    play_skip = VLR_SKIP(play_n);
   } else
 #endif
   {
-    dec = sotto_lr_dec_create();
-    play_skip = 2 * SOTTO_LR_DEC_DELAY;
+    dec = lr_create();
+    play_skip = LR_SKIP;
   }
   play_half = 0;
 #else
@@ -474,7 +533,7 @@ void sp_play_start(void) {
   play_end = S.st.have && MSG_PLAYS && TABLES_READY ? S.st.stored : -1;
   playing = 1;
   fill_good = -1, fill_left = 0;
-  emph1 = emph2 = 0;
+  memset(emph1, 0, sizeof emph1), memset(emph2, 0, sizeof emph2);
   pcm_hash = 2166136261u, pcm_n = 0;
 }
 
@@ -490,14 +549,14 @@ static int lr_half(int16_t pcm[SP_FRAME_SAMPLES]) {
       if (!half && (n = pause_slots(r)) > 0) fill_left = n, play_pos++;
     }
     if (fill_left) {
-      sotto_lr_decode_half(dec, fill_frame, fill_good, half, pcm);
+      lr_decode_half(dec, fill_frame, fill_good, half, pcm);
       if (half) fill_left--;
     } else {
       r = pos_of(play_pos);
-      sotto_lr_decode_half(dec, S.frames + 6 * r, bit(S.good, r), half, pcm);
+      lr_decode_half(dec, S.frames + 6 * r, bit(S.good, r), half, pcm);
       if (half) memcpy(fill_frame, S.frames + 6 * r, 6), fill_good = bit(S.good, r), play_pos++;
     }
-  } else if (!sotto_lr_dec_flush_half(dec, half, pcm))
+  } else if (!lr_flush_half(dec, half, pcm))
     return 0;
   play_half = !half;
   return 1;
@@ -511,11 +570,11 @@ static int vlr_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
   if (play_pos < play_end) {
     if (ring && play_pos >= avail && play_k == 0) return SP_PLAY_WAIT;
     r = pos_of(play_pos);
-    sotto_vlr_decode_frame(vdec, S.frames + 6 * r, bit(S.good, r), play_k, pcm);
+    vlr_decode_frame(vdec, S.frames + 6 * r, bit(S.good, r), play_k, pcm);
     if (++play_k == play_n) play_k = 0, play_pos++;
     return 1;
   }
-  return sotto_vlr_dec_flush_frame(vdec, pcm);
+  return vlr_flush_frame(vdec, pcm);
 }
 #endif
 
@@ -587,8 +646,9 @@ void sp_pcm_to_pwm(const int16_t *pcm, uint16_t *out, int n, unsigned top, int g
   for (i = 0; i < n; i++) {
     int32_t x = pcm[i], y = x, t;
     if (emphasis) {
-      y = (33 * x - 21 * emph1 + 4 * emph2) >> 4;
-      emph2 = emph1, emph1 = x;
+      int32_t *e1 = &emph1[i % EMPH_STRIDE], *e2 = &emph2[i % EMPH_STRIDE];
+      y = (33 * x - 21 * *e1 + 4 * *e2) >> 4;
+      *e2 = *e1, *e1 = x;
     }
     t = (y * gain_q8) >> 8;
     if (t > 32767) t = 32767;
@@ -617,6 +677,8 @@ int sp_auto_gain_q8(void) {
   return top < 0 ? 256 : auto_gain[top];
 }
 
+int sp_frame_samples(void) { return SP_FRAME_SAMPLES; }
+
 int sp_play_pwm(uint16_t out[SP_FRAME_SAMPLES], unsigned top, int gain_q8, int emphasis) {
   int16_t *pcm = (int16_t *)out;   /* decoded in place: the conversion reads each sample before
                                       writing it (320 bytes less RAM on the K6) */
@@ -634,7 +696,6 @@ static void test_packet(uint8_t *out, int len, int seq) {
   uint8_t p[SP_PAYLOAD_MAX];
   int slots = fpp_of(len), s, i;
   unsigned c;
-  if (!pn9[0]) pn9_init();
   memset(p, 0, sizeof p);
   p[0] = SP_MAGIC, p[1] = 0x42, p[2] = (uint8_t)(seq >> 8), p[3] = (uint8_t)seq, p[5] = TEST_FRAMES;
   for (s = 0; s < slots; s++) {
@@ -678,11 +739,11 @@ int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e) {
 }
 
 unsigned sp_static_bytes(void) {
-  return (unsigned)(sizeof dec_mem + sizeof pn9 + sizeof last_pkt + sizeof S + sizeof dec + 14 * sizeof(int) + sizeof rebuilt
+  return (unsigned)(sizeof dec_mem + sizeof last_pkt + sizeof S + sizeof dec + 14 * sizeof(int) + sizeof rebuilt
 #ifdef SP_VLR
                     + sizeof vdec + 2 * sizeof(int)
 #endif
-                    + 2 * sizeof(int32_t) + 2 * SP_FRAME_SAMPLES + sizeof fill_frame + 2 * sizeof(int)
+                    + sizeof emph1 + sizeof emph2 + 2 * SP_FRAME_SAMPLES + sizeof fill_frame + 2 * sizeof(int)
 #ifdef FX_OA_PACKED
                     + 2048u                       /* fx_cs512's table (fx_math.c) */
 #endif
