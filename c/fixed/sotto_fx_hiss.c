@@ -339,15 +339,45 @@ static int16_t sat16(fx_acc v) { return (int16_t)(v > 32767 ? 32767 : v < -32768
 /* scipy.signal.resample_poly(x, 1, 2): y[n] = sum_j h[j] x16[2n + 20 - j]; x16 at 2n - 20.
    The taps' absolute sum is 1.24, so the Q19 x Q15 sum stays below 2^35. */
 static int16_t down2(const int16_t *x) {
+#ifdef FX_ARM_DSP
   fx_acc s = FX_JOIN(fx_dot16(tdh, x, NTAPS), fx_dot16(tdl, x, NTAPS));
+#else
+  /* a half-band filter: the even taps are 0 but the centre one, so only the odd taps and
+     x[20] are multiplied (the same sum; the paired MACs above keep all 41) */
+  fx_acc h = FX_P16(tdh[20], x[20]), l = FX_P16(tdl[20], x[20]);
+  int j;
+#ifdef __TMS320C55X__
+  for (j = 1; j < NTAPS; j += 2) h += FX_P16(tdh[j], x[j]), l += FX_P16(tdl[j], x[j]);
+#else
+  /* and symmetric (tap j = tap 40 - j): the two samples are added first, as in up2 */
+  for (j = 1; j < 20; j += 2) {
+    int32_t v = (int32_t)x[j] + x[40 - j];
+    h += (fx_acc)(tdh[j] * v), l += (fx_acc)(tdl[j] * v);
+  }
+#endif
+  fx_acc s = FX_JOIN(h, l);
+#endif
   FX_ACC_CHECK(s);
   return sat16(fx_rshr(s, 19));
 }
 
 /* resample_poly(x, 2, 1): y[2n + p] = 2 sum_k h[2k + p] x8[n + 10 - k]; x8 at n - 10 */
 static void up2(const int16_t *x, int16_t *y) {
-  fx_acc e = FX_JOIN(fx_dot16(teh, x, 21), fx_dot16(tel, x, 21));
-  fx_acc o = FX_JOIN(fx_dot16(toh, x, 21), fx_dot16(tol, x, 21));
+  /* half-band: the even outputs' taps are 0 but the centre one, and toh/tol[0] is 0 */
+  fx_acc e = FX_JOIN(FX_P16(teh[10], x[10]), FX_P16(tel[10], x[10]));
+#if defined(FX_ARM_DSP) || defined(__TMS320C55X__)
+  fx_acc o = FX_JOIN(fx_dot16(toh + 1, x + 1, 20), fx_dot16(tol + 1, x + 1, 20));
+#else
+  /* the odd taps are symmetric (toh/tol[k] = [21 - k]): add the two samples first. lo (< 2^15)
+     times a 17-bit sum stays inside 32 bits, so each product is the same as the two apart */
+  fx_acc oh = 0, ol = 0;
+  int k;
+  for (k = 1; k <= 10; k++) {
+    int32_t v = (int32_t)x[k] + x[21 - k];
+    oh += (fx_acc)(toh[k] * v), ol += (fx_acc)(tol[k] * v);
+  }
+  fx_acc o = FX_JOIN(oh, ol);
+#endif
   FX_ACC_CHECK(e); FX_ACC_CHECK(o);
   y[0] = sat16(fx_rshr(e, 18));
   y[1] = sat16(fx_rshr(o, 18));

@@ -88,7 +88,7 @@ the speaker could carry the hiss band. Measured 2026-11-07 (Jeff's K6, phone at 
 400 Hz -7, 630 Hz-4 kHz flat to ±3 dB with a 4-7 dB dip at 1.6-2 kHz, 5-5.6 kHz -5 to -8,
 6.3-7.5 kHz -11 to -14, every tone 35-60 dB over the room. Much flatter than the RC estimate above,
 so the emphasis filter's +11 dB at 4 kHz probably over-corrects. At 16 kHz updates the image at
-16 kHz - f is within 8 dB of the tone above 7 kHz (louder at 7.5 kHz). The RF chip's audio is muted and the
+16 kHz - f is within 8 dB of the tone above 7 kHz (louder at 7.5 kHz). Sizing the hiss band port: [k6-hiss-port.md](k6-hiss-port.md). The RF chip's audio is muted and the
 amplifier is enabled (PB2) only during playback.
 
 Senders' levels vary by 15 dB or more, so `sp_auto_gain_q8` sets the gain from the loudest frame's
