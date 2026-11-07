@@ -12,8 +12,8 @@
         WSPR audio to send in USB from the IC-7100 at dial = the K6's rx_hz (tone 0 at --f0)
   python3 tools/k6_wspr.py sync [--before 10] [--dry-run]
         the beacon's sync mark (c/k6/mod/wsprbcn.c, WSPR_SYNC_MS 10000): on hamlet, after the
-        upload, key the IC-7100 (440.850, through tools/k6_bench.py's PTT lock and ID rule) for
-        1.2 s so that it unkeys --before s ahead of a WSPR slot (1 s after an even UTC minute,
+        upload, key the IC-7100 (440.850, through tools/k6_bench.py's PTT lock) with the bench's
+        CW ID (no bare carriers: every test transmission IDs) so that it unkeys --before s ahead of a WSPR slot (1 s after an even UTC minute,
         by the PC's NTP clock). The K6 has no clock of its own; its first frame then starts on
         that slot and the rest follow on the 2-minute grid
 
@@ -149,27 +149,36 @@ def mark_time(now, before=10.0, carrier=1.2, setup=2.0):
 
 
 def cmd_sync(a):
+    """the sync mark is the bench's CW ID itself (Jeff 2026-11-07: every test transmission carries
+    AG7EW's ident, no bare carriers): the IC-7100 keys, plays the ID, and unkeys at the mark's
+    time by the clock, not by the end of the audio. A separate ID first would be a mark of its
+    own, at the wrong time, so the mark is always the ID."""
+    import subprocess
     import time
     import k6_bench as b
     lat = 0.05                                     # rigctl's T 0 to the carrier gone (estimate)
+    wav = b.cwid_wav()
+    d = b.wav_seconds(wav) + 0.8                   # the ID and a margin for paplay's start
     if a.dry_run:
-        end, slot = mark_time(time.time(), a.before)
-        print("dry run: mark %s-%s UTC, slot %s UTC" % (b.utc(end - 1.2), b.utc(end), b.utc(slot)))
+        end, slot = mark_time(time.time(), a.before, carrier=d)
+        print("dry run: mark (CW ID, %.1f s) %s-%s UTC, slot %s UTC"
+              % (d, b.utc(end - d), b.utc(end), b.utc(slot)))
         return 0
     rig = b.rigctl(a.rigctld)
     with b.ptt_lock():
         hz = b.rig_hz(rig)
         if hz != a.freq or not b.in_band(hz):
             raise SystemExit("refusing: IC-7100 on %d Hz, not %d" % (hz, a.freq))
-        if b.id_due_first():
-            b.send_id(rig, "before a WSPR sync mark")
-            time.sleep(1.0)
-        end, slot = mark_time(time.time(), a.before)
-        time.sleep(max(0.0, end - 1.2 - 0.2 - time.time()))   # keyed() holds 0.2 s before its body
-        with b.keyed(rig, what="WSPR sync mark"):
+        end, slot = mark_time(time.time(), a.before, carrier=d)
+        time.sleep(max(0.0, end - d - 0.2 - time.time()))     # keyed() holds 0.2 s before its body
+        with b.keyed(rig, kind="id", what="WSPR sync mark (CW ID)"):
+            p = subprocess.Popen(["paplay", "--device=%s" % b.SINK, wav])
             time.sleep(max(0.0, end - lat - time.time()))
         off = time.time()
-    print("sync mark dropped at %s UTC (%.3f s late); the K6's first WSPR slot %s UTC"
+        if p.poll() is None:
+            p.kill()
+            print("the ID was still playing at the drop: cut", file=sys.stderr)
+    print("sync mark (CW ID) dropped at %s UTC (%.3f s late); the K6's first WSPR slot %s UTC"
           % (b.utc(off), off - end, b.utc(slot)))
     return 0
 

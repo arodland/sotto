@@ -218,3 +218,8 @@ def test_sync_mark_lands_before_an_even_minute():
     assert k6_wspr.mark_time(base - 12.0) == (base - 9.0 + 120, base + 121.0)   # 12.0 < 10+1.2+2
     end, slot = k6_wspr.mark_time(base + 47.5)
     assert slot == base + 121.0 and end == slot - 10.0
+    # the mark is the CW ID (about 9 s): it must fit whole too, still inside the 150 s wait
+    assert k6_wspr.mark_time(base - 20.5, carrier=9.8) == (base - 9.0 + 120, base + 121.0)
+    assert k6_wspr.mark_time(base - 21.0, carrier=9.8) == (base - 9.0, base + 1.0)
+    end, _ = k6_wspr.mark_time(base - 20.5, carrier=9.8)       # the longest wait for the drop
+    assert end - (base - 20.5) < 150.0 - 10.0

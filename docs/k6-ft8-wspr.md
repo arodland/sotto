@@ -493,8 +493,10 @@ in 2500 Hz, and through 8, 12 and -15 Hz of drift, in about a second.
   crystal and PLL, which modules see as `api->ms()`. The MCU (KD32F328) has an RTC block, but
   Aura doesn't start it and the board shows no 32 kHz crystal or backup cell, so nothing keeps
   time with the power off. So `wsprbcn` takes UTC from the PC:
-  `tools/k6_wspr.py sync` keys the IC-7100 (through `k6_bench.py`'s PTT lock and ID rule) for
-  1.2 s, dropping 10 s before a slot by the PC's NTP clock. The module waits up to 150 s for a
+  `tools/k6_wspr.py sync` keys the IC-7100 (through `k6_bench.py`'s PTT lock) and plays the
+  bench's CW ID (about 9 s), unkeying by the PC's NTP clock 10 s before a slot. The mark is the
+  ID itself: Jeff's rule is that every test transmission carries AG7EW's ident, with no bare
+  carriers, and a separate ID first would be a mark of its own at the wrong time. The module waits up to 150 s for a
   carrier of at least 0.5 s, timestamps its drop (polled every 5 ms), and starts the first
   frame's tones 10 s later. Each slot's channel check and key-up come 3.3 s before its tones.
   Later frames follow every WSPR_EVERY x 2 minutes on the crystal, which holds the grid to a few
