@@ -206,7 +206,7 @@ then `r=3` on chunk 5), so no `--only` resend was needed.
   `--action none` confirm (sent as XL) before the XL module packets.
 - Send a station ID just before the first module, so the ID keeper doesn't key its own ID
   during a run.
-- The raw logs are on hamlet: `~/k6-logs/cwprobe-20261106T0506.log` and
+- The raw logs are on hamlet: `~/sotto-work/logs/cwprobe-20261106T0506.log` and
   `cwlisten-20261106T0529.log`.
 
 Unknowns for real repeaters: an ID tone outside 600-1350 Hz, an ID sent over voice (the

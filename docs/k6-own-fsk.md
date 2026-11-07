@@ -77,7 +77,7 @@ AFC is off for the run (REG_73 bit 4); everything is put back afterwards. Tests:
 ## Result on the air (2026-11-06 10:25 UTC)
 
 Run hands-free on hamlet: image e46e7bd, module from CI (2756 B), 440.850 MHz, the IC-7100's
-bare carrier. Log `~/k6-logs/xtalstep-20261106T102217Z.txt` on hamlet.
+bare carrier. Log `~/sotto-work/logs/xtalstep-20261106T102217Z.txt` on hamlet.
 
 ```
 xs regs 3b=5880 3c=4f88 38=af1e 39=02a0 73=4682 43=3028

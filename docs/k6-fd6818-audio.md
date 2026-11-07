@@ -240,7 +240,7 @@ Hilbert transform, instantaneous frequency, low-pass at 3 kHz.
 So **GP0 code 13 is a working FM receive path into the MCU**: the decimated density is a
 ~16.9 kHz IF that demodulates in software to the transmitted audio, with no hardware change.
 The capture is a busy loop (the CPU does nothing else while it samples), so the limits are CPU
-time and RAM, not the signal. The bytes and plot are on hamlet (`~/k6-logs/gp0fm-20261106T0641*`).
+time and RAM, not the signal. The bytes and plot are on hamlet (`~/sotto-work/logs/gp0fm-20261106T0641*`).
 
 ## Capturing the IF by DMA (`gp0raw`, `gp0dma`, `gp0sweep`, PR #69)
 
@@ -312,5 +312,5 @@ FM-D (DATA on, USB audio in), relative to the 935 Hz step:
 
 For the FFSK pager this means: a tone above 3.2 kHz never leaves the IC-7100, and between 300
 Hz and 2.3 kHz the higher FFSK tone goes out about 5 dB an octave hotter than the lower one
-unless the sender de-emphasises it. Logs and tables are on hamlet (`~/k6-logs/gp0raw-*`,
+unless the sender de-emphasises it. Logs and tables are on hamlet (`~/sotto-work/logs/gp0raw-*`,
 `gp0dma*-*`, `gp0sweep-20261106T0809*`).
