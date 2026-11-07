@@ -145,6 +145,41 @@ def test_a_list_full_of_weak_carriers_stays_fast_and_takes_a_repeater():
     assert len(o) == 1 and abs(o[0]["lvl"] + 70) <= 2 and 2400 <= o[0]["ms"] <= 3400, o
 
 
+class Bench(Receiver):
+    """the bench's 70 cm: a floor of -106 (rxmap: -108 in the UHF filter, the PC), and a carrier
+    over -40 dBm desenses every other bin to -140 while it's up, with splatter on the quick reads"""
+
+    def strong(self, us):
+        return any(d >= -40 and abs(hz - self.f) > 18_000 and any(a <= us < b for a, b in sp)
+                   for hz, d, sp in self.sig)
+
+    def level(self, us):
+        v = super().level(us)
+        if self.strong(us):
+            return v - 3                                       # desensed: -140
+        return 10 * math.log10(10 ** (v / 10) + 10 ** (-10.6))   # the bench's -106
+
+    def rssi(self, us):
+        # and its splatter: now and then a quick read next to it jumps 40 dB
+        v = super().rssi(us)
+        if us - self.t < 3000 and self.strong(us) and self.rnd.random() < 0.1:
+            v += 80
+        return v
+
+
+@need_clang
+def test_a_strong_carrier_s_desense_doesnt_drag_the_floor_down():
+    # 70 cm on air (2026-11-07): the CW ID at -22 dBm took the segment floor from -106 to -142 and
+    # every bin of bench noise became a hit, 14 s a sweep
+    m = Bench([(146_940_000, -22, [(s_(8), s_(16))])])
+    ret, said, *_ = go(two_m(30), m)
+    res = sw.decode("\n".join(said))
+    assert abs(res["floors"][0] + 106) <= 3, res["floors"]
+    assert {e["f"] for e in res["new"]} == {146_940_000}, res["new"]
+    assert all(e["fl"] >= -112 for e in res["new"]) and ret == 1
+    assert res["z"]["bps"] >= 350, res["z"]
+
+
 @need_clang
 def test_finds_overs_refines_and_reports():
     # a repeater on 146.940 keyed for 3 s three times at -70, a weak simplex station on 146.715

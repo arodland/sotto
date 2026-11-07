@@ -170,11 +170,23 @@ stack, the 1 s settle and `--no-rows`, but not yet the full-list fix. Logs:
   the -105 dBm carriers at 440.000-440.200 came up again, and sweeps 28-34 took 12.6-14.7 s with
   101-119 hits each. That's the full-list slowdown again, as expected for this build:
   `Z sw=35 bins=14000 ms=123914 bps=112 hot=7`.
-- **The floors still read high after a 1 s settle:** -94 on 2 m and -106 on 70 cm, against -137
-  in the first run. The settle wasn't the cause. A receiver gain held low would do it, for
-  example REG_7E bit 15 (fixed gain) or REG_13 changed by an image or module run between 08:03
-  and 08:19. I'm checking that with the softmodem thread. The per-bin quick floors don't depend
-  on it, but the confirm threshold (`sfl + hit_db`) does.
+- **The floors weren't wrong:** -94 on 2 m and -106 on 70 cm are the bench's real floors. rxmap
+  measured median floors of -91 in the VHF filter and -108 in the UHF filter at the bench
+  (docs/k6-rxmap.md), most likely noise from the PC. All 8 reads of each F line agree to within
+  4 dB. The first run's -137 came from sample points on round frequencies (144.0, 144.5, ...).
+  The K6 is on the same image (keyed-lr-45c23e0, flashed 07:26) for all three runs.
+- **What really went wrong on 70 cm:** the floor fell from -106 to -140/-142 during the CW ID. A
+  -22 dBm carrier desenses the other bins, so a confirm next to it reads about -140, and the
+  floor used to jump straight to any lower confirm. After that, the bench's own -105 dBm noise was
+  37 dB "over the floor" everywhere: 101-120 hits a sweep, and with a full list, 14 s a sweep.
+  **Fixed:** a confirm that fails moves the floor 1 dB toward its read, and one more than 6 dB
+  under it is ignored. The emulator now has a bench model for this: a -106 floor, desense to
+  -140 and splatter on the quick reads next to a -22 dBm carrier
+  (`test_a_strong_carrier_s_desense_doesnt_drag_the_floor_down`). It fails on the previous code
+  and passes now. The cost is that a real, sudden drop of more than 6 dB in the floor isn't
+  followed until the next run. The per-bin quick floors still follow it.
+- **The 1 s settle** stays. It costs nothing and the evidence for it is gone, but a strong upload
+  carrier is still a reason to wait.
 
 ## Next bench run
 

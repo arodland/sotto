@@ -11,8 +11,9 @@
                 capped 3 dB over the segment's quick floor, so a carrier up all along still shows).
      3 confirm  wait on to confirm_us after the tune and read twice, 1 ms apart: a hit if that is
                 hit_db over the segment's settled floor (the second lowest of 8 bins' full reads at
-                the start, as its quick floor is of their quick reads; it follows every confirm
-                that fails).
+                the start, as its quick floor is of their quick reads; a confirm that fails moves
+                it 1 dB toward its read, and one more than 6 dB under it is ignored, so the
+                desense of a strong carrier can't drag it down).
      4 refine   (flags bit 1) a hit with no entry within half a step: narrow reads 5 ms after the
                 tune every 2.5 kHz over +-(step + 5 kHz); the middle of those within 3 dB of the
                 loudest, snapped to snap_hz, and a full read there for its level. Bins within 1.5
@@ -328,7 +329,12 @@ static int sweep(sw_t *s, int g, uint8_t *fl) {
         if (!new_hit(s, g, (uint32_t)(fl - s->fl) + b, hz, lvl, dbm8((uint8_t)r))) fl[b] = (uint8_t)(r - 3);
         r = lvl - sf + f;          /* the row shows a hit at its settled level over the floor */
       } else {
-        if (lvl < sf) sf = lvl;
+        /* 1 dB a confirm, and a read more than 6 dB under it is ignored: on 70 cm (2026-11-07)
+           a -22 dBm carrier desensed the other bins to -140, the floor followed from -106 and
+           all the bench noise became hits */
+        if (lvl < sf) {
+          if (lvl >= sf - 6) sf--;
+        }
         else if ((conf & 3) == 0) sf++;
         s->sfl[g] = st8(sf);
         /* no hit: raise this bin's quick floor to 3 dB under the read, so a bin whose quick
