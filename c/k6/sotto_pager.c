@@ -286,9 +286,12 @@ static int packet(const uint8_t *p, int fpp, uint8_t profile) {
       for (j = hi_group + 1 > g - groups + 1 ? hi_group + 1 : g - groups + 1; j <= g; j++) {
         /* group j reuses group j - groups's place: an overrun if that wasn't played yet */
         if (playing && (long)(j - groups + 1) * fpg > play_pos) overruns++;
-        for (i = 0; i < fpg; i++) {           /* XL at depth 1 has 20-frame groups: by bit */
-          int b = pos_of((long)j * fpg + i);
+        /* the ring holds whole groups, so a group's places run on without a wrap: one division
+           (not one a frame, which kept the coded 4FSK session's receiver away ~0.3 ms) */
+        int b = pos_of((long)j * fpg);
+        for (i = 0; i < fpg; i++, b++) {      /* XL at depth 1 has 20-frame groups: by bit */
           S.good[b >> 3] &= (uint8_t)~(1u << (b & 7));
+          PK_YIELD(i, 31);
         }
       }
       hi_group = g, hi_count = 0;

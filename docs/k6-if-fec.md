@@ -163,6 +163,32 @@ bit-exact. Two things were left:
   to tell the decoder's CPU and bus load from the rest. The `miss=` list is now one entry per
   sync word (it had shown each packet the next one's).
 
+## On air, 2026-11-07 (image 45b3968, PR #108)
+
+The same clip and bench. PHY F played it bit-exact. Every coded send found all 14 sync words,
+and every played result matched (`k6_pcmhash --check`) for the packets that arrived:
+
+| Send | `K6 IFP` | `r=` | Played |
+|---|---|---|---|
+| rate 1/2 | `ret=14 fl=0 lost=65 q=58 idle=19 gap=257@18 ld=2` | `21111111111113` | 14/14, MATCH |
+| rate 2/3 | `ret=14 fl=1 lost=47 q=49 idle=19 gap=258@18 ld=1` | `21111111111113` | 14/14, MATCH |
+| no decode | `ret=0 fl=2 lost=0 q=55 idle=27 gap=137@1 ld=8` | (none) | (none, as meant) |
+| rate 1/2 | `ret=14 fl=0 lost=47 q=60 idle=19 gap=257@18 ld=2` | `21111111111113` | 14/14, MATCH |
+| rate 2/3 | `ret=14 fl=1 lost=47 q=55 idle=19 gap=257@18 ld=4` | `2111111111111C` | 13/14, MATCH |
+| rate 2/3, 1 s lead | `ret=14 fl=1 lost=47 q=53 idle=18 gap=257@18 ld=4` | `C2111111111111` | 13/14, MATCH |
+
+- The sync words now have 1.2-1.6 wrong symbols of 24 on average (`miss=`), about what the
+  module's raw bit error rate gives (1.3), and the lead's inner tones `ld=` 1-8 per mille: the
+  extra errors that fe25ec8 showed came with its ring overruns, and went with the yields.
+- `lost=47` on every decoding send (none without decoding) and the 257 us gap: two overruns of
+  about 23 counts each, one a group. Starting a new interleave group in stream mode cleared the
+  group's good bits one frame at a time, each place through a division (`f % ring`), with no yield:
+  on the cm0 bench model (`bench_k6.py --packet-yield-gap`, K6_CB=spi build) that stretch was 305
+  us. The ring holds whole groups, so a group's places are contiguous: one division, and a yield
+  every 32 bits. The longest stretch between yields is now 51 us (p99 34), and a packet costs 30k
+  cycles at most (47k before).
+- The two CRC failures were a burst's last packet (rate 2/3) and its first (rate 2/3, 1 s lead).
+
 ## Results before the bench
 
 | Test | Result |
@@ -193,13 +219,13 @@ store: 25.6 s of sotto 1200. The session stores the whole message, then plays it
 PHY G at rate 1/2 carries 1200 bit/s. The built-in FFSK nets about 1500 bit/s after packet
 overhead. Ways to get ahead of it, roughly in order of cost:
 
-- **Puncture to rate 2/3**: done (PR #108), not on air yet. On the model it needs about 2 dB
+- **Puncture to rate 2/3**: done (PR #108), on air 14/14 and 13/14 (image 45b3968). On the model it needs about 2 dB
   more than rate 1/2 (every packet at 49 dB-Hz, against 47). On the M0 emulator at the image's
   timing it takes 27% idle, with a third more trellis steps a symbol; steps that end in a
   traceback (80 ring entries) now run only three or more samples before a burst, which an
   overrun at rate 2/3 showed was needed.
-- **A shorter lead.** The session now starts at the control packet, so 1 s should do; to try
-  with `--g-lead 1.0` on air.
+- **A shorter lead.** The session now starts at the control packet: a 1 s lead (`--g-lead 1.0`)
+  locked on air and played 13/14 (the first packet failed its CRC).
 - **A faster symbol rate.** 1600 or 1800 baud 4FSK, with the tones re-spaced to fit the IC-7100's
   3.1 kHz passband. That needs new templates (TL, taps) and costs CPU at the K6's margin; MSK 2400
   already failed on this transmitter.
