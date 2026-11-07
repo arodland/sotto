@@ -9,7 +9,7 @@ in two modes:
   noise floor and its strongest signal. Off-air signals are the test signals: FM broadcast,
   VOR, NOAA, TV, pagers, cellular. Where the filters cut, their peaks sink into the floor. The
   K6 transmits nothing except the usual upload report on 440.850.
-- **cal** (the IC-7100 transmits). The IC-7100 keys a bare carrier on a list of 2 m and 70 cm
+- **cal** (the IC-7100 transmits). The IC-7100 keys a carrier carrying PSK31 "AG7EW TEST" (project rule, 2026-11-07: test transmissions carry ident) on a list of 2 m and 70 cm
   points, then steps its power down at 440.850, and the K6 measures each carrier. This shows
   the in-band response and how RSSI tracks a known change in level. The REG_63 noise
   indicator (0 at full quieting) shows how much FM quieting each carrier gives.

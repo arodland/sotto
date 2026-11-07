@@ -100,3 +100,56 @@ def test_cfg_parsing():
         except SystemExit:
             continue
         raise AssertionError(bad)
+
+
+class Bands:
+    """a chip that picks its divider like the guide's table (VCO 1.48-2.24 GHz, N up to 96), shows the
+    band code in REG_1A, locks (REG_0C bit 9) only where some N fits, and has a noisy RSSI"""
+    NS = [(2, 0x1F80), (4, 0x2F50), (6, 0x9F30), (8, 0x3F48), (12, 0xAF28), (16, 0x4F44), (24, 0xBF24),
+          (32, 0x5F42), (48, 0xCF22), (64, 0x6F41), (96, 0xDF21)]
+
+    def __init__(self):
+        self.f, self.n = 440_850_000, 0
+
+    def tune(self, hz, wide, us):
+        self.f = hz
+
+    def band(self):
+        for n, code in self.NS:
+            if 1.48e9 <= self.f * n <= 2.24e9:
+                return code, True
+        return 0xDF21, False
+
+    def reg(self, r):
+        def f(us):
+            self.n += 1
+            if r == 0x1A:
+                return self.band()[0]
+            if r == 0x0C:
+                return 0x0200 if self.band()[1] else 0
+            if r == 0x67:
+                return rssi_reg(-130 + self.n % 3)            # changes between reads: not reported
+            if r == 0x5F:
+                raise AssertionError("read the FSK FIFO")
+            return 0x1234
+        return f
+
+
+@need_clang
+def test_bandreg_reports_the_band_register_and_lock():
+    from modem import k6mod
+    code, entry = k6mod.build(hf.BAND_SRC)
+    assert k6mod.source_level(hf.BAND_SRC) == 2 and len(code) < 1200 and code.count(hf.BAND_MAGIC) == 1
+    chip = Bands()
+    regs = {**START, **{r: chip.reg(r) for r in range(128) if r != 0x5F}}
+    hz = [440_850_000, 145_000_000, 18_000_000, 16_000_000, 14_000_000]
+    ret, said, regs_end, writes = run(regs, code=(hf.band_patch(code, hf.band_pack(hz)), entry), tune=chip.tune,
+                                      level=4, spare=1024, count=500_000_000)
+    assert writes == [] and ret == 4
+    rows = hf.band_decode("\n".join(said))
+    assert [r[0] for r in rows] == hz
+    assert rows[0][2] == {} and rows[0][1] == 0x0200
+    assert rows[1][2] == {0x1A: 0xAF28}                         # only the band register moved, not RSSI
+    assert rows[3][2] == {0x1A: 0xDF21} and rows[3][1] & 0x200
+    assert rows[4][1] == 0 and rows[4][2] == {0x1A: 0xDF21}     # 14 MHz: no divider fits, no lock
+    assert "NO" in hf.band_table(rows).splitlines()[-1]
