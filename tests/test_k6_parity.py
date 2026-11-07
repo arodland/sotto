@@ -197,7 +197,7 @@ def test_cli_tx_and_rx_round_trip(tmp_path):
     sot = tmp_path / "m.sot"
     sot.write_bytes(fr)
     wav = tmp_path / "tx.wav"
-    assert k6.main(["tx", str(sot), str(wav), "--phy", "F", "--payload", "XL", "--codec", "1200", "--parity", "--no-trim"]) == 0
+    assert k6.main(["tx", str(sot), str(wav), "--phy", "F", "--payload", "XL", "--codec", "1200", "--parity", "--no-trim", "--no-pause"]) == 0
     back = tmp_path / "back.sot"
     assert k6.main(["rx", str(wav), str(back), "--phy", "F", "--payload", "XL", "--codec", "1200"]) == 0
     assert back.read_bytes() == fr
@@ -213,7 +213,7 @@ def test_cli_drop_leaves_out_data_packets(tmp_path):
     sot.write_bytes(fr)
     wav = tmp_path / "tx.wav"
     opts = ["--phy", "F", "--payload", "XL", "--codec", "1200"]
-    assert k6.main(["tx", str(sot), str(wav)] + opts + ["--parity", "--no-trim", "--drop", "3"]) == 0
+    assert k6.main(["tx", str(sot), str(wav)] + opts + ["--parity", "--no-trim", "--no-pause", "--drop", "3"]) == 0
     back, good = tmp_path / "back.sot", tmp_path / "g.u8"
     assert k6.main(["rx", str(wav), str(back), "--good", str(good)] + opts) == 0
     assert back.read_bytes() == fr and np.fromfile(good, np.uint8).all()
