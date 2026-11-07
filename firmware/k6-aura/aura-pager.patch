@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..a6560b5
+index 0000000..02b399b
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3536 @@
+@@ -0,0 +1,3660 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -365,6 +365,25 @@ index 0000000..a6560b5
 +        pub fn km_report_text(out: *mut u8, seq: u8, part: u8, parts: u8, text: *const u8, n: u32);
 +        pub fn sp_vlr_setup() -> i32;
 +        pub fn sp_vlr_expected() -> u32;
++        #[cfg(not(feature = "lean"))]
++        pub fn ifp_session(api: *const K6Api, ring: *mut u8, wait_ms: u32, max_ms: u32, res: *mut IfpResult) -> i32;
++    }
++    /// c/k6/ifpager.h: a coded 4FSK receive session's results
++    #[repr(C)]
++    pub struct IfpResult {
++        pub ret: i32,
++        pub ms: u32,
++        pub syncs: u32,
++        pub syms: u32,
++        pub lost: u32,
++        pub acq_q: i32,
++        pub acq_rej: i32,
++        pub afc_hz: i32,
++        pub idle_pct: i32,
++        pub ks: i32,
++        pub nres: i32,
++        pub res: [i8; 64],
++        pub miss: [i8; 64],
 +    }
 +    /// c/k6/k6_mod.h: what a RAM module can call (append-only, ABI 1)
 +    #[repr(C)]
@@ -994,6 +1013,13 @@ index 0000000..a6560b5
 +/// Actions 8 and 9: stream mode on / off (from the next new message; RAM only, no revert)
 +const CTL_ACT_STREAM_ON: u8 = 8;
 +const CTL_ACT_STREAM_OFF: u8 = 9;
++/// Action 10 (images that aren't lean): a coded 4FSK receive session on the IF (PHY G,
++/// c/k6/ifpager.c, docs/k6-if-fec.md) for up to byte 4 x 2 s: the K6 stops its FSK chip's
++/// reads, takes GP0 code 13's stream, decodes each packet with the soft Viterbi decoder into the
++/// message store, and plays the message when the burst is over. Receive only
++const CTL_ACT_IFRX: u8 = 10;
++/// the session waits this long for the lead (it follows the control packet by about 0.5 s)
++const IFRX_WAIT_MS: u32 = 6000;
 +/// streaming: the sender has stopped after this long with no good packet
 +const STREAM_END_TICKS: u32 = 2 * TICKS_PER_S;
 +/// streaming: fills further apart than this probably let the PWM ring run dry (it holds 80 ms)
@@ -1180,6 +1206,8 @@ index 0000000..a6560b5
 +    pub cal_pending: bool,
 +    /// a control record (magic, seq, mask, values, var|vol<<4, action) waiting for poll
 +    ctl: Option<[u8; 6]>,
++    /// a coded 4FSK receive session asked for (control action 10): its longest, ms; 0 none
++    ifrx_ms: u32,
 +    /// seq of the last control record applied, -1 none
 +    ctl_seq: i16,
 +    /// the settings before a control packet's change (phy_ffsk, xl, baud_2400, f2400_var),
@@ -1322,6 +1350,7 @@ index 0000000..a6560b5
 +            ram_free: 0,
 +            stream_play: false,
 +            stream_start: false,
++            ifrx_ms: 0,
 +            waits: 0,
 +            late: 0,
 +            overruns: 0,
@@ -2148,6 +2177,10 @@ index 0000000..a6560b5
 +
 +    if let Some(rec) = app.pager.ctl.take() {
 +        apply_control(app, syst, rec);
++        #[cfg(not(feature = "lean"))]
++        if app.pager.ifrx_ms != 0 {
++            if_session(app, syst);
++        }
 +    } else if let Some(prev) = app.pager.ctl_prev {
 +        app.pager.ctl_wait = app.pager.ctl_wait.saturating_add(dt);
 +        if app.pager.ctl_wait >= CTL_REVERT_TICKS {
@@ -2631,6 +2664,90 @@ index 0000000..a6560b5
 +    }
 +}
 +
++// ---- the coded 4FSK receiver (PHY G) ----
++//
++// A control packet (action 10) asks for it; the sender's 4FSK burst follows on the same
++// carrier: a 2 s lead, then each XL packet as a 24-symbol sync word and 1032 coded symbols.
++// c/k6/ifpager.c runs the IF matched filter (ifrx.c) on GP0 code 13's stream through DMA
++// channel 1, as the iflive module does, decodes each packet (soft Viterbi, rate 1/2 K=7) and
++// hands it to sp_packet, so the message, its parity rebuilds and its playback are the usual
++// ones. It reaches the RF chip through the module API (receive only), with the PWM ring as its
++// DMA ring: nothing plays meanwhile. Not in the lean images.
++
++/// the session's packet results as one character each: sp_packet's code (0 dup, 1 added,
++/// 2 new, 3 complete; C a bad CRC, M a bad magic), then the sync words' wrong symbols
++#[cfg(not(feature = "lean"))]
++fn ifp_code(v: i8) -> u8 {
++    match v {
++        0..=9 => b'0' + v as u8,
++        -1 => b'C',
++        -2 => b'M',
++        _ => b'?',
++    }
++}
++
++#[cfg(not(feature = "lean"))]
++#[inline(never)] // its locals (the receiver's 2.3 KB) only while it runs
++fn if_session(app: &mut App, syst: &mut SYST) {
++    let max_ms = core::mem::take(&mut app.pager.ifrx_ms);
++    if stream_on() || app.pager.play_pending {
++        report_line(format_args!("K6 IFP refused: playing"));
++        return;
++    }
++    let gpio = app.radio.fd6818.reg_read(syst, MOD_GPIO);
++    let t0 = uptime::now();
++    unsafe {
++        *addr_of_mut!(MOD_CTX) = ModCtx {
++            app: app as *mut App,
++            syst: syst as *mut SYST,
++            rx_hz: app.master_freq_hz(),
++            t_last: t0,
++            ticks: 0,
++            scratch: addr_of_mut!(STORE) as usize + STORE_BYTES, // none: the store is in use
++            tx_until: 0,
++            tx: false,
++            cal_written: true, // no calibration writes
++            tlm_cap: 0,
++        };
++    }
++    paint_free_ram();
++    let ring = (pwm_audio::idle_bytes() as usize + 3) & !3;
++    let mut res: ffi::IfpResult = unsafe { core::mem::zeroed() };
++    let r = unsafe { ffi::ifp_session(&MOD_API, ring as *mut u8, IFRX_WAIT_MS, max_ms, &mut res) };
++    unsafe { (*addr_of_mut!(MOD_CTX)).app = core::ptr::null_mut() };
++    let sfree = free_ram();
++    report_line(format_args!(
++        "K6 IFP ret={} ms={} syncs={} syms={} lost={} q={} rej={} afc={} idle={} ks={} stack_free={}",
++        r, res.ms, res.syncs, res.syms, res.lost, res.acq_q, res.acq_rej, res.afc_hz, res.idle_pct, res.ks, sfree
++    ));
++    let n = (res.nres.max(0) as usize).min(64);
++    let mut codes = [0u8; 64];
++    let mut miss = [0u8; 64];
++    for i in 0..n {
++        codes[i] = ifp_code(res.res[i]);
++        miss[i] = ifp_code(res.miss[i]);
++    }
++    report_line(format_args!(
++        "K6 IFP pkts={} r={} miss={}",
++        res.nres,
++        core::str::from_utf8(&codes[..n]).unwrap_or("?"),
++        core::str::from_utf8(&miss[..n]).unwrap_or("?")
++    ));
++    // back to the pager's set-up, GP0 as it was
++    app.radio.fd6818.reg_write(syst, MOD_GPIO, gpio);
++    app.sync_watching_to_master(syst);
++    arm(app, syst);
++    refresh_status(app);
++    if res.res[..n].iter().any(|&v| v >= 0) {
++        app.pager.last_ok = true;
++        app.pager.ctl_prev = None;
++    }
++    // the sender has stopped: play now (auto-play and the stream's start wait this long)
++    app.pager.idle_ticks = GAP_TICKS;
++    app.pager.last_tick = uptime::now();
++    report_cfg(app, "ifp");
++}
++
 +// ---- keys ----
 +
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
@@ -2767,6 +2884,13 @@ index 0000000..a6560b5
 +        report_line(format_args!("K6 RESET seq={}", seq));
 +        delay::ms(syst, 30);
 +        cortex_m::peripheral::SCB::sys_reset();
++    }
++    if action == CTL_ACT_IFRX {
++        // a session, once this burst's handling is over (poll runs it)
++        app.pager.ifrx_ms = (vv as u32).max(3) * 2000;
++        report_line(format_args!("K6 CTL seq={} ifrx ms={}", seq, app.pager.ifrx_ms));
++        app.pager.idle_ticks = 0;
++        return;
 +    }
 +    if action == CTL_ACT_REG || action == CTL_ACT_REGS {
 +        if action == CTL_ACT_REG {

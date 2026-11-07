@@ -628,3 +628,8 @@ Eb/N0 relative to PEP (dB) at 1% information BER, lower is better:
 So the weak-signal mode we'd recommend is SSB MFSK (16 tones, about 100 baud) with soft FEC,
 using the same IF tap and the same host decoder on the bench. Coherent BPSK is the stretch goal
 once the K6's frequency error and phase noise are measured from captures.
+
+## The coded link (2026-11-07)
+
+The rate-1/2 soft Viterbi over this receiver is now a pager PHY, G: [k6-if-fec.md](k6-if-fec.md)
+has the frame, the K6's decoder and session, and the emulator's results.

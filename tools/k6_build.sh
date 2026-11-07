@@ -102,7 +102,11 @@ $CC $CFLAGS -Os -c "$ROOT/c/k6/sp_vlr.c" -o "$OUT/sp_vlr.o"
 if [ "${K6_RAMFUNC:-0}" = 1 ]; then
   $OBJCOPY --rename-section .text.fx_oa_block=.data.ramfunc.fx_oa_block,alloc,load,contents,code "$OUT/fx_math.o"
 fi
-LIBOBJS="$OUT/sotto_pager.o $OUT/k6_mod.o $OUT/sotto_fx_dec.o $OUT/sp_cb.o $OUT/sp_vlr.o $OUT/fx_math.o $OUT/fx_tables.o"
+# the coded 4FSK receiver (PHY G: ifrx's IF matched filter with the 4FSK templates trained on the
+# K6, soft Viterbi): linked only by the images that call it (not the lean ones). -Os, as the
+# emulator's timing of it (tests/k6_live_emu.py run_ifpager)
+$CC $CFLAGS -Os -DIFRX_T4_K6 -c "$ROOT/c/k6/ifpager.c" -o "$OUT/ifpager.o"
+LIBOBJS="$OUT/sotto_pager.o $OUT/k6_mod.o $OUT/sotto_fx_dec.o $OUT/sp_cb.o $OUT/sp_vlr.o $OUT/fx_math.o $OUT/fx_tables.o $OUT/ifpager.o"
 if [ -n "$LR" ]; then     # not hot (field unpacking and shape sums once per 40 ms): -Os
   $CC $CFLAGS -Os -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_lr.c" -o "$OUT/sotto_fx_lr.o"
   LIBOBJS="$LIBOBJS $OUT/sotto_fx_lr.o"

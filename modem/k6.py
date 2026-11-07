@@ -94,7 +94,28 @@ def msg_id_for(frames):
     return zlib.crc32(frames) & 0xFF
 
 
+def g_audio(payloads, a, fs):
+    """PHY G (modem/k6g.py): a control packet (action ifrx, F/1800 XL, --level) asking the K6 for
+    a coded 4FSK session as long as the burst, 0.5 s of carrier, then the burst (--g-level)"""
+    from . import k6g
+    if any(len(p) != k6g.PAYLOAD for p in payloads):
+        raise SystemExit("--phy G carries XL packets: add --payload XL")
+    secs = k6g.burst_seconds(len(payloads))
+    seq = a.seq if getattr(a, "seq", None) is not None else int(time.time()) & 0xFF
+    ctl = pager.control_packet(seq, None, "ifrx", k6g.PAYLOAD, arg=int(np.ceil(secs / 2)) + 2)
+    c = argparse.Namespace(**vars(a))
+    c.phy, c.baud, c.stream, c.prime, c.cw_id, c.payload = "F", 1800, False, False, None, "XL"
+    x = build_audio([ctl] * 2, c, fs)
+    burst = k6g.audio(k6g.burst_symbols(payloads), fs, a.g_level)
+    return np.concatenate([x, np.zeros(int(0.5 * fs)), burst])
+
+
 def build_audio(payloads, a, fs):
+    if a.phy == "G":
+        x = g_audio(payloads, a, fs)
+        if a.cw_id:
+            x = np.concatenate([x, cw(a.cw_id, fs, a.cw_wpm, level=min(a.level, 0.4))])
+        return x
     if getattr(a, "prime", False) and payloads:
         payloads = [payloads[0]] + list(payloads)   # the throwaway copy goes first
     # XL: 24 bytes of preamble after the first packet (see pager.Air)
@@ -127,14 +148,21 @@ def _read(path, iq=None):
 
 
 def default_baud(phy):
-    """The K6's boot rate for a PHY: F 1800 (images after b1f0492), D 1200"""
+    """The K6's boot rate for a PHY: F 1800 (images after b1f0492), D 1200; G (coded 4FSK) is
+    1200 baud, its control packet F/1800"""
     return 1800 if phy == "F" else 1200
 
 
 def _tx_opts(p):
-    p.add_argument("--phy", choices="DF", default="D",
+    p.add_argument("--phy", choices="DFG", default="D",
                    help="D: direct NRZ 2-FSK (flat input, IC-7100 DATA2 in 9600 bps mode); "
-                        "F: FFSK 1200/1800 Hz tones (any audio input); 1200/2400 Hz at --baud 2400")
+                        "F: FFSK 1200/1800 Hz tones (any audio input); 1200/2400 Hz at --baud 2400; "
+                        "G: coded 4FSK for the K6's IF receiver (modem/k6g.py: XL packets, rate-1/2 "
+                        "soft Viterbi on the K6; images from 2026-11-07 that aren't lean), after an "
+                        "F/1800 control packet that starts its session")
+    p.add_argument("--g-level", type=float, default=0.12,
+                   help="--phy G: the 4FSK's peak audio (default 0.12, as the IF receiver's bench "
+                        "runs; --level stays the control packet's)")
     p.add_argument("--payload", choices=("L", "XL", "S"), default="L",
                    help="L: 64-byte packets, 8 frames; XL: 128-byte, 20 frames (K6 key 2); "
                         "S: 16-byte (the K6 no longer takes it)")
