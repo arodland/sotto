@@ -184,12 +184,12 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
                         os.path.join(K6, f), "-o", o], check=True)
         und = set(subprocess.run(["llvm-nm", "-u", o], capture_output=True, text=True, check=True).stdout.split())
         und -= {"U"}
-        assert und <= {"ex_over", "ex_spur", "cw_call", "cw_div", "cw_feed", "cw_flush", "cw_init", "cw_utoa"}, und
+        assert und <= {"ex_over", "ex_spur", "ex_own_clock", "cw_call", "cw_div", "cw_feed", "cw_flush", "cw_init", "cw_utoa"}, und
         size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
         text, data, bss = (int(x) for x in size.split()[:3])
         assert data == 0 and bss == 0
         sizes[f] = text
-    assert sizes["xscan.c"] < 4600 and sizes["xlisten.c"] < 1700, sizes
+    assert sizes["xscan.c"] < 4900 and sizes["xlisten.c"] < 1700, sizes
 
 
 def test_finds_a_repeater_feeds_the_list_and_the_log_replays_the_same(lib):
@@ -344,6 +344,46 @@ def test_back_from_a_listen_the_segment_reads_its_floor_again(lib):
     assert 2 not in res and radio.longest < 200_000
 
 
+class Dip(Receiver):
+    """every read db lower from at_us to until_us: a strong carrier's desense"""
+
+    def __init__(self, signals, at_us, until_us, db):
+        super().__init__(signals)
+        self.at, self.until, self.db = at_us, until_us, db
+
+    def level(self, us):
+        return super().level(us) - (self.db if self.at <= us < self.until else 0)
+
+
+def test_a_floor_read_under_desense_is_held(lib):
+    """explore-bench-4 (21:09): the listen on 440.850 ended with the -18 dBm ID still up, the floor
+    read after it came back 30 dB low (F2 -139 for -109), and 440.862, 440.900, 444.550 (-116) ...
+    came up as new against it. A read 15 dB under the last is held once and tried again in 5 s; a
+    floor that really dropped is taken on the second read."""
+    L, kxl = lib
+    segs = [(440_000_000, 12_500, 100, 12_500)]
+
+    def run(model, gap_at):
+        radio = Radio(model)
+        buf, mem, ex = explorer(L, kxl, segs, radio)
+        assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+        run_steps(L, buf, radio, gap_at)
+        L.xs_resume(buf)                              # back from a listen, during the dip
+        mark = len(radio.lines)
+        run_steps(L, buf, radio, gap_at + 30)
+        info = XsInfo()
+        L.xs_info(buf, ctypes.byref(info))
+        return radio.lines[mark - 1:], info
+
+    lines, info = run(Dip([], s_(20), s_(21), 30), 20.2)
+    assert any(" F0 held " in l for l in lines), lines[:3]
+    assert not [l for l in lines if " say N " in l], [l for l in lines if " say N " in l]
+    assert -140 <= info.floor_dbm[0] <= -134, list(info.floor_dbm)
+    # a band that really went 20 dB quieter: the second read stands
+    lines, info = run(Dip([], s_(20), s_(1000), 20), 20.2)
+    assert any(" F0 held " in l for l in lines) and info.floor_dbm[0] <= -150, list(info.floor_dbm)
+
+
 def test_a_spur_does_not_hold_the_floor_off(lib):
     """a carrier 30 dB over the floor puts the segment's floor read off (its desense pulls the
     reads down), but a spur is up for good: on air the 144.000 birdie held 2 m's read off until
@@ -358,6 +398,25 @@ def test_a_spur_does_not_hold_the_floor_off(lib):
     f = [float(l.split()[0]) for l in log if " say F0 " in l]
     assert x and 55 < x[0] < 70, x                      # it passes for a spur after spur_s
     assert len([t for t in f if t > x[0]]) >= 2, (x, f)  # and the floor is read each minute after
+
+
+def test_the_k6_s_own_clock_is_a_spur_at_once(lib):
+    """bench 2: the 144.000 birdie (6 x the MCU's 24 MHz) sat on the list for a minute until it
+    passed for a spur; birdie-path-1 showed the front end off takes 55 dB off it as off a station,
+    so its frequency is what gives it away. Now it's a spur on its first hit, and never up."""
+    L, kxl = lib
+    L.xs_up.argtypes = [ctypes.c_void_p, ctypes.POINTER(U32), ctypes.c_uint]
+    L.xs_up.restype = ctypes.c_uint
+    radio = Radio(Receiver([(144_000_000, -72, [(0, s_(1000))]), (144_150_000, -80, [(s_(2), s_(30))])]))
+    buf, mem, ex = explorer(L, kxl, [(143_900_000, 10_000, 60, 5_000)], radio)
+    assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+    run_steps(L, buf, radio, 5)
+    x = [l for l in radio.lines if " say X " in l]
+    assert len(x) == 1 and " X 144.000 " in x[0] and float(x[0].split()[0]) < 1.0, x
+    c = ex.find(144_000_000)
+    assert c is not None and c.flags & kx.F_SPUR and abs(c.hi + 72) <= 2 and c.overs == 0, kx.row_text(c)
+    up = (U32 * 10)()
+    assert list(up[:L.xs_up(buf, up, 10)]) == [144_150_000]    # the station is up, the birdie never
 
 
 def test_an_over_carries_its_level_after_the_transmitter_comes_up(lib):

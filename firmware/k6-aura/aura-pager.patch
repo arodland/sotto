@@ -4179,10 +4179,10 @@ index 0000000..677b2f7
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..497a52f
+index 0000000..9b6ae15
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1286 @@
+@@ -0,0 +1,1311 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4416,6 +4416,7 @@ index 0000000..497a52f
 +const EX_F_TRIED: u8 = 0x02;
 +const EX_F_OFF_HEARD: u8 = 0x04;
 +const EX_F_SIMPLEX: u8 = 0x08;
++const EX_F_SPUR: u8 = 0x10;
 +const EX_F_KNOWN: u8 = 0x20;
 +/// the saved table's frequencies, for the new / known rule on the list (more stay unmarked)
 +const KNOWN_N: usize = 64;
@@ -4907,7 +4908,10 @@ index 0000000..497a52f
 +    t.hz = c.hz;
 +    t.off = c.off_hz;
 +    t.auto_now = true;
-+    t.auto_lvl = c.hi - AUTO_DROP_DB;
++    // a carrier keyed for the first time has no over yet, so no level (bench 4, 21:09: hi 0 made
++    // the -18 dBm ID count as down, and the listen ended after 3 s): auto_check takes it from
++    // the reads then
++    t.auto_lvl = if c.overs == 0 { -127 } else { c.hi - AUTO_DROP_DB };
 +    t.auto_seen_ms = now_ms();
 +    t.resume = true;
 +    app.radio.retune_rx(syst, t.hz, true);
@@ -4924,8 +4928,11 @@ index 0000000..497a52f
 +fn auto_check(app: &mut App, syst: &mut SYST, r: i32) {
 +    let t = st();
 +    let now = now_ms();
-+    if rssi_dbm(app, syst) >= t.auto_lvl {
++    let lvl = rssi_dbm(app, syst);
++    if lvl >= t.auto_lvl {
 +        t.auto_seen_ms = now;
++        // the loudest read so far sets what counts as up
++        t.auto_lvl = t.auto_lvl.max(lvl - AUTO_DROP_DB);
 +    }
 +    if r == XL_MSG {
 +        t.dirty = true;
@@ -5212,7 +5219,9 @@ index 0000000..497a52f
 +        }
 +        was_new = !known;
 +        let mut b: TextBuf<32> = TextBuf::new();
-+        let g = if c.flags & EX_F_IGNORED != 0 { 'x' } else { c.grade as char };
++        let ign = c.flags & EX_F_IGNORED != 0;
++        let bird = !ign && c.flags & EX_F_SPUR != 0;
++        let g = if ign { 'x' } else if bird { ' ' } else { c.grade as char };
 +        write!(b, "{} ", g).ok();
 +        mhz(&mut b, c.hz);
 +        write!(b, " ").ok();
@@ -5230,6 +5239,18 @@ index 0000000..497a52f
 +        let ink = if sel { BinaryColor::Off } else { BinaryColor::On };
 +        let st = MonoTextStyle::new(&FONT_4X6, ink);
 +        Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
++        if bird {
++            // a birdie or other spur: a gull in the grade column and the space after it
++            // Jeff's pick "A" (2026-11-07): 5 wide, 2 high
++            const GULL: [u8; 2] = [0x0a, 0x15];
++            for (r, &m) in GULL.iter().enumerate() {
++                for c in 0..5 {
++                    if m & (0x10 >> c) != 0 {
++                        Pixel(Point::new(1 + c, y + 1 + r as i32), ink).draw(lcd).ok();
++                    }
++                }
++            }
++        }
 +        // Jeff's split bar (2026-11-07): the loudest over as a 2 px bar, 5 dB a pixel
 +        // from -120 dBm, and under it a dotted line for the score (10 points = full),
 +        // in the columns the number took; the numbers are in the footer
@@ -5376,7 +5397,11 @@ index 0000000..497a52f
 +            list_rows(lcd, t, 0);
 +            let mut b: TextBuf<32> = TextBuf::new();
 +            if let Some(c) = cand(t.sel as u32) {
-+                write!(b, "{} dBm  score {}  {} overs", c.hi, c.score, c.overs).ok();
++                if c.flags & EX_F_SPUR != 0 {
++                    write!(b, "{} dBm  birdie, not a station", c.hi).ok();
++                } else {
++                    write!(b, "{} dBm  score {}  {} overs", c.hi, c.score, c.overs).ok();
++                }
 +            } else {
 +                write!(b, "listening...").ok();
 +            }

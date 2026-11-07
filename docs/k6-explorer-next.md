@@ -33,7 +33,7 @@ What the scan gives the explorer (one line per event, docs/k6-scan.md):
 | Scan line | Explorer call |
 |---|---|
 | `H f ms lvl aT`: an over ended | `ex_over(hz, T, ms, lvl)` |
-| `X f lvl`: a spur | `ex_spur(hz)` |
+| `X f lvl`: a spur | `ex_spur(hz, lvl)` |
 | `CWID ok CALL ... rx=HZ` (cwlisten) | `ex_cw(hz, call)`, and `rt_cw_apply` for a saved entry |
 | (not built) an input heard at rx + offset | `ex_input(hz, off)` |
 | (not built) a tone read on the output | `ex_tone(hz, tone)` |

@@ -74,7 +74,7 @@ def load(so=None):
     L.ex_init.argtypes = [P, ctypes.POINTER(Cand), ctypes.c_uint]
     L.ex_over.argtypes = [P, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_int]
     L.ex_over.restype = ctypes.POINTER(Cand)
-    L.ex_spur.argtypes = [P, ctypes.c_uint32]
+    L.ex_spur.argtypes = [P, ctypes.c_uint32, ctypes.c_int]
     L.ex_input.argtypes = [P, ctypes.c_uint32, ctypes.c_int32]
     L.ex_tone.argtypes = [P, ctypes.c_uint32, ctypes.c_uint16]
     L.ex_cw.argtypes = [P, ctypes.c_uint32, ctypes.c_char_p]
@@ -158,7 +158,7 @@ def replay(ex, text):
         ex.over(o["f"], start & 0xFFFFFFFF, o["ms"], o["lvl"])
         counts[0] += 1
     for s in res["spurs"]:
-        ex.spur(s["f"])
+        ex.spur(s["f"], s["lvl"])
         counts[1] += 1
     for _, ln in k6_scan.lines_of(text):
         if m := CWID.search(ln):
