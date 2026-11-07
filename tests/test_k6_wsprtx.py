@@ -78,7 +78,7 @@ def test_builds_level_3_small():
     from modem import k6mod
     code, entry = k6mod.build(SRC)
     assert k6mod.source_level(SRC) == 3 and entry == 0
-    assert 24 + len(code) <= 2048, len(code)
+    assert 24 + len(code) <= 3072, len(code)
 
 
 @need_clang
@@ -162,3 +162,39 @@ def test_beacon_starts_from_the_sync_mark(tmp_path, mark):
         assert said[2] == "wspr no sync mark: starting now", said
         assert 150_000_000 < s0[0][1] < 155_000_000, s0[0]
     assert abs((s1[0][1] - s0[0][1]) - 600_000_000) < 20_000
+
+
+@need_clang
+def test_beacon_screen_on_a_level_6_image(tmp_path):
+    """on an image with the screen calls: the sync screen with its countdown, then the slot's
+    countdown, the TX bar filling over the frame, the ID, and the frames sent. On a level 3
+    image (every other test here) the module never calls them: run() fails any screen call"""
+    src = tmp_path / "wsprui.c"
+    src.write_text('#define WSPR_REPEAT 2\n#define WSPR_SYNC_MS 10000\n#include "%s"\n' % SRC)
+
+    def rssi(us):
+        return rssi_reg(-40 if 5_000_000 <= us < 6_200_000 else -120)
+    tx, lcd = {}, {}
+    ret, said, regs, _ = run({**START, 0x67: rssi}, src=str(src), level=6, tx=tx, lcd=lcd)
+    assert ret == 2, said
+    fr = lcd["frames"]
+    assert all(f["text"][0] == "WSPR BEACON  440.850" and f["text"][1] == "AG7EW CN87 10 dBm"
+               and f["text"][5] == "hold a key to stop" for f in fr)
+    sync = [f for f in fr if f["text"][2] == "waiting for sync"]
+    assert sync and sync[0]["text"][3] == "PC: k6_wspr.py sync"
+    assert sync[0]["text"][4] in ("else start in 2:30", "else start in 2:29"), sync[0]["text"]
+    assert all(f["us"] < 6_200_000 for f in sync)             # none while the mark is up
+    wait = [f for f in fr if f["text"][2].startswith("next slot in ")]
+    assert wait[0]["text"][2] in ("next slot in 0:10", "next slot in 0:09"), wait[0]["text"]
+    assert wait[0]["text"][4] == "on the UTC grid" and wait[0]["text"][3] == "sent 0 of 2"
+    txf = [f for f in fr if f["text"][2] == "TX"]
+    bars = [f["bar"][2][0] for f in txf]
+    one = bars[:bars.index(0, 1)]                              # the first frame's
+    assert one == sorted(one) and one[-1] >= 160 and txf[0]["bar"][2][1] == 162, bars
+    assert len(txf) >= 2 * 40                                  # every 4 symbols, both frames
+    ids = [f for f in fr if f["text"][2] == "ID AG7EW"]
+    assert len(ids) == 2 and all(f["bar"][2][1] == 0 for f in ids)
+    assert any(f["text"][3] == "sent 1 of 2" for f in wait)
+    (s0, _), (s1, _) = frames(tx["w"])
+    assert abs(s0[0][1] - 16_200_000) < 40_000, s0[0]          # the screen doesn't move the slot
+    assert abs((s1[0][1] - s0[0][1]) - 600_000_000) < 40_000

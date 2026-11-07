@@ -126,7 +126,8 @@ def test_tool_decodes_a_log_with_lost_lines(tmp_path):
 # --- the modules on an emulated M0 ----------------------------------------------------------
 
 NAMES = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down",
-         "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read", "cal_write"]
+         "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read", "cal_write",
+         "fl_read", "fl_prog", "fl_erase", "lcd_text", "lcd_bar", "lcd_wf", "lcd_flush"]
 
 
 def k6_bench(sig, regs, fdma=5.71e6, step=128):
@@ -204,10 +205,11 @@ def k6_bench(sig, regs, fdma=5.71e6, step=128):
     return mmio, rcc, tim, dma, sim
 
 
-def emulate(src, regs, sig, level=2, cal=None, count=2_000_000_000):
+def emulate(src, regs, sig, level=2, cal=None, count=2_000_000_000, lcd=None):
     """run module src on an emulated M0. level: the API level the table says; cal: what level 4's
-    cal_read reads (the calibration record's bytes; default a blank sector). Returns (ret, said,
-    regs, writes, stack bytes, bench)"""
+    cal_read reads (the calibration record's bytes; default a blank sector); lcd: a dict that
+    gets level 6's screen, one entry in lcd["frames"] a flush (us, text: six lines, wf: rows top
+    first). Returns (ret, said, regs, writes, stack bytes, bench)"""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
     sys.path.insert(0, ROOT)
@@ -234,7 +236,8 @@ def emulate(src, regs, sig, level=2, cal=None, count=2_000_000_000):
 
     def on_stub(uc, addr, size, _):
         name = NAMES[(addr - stubs) // 16]
-        r0, r1 = uc.reg_read(A.UC_ARM_REG_R0), uc.reg_read(A.UC_ARM_REG_R1)
+        r0, r1, r2 = (uc.reg_read(A.UC_ARM_REG_R0), uc.reg_read(A.UC_ARM_REG_R1),
+                      uc.reg_read(A.UC_ARM_REG_R2))
         ret = 0
         if name == "say":
             st["said"].append(bytes(uc.mem_read(r0, 64)).split(b"\0")[0].decode())
@@ -264,7 +267,18 @@ def emulate(src, regs, sig, level=2, cal=None, count=2_000_000_000):
             assert level >= 4 and r1 <= 64, (level, r1)
             uc.mem_write(r0, ((cal or b"") + b"\xff" * 64)[:r1])
             ret = r1
-        elif name in ("tx_on", "tx_off", "tx_pa", "cal_write"):
+        elif name.startswith("lcd_"):
+            assert lcd is not None and level >= 6, f"{name} called (level {level})"
+            scr = lcd.setdefault("scr", {"text": [""] * 6, "wf": (0, 0, 0)})
+            if name == "lcd_text" and 0 <= r0 < 6:
+                scr["text"][r0] = bytes(uc.mem_read(r1, 21)).split(b"\0")[0].decode()
+            elif name == "lcd_wf":
+                scr["wf"] = (r0, min(r1, 30) if r0 else 0, r2)
+            elif name == "lcd_flush":
+                ptr, rows, head = scr["wf"]
+                wf = [bytes(uc.mem_read(ptr + 16 * ((head + i) % rows), 16)) for i in range(rows)]
+                lcd.setdefault("frames", []).append({"text": list(scr["text"]), "wf": wf})
+        elif name in ("tx_on", "tx_off", "tx_pa", "cal_write", "fl_read", "fl_prog", "fl_erase"):
             raise AssertionError(name + " called")
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
     mu.hook_add(unicorn.UC_HOOK_CODE, on_stub, begin=stubs, end=stubs + 16 * len(NAMES))

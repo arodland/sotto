@@ -37,16 +37,18 @@ radio today, and what is still waiting on a bench run, a firmware change or a de
   the level 3 API's 20 s cap. `tx_on`'s REG_30 carries the tone: no firmware change.
 - **WSPR (2026-11-07, Jeff: "finish out the WSPR beacon and try for receive"): built and
   emulated, not yet on air.** See "WSPR".
-  - Beacon: `wsprtx` (1.6 KB) sends `AG7EW CN87 10` as audio 4-FSK on FM from the tone
-    oscillator, with an MCW ID, in 117.4 s. That needs the module TX cap raised from 20 s to
-    120 s, which means a reflash. `wsprbcn` repeats it every 10 minutes on UTC's 2-minute grid
-    from a sync mark the PC keys. On FM the tones come from the FD6818's crystal at 1.5 kHz,
-    so the carrier's drift at 440 MHz never reaches the decoder.
-  - Receive: `wspriq` (3.4 KB) streams the IF's complex baseband (about 199 Hz, +-99 Hz around
-    1500 Hz) to the PC, and `tools/k6_wspr.py decode` decodes it. The decoder searches drift
-    (+-24 Hz over a frame), so a K6 drifting 5-20 Hz is fine. On an emulated M0 a whole frame
-    through the 1-bit path decodes; on the host, -24 dB with 6 Hz of drift and lost lines
-    decodes.
+  - Beacon: `wsprtx` (2.3 KB with its screen) sends `AG7EW CN87 10` as audio 4-FSK on FM
+    from the tone oscillator, with an MCW ID, in 117.4 s. That needs the module TX cap raised
+    from 20 s to 120 s, which means a reflash. `wsprbcn` repeats it every 10 minutes on UTC's
+    2-minute grid from a sync mark the PC keys. On FM the tones come from the FD6818's crystal
+    at 1.5 kHz, so the carrier's drift at 440 MHz never reaches the decoder.
+  - Receive: `wspriq` (4.0 KB with its screen) streams the IF's complex baseband (about
+    199 Hz, +-99 Hz around 1500 Hz) to the PC, and `tools/k6_wspr.py decode` decodes it. The
+    decoder searches drift (+-24 Hz over a frame), so a K6 drifting 5-20 Hz is fine. On an
+    emulated M0 a whole frame through the 1-bit path decodes; on the host, -24 dB with 6 Hz of
+    drift and lost lines decodes.
+  - Screens: module API level 6 (new) lets both modules draw on the K6's display: countdowns,
+    a TX progress bar, and a receive waterfall. See "Screens".
 
 ## The receiver
 
@@ -515,7 +517,7 @@ radio, the decode on the PC.
   IF + 1500 Hz with the calibration record's offset, two CICs) gives complex samples at about
   199 Hz. The module sends them as they are: 15 samples a line (I and Q as signed bytes with one
   shift for the line) and the 96 MHz time of the line's last sample, 53 characters, about 13
-  lines a second (ft8wf's rate). 3.4 KB of code.
+  lines a second (ft8wf's rate). 3.4 KB of code, 4.0 KB with the level 6 screen.
 - **Lines:** `wspriq start f=1500 inv=0 n=15 cal=-16580`, `wspriq gain ...` (as ft8wf),
   `q 1a2b3c4d 3 <40 base64 chars>`, `wspriq st t=15 lost=0 ks=5492 idle=61`,
   `wspriq done n=3200 lost=0`. It runs 240 s (two slots, so a frame started anywhere in the first
@@ -555,15 +557,26 @@ The image must have the 120 s module TX cap (a `tools/k6_update.py` reflash, one
 **Real signals.** `wspriq` only listens, so it can sit on 144.489 MHz (2 m WSPR, USB dial) with
 a matching `rx_hz`, any time, without asking.
 
-### Screens (proposed, API level 6)
+### Screens (API level 6)
 
-Modules can't draw today; the screen is Aura's. Proposed level 6, after level 5's flash calls
-(PR #114): the core keeps the font and the display, and a module sends only text and pixel rows.
-`show(line, text)` (six lines of 21 characters in FONT_6X10, line 0 an inverted title bar),
-`bar(line, num, den)` and `wf_row(16 bytes)` (a 128-pixel row scrolled into lines 2-4). Each call
-flushes only the display pages it touched. Mock-ups: beacon (title, message, TX progress bar,
-next-slot countdown, frames sent, sync state); waiting for the sync mark; receive (the window,
-a scrolling waterfall from ft8k's 32-bin rows, time left, lost lines).
+Modules couldn't draw before; the screen was Aura's. Level 6 (docs/k6-modules.md "API level 6")
+adds `lcd_text`, `lcd_bar`, `lcd_wf` and `lcd_flush`, after level 5's flash calls. Both WSPR
+modules use them only when `api->level` is 6 or more, so the same builds run on older images
+without a screen. Frames the emulated modules drew:
+`/mnt/project-files/k6-wspr/wspr-screens-emulated.png`.
+
+- **Beacon:** the title (`WSPR BEACON  440.850`, or `WSPR TX` for one frame), the message, then
+  by phase: waiting for the sync mark with its 150 s countdown (no redraws while a mark is up,
+  so its drop stays timed to 5 ms); `next slot in 7:58`, redrawn each second; `TX` with a bar
+  over the 162 symbols, every 4 symbols (2.7 s); `ID AG7EW`. Below: frames sent, whether it is
+  on the UTC grid, and "hold a key to stop". 2.3 KB (`wsprbcn` 2.8 KB).
+- **Receive:** `WSPR RX  440850 kHz`, the window and calibration (`1500Hz +-99  cal -166`), a
+  24-row waterfall (0.64 s a row, 15 s in all) and the time and lost lines. Each 40 ms row
+  takes a 32-point DFT of the newest 32 samples (6.2 Hz bins, 4 px each, centre at x = 64),
+  keeping each bin's largest power; every 16 rows the bins become a pixel row, lit from the
+  middle out at 2, 4, 8 and 16 times the row's mean power. ft8k's own DFT rows would cost
+  1.3 KB more, which doesn't fit. Each flush (every 1.3 s) is a 20-40 ms gap the stream
+  zero-fills. `wspriq` is 4,070 B: two bytes under the limit.
 
 ## Files
 

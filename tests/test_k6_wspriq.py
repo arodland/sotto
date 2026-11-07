@@ -25,7 +25,7 @@ TEXT = "AG7EW CN87 10"
 
 def short(tmp_path, seconds=3, audio=1500):
     w = tmp_path / "wspriq_short.c"
-    w.write_text('#define WSPR_SECONDS %d\n#define WSPR_AUDIO %d\n#include "%s"\n'
+    w.write_text('#define K6_MODULE_OPT z\n#define WSPR_SECONDS %d\n#define WSPR_AUDIO %d\n#include "%s"\n'
                  % (seconds, audio, os.path.join(MOD, "wspriq.c")))
     return str(w)
 
@@ -42,7 +42,7 @@ def test_wspriq_builds_small():
     sys.path.insert(0, ROOT)
     from modem import k6mod
     code, entry = k6mod.build(os.path.join(MOD, "wspriq.c"))
-    assert len(code) + 24 <= 4096 and len(code) < 3600, len(code)
+    assert len(code) + 24 <= 4096, len(code)
 
 
 @need_clang
@@ -68,7 +68,7 @@ def test_wspriq_streams_a_tone(tmp_path):
     f = np.fft.fftfreq(4096, 1 / rate)
     peak = f[np.argmax(np.abs(np.fft.fft(zz * np.hanning(len(zz)), 4096)))]
     assert abs(peak - 10.0) < 0.5, peak
-    assert stack < 2600, stack
+    assert stack < 3300, stack                     # the screen's 512 B of rows and powers too
     assert rcc[0x18] == 0 and rcc[0x14] == 0x14 and tim[0x00] == 0 and dma[0x08] == 0
     assert all(regs[r] == v for r, v in START.items()), regs
     assert {r for r, _ in writes} <= {0x33, 0x34, 0x73, 0x7E, 0x13}
@@ -89,6 +89,31 @@ def test_wspriq_follows_the_calibration(tmp_path):
     zz = z[60:]
     f = np.fft.fftfreq(4096, 1 / rate)
     assert abs(f[np.argmax(np.abs(np.fft.fft(zz, 4096)))] - 10.0) < 1.0
+
+
+@need_clang
+def test_wspriq_screen_on_a_level_6_image(tmp_path):
+    """on an image with the screen calls: the title, the window and its calibration, a status
+    line, and a waterfall whose steady tone at +10 Hz lights the bin (16 + 10 / 6.2 = 17.6)
+    four pixels wide, x 68-75; the stream is still whole"""
+    pytest.importorskip("unicorn")
+    tone = gp0.FIF + 1500 + 10.0
+
+    def sig(t, regs):
+        return 0.5 + 0.3 * np.cos(2 * np.pi * tone * t) + 0.02 * np.cos(2 * np.pi * (tone - 70) * t)
+    lcd = {}
+    ret, said, regs, writes, stack, _ = emulate(short(tmp_path, 4), START, sig, level=6, lcd=lcd)
+    fr = lcd["frames"]
+    assert len(fr) >= 2, said
+    assert fr[-1]["text"][0] == "WSPR RX  440850 kHz" and fr[-1]["text"][1] == "1500Hz +-99  cal 0"
+    assert fr[-1]["text"][5].startswith("t ") and fr[-1]["text"][5].endswith(" of 4 s  lost 0")
+    wf = np.array([[(b >> (7 - j)) & 1 for b in row for j in range(8)] for row in fr[-1]["wf"]])
+    assert wf.shape == (24, 128)
+    lit = wf[:3].sum(axis=0)                       # the newest rows
+    assert lit[68:76].sum() >= 3 * 6 and lit[:64].sum() + lit[80:].sum() <= 6, np.nonzero(lit)
+    q = [s for s in said if s.startswith("q ")]
+    assert said[-1] == "wspriq done n=%d lost=0" % len(q) and ret == len(q)
+    assert stack < 3300, stack
 
 
 def fake_log(z, rate, t0=0.37, every=None, drop=(), shift_bits=12):

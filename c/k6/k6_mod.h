@@ -47,7 +47,7 @@ extern "C" {
 #define KM_HDR 16
 #define KM_TAG 8
 #define KM_ABI 1
-#define KM_LEVEL 5
+#define KM_LEVEL 6
 
 typedef struct k6_api {
   uint16_t abi, level;              /* KM_ABI, KM_LEVEL */
@@ -103,7 +103,24 @@ typedef struct k6_api {
   int (*fl_read)(uint32_t addr, void *buf, uint32_t n);        /* 0, or -1 */
   int (*fl_prog)(uint32_t addr, const void *buf, uint32_t n);  /* 0, or -1 */
   int (*fl_erase)(uint32_t addr);                              /* 0, or -1 */
+  /* level 6 (2026-11-07, for the WSPR modules' screens): the module's own screen while it runs.
+     The firmware keeps six text lines of 21 characters (FONT_6X10, baselines y = 9, 19 .. 59;
+     line 0 is an inverted title bar), a bar after any line's text, and a pointer to a waterfall
+     in the module's memory: up to KM_WF_ROWS rows of 128 pixels (16 bytes, bit 7 of byte 0
+     leftmost) from y = KM_WF_TOP down, in place of lines 2-4, ring[head] on top. The first
+     three only fill that state; lcd_flush draws it all and sends it to the display (a whole
+     frame: about 20-40 ms, so a few times a second at most). The pager's own screen comes back
+     when the module returns. A module that must also run on older images reads api->level
+     at run time and calls these only when it is 6 or more (K6_MODULE_LEVEL stays its other
+     needs), so one build serves both. */
+  void (*lcd_text)(int line, const char *s);                   /* 0-5; "" clears the line */
+  void (*lcd_bar)(int line, uint32_t num, uint32_t den);       /* den 0 removes it */
+  void (*lcd_wf)(const uint8_t *ring, int rows, int head);     /* rows 0 removes it */
+  int (*lcd_flush)(void);                                      /* 0, or -1 (no display) */
 } k6_api_t;
+
+#define KM_WF_TOP 21                /* lcd_wf's first pixel row */
+#define KM_WF_ROWS 30
 
 #define KM_FL_LO 0x0F0000u          /* the repeater table: fl_prog and fl_erase */
 #define KM_FL_HI 0x100000u

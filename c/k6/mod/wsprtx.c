@@ -158,6 +158,73 @@ static int keyed(const k6_api_t *api) {
   return api->tx_pa(1) < 0 ? -5 : 0;
 }
 
+/* ---- the screen (module API level 6, on images that have it; older ones skip it) ----
+   WSPR BEACON  440.850      (inverted)
+   AG7EW CN87 10 dBm
+   next slot in 7:58  /  TX [=====     ]  /  ID AG7EW  /  waiting for sync
+   sent 1 of 6        /  PC: k6_wspr.py sync
+   on the UTC grid    /  else start in 2:24
+   hold a key to stop */
+enum { UI_SYNC, UI_WAIT, UI_TX, UI_ID };
+typedef struct {
+  uint32_t until;   /* UI_SYNC, UI_WAIT: the countdown's end (ms()) */
+  uint16_t k;       /* UI_TX: symbols sent */
+  uint8_t phase, sent, synced;
+} ui_t;
+
+static char *mss(char *p, uint32_t s) {     /* "7:58", no divide */
+  uint32_t m = 0, t = 0;
+  while (s >= 60) {                         /* (the asm keeps clang from making a divide) */
+    s -= 60, m++;
+    __asm__("" : "+r"(s));
+  }
+  while (s >= 10) {
+    s -= 10, t++;
+    __asm__("" : "+r"(s));
+  }
+  p = dec(p, m);
+  *p++ = ':', *p++ = (char)('0' + t), *p++ = (char)('0' + s);
+  *p = 0;
+  return p;
+}
+
+static void ui(const k6_api_t *api, const ui_t *u) {
+  char l[24], *p;
+  uint32_t left;
+  if (api->level < 6) return;
+  left = (int32_t)(u->until - api->ms()) > 0 ? ((u->until - api->ms() + 500u) * 4194u) >> 22 : 0;
+  api->lcd_text(0, WSPR_REPEAT > 1 ? "WSPR BEACON  440.850" : "WSPR TX      440.850");
+  api->lcd_text(1, WSPR_TEXT " dBm");
+  api->lcd_bar(2, u->k, u->phase == UI_TX ? NSYM : 0);
+  if (u->phase == UI_SYNC) {
+    api->lcd_text(2, "waiting for sync");
+    api->lcd_text(3, "PC: k6_wspr.py sync");
+    mss(put(l, "else start in "), left);
+    api->lcd_text(4, l);
+  } else {
+    if (u->phase == UI_WAIT) mss(put(l, "next slot in "), left);
+    else put(l, u->phase == UI_TX ? "TX" : "ID " ID_TEXT)[0] = 0;
+    api->lcd_text(2, l);
+    p = dec(put(l, "sent "), u->sent);
+    p = dec(put(p, " of "), WSPR_REPEAT);
+    *p = 0;
+    api->lcd_text(3, l);
+    api->lcd_text(4, u->synced ? "on the UTC grid" : WSPR_SYNC_MS ? "no sync mark" : "");
+  }
+  api->lcd_text(5, "hold a key to stop");
+  api->lcd_flush();
+}
+
+/* until() with the screen's countdown redrawn every second */
+static int wait_ui(const k6_api_t *api, uint32_t t, const ui_t *u) {
+  int r;
+  while ((int32_t)(t - api->ms()) > 1000) {
+    ui(api, u);
+    if ((r = until(api, api->ms() + 1000u)) != 0) return r;
+  }
+  return until(api, t);
+}
+
 /* the channel clear for WSPR_CLEAR_MS: 0, -4 on a key, -7 if it is busy after wait_ms */
 static int clear(const k6_api_t *api, uint32_t wait_ms) {
   uint32_t t0 = api->ms(), c = t0;
@@ -201,10 +268,15 @@ static int mcw(const k6_api_t *api) {
 #if WSPR_SYNC_MS
 /* the sync mark: a carrier held for at least half a second, then dropped. *td = the first ms()
    it read clear (polled every 5 ms); 0, -4 on a key, -7 if none came in WSPR_SYNC_WAIT_MS */
-static int sync(const k6_api_t *api, uint32_t *td) {
-  uint32_t t0 = api->ms(), up = 0, now;
+static int sync(const k6_api_t *api, uint32_t *td, ui_t *u) {
+  uint32_t t0 = api->ms(), up = 0, now, shown = t0 - 1000u;
+  u->until = t0 + WSPR_SYNC_WAIT_MS;
   while ((now = api->ms()) - t0 < WSPR_SYNC_WAIT_MS) {
     if (api->key_down()) return -4;
+    if (!up && now - shown >= 1000u) {          /* not while a mark is up: its drop is timed */
+      shown = now;
+      ui(api, u);
+    }
     if (KM_RSSI_DBM(api->fd_read(0x67)) >= WSPR_CLEAR_DBM) {
       if (!up) up = now | 1;
     } else if (up) {
@@ -222,7 +294,7 @@ static int sync(const k6_api_t *api, uint32_t *td) {
 
 /* one frame, its tones from t0 (or the lead after tx_on if that is later), and its ID, keyed;
    the symbols sent and *id the ID's units, or a negative error */
-static int frame(const k6_api_t *api, int *id, uint32_t t0) {
+static int frame(const k6_api_t *api, int *id, uint32_t t0, ui_t *u) {
   uint32_t k = 0, j, t3;
   int r = 0;
   if (api->tx_on(TX_MS) != 0) return -3;
@@ -240,10 +312,14 @@ static int frame(const k6_api_t *api, int *id, uint32_t t0) {
     if (!k) api->fd_write(0x70, REG70_ON);
     api->fd_write(0x71, (uint16_t)(WORD(WSPR_AUDIO) + ((WSPR_TONES[k] * TONE_Q16) >> 16)));
     k++;
+    u->k = (uint16_t)k;
+    if (!(k & 3)) ui(api, u);                   /* the bar every 4 symbols (2.7 s) */
   }
   api->fd_write(0x70, 0);
   if (!r) r = until(api, api->ms() + 400);    /* a gap, then the ID */
   if (!r) {
+    u->phase = UI_ID;
+    ui(api, u);
     *id = mcw(api);
     if (*id < 0) r = *id;
   }
@@ -257,6 +333,7 @@ int k6_main(const k6_api_t *api) {
   char line[64], *p;
   uint32_t next = 0;
   int sent = 0, n, r, id = 0, sym;
+  ui_t u = {0, 0, UI_WAIT, 0, 0};
   if (api->level < 3) return -1;
   p = put(line, "wspr " WSPR_TEXT " f=");
   p = dec(p, WSPR_AUDIO);
@@ -275,10 +352,13 @@ int k6_main(const k6_api_t *api) {
   api->say("wspr sync: waiting for the mark");
   {
     uint32_t td;
-    r = sync(api, &td);
+    u.phase = UI_SYNC;
+    r = sync(api, &td, &u);
+    u.phase = UI_WAIT;
+    u.synced = !r;
     if (r == -4) return r;
-    next = r ? api->ms() + KEYUP_MS : td + WSPR_SYNC_MS;
-    if (r) api->say("wspr no sync mark: starting now");              /* the host dropped it WSPR_SYNC_MS before a slot */
+    next = r ? api->ms() + KEYUP_MS : td + WSPR_SYNC_MS; /* dropped WSPR_SYNC_MS before a slot */
+    if (r) api->say("wspr no sync mark: starting now");
   }
 #endif
   for (n = 0; n < WSPR_REPEAT; n++) {
@@ -289,7 +369,9 @@ int k6_main(const k6_api_t *api) {
       *p = 0;
       api->say(line);
     }
-    if ((r = until(api, next - KEYUP_MS)) != 0) return r;
+    u.until = next;
+    u.k = 0;
+    if ((r = wait_ui(api, next - KEYUP_MS, &u)) != 0) return r;
     r = clear(api, 200u);                       /* 1 s clear, then key-up for the slot's tones */
     if (r == -4) return r;
     if (r) {
@@ -297,10 +379,13 @@ int k6_main(const k6_api_t *api) {
       next += SLOT_MS;
       continue;
     }
-    sym = frame(api, &id, next);
+    u.phase = UI_TX;
+    ui(api, &u);
+    sym = frame(api, &id, next, &u);
+    u.phase = UI_WAIT;
     next += SLOT_MS;
     if (sym < 0) return sym;
-    sent++;
+    u.sent = (uint8_t)++sent;
     p = put(line, "wspr sent ");
     p = dec(p, (uint32_t)sent);
     p = put(p, " sym=");
