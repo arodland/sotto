@@ -345,7 +345,9 @@ against it at the start of each playback (`K6 PWM frame 320 != segment ...` on a
 message store is 2.5 KB (413 slots: 16 s of sotto 1200, 33 s of 600, 50 s of 400; streaming plays
 longer messages as they arrive) to leave the boot's stack 468 B of margin; the pre-emphasis runs
 on every other sample, so 0-4 kHz sounds as the 8 kHz images. `tools/k6_pcmhash.py --hiss` and
-`c/k6/bench_k6.py --hiss` know the build. Codebooks from the SPI flash as `aura-pager-vlr`.
+`c/k6/bench_k6.py --hiss` know the build. Codebooks from the SPI flash as `aura-pager-vlr`. Its
+message store is 2.5 KB (the plain images' is 4 KB): sotto 1200 messages over about 13 s stream
+with `--depth 4`, or the ring of two depth-8 groups overruns (on air 2026-11-07, docs/k6-hiss-port.md).
 
 **Codebook in SPI flash (the default since 2026-11-06).** The decoder reads sotto's 30 KB
 codebook from the radio's SPI flash, one 20-byte vector at a time, so the table doesn't need to

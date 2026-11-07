@@ -412,7 +412,7 @@ line up after the delay above (lag 10 samples at 8 kHz, the interpolator).
 
 | Change | Saved |
 |---|---:|
-| Message store 4 KB -> 2.5 KB (1200 holds 17 s stored; streaming is unchanged) | 1.5 KB |
+| Message store 4 KB -> 2.5 KB (1200 holds 17 s stored; a stream's ring holds two XL groups at depth 8, so 1200 messages over about 13 s need depth 4, below) | 1.5 KB |
 | Decoder pool sized to the three states (core 904, 600 / 400 wrapper 592, hiss 736 B on the M0) instead of a round figure | 0.4 KB |
 | Model rings for the two odd halves only (`LM 2`), one 32-sample resampler ring, level ring 13 deep, 5 superframes of side channel | 0.5 KB |
 | PN9 table in flash, `const`; core model bands for half 1 only | 0.1 KB |
@@ -445,6 +445,20 @@ which the measurements in the sizing section put right at the 20 ms edge with RX
 PWM ring absorbs the 99th-percentile frames. So the image is for listening and for measuring,
 with the pager's late counter telling whether frames ran over. If they do, the next step is the
 hot loops in RAM (9.5 MHz against 12.3 on the model), or the output fold in the PWM interrupt.
+
+**On the radio (2026-11-07 23:15 UTC, build 03b8917, IC-7100 -> K6 on 440.850, cable in).** All
+nine clips (LibriSpeech female 198 and male 3436, the first 15 s of Jeff's Lynden recording, each at
+600, 1200 and 400) arrived with every packet and `late=0`. 600 and 400: 3 of 3 `pcm=` MATCH. 1200:
+the female clip MATCH; the two longer ones (325 and 344 frames) each had `overruns=1` at interleave
+depth 8 and a short dropout near the end, and the same clip at depth 4 played MATCH with no overrun.
+The cause is the 2.5 KB store, not CPU: in stream mode the store is a ring of whole interleave
+groups, and at XL depth 8 it holds two groups of 160 sotto 1200 frames, so a message over about
+12.8 s has its next group land on frames not yet played. At depth 4 a group is 80 frames and five
+fit. So 1200 messages longer than 13 s go at `--depth 4` on this image (`modem.k6 send --depth 4`);
+600 and 400 messages are shorter per frame slot and were fine at depth 8 up to the 15 s tried.
+Decode times: 14.7-18.3 ms mean per 20 ms frame across the rates, worst single frame 39.4 ms, which
+the three-segment PWM ring covered (`late=0`). `ram_free` while playing: 332 (600), 388 (1200),
+588 (400) B. Run dir on hamlet: `~/sotto-work/runs/2026-11-07-hiss1/`.
 
 **On the bench.** Encode a 16 kHz clip with `c/sotto_enc -16 -600 in.raw out.sot` (also `-1200`,
 `-400`; `make -C c sotto_enc`, VARIANT v3.8), send it with `python -m modem.k6 send ... --codec 600`,

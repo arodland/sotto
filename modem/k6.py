@@ -200,7 +200,9 @@ def _tx_opts(p):
     p.add_argument("--depth", type=int, choices=pager.DEPTHS, default=pager.GROUP,
                    help="packets per interleave group (default 8): a streaming K6 starts playing once "
                         "a group is in, so 4 starts about twice as soon; a lost packet's frames are "
-                        "then 4 slots apart instead of 8 (L and XL; images from 2026-11-05 on)")
+                        "then 4 slots apart instead of 8 (L and XL; images from 2026-11-05 on). The hiss band "
+                        "image's 2.5 KB store holds two XL groups at depth 8, so sotto 1200 messages over "
+                        "about 13 s need 4 there (docs/k6-hiss-port.md)")
     p.add_argument("--short-last", action=argparse.BooleanOptionalAction, default=True,
                    help="a partial last interleave group takes only the packets it fills (seq bit 13; "
                         "about 9%% fewer XL packets). --no-short-last sends the old padded layout, for "

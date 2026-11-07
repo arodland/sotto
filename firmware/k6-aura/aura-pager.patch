@@ -338,8 +338,8 @@ index 0000000..7f6e8e1
 +#[cfg(not(feature = "hiss"))]
 +const STORE_BYTES: usize = 4096;
 +/// the hiss band image: 2.5 KB (413 slots: 16 s of sotto 1200, 33 s of 600, 50 s of 400; a stream
-+/// plays while it arrives, so a message can be longer; two XL interleave groups fit), what its
-+/// decoder and 16 kHz ring take, with the boot's stack kept clear of .bss
++/// plays while it arrives, but its ring holds only two XL groups at depth 8, so sotto 1200 messages
++/// over 13 s need depth 4), what its decoder and 16 kHz ring take, with the boot stack clear of .bss
 +#[cfg(feature = "hiss")]
 +const STORE_BYTES: usize = 2560;
 +// (The RAM below UserVectors, 0x2000_0000-0x2000_0FFF, is not free: images that put the store
