@@ -13,7 +13,9 @@
 #            With K6_CB=spi both codebooks are read from the SPI flash: v3.7's at 0x100000 and
 #            sotto 600 / 400's 21 KB at 0x108000 (c/k6/sp_vlr.h, image $OUT/sotto-vlr.bin, CRC
 #            -DSP_VLR_CRC); with K6_CB=install the sotto 600 / 400 tables are linked and written
-#            there once at power-on (v3.7's codebook must be there already: aura-pager-cbi).
+#            there once at power-on (v3.7's codebook must be there already: aura-pager-cbi);
+#            with K6_CB=rom they are linked and read in place from the MCU's flash, as ROM, and
+#            the image never writes the SPI flash (it reads v3.7's codebook there, for sotto 1200).
 #        K6_MOD_KEY_FILE=~/.config/sotto/k6-mod.key sh tools/k6_build.sh   the RAM module loader
 #            (c/k6/k6_mod.c) accepts modules signed with that key (`python -m modem.k6 modkey`
 #            makes one). Without it the loader holds a placeholder and refuses every module
@@ -50,7 +52,8 @@ case "${K6_CB:-}" in
   "") ;;
   spi) OUT=${K6_OUT:-$OUT-cbs} ;;
   install) OUT=${K6_OUT:-$OUT-cbi}; [ -n "$VLR" ] || CB="-DFX_CB_SPI -DSP_CB_INSTALL" ;;
-  *) echo "K6_CB is spi or install" >&2; exit 1 ;;
+  rom) [ -n "$VLR" ] || { echo "K6_CB=rom is for K6_CODEC=vlr" >&2; exit 1; }; OUT=${K6_OUT:-$OUT-rom} ;;
+  *) echo "K6_CB is spi, install or rom" >&2; exit 1 ;;
 esac
 # the images that link the 30 KB shape codebook into the MCU's flash (the -table fallbacks and the
 # install image) have no room for the parity rebuild (spec 14): they ignore parity packets
@@ -82,8 +85,11 @@ if [ -n "${K6_CB:-}" ]; then
     ${HOSTCC:-cc} -O2 -std=c99 -DSP_VLR -I"$ROOT/c" "$ROOT/c/k6/vlr_image.c" "$ROOT/c/k6/sp_vlr.c" "$ROOT/c/k6/sp_cb.c" \
       "$ROOT/c/sotto_vlr_tables.c" "$ROOT/c/fixed/fx_tables.c" -o "$OUT/vlr_image"
     "$OUT/vlr_image" "$OUT/sotto-vlr.bin"
-    if [ "$K6_CB" = spi ]; then CB="$CB -DVLR_CB_SPI -DSP_VLR_CRC=$("$OUT/vlr_image" -c)"
-    else CB="$CB -DVLR_CB_SPI -DSP_VLR_INSTALL"; fi
+    # rom: no VLR_CB_SPI, so the tables are linked and sp_vlr_setup touches no flash
+    case "$K6_CB" in
+      spi) CB="$CB -DVLR_CB_SPI -DSP_VLR_CRC=$("$OUT/vlr_image" -c)" ;;
+      install) CB="$CB -DVLR_CB_SPI -DSP_VLR_INSTALL" ;;
+    esac
   fi
   CFLAGS="$CFLAGS $CB"
   echo "codebook in SPI flash: $CB"
@@ -117,7 +123,7 @@ if [ -n "$LR" ]; then     # not hot (field unpacking and shape sums once per 40 
 fi
 if [ -n "$VLR" ]; then    # once per 20 ms frame, then the v3.7 core's synthesis: -Os too
   $CC $CFLAGS -Os -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_vlr.c" -o "$OUT/sotto_fx_vlr.o"
-  # the tables build: with K6_CB=spi the codebooks are left out (VLR_CB_SPI); install links them
+  # the tables build: with K6_CB=spi the codebooks are left out (VLR_CB_SPI); install and rom link them
   VT=; [ "${K6_CB:-}" = install ] && VT=-UVLR_CB_SPI
   $CC $CFLAGS $VT -c "$ROOT/c/sotto_vlr_tables.c" -o "$OUT/sotto_vlr_tables.o"
   LIBOBJS="$LIBOBJS $OUT/sotto_fx_vlr.o $OUT/sotto_vlr_tables.o"

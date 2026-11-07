@@ -165,6 +165,10 @@ fi
 #   aura-pager-vlri    the same with sotto 600 / 400's codebooks linked: at power-on it writes
 #                      out/sotto-vlr.bin to the SPI flash if it isn't there yet (once; serial
 #                      `K6 VLR r=2`, then r=1). Flash it once per radio, after aura-pager-cbi
+#   aura-pager-vlr-rom sotto 1200, 600 and 400 with sotto 600 / 400's 21 KB of codebooks in the
+#                      MCU's flash, read in place as ROM: it never writes the SPI flash (serial
+#                      `K6 VLR r=1`, no install; it still reads v3.7's codebook at 0x100000 for
+#                      sotto 1200). Lean, as vlri
 #   aura-pager-only-table, aura-pager-lr-table   the table in the MCU's flash, as before: no
 #                      SPI flash needed; lean (no module TX, ARQ reports or calibration
 #                      writes), with little flash to spare (TABLE=0 skips them)
@@ -184,6 +188,11 @@ if [ "${VLR:-1}" = 1 ]; then
   lib build-vlr-cbi
   # it holds sotto 600 / 400's 21 KB of codebooks: lean, as the other install image
   variant aura-pager-vlri "pager-only image, sotto 1200 + 600 + 400, installs sotto 600 / 400's codebooks" \
+    --features pager-only,lean
+  K6_CODEC=vlr K6_CB=rom sh "$ROOT/tools/k6_build.sh"
+  lib build-vlr-rom
+  # vlri without the installer: the same 21 KB of tables, never written anywhere
+  variant aura-pager-vlr-rom "pager-only image, sotto 1200 + 600 + 400, sotto 600 / 400's codebooks in MCU flash (no SPI writes)" \
     --features pager-only,lean
 fi
 if [ "${INSTALL:-1}" = 1 ]; then
