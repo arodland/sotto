@@ -19,7 +19,7 @@ to rxmap-<seg>-<time>.log.
 
 cal: the IC-7100 transmits, in the US amateur 2 m and 70 cm bands only (430-450 MHz: Lynden is
 north of Line A, where 420-430 is closed to amateurs), on a dummy load if you have one. Each
-point gets a bare FM carrier for --hold s and the station's CW ID, then the power steps at
+point gets PSK31 "AG7EW TEST" as FM audio (project rule: a test transmission carries ident) and the station's CW ID, then the power steps at
 440.850; the K6 measures each carrier and sends the lines back when it is done.
 
 hamlet has no clang: give --bin the CI-built mod-rxmap.bin (K6 pager firmware artifact). The
@@ -383,9 +383,21 @@ CAL_POINTS = [144_050_000, 145_550_000, 146_550_000, 147_450_000, 147_950_000,
 POWERS = [1.0, 0.5, 0.25, 0.1, 0.0]
 
 
-def allowed(hz, line_a_north=True):
-    """US amateur 2 m / 70 cm, 10 kHz inside the edges; 430-450 north of Line A"""
+# US amateur HF segments for --hf, the PSK31 test into a dummy load (Jeff OK'd 17 m and 20 m at RF
+# power 0.0, 2026-11-07, docs/k6-hf.md). Points are USB dial frequencies (PSK31 watering holes); the
+# signal is TONE_HZ above them, and that is where the K6 listens
+HF_BANDS = [(14_000_000, 14_350_000), (18_068_000, 18_168_000)]
+HF_POINTS = [18_100_000, 14_070_000]
+TONE_HZ = 1000
+HF_TEXT = "AG7EW TEST "
+
+
+def allowed(hz, line_a_north=True, hf=False):
+    """US amateur 2 m / 70 cm, 10 kHz inside the edges; 430-450 north of Line A. hf: also 20 and 17 m
+    (10 kHz inside their edges), for the HF PSK31 test into a dummy load"""
     lo70 = 430_000_000 if line_a_north else 420_000_000
+    if hf and any(lo + 10_000 <= hz <= hi - 10_000 for lo, hi in HF_BANDS):
+        return True
     return 144_010_000 <= hz <= 147_990_000 or lo70 + 10_000 <= hz <= 449_990_000
 
 
@@ -399,18 +411,30 @@ def cmd_cal(a):
     import k6_upload as up
     import soundfile as sf
     from modem import k6
-    points = [round(float(x) * 1e6) for x in a.points.split(",")] if a.points else CAL_POINTS
-    powers = [float(x) for x in a.powers.split(",")] if a.powers else POWERS
-    bad = [f for f in points if not allowed(f, not a.south_of_line_a)]
+    points = ([round(float(x) * 1e6) for x in a.points.split(",")] if a.points
+              else HF_POINTS if a.hf else CAL_POINTS)
+    powers = ([] if a.powers == "none" else [float(x) for x in a.powers.split(",")] if a.powers
+              else [] if a.hf else POWERS)
+    bad = [f for f in points if not allowed(f, not a.south_of_line_a, a.hf)]
     if bad:
-        sys.exit("not on 2 m / 70 cm (430-450 north of Line A): " + ", ".join(map(mhz, bad)))
-    uniq = list(dict.fromkeys(points + [PAGER_HZ]))
+        sys.exit("not on 2 m / 70 cm (430-450 north of Line A)" + (" or 20/17 m" if a.hf else "")
+                 + ": " + ", ".join(map(mhz, bad)))
+    hold = a.hold if a.hold is not None else 10.0 if a.hf else 2.5
+    # project rule (Jeff, 2026-11-07): a test transmission carries ident, and a steady carrier goes out
+    # as PSK31 "AG7EW TEST" over and over: in PKTUSB on HF, as the FM audio on 2 m / 70 cm
+    from modem import psk31
+    psk = psk31.modulate(psk31.repeat_to(HF_TEXT, hold), up.FS, TONE_HZ, level=0.3)
+    hold = len(psk) / up.FS
+    k6hz = {f: f + TONE_HZ if a.hf else f for f in points}     # where the K6 listens for each point
+    # --hf leaves 440.850 out: the closing CW ID there must not count as "seen" (run 2, 2026-11-07)
+    uniq = list(dict.fromkeys([k6hz[f] for f in points] + ([] if a.hf else [PAGER_HZ])))
     if len(uniq) > NCAL:
         sys.exit(f"at most {NCAL - 1} points besides 440.850")
     sched = cal_schedule(points, powers)
-    per = a.hold + (2.6 if a.id_each else 0) + a.gap + 0.6
+    per = hold + (2.6 if a.id_each else 0) + a.gap + 0.6
     total = len(sched) * per
-    blk = pack(PAGER_HZ, 0, 0, 0, mode=1, cal=uniq, quiet_s=12, max_s=int(total + 120), det_db=a.det_db,
+    max_s = int(total + (40 if a.hf else 120))   # the K6 gives up this long after it starts
+    blk = pack(PAGER_HZ, 0, 0, 0, mode=1, cal=uniq, quiet_s=12, max_s=max_s, det_db=a.det_db,
                wide=0 if a.narrow else 1)
     ns = SimpleNamespace(rigctld=a.rigctld, dry_run=a.dry_run, device=up.PLAY, rec_device=up.REC, phy="F",
                          baud=1800.0, payload="XL", level=0.3, telemetry=12, api_level=2, key_file=a.key_file,
@@ -435,6 +459,8 @@ def cmd_cal(a):
         open(ns.source, "wb").write(patch(code_of(a), blk))
         idw = os.path.join(d, "id.wav")
         sf.write(idw, k6.cw(a.call, up.FS, wpm=25), up.FS, subtype="PCM_16")
+        pskw = os.path.join(d, "psk31.wav")
+        sf.write(pskw, psk, up.FS, subtype="PCM_16")
         count = up.chunks_of(ns)
         rec = up.Recorder(ns, d)
         try:
@@ -443,6 +469,7 @@ def cmd_cal(a):
                 w = os.path.join(d, f"up{rnd}.wav")
                 note(f"upload {rnd}: {len(todo)} of {count} chunks; {up.mod_wav(ns, w, serial, xfer, todo)}")
                 up.key_and_play(ns, w)
+                t_run = time.time()                       # the K6 starts once it holds every chunk
                 since = rec.samples()
                 st, _, _ = up.listen(ns, rec, since, xfer, 12.0)
                 if st is None:
@@ -455,31 +482,41 @@ def cmd_cal(a):
             else:
                 sys.exit("upload incomplete after 4 sends")
             time.sleep(2.0)
-            note(f"the K6 listens; the IC-7100 sends {len(sched)} carriers, {total:.0f} s in all "
-                 f"(RF power {p0:.2f} unless stepped)")
+            if a.hf:
+                up.rig(ns, "L", "RFPOWER", f"{a.hf_power:.2f}")
+            note(f"the K6 listens; the IC-7100 sends {len(sched)} " + ("PSK31 bursts" if a.hf else "carriers")
+                 + f", {total:.0f} s in all (RF power {a.hf_power if a.hf else p0:.2f} unless stepped)")
             for i, (hz, pw) in enumerate(sched):
                 up.rig(ns, "F", hz)
+                if a.hf:
+                    up.rig(ns, "M", "PKTUSB", 0)
+                    if not a.dry_run and int(up.rig(ns, "f")) != hz:
+                        sys.exit(f"IC-7100 didn't take {hz} Hz")
                 if pw is not None:
                     up.rig(ns, "L", "RFPOWER", f"{pw * p0:.2f}")
                 if up.rig(ns, "t") != "0":
                     time.sleep(5)
-                note(f"carrier {i + 1}/{len(sched)}: {mhz(hz)} MHz"
+                note(("PSK31 " + repr(HF_TEXT.strip()) + f" USB dial {mhz(hz)}, K6 on {mhz(k6hz.get(hz, hz))}"
+                      if a.hf and hz in k6hz else f"carrier {i + 1}/{len(sched)}: {mhz(hz)} MHz")
                      + (f", RF power {pw * p0:.2f} ({pw:g} of {p0:.2f})" if pw is not None else ""))
                 # under the bench's PTT lock, so the CW ID keeper waits; lead 0: the K6's
                 # schedule counts the hold from T 1
                 with up.bench.keyed(lambda *v: up.rig(ns, *v), "data", f"rxmap carrier {mhz(hz)}",
                                     dry_run=ns.dry_run, lead=0.0):
-                    time.sleep(a.hold)
+                    up.bench.play(pskw, ns.device, ns.dry_run)
                     if a.id_each:
                         up.bench.play(idw, ns.device, ns.dry_run)
                 time.sleep(a.gap)
         finally:
             up.rig(ns, "F", PAGER_HZ)
+            if a.hf:
+                up.rig(ns, "M", "PKTFM", 12000)
             up.rig(ns, "L", "RFPOWER", f"{p0:.2f}")
         try:
             note("back on 440.850; waiting for the K6's report")
             since = rec.samples()
-            st, text, _ = up.listen(ns, rec, since, xfer, 60.0)
+            # it reports 12 s after the last carrier it saw, or at max_s if it saw none: wait for both
+            st, text, _ = up.listen(ns, rec, since, xfer, max(60.0, t_run + max_s + 30 - time.time()))
             if st is not None:
                 note(f"K6: {st['state']}, returned {st['ret']} in {st['ms']} ms")
             out.write("K6 telemetry:\n" + (text or "") + "\n")
@@ -518,13 +555,20 @@ def main():
     m.add_argument("--quick-us", type=int, default=3000)
     c = sub.choices["cal"]
     c.add_argument("--points", help="MHz, comma separated (default: plan's list)")
-    c.add_argument("--powers", help="RF power steps at 440.850, 0..1 of the radio's own (default 1,.5,.25,.1,0)")
-    c.add_argument("--hold", type=float, default=2.5, help="s of bare carrier a point (default 2.5)")
+    c.add_argument("--powers", help="RF power steps at 440.850, 0..1 of the radio's own (default 1,.5,.25,.1,0; "
+                                    "'none' for no steps)")
+    c.add_argument("--hold", type=float, help="s of PSK31 'AG7EW TEST' a point, at least one copy (default 2.5, "
+                                             "i.e. one copy, ~4.2 s; --hf: about 10 s)")
     c.add_argument("--gap", type=float, default=1.5, help="s unkeyed between points (default 1.5)")
     c.add_argument("--no-id-each", dest="id_each", action="store_false", help="no CW ID after each carrier")
     c.add_argument("--det-db", type=int, default=15)
     c.add_argument("--call", default="AG7EW")
     c.add_argument("--south-of-line-a", action="store_true", help="allow 420-430 MHz")
+    c.add_argument("--hf", action="store_true",
+                   help="HF test (Jeff's OK each run, dummy load on the HF port): the IC-7100 sends PSK31 "
+                        f"'{HF_TEXT.strip()}' over and over in PKTUSB, dial 18.100 and 14.070 (any point in "
+                        "20/17 m), the K6 listens 1 kHz up; no power steps")
+    c.add_argument("--hf-power", type=float, default=0.0, help="--hf: RF POWER 0..1 (default 0.0, the minimum)")
     d = sub.add_parser("decode")
     d.add_argument("logs", nargs="+")
     d.add_argument("--svg")
