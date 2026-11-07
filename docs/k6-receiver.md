@@ -80,7 +80,11 @@ the RF chip's AF output also feeds through 2.2 kΩ (schematic BF_K6_Plus_Open_V1
 -3 dB at 1 kHz, -7 dB at 2 kHz and -10 dB at 3 kHz: the stock prompts are muffled. `sp_pcm_to_pwm`
 optionally applies `(33 x[n] - 21 x[n-1] + 4 x[n-2]) / 16`. That is flat at DC and +11 dB at 4 kHz,
 and it flattens the computed response to ±0.5 dB up to 3.5 kHz, assuming the 2.2 kΩ node is the
-load. It is not measured. Key 4 on the radio turns it off. The RF chip's audio is muted and the
+load. It is not measured. Key 4 on the radio turns it off. The RAM module `c/k6/mod/spksweep.c` measures it with no reflash: uploaded with
+`python3 -m modem.k6 mod`, it plays 14 steady tones, 250 Hz to 7.5 kHz, at twice the pager's update
+rate (16 kHz, TIM1 RCR 2, CCR4 written by polling), and `tools/k6_sweep.py REC.wav` reads each
+tone's level from a recording of the speaker, relative to 1 kHz. The 4-8 kHz rows say whether
+the speaker could carry the hiss band. The RF chip's audio is muted and the
 amplifier is enabled (PB2) only during playback.
 
 Senders' levels vary by 15 dB or more, so `sp_auto_gain_q8` sets the gain from the loudest frame's
