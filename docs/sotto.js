@@ -1,10 +1,13 @@
 // sotto in the browser: loads sotto.wasm (c/wasm, built from the C port in c/), which encodes
 // 16 kHz speech into 6-byte frames and decodes frames back into speech, and optionally
-// sotto_vlr.wasm, the fixed-point sotto 600 / 400 decoder. Every rate sends 48 bits per frame:
+// sotto_vlr.wasm, the fixed-point plain sotto 600 / 400 decoder (the one the UV-K6 runs).
+// Every rate sends 48 bits per frame, and every rate carries v3.8's 4-8 kHz hiss band:
 //   2400  v3.8, 20 ms frames, 16 kHz out
 //   1200  sotto 1200 hiss, 40 ms superframes, 16 kHz out
-//    600  sotto 600, 80 ms superframes, 8 kHz out
-//    400  sotto 400, 120 ms superframes, 8 kHz out
+//    600  sotto 600 hiss, 80 ms superframes, 16 kHz out
+//    400  sotto 400 hiss, 120 ms superframes, 16 kHz out
+// Plain sotto 600 / 400 (8 kHz, no hiss band; what `sotto_enc -600|-400` writes for the K6):
+// encodePlain / decodePlain.
 // Used by index.html; c/wasm/check_wasm.mjs runs the same modules under node against the
 // native tools.
 // SPDX-License-Identifier: MIT
@@ -18,8 +21,8 @@ const wasiStubs = {
 export const RATES = {
   2400: { name: "sotto v3.8", frameMs: 20, sampleRate: 16000 },
   1200: { name: "sotto 1200 hiss", frameMs: 40, sampleRate: 16000 },
-  600: { name: "sotto 600", frameMs: 80, sampleRate: 8000 },
-  400: { name: "sotto 400", frameMs: 120, sampleRate: 8000 },
+  600: { name: "sotto 600 hiss", frameMs: 80, sampleRate: 16000 },
+  400: { name: "sotto 400 hiss", frameMs: 120, sampleRate: 16000 },
 };
 
 async function instantiate(source) {
@@ -65,7 +68,7 @@ function runEncode(x, speech, maxFrames, encodeAt) {
   });
 }
 
-// source: sotto.wasm (URL or bytes); vlrSource: sotto_vlr.wasm, needed to decode 600 / 400.
+// source: sotto.wasm (URL or bytes); vlrSource: sotto_vlr.wasm, needed only by decodePlain.
 export async function loadSotto(source, vlrSource) {
   const [x, v] = await Promise.all([instantiate(source), vlrSource ? instantiate(vlrSource) : null]);
   const down2 = pcm16 => withBlocks(x, [2 * pcm16.length, 2 * Math.ceil(pcm16.length / 2)], (pi, po) => {
@@ -75,29 +78,46 @@ export async function loadSotto(source, vlrSource) {
   });
   return {
     format: cstr(x, x.sotto_wasm_format()),
-    rates: v ? [2400, 1200, 600, 400] : [2400, 1200],
-    // 16 kHz to 8 kHz, as scipy's resample_poly(x, 1, 2) (the 600 / 400 encoders take 8 kHz)
+    rates: [2400, 1200, 600, 400],
+    plain: !!v,      // decodePlain available
+    // 16 kHz to 8 kHz, as scipy's resample_poly(x, 1, 2) (the plain 600 / 400 encoders take 8 kHz)
     down2,
     // rate 2400, 1200, 600 or 400; speech: Int16Array at 16 kHz (see levelTo). Returns the
-    // frames, the same bytes as `sotto_enc -16 [-1200]` (or `sotto_enc -600|-400` of down2's 8 kHz).
+    // frames, the same bytes as `sotto_enc -16 [-1200|-600|-400]`.
     encode(rate, speech) {
       if (rate === 2400) return this.encode16(speech);
       if (rate === 1200) return runEncode(x, speech, x.sotto_wasm_max_frames_lr16, x.sotto_wasm_encode_lr16);
       if (rate === 600 || rate === 400)
-        return runEncode(x, down2(speech), n => x.sotto_wasm_max_frames_vlr(rate, n),
-                         (ps, n, po) => x.sotto_wasm_encode_vlr(rate, ps, n, po));
+        return runEncode(x, speech, n => x.sotto_wasm_max_frames_vlr16(rate, n),
+                         (ps, n, po) => x.sotto_wasm_encode_vlr16(rate, ps, n, po));
       throw new Error(`sotto: no ${rate} bit/s mode`);
     },
     // frames at that rate; good: optional, one byte per frame, 0 = lost.
-    // Returns { pcm: Int16Array, sampleRate } (16 kHz for 2400 and 1200, 8 kHz for 600 and 400).
+    // Returns { pcm: Int16Array, sampleRate: 16000 }, as `sotto_dec -16 [-1200|-600|-400]`.
     decode(rate, frames, good) {
       if (rate === 2400) return { pcm: this.decode16(frames, good), sampleRate: 16000 };
       if (rate === 1200)
         return { pcm: runDecode(x, frames, good, x.sotto_wasm_out_len_lr16, x.sotto_wasm_decode_lr16), sampleRate: 16000 };
+      if (rate === 600 || rate === 400)
+        return { pcm: runDecode(x, frames, good, n => x.sotto_wasm_vlr_out_len16(rate, n),
+                                (pb, pg, n, po) => x.sotto_wasm_decode_vlr16(rate, pb, pg, n, po)), sampleRate: 16000 };
+      throw new Error(`sotto: no ${rate} bit/s mode`);
+    },
+    // Plain sotto 600 / 400 (no hiss band), as the UV-K6 sends and plays it. encodePlain takes
+    // 16 kHz speech and gives the bytes of `sotto_enc -600|-400` of down2's 8 kHz; decodePlain
+    // (needs sotto_vlr.wasm) gives { pcm, sampleRate: 8000 }, as `sotto_vlr_dec_fx 600|400`.
+    // A hiss stream plays on the plain decoder too, at 8 kHz, with a wrong pitch slope in
+    // superframes where only one frame is pitched (c/sotto_vlr.h).
+    encodePlain(rate, speech) {
+      if (rate !== 600 && rate !== 400) throw new Error(`sotto: no plain ${rate} bit/s mode`);
+      return runEncode(x, down2(speech), n => x.sotto_wasm_max_frames_vlr(rate, n),
+                       (ps, n, po) => x.sotto_wasm_encode_vlr(rate, ps, n, po));
+    },
+    decodePlain(rate, frames, good) {
       if ((rate === 600 || rate === 400) && v)
         return { pcm: runDecode(v, frames, good, n => v.sotto_wasm_vlr_out_len(rate, n),
                                 (pb, pg, n, po) => v.sotto_wasm_decode_vlr(rate, pb, pg, n, po)), sampleRate: 8000 };
-      throw new Error(`sotto: can't decode ${rate} bit/s here` + (v ? "" : " (sotto_vlr.wasm not loaded)"));
+      throw new Error(`sotto: can't decode plain ${rate} bit/s here` + (v ? "" : " (sotto_vlr.wasm not loaded)"));
     },
     sampleRate: 16000,
     bytesPerFrame: 6,

@@ -88,13 +88,13 @@
 
   <h2 style="margin-top:24px">Try it with your own voice</h2>
   <section class="try" aria-labelledby="try-h">
-    <p id="try-h" style="margin-top:0">Record up to 30 seconds, or pick an audio file, and the page encodes the same recording at all four rates (2400, 1200, 600 and 400 bit/s) and decodes each one, so you can switch between them. The encoders and decoders run here, in your browser, compiled to WebAssembly from the same C code that targets the radios; nothing is uploaded. A <code>.sot</code> file is the bitstream itself: 6 bytes per frame, so 300, 150, 75 or 50 bytes a second (the C tools decode it too: <code>c/sotto_dec -16 [-1200] file.sot out.raw</code>, or <code>sotto_vlr_dec_fx 600|400</code>).</p>
+    <p id="try-h" style="margin-top:0">Record up to 30 seconds, or pick an audio file, and the page encodes the same recording at all four rates (2400, 1200, 600 and 400 bit/s) and decodes each one, so you can switch between them. The encoders and decoders run here, in your browser, compiled to WebAssembly from the same C code that targets the radios; nothing is uploaded. A <code>.sot</code> file is the bitstream itself: 6 bytes per frame, so 300, 150, 75 or 50 bytes a second (the C tools decode it too: <code>c/sotto_dec -16 [-1200|-600|-400] file.sot out.raw</code>). Every rate here carries the 4-8 kHz hiss band; the menu also plays plain sotto 600 and 400, the 8 kHz streams the UV-K6 pager sends (<code>sotto_enc -600|-400</code>).</p>
     <div class="controls">
       <button id="rec" class="primary" type="button" disabled>Record</button>
       <label class="filebtn off" id="file-lbl">Encode an audio file<input id="file" type="file" accept="audio/*" disabled></label>
       <label class="filebtn off" id="sot-lbl">Play a .sot file<input id="sot" type="file" accept=".sot,application/octet-stream" disabled></label>
       <label class="note" for="sot-rate">sent at <select id="sot-rate">
-        <option value="2400">2400</option><option value="1200">1200</option><option value="600">600</option><option value="400">400</option>
+        <option value="2400">2400</option><option value="1200">1200</option><option value="600">600</option><option value="400">400</option><option value="600p">600 plain (K6)</option><option value="400p">400 plain (K6)</option>
       </select> bit/s</label>
       <span id="try-msg" role="status">Loading the codec…</span>
     </div>
@@ -109,11 +109,11 @@
     <tbody>
       <tr><td>sotto v3.8 (2400)</td><td class="num">20 ms</td><td>pitch, voicing, energy and a 34-bit envelope every frame</td><td>16 kHz, hiss band</td><td class="num" id="rates-2400"></td></tr>
       <tr><td>sotto 1200 hiss</td><td class="num">40 ms</td><td>one frame with a coarser envelope, then one coded as small steps from its neighbours</td><td>16 kHz, hiss band</td><td class="num" id="rates-1200"></td></tr>
-      <tr><td>sotto 600</td><td class="num">80 ms</td><td>4 frames: one voicing pattern, a pitch line, an energy level and its change, and envelopes every 40 ms with straight lines between</td><td>8 kHz</td><td class="num" id="rates-600"></td></tr>
-      <tr><td>sotto 400</td><td class="num">120 ms</td><td>6 frames, the same way</td><td>8 kHz</td><td class="num" id="rates-400"></td></tr>
+      <tr><td>sotto 600 hiss</td><td class="num">80 ms</td><td>4 frames: one voicing pattern, a pitch line, an energy level and its change, and envelopes every 40 ms with straight lines between; the hiss band rides in the pitch bits of unpitched stretches</td><td>16 kHz, hiss band</td><td class="num" id="rates-600"></td></tr>
+      <tr><td>sotto 400 hiss</td><td class="num">120 ms</td><td>6 frames, the same way</td><td>16 kHz, hiss band</td><td class="num" id="rates-400"></td></tr>
     </tbody>
   </table></div>
-  <p class="note">PESQ is narrowband (0-4 kHz, mean of the six voices), so it can't hear the 4-8 kHz hiss band. Listening tests on other voices: sotto 1200 hiss beat plain sotto 1200 in all 6 pairs and came close to v3.8 (2 ties, 1 loss); sotto 600 beat Codec 2 700C (3-0) and Codec 2 1200 (2-0); sotto 400 split 1-1 with Codec 2 700C. 600 and 400 also have a hiss band, which won all 7 of its listening pairs, but so far only in the Python model, so the page plays them at 8 kHz. Details: <a href="https://github.com/baitisj/sotto/blob/main/docs/sotto-1200-hiss.md">sotto-1200-hiss.md</a>, <a href="https://github.com/baitisj/sotto/blob/main/docs/sotto-vlr.md">sotto-vlr.md</a>.</p>
+  <p class="note">PESQ is narrowband (0-4 kHz, mean of the six voices), so it can't hear the 4-8 kHz hiss band. Listening tests on other voices: sotto 1200 hiss beat plain sotto 1200 in all 6 pairs and came close to v3.8 (2 ties, 1 loss); sotto 600 beat Codec 2 700C (3-0) and Codec 2 1200 (2-0); sotto 400 split 1-1 with Codec 2 700C. Adding the hiss band to 600 and 400 won all 7 of its listening pairs against the plain modes, and sotto 600 hiss tied sotto 1200 hiss (2 of 2); with it, narrowband PESQ moves from 2.09 to 2.12 at 600 and from 1.76 to 1.79 at 400. Details: <a href="https://github.com/baitisj/sotto/blob/main/docs/sotto-1200-hiss.md">sotto-1200-hiss.md</a>, <a href="https://github.com/baitisj/sotto/blob/main/docs/sotto-vlr.md">sotto-vlr.md</a>.</p>
   <div id="rategrid" class="grid2"></div>
 
   <h2>Part 1: sotto's encoder against Codec 2's</h2>
@@ -268,14 +268,14 @@
   // Four rates: one original per voice encoded at each rate (docs/samples/rates, made by
   // tools/render_page_rates.py; narrowband PESQ from docs/results/page_rates.json)
   const rateVoices = [
-    { id: "female_libri198_14s", name: "Female voice (LibriSpeech reader 198, 14 s)", s: { 2400: 2.72, 1200: 2.45, 600: 1.95, 400: 1.54 } },
+    { id: "female_libri198_14s", name: "Female voice (LibriSpeech reader 198, 14 s)", s: { 2400: 2.72, 1200: 2.45, 600: 2.01, 400: 1.64 } },
     { id: "male_libri3436_15s", name: "Male voice (LibriSpeech reader 3436, 15 s)", s: { 2400: 3.33, 1200: 3.00, 600: 2.47, 400: 2.00 } },
-    { id: "librispeech_3536_f", name: "Female voice (LibriSpeech reader 3536, 12 s)", s: { 2400: 2.83, 1200: 2.62, 600: 1.90, 400: 1.64 } },
-    { id: "librispeech_8842_f", name: "Female voice (LibriSpeech reader 8842, 12 s)", s: { 2400: 2.60, 1200: 2.29, 600: 1.83, 400: 1.63 } },
-    { id: "librispeech_777_m", name: "Male voice (LibriSpeech reader 777, 12 s)", s: { 2400: 3.03, 1200: 2.81, 600: 2.38, 400: 2.02 } },
-    { id: "librispeech_251_m", name: "Male voice (LibriSpeech reader 251, 12 s)", s: { 2400: 2.83, 1200: 2.44, 600: 2.02, 400: 1.72 } },
+    { id: "librispeech_3536_f", name: "Female voice (LibriSpeech reader 3536, 12 s)", s: { 2400: 2.83, 1200: 2.62, 600: 2.00, 400: 1.70 } },
+    { id: "librispeech_8842_f", name: "Female voice (LibriSpeech reader 8842, 12 s)", s: { 2400: 2.60, 1200: 2.29, 600: 1.84, 400: 1.68 } },
+    { id: "librispeech_777_m", name: "Male voice (LibriSpeech reader 777, 12 s)", s: { 2400: 3.03, 1200: 2.81, 600: 2.35, 400: 1.95 } },
+    { id: "librispeech_251_m", name: "Male voice (LibriSpeech reader 251, 12 s)", s: { 2400: 2.83, 1200: 2.44, 600: 2.04, 400: 1.75 } },
   ];
-  const rateMean = { 2400: 2.89, 1200: 2.60, 600: 2.09, 400: 1.76 };
+  const rateMean = { 2400: 2.89, 1200: 2.60, 600: 2.12, 400: 1.79 };
   for (const r in rateMean) document.getElementById(`rates-${r}`).textContent = rateMean[r].toFixed(2);
   const rhost = document.getElementById("rategrid");
   for (const v of rateVoices) {
@@ -354,7 +354,8 @@
     $("file").disabled = $("sot").disabled = on;
     $("file-lbl").classList.toggle("off", on); $("sot-lbl").classList.toggle("off", on);
   }
-  const RATE_NAMES = { 2400: "sotto v3.8", 1200: "sotto 1200 hiss", 600: "sotto 600", 400: "sotto 400" };
+  const RATE_NAMES = { 2400: "sotto v3.8", 1200: "sotto 1200 hiss", 600: "sotto 600 hiss", 400: "sotto 400 hiss",
+                       "600p": "plain sotto 600 (K6)", "400p": "plain sotto 400 (K6)" };
   async function encodeAndShow(x16, what) {
     const { sotto, levelTo, wavBlob, RATES } = await codec;
     const { pcm, gainDb } = levelTo(x16);
@@ -451,12 +452,12 @@
     const { sotto, wavBlob } = await codec;
     const named = f.name.match(/-(2400|1200|600|400)\.sot$/i);
     if (named) $("sot-rate").value = named[1];
-    const rate = Number($("sot-rate").value);
+    const mode = $("sot-rate").value, rate = parseInt(mode), plain = mode.endsWith("p");
     const frames = new Uint8Array(await f.arrayBuffer());
     if (!frames.length || frames.length % 6) { msg(`${f.name} isn't a .sot file: its size should be a multiple of 6 bytes.`); return; }
-    const { pcm: y, sampleRate } = sotto.decode(rate, frames);
+    const { pcm: y, sampleRate } = plain ? sotto.decodePlain(rate, frames) : sotto.decode(rate, frames);
     const wav = wavBlob(y, sampleRate);
-    show([{ label: `${RATE_NAMES[rate]}, ${rate} bit/s`, sub: `${esc(f.name)}: ${frames.length / 6} frames, ${(frames.length * 8 / rate).toFixed(1)} s`, blob: wav, best: true }],
+    show([{ label: `${RATE_NAMES[mode]}, ${rate} bit/s`, sub: `${esc(f.name)}: ${frames.length / 6} frames, ${(frames.length * 8 / rate).toFixed(1)} s`, blob: wav, best: true }],
          [[{ label: "Download decoded .wav", name: f.name.replace(/\.sot$/i, "") + ".wav", blob: wav }]]);
     msg(`Decoded ${f.name} at ${rate} bit/s.`);
   });
