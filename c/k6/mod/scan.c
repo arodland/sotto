@@ -1,4 +1,4 @@
-/* sweep: Phase 1 of the K6 signal explorer, the fast two-stage sweep (docs/k6-sweep.md, the
+/* scan: Phase 1 of the K6 signal explorer, the fast two-stage sweep (docs/k6-scan.md, the
    explorer design). Receive only: tune is the way to move, no register is written.
 
    Up to 4 segments, swept in turn until max_s or a key. Each bin of a segment:
@@ -40,7 +40,7 @@
    Returns the hot entries that aren't spurs, or -3 (an image below level 2), -8 (more than
    FLMAX bins, or scratch too small for the row), -11 (a bad parameter block). A key ends the
    run normally.
-   CI builds it as mod-sweep.bin; tools/k6_sweep.py patches the parameter block before it signs.
+   CI builds it as mod-scan.bin; tools/k6_scan.py patches the parameter block before it signs.
    No libraries, no division, no writable statics. SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 2
 #define K6_MODULE_OPT z
@@ -49,7 +49,7 @@
 #define NSEG 4
 /* byte fields first: Thumb-1 loads reach bytes at offsets below 32 in one instruction */
 typedef struct {
-  char magic[8];          /*  0 "SWEEP v1": tools/k6_sweep.py finds the block by it */
+  char magic[8];          /*  0 "SWEEP v1": tools/k6_scan.py finds the block by it */
   uint8_t nseg;           /*  8 */
   uint8_t wide;           /*  9 1 wide filter, 0 narrow (coarse, confirm, revisit) */
   uint8_t noise_db;       /* 10 */

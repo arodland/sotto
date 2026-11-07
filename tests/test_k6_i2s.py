@@ -27,7 +27,7 @@ PERIOD = 400            # samples between modelled DFS edges
 
 
 def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024,
-        mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None, tune=None, count=200_000_000, code=None):
+        mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None, tune=None, count=200_000_000, code=None, gpiob=None):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
@@ -42,7 +42,8 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     calibration record: cal["flash"] (bytes, default 64 x 0xFF) is what cal_read reads, and each
     cal_write lands there and in cal["writes"] (refused, -1, after the first or while keyed).
     tune(hz, wide, us): called on every api->tune (a receiver model's way to follow the module);
-    count: the emulator's instruction limit; code: (bytes, entry) to run instead of building src. Returns (ret, said lines, registers at the end, writes)."""
+    count: the emulator's instruction limit; code: (bytes, entry) to run instead of building src;
+    gpiob(off, value, st): takes the module's GPIOB writes (else a write fails the test). Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
     st = {"us": 0, "said": [], "writes": [], "reads": 0, "pin": 0}
@@ -80,6 +81,8 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
         return 0
 
     def gpio_write(uc, off, size, value, _):
+        if gpiob:
+            return gpiob(off, value, st)
         raise AssertionError(f"module wrote GPIOB+{off:#x}")
     mu.mmio_map(0x48000400, 0x400, gpio_read, None, gpio_write, None)
     st["regs"] = regs

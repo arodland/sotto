@@ -1,9 +1,9 @@
-# K6 fast sweep (explorer Phase 1)
+# K6 fast scan (explorer Phase 1)
 
 The first working piece of the K6 signal explorer (design: the "K6 signal explorer" Claude Doc,
-section "Fast scanning: a two-stage sweep"). A level 2 RAM module, `c/k6/mod/sweep.c`, sweeps up
+section "Fast scanning: a two-stage sweep"). A level 2 RAM module, `c/k6/mod/scan.c`, sweeps up
 to four segments in turn, finds carriers, follows each one it finds, and reports every
-transmission ("over") with its length and level. The host side is `tools/k6_sweep.py`. The K6
+transmission ("over") with its length and level. The host side is `tools/k6_scan.py`. The K6
 only listens: the module never transmits and writes no register (`tune` is how it moves).
 
 It runs on the image already on the radio (API level 2 or later), so nothing needs flashing.
@@ -34,12 +34,12 @@ Each bin of a segment:
 ## Running it
 
 ```
-python3 tools/k6_sweep.py plan                     # segments, fit, estimated sweep times
-python3 tools/k6_sweep.py run 2m --bin mod-sweep.bin --key-file ~/.config/sotto/k6-mod.key \
+python3 tools/k6_scan.py plan                     # segments, fit, estimated sweep times
+python3 tools/k6_scan.py run 2m --bin mod-scan.bin --key-file ~/.config/sotto/k6-mod.key \
     --seconds 120 --out ~/sotto-work/runs/<run-folder>
-python3 tools/k6_sweep.py run 2mo 70a --seconds 300 ...   # two segments in turn
-python3 tools/k6_sweep.py decode LOG --segments 2m --svg wf.svg --csv hits.csv
-python3 tools/k6_sweep.py watch LOG                # live terminal waterfall from a growing log
+python3 tools/k6_scan.py run 2mo 70a --seconds 300 ...   # two segments in turn
+python3 tools/k6_scan.py decode LOG --segments 2m --svg wf.svg --csv hits.csv
+python3 tools/k6_scan.py watch LOG                # live terminal waterfall from a growing log
 ```
 
 `run` patches the segments into the module's parameter block (`SWEEP v1`), signs it, and sends
@@ -47,7 +47,7 @@ it with `tools/k6_upload.py` (ARQ, telemetry 12). When the run ends, the K6 answ
 with the summary. The waterfall rows only go to the serial port; to keep them, run
 `python -m modem.k6_harness listen --k6 PORT --log FILE` by hand (it only reads the port) and
 point `watch` or `decode` at the file. hamlet has no clang, so give `--bin` the CI-built
-`mod-sweep.bin` from the K6 pager firmware artifact.
+`mod-scan.bin` from the K6 pager firmware artifact.
 
 Segments (`plan` lists them): `2m` 144-148 at 10 kHz, `2mo`/`2mr` the 2 m repeater outputs,
 `125` 222-225, `70a`/`70b` 440-445/445-450 at 12.5 kHz, `70w` 440-450 at 25 kHz, `70s`
@@ -82,7 +82,7 @@ this module takes about 1.2 KB of it. So 2 m plus 70 cm 440-445 fit in one run (
 
 ## Tests
 
-`tests/test_k6_sweep.py` runs the module on the emulated M0 against a receiver model with Phase
+`tests/test_k6_scan.py` runs the module on the emulated M0 against a receiver model with Phase
 0's ramps (wide and narrow), ±1 dB read noise and a filter skirt. It checks a repeater keyed three
 times (three `H` lines at the right length and level), a weak station 5 kHz off the coarse raster
 (refined onto its channel), a carrier that never moves (a spur, then no more revisits), the

@@ -1,231 +1,148 @@
-"""The explorer's Phase 1 sweep module (c/k6/mod/sweep.c) on an emulated Cortex-M0 against a
-modelled FD6818 receiver, its parameter block patched the way tools/k6_sweep.py patches CI's .bin:
-
-  - it fits: 2 m (400 bins) and a 70 cm half-band fit the scratch RAM the 4 KB store leaves;
-  - the coarse pass finds carriers that come and go, the refine pass puts them on the channel,
-    each transmission becomes one H line with its level, and the summary decodes;
-  - a carrier that never moves is called a spur and left alone;
-  - the waterfall rows show the carrier in the right column, max-pooled;
-  - a key stops it, a bad block and a small scratch are refused, nothing is ever written.
-
-The receiver model: RSSI restarts at -173 dBm on every tune and ramps to the true level as the
-explorer's Phase 0 measured (wide: 22 % of the way in dB at 1 ms, all of it at 12 ms; narrow
-slower), with +-1 dB of read noise. The true level is the noise floor plus every signal within
-the filter (wide: 12 kHz, narrow: 6 kHz, 20 dB down at half again that). SPDX-License-Identifier: MIT"""
-import math
+"""The K6 speaker sweep module (c/k6/mod/spksweep.c) on an emulated Cortex-M0, against a modelled
+TIM1, and tools/k6_sweep.py, which must find the sweep in a recording and read back a known
+response: the module's PWM values held at 16 kHz, through the schematic's RC filter, into a
+44.1 kHz recording with noise and a delay. SPDX-License-Identifier: MIT"""
 import os
-import random
 import sys
 
+import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from test_k6_i2s import ROOT, START, need_clang, rssi_reg, run  # noqa: E402
+from test_k6_i2s import ROOT, START, need_clang, run  # noqa: E402
 
 sys.path.insert(0, os.path.join(ROOT, "tools"))
-import k6_sweep as sw  # noqa: E402
+import k6_sweep  # noqa: E402
 
-SRC = sw.SRC
-WIDE = [(0, 0.0), (1000, 0.22), (1500, 0.36), (2000, 0.46), (3000, 0.59), (5000, 0.70), (8000, 0.91),
-        (12000, 1.0)]
-NARROW = [(0, 0.0), (1000, 0.06), (2000, 0.18), (3000, 0.36), (5000, 0.55), (8000, 0.69), (12000, 0.89),
-          (20000, 1.0)]
-FLOOR = -137
+SRC = os.path.join(ROOT, "c", "k6", "mod", "spksweep.c")
+TIM1, RCC, GPIOA = 0x40012C00, 0x40021000, 0x48000000
+AT_START = {"rcc": {0x18: 0x0000_0201}, "gpioa": {0x00: 0x2800_0000, 0x08: 0x0C00_0000, 0x24: 0x0000_0110}}
 
 
-def ramp(us, table):
-    for (t0, g0), (t1, g1) in zip(table, table[1:]):
-        if us < t1:
-            return g0 + (g1 - g0) * (us - t0) / (t1 - t0)
-    return 1.0
+def emulate(keys=(), tim_busy=False, regs=None):
+    """run the module: (ret, said, chip registers, log) with log = {"ccr4": [values written],
+    "spk": [(on, index in ccr4)], "tim": TIM1 at the end, "rcc", "gpioa": theirs at the end}"""
+    log = {"ccr4": [], "spk": [], "tim": {0x00: int(tim_busy)}, "updates": 0,
+           "rcc": dict(AT_START["rcc"]), "gpioa": dict(AT_START["gpioa"]), "armed": False}
+
+    def tim_r(uc, off, size, st):
+        if off == 0x10 and log["tim"].get(0x00, 0) & 1:
+            if not log["armed"]:          # the first read after a clear: not yet
+                log["armed"] = True
+                return 0
+            log["updates"] += 1           # the next: an update event
+            st["us"] += 62 + (log["updates"] & 1)   # 62.5 us an update, in whole us
+            return 1
+        return log["tim"].get(off, 0)
+
+    def tim_w(uc, off, size, value, st):
+        if off == 0x10:
+            log["armed"] = False
+        if off == 0x40:
+            log["ccr4"].append(value)
+        log["tim"][off] = value
+
+    def reg_r(name):
+        return lambda uc, off, size, st: log[name].get(off, 0)
+
+    def reg_w(name):
+        def w(uc, off, size, value, st):
+            log[name][off] = value
+        return w
+
+    def gpiob(off, value, st):
+        assert value == 1 << 2 and off in (0x18, 0x28), (hex(off), value)
+        log["spk"].append((off == 0x18, len(log["ccr4"])))
+
+    mmio = [(TIM1, 0x400, tim_r, tim_w), (RCC, 0x400, reg_r("rcc"), reg_w("rcc")),
+            (GPIOA, 0x400, reg_r("gpioa"), reg_w("gpioa"))]
+    ret, said, regs, writes = run(regs or {**START, 0x47: 0x6140}, src=SRC, mmio=mmio, keys=keys,
+                                  gpiob=gpiob)
+    return ret, said, regs, writes, log
 
 
-class Receiver:
-    """signals: [(hz, dBm, [(from_us, to_us), ...])]"""
-
-    def __init__(self, signals, seed=1):
-        self.sig, self.f, self.t, self.wide = signals, 440_850_000, 0, 1
-        self.rnd = random.Random(seed)
-        self.tunes = []
-
-    def tune(self, hz, wide, us):
-        self.f, self.t, self.wide = hz, us, wide
-        self.tunes.append((hz, wide, us))
-
-    def level(self, us):
-        p = 10 ** (FLOOR / 10)
-        bw = 12_000 if self.wide else 6_000
-        for hz, dbm, spans in self.sig:
-            d = abs(hz - self.f)
-            if d <= 1.5 * bw and any(a <= us < b for a, b in spans):
-                p += 10 ** ((dbm - (0 if d <= bw else 20)) / 10)
-        return 10 * math.log10(p)
-
-    def rssi(self, us):
-        g = ramp(us - self.t, WIDE if self.wide else NARROW)
-        return rssi_reg(round(-173 + (self.level(us) + 173) * g + self.rnd.uniform(-1, 1)))
-
-    def noise(self, us):
-        return 0 if self.level(us) > -100 else 0x2A
+@pytest.fixture(scope="module")
+def swept():
+    return emulate()
 
 
-def go(blk, model, keys=(), level=4, spare=None, code=None):
-    from modem import k6mod
-    if code is None:
-        code, entry = k6mod.build(SRC)
-    else:
-        code, entry = code, 0
-    regs = {**START, 0x67: model.rssi, 0x63: model.noise}
-    return run(regs, code=(sw.patch(code, blk), entry), tune=model.tune, level=level, keys=keys,
-               spare=sw.STORE - len(code) if spare is None else spare, count=3_000_000_000)
-
-
-def s_(sec):
-    return int(sec * 1e6)
+def played(log):
+    """the values written while the amplifier was on, less the one queued before it went off"""
+    (on, a), (off, b) = log["spk"]
+    assert on and not off
+    return np.array(log["ccr4"][a:b - 1], float)
 
 
 @need_clang
-def test_builds_and_fits_2m_and_a_70cm_half():
+def test_builds_level_2_small():
     from modem import k6mod
     code, entry = k6mod.build(SRC)
     assert k6mod.source_level(SRC) == 2 and entry == 0
-    assert code.count(sw.MAGIC) == 1
-    assert len(sw.pack([sw.SEGMENTS["2m"][:4]])) == 76
-    for name in ("2m", "125", "70a", "70b", "70w"):
-        assert sw.fits([sw.SEGMENTS[name][:4]], code=len(code)), name
-    assert sw.fits([sw.SEGMENTS["2m"][:4], sw.SEGMENTS["125"][:4], (440_000_000, 25_000, 300, 12_500)], code=len(code))
-    assert not sw.fits([(144_000_000, 10_000, 1100, 5_000)], code=len(code))
-    blk = sw.pack([sw.SEGMENTS["2m"][:4]], seconds=30)
-    assert sw.unpack(blk)["segs"] == [sw.SEGMENTS["2m"][:4]] and sw.unpack(blk)["max_s"] == 30
-    with pytest.raises(ValueError):
-        sw.patch(code + code, blk)
-
-
-def two_m(seconds=40, **kw):
-    return sw.pack([(146_600_000, 10_000, 80, 5_000)], seconds=seconds, **kw)
+    assert 24 + len(code) <= 1500, len(code)
 
 
 @need_clang
-def test_finds_overs_refines_and_reports():
-    # a repeater on 146.940 keyed for 3 s three times at -70, a weak simplex station on 146.715
-    # (between coarse bins: 7.5 kHz off 146.71/.72 isn't, but it is 5 kHz off) once at -105, and the
-    # upload's own carrier on 440.850 for the first second
-    rep = [(s_(4), s_(7)), (s_(12), s_(15)), (s_(22), s_(25))]
-    m = Receiver([(146_940_000, -70, rep), (146_715_000, -105, [(s_(9), s_(13))]),
-                  (440_850_000, -20, [(0, s_(1))])])
-    ret, said, _, writes = go(two_m(32), m)
-    assert writes == [] and all(len(ln) <= 60 for ln in said)
-    res = sw.decode("\n".join(said))
-    assert res["floors"] and abs(res["floors"][0] - FLOOR) <= 2
-    news = {e["f"] for e in res["new"]}
-    assert 146_940_000 in news and 146_715_000 in news, res["new"]
-    overs = [o for o in res["overs"] if o["f"] == 146_940_000]
-    assert len(overs) == 3, overs
-    for o in overs:
-        assert 2600 <= o["ms"] <= 3400 and abs(o["lvl"] + 70) <= 2, o
-    t = {e["f"]: e for e in res["summary"]}
-    assert t[146_940_000]["overs"] == 3 and t[146_940_000]["spread"] <= 2 and not t[146_940_000]["spur"]
-    assert t[146_715_000]["overs"] == 1
-    assert res["z"]["hot"] == 2 == ret and res["z"]["sweeps"] == len(res["sweeps"])
-    # the summary alone, as the telemetry keeps it, decodes the same
-    tl = sw.decode("".join(ln + "\n" for ln in said)[-sw.TLM_BYTES:])
-    assert tl["summary"] == res["summary"] and tl["z"] == res["z"]
-    rep_txt = sw.report(res, [(146_600_000, 10_000, 80, 5_000)])
-    assert "146.940" in rep_txt and "bins/s" in rep_txt
+def test_plays_the_schedule_and_puts_everything_back(swept):
+    ret, said, regs, writes, log = swept
+    assert ret == 14
+    assert said == ["spk sweep rate=16000 tones=14 top=2000", "spk sweep done tones=14 late=0"]
+    assert writes == [(0x47, 0x6040), (0x47, 0x6140)]     # the chip's AF muted while it plays
+    t = log["tim"]
+    assert t[0x2C] == 2000 and t[0x30] == 2 and t[0x28] == 0 and t[0x00] == 0 and t[0x0C] == 0
+    assert not t[0x44] & 0x8000 and t[0x20] == 0         # outputs off, CC4E as found
+    assert log["rcc"] == AT_START["rcc"] and log["gpioa"] == AT_START["gpioa"]
+    x = played(log)
+    fs = k6_sweep.RATE
+    assert len(x) == 16000 + 14 * 20000
+    assert log["ccr4"][:481] == [1000] * 481             # 30 ms settled before the amplifier
+    assert log["ccr4"][-321:] == [1000] * 321            # and 20 ms after it
+    assert np.ptp(x[:int(0.99 * fs)]) == 0 and x[0] == 1000
+    for j, f in enumerate(k6_sweep.HZ):
+        a = int((1 + 1.25 * j + 0.1) * fs)
+        seg = x[a:a + int(0.8 * fs)] - 1000
+        assert 230 <= seg.max() <= 250 and -250 <= seg.min() <= -230   # peak, as sampled
+        sp = np.abs(np.fft.rfft(seg * np.hanning(len(seg))))
+        assert abs(np.argmax(sp) * fs / len(seg) - f) < 2
+        g = x[int((2.0 + 1.25 * j) * fs):int((2.25 + 1.25 * j) * fs)]
+        assert np.ptp(g) == 0 and g[0] == 1000               # the gap is silent
 
 
 @need_clang
-def test_a_carrier_that_never_moves_is_a_spur():
-    m = Receiver([(146_800_000, -90, [(0, s_(1000))]), (146_940_000, -70, [(s_(5), s_(8))])])
-    blk = two_m(30, spur_s=8)
-    ret, said, *_ = go(blk, m)
-    res = sw.decode("\n".join(said))
-    assert [x["f"] for x in res["spurs"]] == [146_800_000]
-    t = {e["f"]: e for e in res["summary"]}
-    assert t[146_800_000]["spur"] and not t[146_940_000]["spur"]
-    assert ret == 1
-    # once it's a spur, the revisits stop: in the last 8 s it's tuned once a sweep, as any bin
-    late = [hz for hz, _, us in m.tunes if us > s_(22)]
-    assert late.count(146_800_000) <= late.count(146_600_000) + 1
-    early = [hz for hz, _, us in m.tunes if s_(6) < us < s_(14)]
-    assert early.count(146_800_000) > early.count(146_600_000) + 10    # revisited while it was up
+def test_a_key_stops_it_in_a_silence():
+    # the gap after tone 1 starts 3.25 s in (plus the 30 ms settle)
+    ret, said, regs, writes, log = emulate(keys=((3_200_000, 3_400_000),))
+    assert ret == -2 and said[-1] == "spk sweep done tones=2 late=0"
+    assert writes[-1] == (0x47, 0x6140) and log["tim"][0x00] == 0
+    assert [on for on, _ in log["spk"]] == [True, False]
+    assert log["gpioa"] == AT_START["gpioa"]
 
 
 @need_clang
-def test_rows_show_the_carrier_in_its_column():
-    m = Receiver([(146_940_000, -70, [(0, s_(1000))])])
-    blk = sw.pack([(146_600_000, 10_000, 80, 5_000)], seconds=6, cols=40, spur_s=600)
-    ret, said, *_ = go(blk, m)
-    res = sw.decode("\n".join(said))
-    rows = [s["row"] for s in res["sweeps"][1:]]
-    assert rows and all(len(r) == 40 for r in rows)
-    col = (146_940_000 - 146_600_000) // 10_000 * 40 // 80
-    for r in rows:
-        assert max(range(40), key=lambda i: r[i]) in (col - 1, col), r   # 146.93 is in its skirt
-        assert r[col] >= 20 and max(r[:col - 1] + r[col + 2:]) < 8, r   # the carrier, noise elsewhere
+def test_leaves_a_running_timer_alone():
+    ret, said, regs, writes, log = emulate(tim_busy=True)
+    assert ret == -4 and not writes and not log["ccr4"] and not log["spk"]
 
 
 @need_clang
-def test_cost_of_a_bin_comes_out_of_the_sweep_lines():
-    m = Receiver([])
-    segs = [(146_600_000, 10_000, 80, 5_000)]
-    ret, said, *_ = go(sw.pack(segs, seconds=5), m)
-    res = sw.decode("\n".join(said))
-    assert ret == 0 and res["summary"] == []
-    # the emulator charges 400 us a tune and 20 us a read: what the decoder must find
-    assert abs(sw.bin_cost_us(res, segs) - 420) < 40
-    assert res["z"]["bps"] == pytest.approx(1e6 / (1500 + 420), rel=0.1)
-
-
-@need_clang
-def test_two_segments_in_turn():
-    m = Receiver([(146_940_000, -70, [(s_(3), s_(9))]), (442_500_000, -80, [(s_(3), s_(9))])])
-    segs = [(146_600_000, 10_000, 80, 5_000), (442_000_000, 12_500, 80, 12_500)]
-    ret, said, *_ = go(sw.pack(segs, seconds=14), m)
-    res = sw.decode("\n".join(said))
-    assert {s["seg"] for s in res["sweeps"]} == {0, 1} and len(res["floors"]) == 2
-    assert {e["f"] for e in res["summary"]} == {146_940_000, 442_500_000}
-
-
-@need_clang
-def test_key_bad_block_small_scratch_old_image():
-    m = Receiver([])
-    ret, said, *_ = go(two_m(0), m, keys=[(s_(4), s_(5))])
-    assert ret == 0 and said[-1].startswith("Z sw=")
-    bad = bytearray(two_m())
-    bad[8] = 0                                          # no segments
-    assert go(bytes(bad), m)[0] == -11
-    bad = bytearray(two_m())
-    bad[16:18] = (20000).to_bytes(2, "little")          # quick read after the confirm
-    assert go(bytes(bad), m)[0] == -11
-    big = sw.pack([(144_000_000, 10_000, 1100, 5_000)])
-    assert go(big, m)[0] == -8
-    assert go(two_m(), m, spare=sw.SW_T + sw.HOT * sw.HOT_T + 40)[0] == -8   # no room for the row
-    assert go(two_m(), m, level=1)[0] == -3
-
-
-def test_pack_parse_and_decode():
-    assert sw.parse_seg("144.0-148.0/10") == (144_000_000, 10_000, 400, 5_000)
-    assert sw.parse_seg("440-445/12.5") == (440_000_000, 12_500, 400, 12_500)
-    with pytest.raises(ValueError):
-        sw.pack([(144_000_000, 10_000, 4, 5_000)])
-    log = ("12:00:01 K6 MOD say F -137\n"
-           "12:00:01 K6 MOD say R0 0 0005\n"
-           "12:00:02 K6 MOD say S0 1 160 c0 h0\n"
-           "12:00:02 K6 MOD say N 146.940 -70 fl-137 z0 b34\n"
-           "12:00:05 K6 MOD say H 146.940 3010 -70 n1\n"
-           "12:00:09 K6 MOD say T 146.940 n1 t3 -70 d0\n"
-           "12:00:09 K6 MOD say Z sw=20 bins=1600 ms=8000 bps=200 hot=1\n")
-    res = sw.decode(log)
-    assert res["sweeps"][0]["row"] == [0, 0, 0, 5] and res["sweeps"][0]["t"] == "12:00:02"
-    assert res["overs"][0] == {"f": 146_940_000, "ms": 3010, "lvl": -70, "n": 1, "t": "12:00:05"}
-    assert res["z"]["bps"] == 200 and res["summary"][0]["overs"] == 1
-
-
-def test_watch_shows_a_row_a_sweep():
-    shown, pending = [], []
-    for ln in ["F -137", "R0 0 00", "R0 2 9o", "N 146.940 -70 fl-137 z0 b34", "S0 3 160 c1 h1",
-               "Z sw=4 bins=320 ms=700 bps=457 hot=1"]:
-        sw.watch_line(ln, pending, shown.append)
-    assert shown[0] == "  floors -137" and shown[1].startswith("  new  146.940")
-    assert shown[2] == "0 |  :@|   160 ms c1" and shown[-1].startswith("Z ") and pending == []
+def test_reads_back_a_known_response(swept, tmp_path):
+    from scipy.signal import bilinear, freqz, lfilter, resample_poly
+    sf = pytest.importorskip("soundfile")
+    x = (played(swept[4]) - 1000) / 1000
+    y = np.repeat(x, 3)                          # 16 kHz values held at 48 kHz
+    # the ladder as an analog filter, matched at 48 kHz (its poles sit at 1.5 and 8.7 kHz)
+    r1, c1, r2, c2 = 4.7e3, 3.9e-9, 4.7e3, 22e-9
+    b, a = bilinear([1.0], [r1 * c1 * r2 * c2, r1 * c1 + r2 * c2 + r1 * c2, 1.0], 48000)
+    y = lfilter(b, a, y)
+    y = resample_poly(y, 147, 160)               # 44.1 kHz
+    rng = np.random.default_rng(1)
+    y = np.concatenate([np.zeros(int(1.7 * 44100)), y, np.zeros(44100)])
+    y = y + rng.normal(0, 1e-3, len(y))
+    sf.write(tmp_path / "rec.wav", y, 44100)
+    r = k6_sweep.analyse(str(tmp_path / "rec.wav"))
+    assert abs(r["start_s"] - 2.7) < 0.03
+    hz = np.array(k6_sweep.HZ, float)
+    _, h = freqz(b, a, worN=np.append(hz, 1000.0), fs=48000)
+    want = 20 * np.log10(np.abs(h[:-1]) / np.abs(h[-1]))
+    for t, w in zip(r["tones"], want):
+        assert abs(t["db"] - w) < 0.7, (t, w)
+        assert t["snr_db"] > 30
