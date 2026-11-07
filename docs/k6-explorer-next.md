@@ -155,7 +155,11 @@ What goes into the core, in order:
 
 1. **API level 5** (above), on the next image that's flashed anyway.
 2. **The scan engine in the core.** Same `scan.c` loop, called from the main loop a block of 32
-   bins at a time instead of owning the CPU. The `R`/`S` lines become the waterfall rows.
+   bins at a time instead of owning the CPU. The `R`/`S` lines become the waterfall rows. The sweep loop is the hot code, and code
+   in flash runs about 1.33x slower than from RAM. So copy the loop into RAM at start-up: one
+   section, no relocations, called through a pointer (docs/k6-modules.md, Insight 29). It's a
+   tune and a read about every 2.4 ms, so the flash penalty matters less here than in the
+   modem, but it's free to have.
 3. **explore.c and rt.c linked into the core**, about 4.5 KB of flash together. Explorer RAM:
    64 candidates × 48 B = 3 KB, the floors 1 KB, the hot list 280 B and the waterfall 768 B.
    That's 5 KB against the plan's 4.5 KB. If it doesn't fit, a 28 B candidate gets there: times
