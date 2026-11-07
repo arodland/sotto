@@ -79,7 +79,7 @@ def test_vlr_pager_plays_what_the_fixed_decoder_plays(codec, name, lost):
     st, pcm = run("pager_host_vlr", [p for i, p in enumerate(pk) if i not in lost], xl=name == "XL")
     good = [1] * len(fr)
     for q in lost:
-        for f in prof.packet_frames(q):
+        for f in prof.packet_frames(q, len(fr)):
             if f < len(fr):
                 good[f] = 0
     assert st["vlr"] == "1" and int(st["total"]) == 70 and int(st["got"]) == sum(good)
@@ -103,7 +103,8 @@ def test_a_new_codec_starts_a_new_message():
     """Same msg_id, profile and total, other magic: the store starts over (the slots mean
     something else)."""
     fr = b"".join(frames_of(16, seed=4))
-    pk = pager.profile("L", "600").pack(fr, msg_id=5) + pager.profile("L", "400").pack(fr, msg_id=5)[:1]
+    pk = (pager.profile("L", "600", short_last=False).pack(fr, msg_id=5)
+          + pager.profile("L", "400", short_last=False).pack(fr, msg_id=5)[:1])
     st, _ = run("pager_host_vlr", pk)
     r = [x for x in st["results"].split(",") if x]
     assert r[:2] == ["2", "1"] and r[-1] == "2" and int(st["got"]) == 2

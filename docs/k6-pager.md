@@ -23,6 +23,18 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
   top 2 bits of the packet number say which (0 = 8, 1 = 4, 2 = 2, 3 = 1), so the receiver
   adapts per message. A streaming K6 starts once a group is in, so depth 4 starts about twice
   as soon; a lost packet's frames are then 4 slots apart. Images before 2026-11-05 know only 8.
+- **Short last group** (2026-11-07, default; `--no-short-last` for the old layout): a last group
+  with only rem frames takes m = ceil(rem / F) packets instead of D, packet k carrying frames
+  g*F*D + s*m + k, and sets bit 13 of the packet number (seq is now 13 bits; the most a message
+  needs is 8192 packets). The receiver gets m from total. Images before 2026-11-07 drop those
+  packets (they read seq >= 8192) and still play every full group. On 25 real clips: XL 9.2%
+  fewer packets in sotto 2400, 15.2% in sotto 1200; L 4.8% / 7.1%.
+- **Trim** (`tx`/`send`, default; `--no-trim`): dead air goes from both ends of the message,
+  keeping 60 ms (`--trim-keep-ms`). A slot counts as silent when its energy code is 15 codes
+  (34 dB) or more under the message's 98th percentile, so the rule is relative to the talker,
+  as the silent-frame study recommended. No K6 change. With the short last group: XL 12.2% fewer
+  packets (2400), 18.0% (1200) on pre-trimmed corpus clips; real mic recordings gain more.
+  `tools/k6_pcmhash.py` trims and packs the same way by default (same flags).
 - **Profile XL** (`--payload XL`, K6 key 2): 128-byte payload, the same header, 20 frames, no
   reserved bytes; groups of 8 packets carry 160 frames. In packet mode the preamble is 16 bytes
   before the first packet and 24 before the rest: after a 128-byte packet the K6's chip reports

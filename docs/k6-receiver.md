@@ -21,7 +21,11 @@ PC: c/sotto_enc (v3.7)  ->  k6fsk packets  ->  IC-7100 FSK  ~~~>  K6 FD6818 FSK 
   magic and CRC-16, and puts frames in their place per the spec's interleave (packet k of group g
   carries frames g*64 + 8s + k). It keeps a good bit per frame and per packet, so repeats fill
   holes. A new msg_id drops the old message. It also takes profile XL (128 bytes, 20 frames per
-  packet, frames g*160 + 8s + k); profile S was removed on 2026-11-04.
+  packet, frames g*160 + 8s + k); profile S was removed on 2026-11-04. A packet with seq bit 13
+  set belongs to a short last group (2026-11-07): m = ceil(rem / F) packets for its rem frames,
+  packet k carrying frames g*F*D + s*m + k, with m from total. Until a packet of the last group
+  arrives the receiver presumes the short layout for packets_total (missing= lists); a last-group
+  packet without the bit switches it back to the old padded layout.
   Playback decodes frame by frame and conceals missing frames. There is no heap: the store is in
   the caller's buffer, and the decoder's one `calloc` is a static 864-byte block.
 - **`tools/k6_build.sh`** builds `libsotto_k6.a` for thumbv6m with clang, plus a bench ELF. The

@@ -6,7 +6,7 @@ be checked over the serial report without anyone listening.
   python3 tools/k6_pcmhash.py msg.sot --codec 1200 --payload XL --missing 3,17
   python3 tools/k6_pcmhash.py msg.sot --codec 1200 --payload XL --check 'K6 PLAY id=.. pcm=..'
 
-It packs the .sot exactly as `python -m modem.k6 tx` does (same profile, msg_id), leaves out the
+It packs the .sot exactly as `python -m modem.k6 tx` does (same trim, profile, msg_id), leaves out the
 packets the K6 reported missing, and plays the rest through c/k6/pager_host (v3.7),
 c/k6/pager_host_lr (sotto 1200) or c/k6/pager_host_vlr (sotto 600 / 400): the same C as the
 radio's decoder, bit-exact with it, built for the PC. The hash is FNV-1a over the int16 samples before the PWM conversion (sp_pcm_hash in
@@ -33,10 +33,13 @@ from modem.k6 import msg_id_for  # noqa: E402
 K6 = os.path.join(ROOT, "c", "k6")
 
 
-def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store=200000, depth=8):
+def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store=200000, depth=8,
+              short_last=True, trim_keep_s=None):
     """(hash as 8 hex digits, samples, the host's status dict) for frames with the packets in
-    missing left out."""
-    prof = pager.profile(payload, codec, depth)
+    missing left out; trim_keep_s: the frames trimmed first as modem.k6 --trim does (None: as given)."""
+    if trim_keep_s is not None:
+        frames = pager.trim_silence(frames, codec, trim_keep_s)[0]
+    prof = pager.profile(payload, codec, depth, short_last)
     mid = msg_id if msg_id is not None else msg_id_for(frames)
     pk = [p for i, p in enumerate(prof.pack(frames, mid)) if i not in set(missing)]
     host = os.path.join(K6, {"1200": "pager_host_lr", "600": "pager_host_vlr", "400": "pager_host_vlr"}
@@ -70,6 +73,9 @@ def main(argv=None):
     ap.add_argument("--payload", choices=("L", "XL"), default="XL")
     ap.add_argument("--depth", type=int, choices=pager.DEPTHS, default=8, help="as given to modem.k6")
     ap.add_argument("--msg-id", type=int, help="as given to modem.k6 (default: from the frames, as it does)")
+    ap.add_argument("--short-last", action=argparse.BooleanOptionalAction, default=True, help="as given to modem.k6")
+    ap.add_argument("--trim", action=argparse.BooleanOptionalAction, default=True, help="as given to modem.k6")
+    ap.add_argument("--trim-keep-ms", type=float, default=60.0, help="as given to modem.k6")
     ap.add_argument("--missing", default="", help="packet seqs the K6 reported missing, e.g. 3,17")
     ap.add_argument("--check", metavar="LINE", help="the K6 PLAY line to compare with")
     a = ap.parse_args(argv)
@@ -83,7 +89,8 @@ def main(argv=None):
         missing = seqs
         if "pcm" not in kv:
             sys.exit("no pcm= in that PLAY line (firmware before the checksum)")
-    h, n, st = reference(frames, a.codec, a.payload, missing, a.msg_id, depth=a.depth)
+    h, n, st = reference(frames, a.codec, a.payload, missing, a.msg_id, depth=a.depth, short_last=a.short_last,
+                         trim_keep_s=a.trim_keep_ms / 1000 if a.trim else None)
     print(f"pcm={h} samples={n} total={st['total']} got={st['got']} missing={','.join(map(str, missing)) or '-'}")
     if kv is not None:
         ok = kv["pcm"] == h and int(kv["samples"]) == n
