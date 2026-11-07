@@ -231,6 +231,9 @@ serial dump (key 7).
 And his priority rule (21:54): when several carriers are up, the loudest goes first. `xs_up` gives
 them loudest first, and `ex_pick_id` takes the first among those listened to fewest times, so a
 carrier just evaluated moves to the back and the next loudest goes when it's up again.
+The listener also picks only at the end of a full pass over the band set, two passes after a
+listen ends so one is whole (Jeff 21:57: "spend a couple seconds to do a full sweep first"), not
+the moment the first carrier shows partway through a sweep.
 
 ## Bench 4 (2026-11-07 21:07-21:12 UTC, PR #122 head 7a591c0)
 

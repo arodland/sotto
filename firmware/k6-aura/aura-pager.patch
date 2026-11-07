@@ -4179,10 +4179,10 @@ index 0000000..7f6e8e1
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..f60a9fb
+index 0000000..9c3fd10
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1329 @@
+@@ -0,0 +1,1350 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4407,11 +4407,13 @@ index 0000000..f60a9fb
 +const LISTEN_S: u32 = 1500;
 +/// the automatic Listen for ID (Jeff's rule, 2026-11-07): it goes to a candidate with no call
 +/// when it keys up, the one listened to fewest times first (ex_pick_id); it stays while the
-+/// carrier is up, then AUTO_TAIL_MS more, AUTO_MAX_S at most, and leaves AUTO_GAP_MS of sweep
-+/// before the next. A call needs two decodes alike, on one listen or two.
++/// carrier is up, then AUTO_TAIL_MS more, AUTO_MAX_S at most. The next is picked only at the end
++/// of a full pass over the band set (AUTO_PASSES after a listen, so one is whole), from all that
++/// are up then, loudest first (Jeff 2026-11-07: "spend a couple seconds to do a full sweep
++/// first"). A call needs two decodes alike, on one listen or two.
 +const AUTO_MAX_S: u32 = 120;
 +const AUTO_TAIL_MS: u32 = 3000;
-+const AUTO_GAP_MS: u32 = 5000;
++const AUTO_PASSES: u32 = 2;
 +const AUTO_DROP_DB: i16 = 15;
 +const XL_MSG: i32 = 3;
 +const EX_F_IGNORED: u8 = 0x01;
@@ -4486,7 +4488,10 @@ index 0000000..f60a9fb
 +    auto_now: bool,
 +    auto_seen_ms: u32,
 +    auto_lvl: i16,
-+    auto_end_ms: u32,
++    /// full passes (xs_info sweeps) at the last listen's end or the band's start, and the last
++    /// pass the listener looked at
++    auto_mark: u32,
++    auto_pass: u32,
 +    once: [(u32, [u8; 11]); 6],
 +    once_i: u8,
 +    /// the sweep was left for Try or Listen: its segment reads its floor again on the way back
@@ -4526,7 +4531,8 @@ index 0000000..f60a9fb
 +    auto_now: false,
 +    auto_seen_ms: 0,
 +    auto_lvl: 0,
-+    auto_end_ms: 0,
++    auto_mark: 0,
++    auto_pass: 0,
 +    once: [(0, [0; 11]); 6],
 +    once_i: 0,
 +    resume: false,
@@ -4615,8 +4621,17 @@ index 0000000..f60a9fb
 +}
 +
 +/// set the sweep up on band set b (the candidates stay)
++/// full passes over the band set so far
++fn passes() -> u32 {
++    let mut info: XsInfo = unsafe { core::mem::zeroed() };
++    unsafe { ffi::xs_info(st().xs, &mut info) };
++    info.sweeps
++}
++
 +fn start_band(b: u8) {
 +    let t = st();
++    t.auto_mark = 0;
++    t.auto_pass = 0;
 +    t.band = b % BANDS.len() as u8;
 +    let (_, segs) = BANDS[t.band as usize];
 +    unsafe {
@@ -4746,8 +4761,14 @@ index 0000000..f60a9fb
 +            if n > 0 && t.sel as u32 >= n {
 +                t.sel = (n - 1) as _;
 +            }
-+            if !key && t.auto && now_ms().wrapping_sub(t.auto_end_ms) >= AUTO_GAP_MS {
-+                auto_pick(app, syst);
++            if !key && t.auto {
++                let n = passes();
++                if n != t.auto_pass {
++                    t.auto_pass = n;
++                    if n >= t.auto_mark + AUTO_PASSES {
++                        auto_pick(app, syst);
++                    }
++                }
 +            }
 +        }
 +        View::Listen => {
@@ -4805,7 +4826,7 @@ index 0000000..f60a9fb
 +            ctx_off();
 +            monitor_off(app, syst);
 +            if core::mem::take(&mut t.auto_now) {
-+                t.auto_end_ms = now_ms();
++                t.auto_mark = passes();
 +            }
 +            note("LISTEN STOPPED");
 +            t.view = View::List;
@@ -4985,7 +5006,7 @@ index 0000000..f60a9fb
 +    }
 +    let auto = core::mem::take(&mut t.auto_now);
 +    if auto {
-+        t.auto_end_ms = now_ms();
++        t.auto_mark = passes();
 +    } else {
 +        monitor_off(app, syst);
 +    }
