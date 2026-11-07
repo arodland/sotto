@@ -426,8 +426,10 @@ y = v.decode_audio(bits, good=None)   # good: per-superframe flags
 
 - On air: flash `aura-pager-vlri`, then send a sotto 600 and a sotto 400 message and check `pcm=`.
 - References that need an outside build: Codec 2 450, MELPe 600.
-- Hiss band: a fixed-point port (C55x, and the K6 if it should play 16 kHz some day), and the
-  browser page's float `sotto.wasm` could export the 16 kHz pair. To reach more fricatives, the voicing
+- Hiss band: a fixed-point port (C55x, and the K6 if it should play 16 kHz some day). (The
+  browser page's `sotto.wasm` now exports the 16 kHz pair, and the page's 600 / 400 samples and
+  its mic encoder use it; narrowband PESQ on its six voices 2.09 -> 2.12 at 600, 1.76 -> 1.79 at
+  400.) To reach more fricatives, the voicing
   pattern search could weight frames that v3.8's rules sent U more heavily, so fewer of them
   land in voiced patterns.
 - Not tried: a residual for the interpolated frames (as sotto 1200's B frame), which needs bits

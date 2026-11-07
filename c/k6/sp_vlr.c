@@ -25,12 +25,11 @@ static uint32_t get32(const uint8_t *p) {
 #endif
 
 #ifdef HAVE_TABLE
-static uint32_t table_crc(void) {
-  static uint32_t crc;
-  static int have;
-  if (!have) crc = sp_cb_crc32(0, (const uint8_t *)vlr_cb_all, vlr_cb_bytes), have = 1;
-  return crc;
-}
+/* Worked out on every call (about 30 ms on the K6; only the install image and the host tools
+   have the table), not kept in a static: aura-pager-vlri's boot (Aura's main and place_app,
+   6.7 KB of stack with 6.8 KB free) reaches the top of .bss, where this file's statics sit, and
+   a cached CRC read back 0 there (`K6 VLR r=-5 crc=00000000`, 2026-11-07). */
+static uint32_t table_crc(void) { return sp_cb_crc32(0, (const uint8_t *)vlr_cb_all, vlr_cb_bytes); }
 #endif
 
 uint32_t sp_vlr_expected(void) {

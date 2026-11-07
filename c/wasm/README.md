@@ -9,16 +9,19 @@ at a time:
 
 | module | code | rates |
 |---|---|---|
-| `sotto.wasm` (float, v3.8) | `../sotto.c`, `../sotto_hiss.c`, `../sotto_lr.c`, `../sotto_vlr.c` and the parts of Codec 2 they call | 2400 (v3.8) and 1200 hiss, encode and decode at 16 kHz; 600 / 400 encode (8 kHz in) |
-| `sotto_vlr.wasm` (fixed point, v3.7 core) | `../fixed/sotto_fx_vlr.c`, `../fixed/sotto_fx_dec.c` | 600 / 400 decode, 8 kHz out: the decoder the K6 pager runs |
+| `sotto.wasm` (float, v3.8) | `../sotto.c`, `../sotto_hiss.c`, `../sotto_lr.c`, `../sotto_vlr.c`, `../sotto_vlr_dec.c` and the parts of Codec 2 they call | 2400 (v3.8), 1200 hiss, 600 hiss and 400 hiss, encode and decode at 16 kHz; plain 600 / 400 encode (8 kHz in) |
+| `sotto_vlr.wasm` (fixed point, v3.7 core) | `../fixed/sotto_fx_vlr.c`, `../fixed/sotto_fx_dec.c` | plain 600 / 400 decode, 8 kHz out: the decoder the K6 pager runs |
 
-sotto 600 / 400 decode on the v3.7 core (no v3.8 hiss rules), so their decoder is a separate
-module built without `-DSOTTO_V38`, as `make VARIANT=v3.7 fixed` builds `sotto_vlr_dec_fx`.
+The page's four rates all carry v3.8's 4-8 kHz hiss band. Plain sotto 600 / 400 (no hiss band,
+what the K6 sends and plays) decode on the v3.7 core (no v3.8 hiss rules), so their decoder is a
+separate module built without `-DSOTTO_V38`, as `make VARIANT=v3.7 fixed` builds
+`sotto_vlr_dec_fx`; the page uses it only for the "600 plain (K6)" and "400 plain (K6)" entries
+of its .sot menu.
 
 ```sh
 sudo apt install clang lld wasi-libc libclang-rt-18-dev-wasm32   # Debian/Ubuntu names
 make                     # in the repository root first: the Codec 2 build (generated codebooks)
-make -C c/wasm install   # builds sotto.wasm (about 290 KB) and sotto_vlr.wasm (60 KB), copies them to docs/
+make -C c/wasm install   # builds sotto.wasm (about 310 KB) and sotto_vlr.wasm (60 KB), copies them to docs/
 make -C c/wasm check     # node: compares every decoder and encoder with the native tools on the
                          # page clips (c/sotto_enc, c/sotto_dec, and a VARIANT=v3.7
                          # sotto_vlr_dec_fx it builds in build/c37; encoder part needs python3
@@ -33,15 +36,18 @@ runs on the C5517) behind the same entry points, for comparing fixed-point versi
 browser. Being integer only, it gives exactly the bits of `c/fixed/sotto_enc_fx -16` (apart
 from the padded last frame). It isn't installed into `docs/`.
 
-`docs/sotto.js` loads the modules (`loadSotto(url, vlrUrl)`) and gives `encode(rate, speech)` and
-`decode(rate, frames, good)` for rate 2400, 1200, 600 or 400, plus the 2400-only `encode16` and
-`decode16` below. `encode` always takes 16 kHz speech; for 600 / 400 it first halves the rate in
-C (`down2`, the same filter and rounding as scipy's `resample_poly(x, 1, 2)`). `decode` returns
-`{ pcm, sampleRate }`: 16 kHz for 2400 and 1200, 8 kHz for 600 and 400. Every rate's frame is
-6 bytes (48 bits) covering 20, 40, 80 or 120 ms. The outputs match the native tools:
-`sotto_enc -16 [-1200]` / `sotto_dec -16 [-1200]`, and `sotto_enc -600|-400` of the 8 kHz input /
-`sotto_vlr_dec_fx 600|400` (bit-exact: the decoder is integer only and the VLR encoder's ties
-didn't flip on the page clips). Each call starts Codec 2's random generator afresh, as a new
+`docs/sotto.js` loads the modules (`loadSotto(url, vlrUrl)`; `vlrUrl` is optional) and gives
+`encode(rate, speech)` and `decode(rate, frames, good)` for rate 2400, 1200, 600 or 400 (all with
+the hiss band), plus the 2400-only `encode16` and `decode16` below. `encode` takes 16 kHz speech
+and `decode` returns `{ pcm, sampleRate: 16000 }`. Every rate's frame is 6 bytes (48 bits)
+covering 20, 40, 80 or 120 ms. The outputs match `sotto_enc -16 [-1200|-600|-400]` /
+`sotto_dec -16 [-1200|-600|-400]` (every frame on the page clips; decoded samples within 1 LSB).
+For plain sotto 600 / 400, `encodePlain(rate, speech16)` first halves the rate in C (`down2`, the
+same filter and rounding as scipy's `resample_poly(x, 1, 2)`) and gives the bytes of
+`sotto_enc -600|-400` of that 8 kHz input; `decodePlain(rate, frames, good)` (needs
+`sotto_vlr.wasm`) gives 8 kHz, the samples of `sotto_vlr_dec_fx 600|400` (bit-exact: integer
+only). The plain decoder plays a hiss stream too, without its hiss band (and with a wrong pitch
+slope where only one frame of a superframe is pitched), which is how the check exercises it. Each call starts Codec 2's random generator afresh, as a new
 process does, so the result doesn't depend on what the page encoded before.
 
 `encode16` takes an `Int16Array` of 16 kHz speech and returns a `Uint8Array` of 6-byte frames, the
