@@ -228,6 +228,10 @@ And skirts are folded into the carrier beside them on the screen (`ex_view`): th
 dump had four skirts of our -20 dBm ID (440.825 to 440.900) in seven rows. They stay in the
 serial dump (key 7).
 
+And his priority rule (21:54): when several carriers are up, the loudest goes first. `xs_up` gives
+them loudest first, and `ex_pick_id` takes the first among those listened to fewest times, so a
+carrier just evaluated moves to the back and the next loudest goes when it's up again.
+
 ## Bench 4 (2026-11-07 21:07-21:12 UTC, PR #122 head 7a591c0)
 
 The floor fix and the birdie fix worked: 2 m read -92 to -94 every minute, no 2 m phantoms, and

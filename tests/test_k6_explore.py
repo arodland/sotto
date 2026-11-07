@@ -248,7 +248,7 @@ def test_listen_for_id_takes_turns_and_skips_the_ones_with_a_call(lib):
         return p.contents.hz if p else None
 
     first = pick()
-    assert first in (146_940_000, 147_200_000)
+    assert first == 146_940_000              # a tie on listens: the first up, xs_up's loudest
     second = pick()
     assert {first, second} == {146_940_000, 147_200_000}       # took turns
     assert pick() == first                                      # and round again

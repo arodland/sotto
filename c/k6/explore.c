@@ -251,7 +251,7 @@ ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n) {
     if (c->call[0] || c->grade == 's' || (c->flags & (EX_F_SPUR | EX_F_IGNORED | EX_F_SIMPLEX)) ||
         (c->overs && c->skirts >= c->overs))
       continue;
-    if (!best || c->listens < best->listens || (c->listens == best->listens && before(c, best))) best = c;
+    if (!best || c->listens < best->listens) best = c;   /* a tie: the first, the loudest (xs_up) */
   }
   if (best && best->listens < 255) best->listens++;
   return best;

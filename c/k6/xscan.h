@@ -107,7 +107,8 @@ typedef struct {
   uint8_t pad[2];
 } xs_info_t;
 void xs_info(const xs_t *s, xs_info_t *out);
-/* the hot entries that are up now (not spurs): their centres into out, at most max; how many */
+/* the hot entries that are up now worth a listen (not spurs, skirts, or weak), loudest first:
+   their centres into out, at most max; how many */
 unsigned xs_up(const xs_t *s, uint32_t *out, unsigned max);
 /* reads the level at hz now (a tune and a full read), for the details screen */
 int xs_level(xs_t *s, uint32_t hz);

@@ -483,7 +483,7 @@ void xs_info(const xs_t *s, xs_info_t *o) {
   }
 }
 
-/* up now, not a spur, and not within XS_SKIRT_HZ of one up XS_SKIRT_DB louder: the bench's
+/* up now, loudest first, not a spur, and not within XS_SKIRT_HZ of one up XS_SKIRT_DB louder: the bench's
    -24 dBm ID showed up at 440.900 too (-81), and that's where the automatic listener went. And
    XS_PICK_DB over its segment's floor: bench 5 (21:37) sat 2 minutes on a steady 440.7375 only
    10 dB up (-103, fl-113), too weak for the tone detector anyway, and missed the keeper's ID.
@@ -502,8 +502,9 @@ static int floor_of(const xs_t *s, uint32_t hz) {
 }
 
 unsigned xs_up(const xs_t *s, uint32_t *out, unsigned max) {
+  const xs_hot_t *up[XS_HOT];
   unsigned i, j, n = 0;
-  for (i = 0; i < XS_HOT && n < max; i++) {
+  for (i = 0; i < XS_HOT; i++) {
     const xs_hot_t *h = &s->hot[i], *o;
     if (!h->hz || !h->up || h->spur || h->lvl < floor_of(s, h->hz) + XS_PICK_DB + (ex_on_raster(h->hz) ? 0 : XS_OFFGRID_DB))
       continue;
@@ -511,7 +512,12 @@ unsigned xs_up(const xs_t *s, uint32_t *out, unsigned max) {
       if (o != h && o->hz && o->up && (o->hz > h->hz ? o->hz - h->hz : h->hz - o->hz) <= XS_SKIRT_HZ &&
           o->lvl >= h->lvl + XS_SKIRT_DB)
         break;
-    if (j == XS_HOT) out[n++] = h->hz;
+    if (j < XS_HOT) continue;
+    /* loudest first (Jeff 2026-11-07: listen to the strongest first) */
+    for (j = n++; j && up[j - 1]->lvl < h->lvl; j--) up[j] = up[j - 1];
+    up[j] = h;
   }
+  if (n > max) n = max;
+  for (i = 0; i < n; i++) out[i] = up[i]->hz;
   return n;
 }
