@@ -111,17 +111,13 @@ sweep) sent from hamlet, 2 m for 90 s, wide, 1.5 ms quick reads. All 28 chunks i
 
 ## Second bench run (2026-11-07 08:19-08:26 UTC)
 
-Same image, nothing flashed. The module came from CI run 42354372005 (aae8956, 3,476 B), which
+Nothing flashed by this thread (which image was on the radio: to confirm). The module came from CI run 42354372005 (aae8956, 3,476 B), which
 had room for only 108 columns, so both runs used `--cols 108`. 29 of 29 chunks went in each
 time with no resends, and the ARQ report was heard both times.
 
-**2 m, 90 s:** `Z sw=90 bins=36000 ms=90131 bps=399 hot=1`, so the speed held at 399 bins/s.
-**Bin 0 still lights up on every sweep, park or not.** The line is `T 144.000 n89 t0 -71 d1`,
-with 89 overs of 0 ms each. It reads -71 at the confirm, 12 ms after the tune, and is gone at
-the revisit. So it isn't the 4 MHz jump, since the park now comes between the jump and the read.
-What comes just before bin 0 every sweep is the burst of serial lines (R and S, about 150-200 B,
-13-17 ms at 115,200 baud). If the UART is still sending during the park and the read, that
-would explain it. The next run tests this with `--no-rows`.
+**2 m, 90 s:** `F0 -94 q-135`, `Z sw=90 bins=36000 ms=90131 bps=399 hot=1`. The speed held at
+399 bins/s. Bin 0 still lights up on every sweep, park or not: `T 144.000 n89 t0 -71 d1`. The
+segment floor read **-94**, against -137 in the first run, which is 43 dB high (see below).
 
 **70 cm (70a, 440-445), 120 s, CW ID at 40.7 s:**
 
@@ -129,7 +125,7 @@ would explain it. The next run tests this with `--no-rows`.
   8.0 s at the IC-7100's level, as it should be. Bins next to it were also flagged during the
   key-up (440.862 at -59, 440.900 at -81, 440.912 at -74), as was 444.6-444.98 at -105 to -117.
   None of them stayed up.
-- **The segment floor started 35 dB high:** `fl-106` at the ID, then -141/-143 from the next
+- **The segment floor started 35 dB high:** `F0 -106 q-140`, and `fl-106` at the ID, then -141/-143 from the next
   confirm on. The floors are read right after the module waits out the upload's own -22 dBm
   carrier on 440.850. On 70 cm the receiver seems not to have recovered 0.2 s later. The wait is
   now 1 s.
@@ -155,6 +151,30 @@ would explain it. The next run tests this with `--no-rows`.
   helps quick reads that jump about.
 
 The logs are on hamlet in `~/sotto-work/runs/explorer-scan-2/`.
+
+## Third bench run (2026-11-07 08:37 UTC)
+
+The module was 9c296dd, CI run 42355911841 (3,516 B, sha256 c1c0e42a...). It had the row on the
+stack, the 1 s settle and `--no-rows`, but not yet the full-list fix. Logs:
+`~/sotto-work/runs/explorer-scan-3/`.
+
+- **2 m, 60 s, `--no-rows`:** `F0 -94 q-136`, `Z sw=62 bins=24800 ms=60978 bps=406 hot=1`,
+  stack_free 1,140 B. Bin 0 lit up just the same with no R lines: `N 144.000 -72 fl-94 z1 b0`,
+  then 50 overs, `T 144.000 n50 t37 -71 d1`. So the serial burst isn't the cause. 144.000 was up
+  37 s of the 60, which makes it a real carrier rather than an artifact. It's most likely 6 × 24
+  MHz (rxmap found the 24 MHz harmonics), and it simply falls on bin 0. In the first run, at
+  `t0`, the revisit never caught it up; with the per-bin floors it now does. It will turn into an
+  `X` spur after `spur_s` (60 s), once a run is long enough.
+- **70 cm, 120 s, CW ID at 41 s:** `F0 -106 q-141`, then sweeps 0-20 at 952 ms with no
+  confirms. The ID was caught: `N 440.850 -23 fl-140 z2 b67` and `H 440.850 7891 -23`. After it,
+  the -105 dBm carriers at 440.000-440.200 came up again, and sweeps 28-34 took 12.6-14.7 s with
+  101-119 hits each. That's the full-list slowdown again, as expected for this build:
+  `Z sw=35 bins=14000 ms=123914 bps=112 hot=7`.
+- **The floors still read high after a 1 s settle:** -94 on 2 m and -106 on 70 cm, against -137
+  in the first run. The settle wasn't the cause. A receiver gain held low would do it, for
+  example REG_7E bit 15 (fixed gain) or REG_13 changed by an image or module run between 08:03
+  and 08:19. I'm checking that with the softmodem thread. The per-bin quick floors don't depend
+  on it, but the confirm threshold (`sfl + hit_db`) does.
 
 ## Next bench run
 
