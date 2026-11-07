@@ -70,12 +70,12 @@ static double sq(const double *a, const double *b) {
   return s;
 }
 
-struct sotto_vlr_enc *sotto_vlr_enc_create(int rate) {
+static struct sotto_vlr_enc *create(int rate, int core) {
   const vlr_mode_t *m = rate == 600 ? &vlr_mode600 : rate == 400 ? &vlr_mode400 : NULL;
   struct sotto_vlr_enc *e;
   if (!m || !(e = calloc(1, sizeof *e))) return NULL;
   e->m = m;
-  if (!(e->core = sotto_enc_create())) {
+  if (core && !(e->core = sotto_enc_create())) {
     free(e);
     return NULL;
   }
@@ -87,6 +87,11 @@ struct sotto_vlr_enc *sotto_vlr_enc_create(int rate) {
   e->prev_wc = 64;
   return e;
 }
+
+struct sotto_vlr_enc *sotto_vlr_enc_create(int rate) { return create(rate, 1); }
+
+/* sotto 600 / 400 hiss (sotto_hiss.c): no core; the frames come from v3.8's front end */
+struct sotto_vlr_enc *sotto_vlr_enc_create_frames(int rate) { return create(rate, 0); }
 
 void sotto_vlr_enc_destroy(struct sotto_vlr_enc *e) {
   if (!e) return;
@@ -338,6 +343,31 @@ static void pull(struct sotto_vlr_enc *e) {
   drain(e);
 }
 
+void sotto_vlr_enc_push(struct sotto_vlr_enc *e, const sotto_fparams_t *p) {
+  *FR(e, e->nf++) = *p;
+  drain(e);
+}
+
+/* no more frames: pad the last superframe, settle the last anchors */
+void sotto_vlr_enc_end(struct sotto_vlr_enc *e) {
+  const vlr_mode_t *m = e->m;
+  if (e->done) return;
+  e->done = 1;
+  if (e->nf > 0) {
+    while (e->nf % m->n) *FR(e, e->nf) = *FR(e, e->nf - 1), e->nf++;   /* pad the last superframe */
+    drain(e);
+    /* the frames after the last anchor hold it; then the best path decides the rest */
+    const vlr_anchor_t *a = AN(e, e->nan - 1);
+    for (int b = 0; b < e->ncost; b++)
+      for (long g = a->f + 1; g < e->nf; g++) e->cost[b] += wgt(FR(e, g)->ei) * sq(a->rec[b], FR(e, g)->c);
+    int b = 0;
+    for (int i = 1; i < e->ncost; i++) if (e->cost[i] < e->cost[b]) b = i;
+    if (e->nfinal < e->nan) decide(e, e->nfinal, e->nan - 1, b);
+    e->nfinal = e->nan;
+  }
+  drain(e);
+}
+
 void sotto_vlr_encode(struct sotto_vlr_enc *e, const short *speech, int n80) {
   for (int i = 0; i < n80; i++) sotto_enc_analyse_block(e->core, speech + 80 * i);
   pull(e);
@@ -351,22 +381,9 @@ int sotto_vlr_enc_pop(struct sotto_vlr_enc *e, unsigned char out[SOTTO_BYTES_PER
 
 int sotto_vlr_enc_flush(struct sotto_vlr_enc *e, unsigned char out[SOTTO_BYTES_PER_FRAME]) {
   if (!e->done) {
-    const vlr_mode_t *m = e->m;
-    e->done = 1;
     sotto_enc_flush_core(e->core);
     pull(e);
-    if (e->nf > 0) {
-      while (e->nf % m->n) *FR(e, e->nf) = *FR(e, e->nf - 1), e->nf++;   /* pad the last superframe */
-      drain(e);
-      /* the frames after the last anchor hold it; then the best path decides the rest */
-      const vlr_anchor_t *a = AN(e, e->nan - 1);
-      for (int b = 0; b < e->ncost; b++)
-        for (long g = a->f + 1; g < e->nf; g++) e->cost[b] += wgt(FR(e, g)->ei) * sq(a->rec[b], FR(e, g)->c);
-      int b = 0;
-      for (int i = 1; i < e->ncost; i++) if (e->cost[i] < e->cost[b]) b = i;
-      if (e->nfinal < e->nan) decide(e, e->nfinal, e->nan - 1, b);
-      e->nfinal = e->nan;
-    }
+    sotto_vlr_enc_end(e);
   }
   drain(e);
   return sotto_vlr_enc_pop(e, out);

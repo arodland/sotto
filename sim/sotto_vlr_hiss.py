@@ -57,6 +57,9 @@ class SottoVLRHiss(SottoVLR, hb.SottoV38):
 
     # ------------------------------------------------------------ shared by both ends
     _rows = staticmethod(Sotto1200Hiss._rows)
+    # the rows are concealed already (frame_params repeats the last good superframe), as in
+    # sotto 1200 hiss: a lost frame keeps its own repeated code and hiss
+    _conceal_rows = staticmethod(Sotto1200Hiss._conceal_rows)
 
     def npitched(self, f):
         return int((self.vpat[f["v"]] != 0).sum())
@@ -236,6 +239,7 @@ class SottoVLRHiss(SottoVLR, hb.SottoV38):
         self._res = res
         rows = Sotto1200Hiss._rows(code, side)    # side bit lands in bit 8
         rgood = np.repeat(good | self.rebuilt, N)
+        self._side_good = np.repeat(good, N)          # a rebuilt frame carries no side bit
         self._dec_args = (sb, good)
         return hb.SottoV38.decode_audio16(self, rows, rgood, n16=n16, seed=seed)
 
@@ -248,4 +252,4 @@ class SottoVLRHiss(SottoVLR, hb.SottoV38):
     def _read_pc(self, bits, good):
         if not self.side:
             return np.zeros((len(bits), 3))
-        return hb.SottoV38._read_pc(self, self._side_view(bits), good)
+        return hb.SottoV38._read_pc(self, self._side_view(bits), self._side_good)

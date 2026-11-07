@@ -3,6 +3,7 @@
  * -1200: sotto 1200, 6 bytes per 40 ms superframe (8 kHz input).
  * -16 -1200: sotto 1200 hiss, 6 bytes per 40 ms from 16 kHz input (VARIANT=v3.8 build).
  * -600 / -400: sotto 600 / 400, 6 bytes per 80 / 120 ms superframe (8 kHz input).
+ * -16 -600 / -16 -400: sotto 600 / 400 hiss, from 16 kHz input (VARIANT=v3.8 build).
  * SPDX-License-Identifier: MIT */
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,6 +36,23 @@ int main(int argc, char **argv) {
 #endif
   unsigned char b[SOTTO_BYTES_PER_FRAME];
   size_t n;
+#ifdef SOTTO_V38
+  if (vlr && k16) {
+    struct sotto_vlr_enc16 *e = sotto_vlr_enc16_create(vlr);
+    short x[160];
+    if (!e) {
+      fprintf(stderr, "sotto_enc: this build has no sotto %d hiss encoder (use the float build)\n", vlr);
+      return 1;
+    }
+    while (fread(x, sizeof(short), 160, in) == 160) {   /* whole 10 ms blocks */
+      sotto_vlr_encode16(e, x, 1);
+      while (sotto_vlr_enc16_pop(e, b)) fwrite(b, 1, sizeof b, out);
+    }
+    while (sotto_vlr_enc16_flush(e, b)) fwrite(b, 1, sizeof b, out);
+    sotto_vlr_enc16_destroy(e);
+    return 0;
+  }
+#endif
   if (vlr) {
     struct sotto_vlr_enc *e = sotto_vlr_enc_create(vlr);
     short x[80];

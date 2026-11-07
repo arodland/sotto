@@ -165,7 +165,8 @@ core's own look-ahead.
 
 ## Fixed-point decoder and the K6 budget
 
-`c/fixed/sotto_fx_vlr.c` (API in `c/sotto_vlr.h`, tool `c/fixed/sotto_vlr_dec_fx 600|400
+`c/fixed/sotto_fx_vlr.c` (its body in `c/sotto_vlr_dec.inc`, shared with the float decoder
+since the hiss band's C port; API in `c/sotto_vlr.h`, tool `c/fixed/sotto_vlr_dec_fx 600|400
 in.bit out.raw [good.u8]`) turns each superframe into N per-frame field sets (voicing code,
 pitch index, energy code, 19 shape coefficients in dB Q16) and calls the v3.7 fixed-point
 synthesis core once per 20 ms frame (`sotto_dec_frame`), as sotto 1200's decoder does. Its
@@ -257,7 +258,8 @@ loss sotto 1200 is better, as expected: a lost 600 slot takes 80 ms of speech, n
 *Python reference `sim/sotto_vlr_hiss.py` (`SottoVLRHiss("600")`), tables `sim/data/vlr_hiss.npz`
 from `tools/train_vlr_hiss.py` (32 non-test LibriSpeech dev-clean voices, CC BY 4.0), scores
 `tools/eval_vlr_hiss.py` → `docs/results/vlr_hiss.json`. Listening round 21: won 7 of 7 against the
-plain modes. No C port yet.*
+plain modes. Float C port in `c/sotto_hiss.c` (`sotto_vlr_enc16` / `sotto_vlr_dec16`, below),
+checked by `tools/check_vlr_hiss.py` → `docs/results/vlr_hiss_c_check.json`.*
 
 Jeff asked (2026-11-06) whether v3.8's hiss band (`docs/unvoiced-hiss.md`) goes into sotto 600
 and 400 as easily as into sotto 1200 (`docs/sotto-1200-hiss.md`). It fits in the same 48 bits,
@@ -305,7 +307,8 @@ With 1 XL packet in 8 lost: 600 hiss 11.38 dB, 400 hiss 15.17 dB.
   The one-pitched-frame superframes lose their slope there, but that costs nothing measurable.
 - **The K6 is unchanged:** it plays 8 kHz, so it can take a hiss stream and ignore the band, as
   with sotto 1200. Its decoder would need `sf_pitch`'s zero-slope rule for one-pitched-frame
-  superframes (one line in `c/fixed/sotto_fx_vlr.c`, not done).
+  superframes (in `c/sotto_vlr_dec.inc` since the C port, but only the float hiss decoder
+  switches it on).
 
 So the hiss band in sotto 600 is roughly sotto 1200 hiss's "anchors only" variant (6.4 dB)
 or worse, and sotto 400's is weaker again. Round 19 found sotto 1200's band clearly worth having
@@ -326,6 +329,75 @@ sotto 600 hiss against sotto 1200 hiss (2), and a null pair. Jeff, 2026-11-06:
 By ear the band is worth having at both rates, despite the larger band error: it won all 7
 pairs against the plain modes, and sotto 600 hiss tied sotto 1200 hiss on both clips.
 
+### C port
+
+*2026-11-07, after round 21 (Jeff: "Go ahead and build the C ports of the hiss band").*
+`make -C c` (VARIANT=v3.8, the default) builds it into libsotto; the API is in
+`c/sotto_vlr.h` under "sotto 600 / 400 hiss". The tools take `-16 -600` or `-16 -400`:
+`sotto_enc -16 -600 in16k.raw out.bit` and `sotto_dec -16 -600 in.bit out16k.raw [good.u8]`
+(one flag byte per superframe). A plain sotto 600 / 400 decoder (the K6's) still plays a hiss
+stream at 8 kHz.
+
+It is built the way sotto 1200 hiss is (`docs/sotto-1200-hiss.md`, "C port"):
+
+- **One decoder source for the K6 and the PC.** The fixed-point decoder's body moved into
+  `c/sotto_vlr_dec.inc`. `c/fixed/sotto_fx_vlr.c` (the K6 pager, the browser page's
+  `sotto_vlr.wasm`) includes it with shapes in dB Q16, as before, and decodes sample for sample
+  as before (checked on hts1a at both rates, with losses; the K6 tests pass). The new `c/sotto_vlr_dec.c` includes it on the float v3.7 core (shapes in dB), so the
+  hiss decoder doesn't need a second copy of the stream logic (loss rebuild, anchor
+  interpolation, frame-at-a-time play).
+- **Decoder.** In the float v3.8 build the .inc calls a hook after every 20 ms frame its core
+  synthesises (frame number, voicing code, concealment run, whether the superframe arrived
+  or was rebuilt), and with a hook set it reads a one-pitched-frame superframe's pitch as
+  flat (`sf_pitch`). The hook in `sotto_hiss.c` keeps the hiss fields of the last 8
+  superframes received, works out the frame's 4-band correction (index plus slope; the
+  neighbours' hiss plus the 2-bit offset or `k2`; `h0`) and whether it carries the
+  superframe's side bit, and feeds v3.8's 16 kHz layer (`dec_push`, which now takes a
+  "carrier" flag instead of assuming every unvoiced frame carries one). The neighbours two
+  superframes ahead are always in, because the decoder plays superframe s once s + 2 has
+  arrived.
+- **Encoder.** v3.8's front end (decimation, core, input features, voicing rules) hands its
+  final 20 ms frames to the sotto 600 / 400 coder in `c/sotto_vlr.c`, run without its own core
+  (`sotto_vlr_enc_create_frames`, `_push`, `_end`). Each superframe that comes out gets the
+  one-pitched-frame pitch fix and goes through a local float sotto 600 / 400 decoder, whose
+  envelope gives the guess and whose output the side channel's predictor. Stage 1 picks a
+  kind-0 superframe's index and slope (joint search) as soon as its envelope is in; stage 2
+  finishes superframe s once stage 1 has reached s + 2: the kind-1 offset over the
+  neighbours, the side bit, the fields packed.
+- **The Python** got the two fixes sotto 1200 hiss's port brought there: the rows handed to
+  v3.8's layer are already concealed (`_conceal_rows`), and a rebuilt superframe carries no
+  side bit. Clean scores don't move; the loss rows above are rescored with them.
+
+**Check against the Python** (`tools/check_vlr_hiss.py`, the 16 test voices, whole clips, the
+Python with the C's fixed-lag tracker and whisper look-ahead):
+
+| | sotto 600 hiss | sotto 400 hiss |
+|---|---:|---:|
+| Superframes whose 48 bits match | 2,243 of 2,248 (14 voices all) | 1,499 of 1,500 (15 voices all) |
+| 0-4 kHz SNR, C decoder vs Python decoder on the same bits | 26-44 dB | 28-42 dB |
+| 4-8 kHz level per 10 ms, mean / 95th pct. \|difference\| | 0.73 / 1.84 dB | 0.72 / 1.82 dB |
+| PESQ-NB clean: Python / C decoder / C encoder + C decoder | 2.094 / 2.095 / 2.092 | 1.814 / 1.814 / 1.815 |
+| the same, 1 superframe in 8 lost | 1.804 / 1.804 / 1.802 | 1.612 / 1.612 / 1.611 |
+| the same, 10% random loss | 1.877 / 1.876 / 1.876 | 1.676 / 1.670 / 1.671 |
+
+- The superframes that differ: on p095 (600) shape anchors at near-ties, as in the plain
+  coder (`tools/check_vlr.py`); on p051 (one superframe at each rate, and the one after it at
+  600) the core's pitch tracker, which takes a near-tie octave the other way on the C's
+  16-bit decimated input (as in v3.8's own check).
+- The decoders differ only in the noise band's random phase (0.73 / 1.84 dB is the spread
+  between two seeds) and the 0-4 kHz synthesis rounding, as for sotto 1200 hiss.
+- **Delay.** The encoder writes a superframe about 10 superframes (sotto 600, 800 ms) or 9
+  (sotto 400, 1.08 s) after its speech: the core's look-ahead and v3.8's rules (16 frames),
+  the anchor search, the local decoder's 2 superframes, and stage 2 waiting for the hiss 2
+  superframes ahead. The decoder plays `SOTTO_VLR_DEC16_DELAY` superframes behind: 4 at 600,
+  3 at 400 (sotto 600 / 400's 2 plus v3.8's layer, rounded up to whole superframes). For the
+  store-and-forward pager neither matters.
+- **Cost on a PC** (11.5 s of p020): the encoder takes about v3.8's 2400 encoder's time (0.14
+  s), the decoder a little less than v3.8's 16 kHz decoder.
+- **Fixed point.** Not done (stubs return NULL, as for sotto 1200 hiss). The K6 keeps playing
+  8 kHz. If hiss streams become what we send it, it could switch on the .inc's zero-slope rule
+  for one-pitched-frame superframes (`sf_pitch`, now tied to the hook).
+
 ## Use
 
 ```sh
@@ -337,6 +409,10 @@ make -C c VARIANT=v3.7 all fixed                     # c/sotto_enc, c/fixed/sott
 c/sotto_enc -600 in.raw out.bit                      # 8 kHz 16-bit mono in, 6 bytes per 80 ms out
 c/fixed/sotto_vlr_dec_fx 600 out.bit back.raw
 python tools/check_vlr.py CLIP.flac ... --mode 600 [--loss 0.1] [--bits-dir DIR]
+make -C c                                            # VARIANT=v3.8: the hiss band
+c/sotto_enc -16 -600 in16k.raw out.bit               # sotto 600 hiss: 16 kHz in
+c/sotto_dec -16 -600 out.bit back16k.raw [good.u8]
+python tools/check_vlr_hiss.py CLIP16K.wav ... [--every 8 | --loss 0.1] [--json OUT]
 ```
 
 ```python
@@ -350,7 +426,8 @@ y = v.decode_audio(bits, good=None)   # good: per-superframe flags
 
 - On air: flash `aura-pager-vlri`, then send a sotto 600 and a sotto 400 message and check `pcm=`.
 - References that need an outside build: Codec 2 450, MELPe 600.
-- Hiss band: a C port (round 21 says ears want it), on the v3.8 layer in `c/sotto_hiss.c`. To reach more fricatives, the voicing
+- Hiss band: a fixed-point port (C55x, and the K6 if it should play 16 kHz some day), and the
+  browser page's float `sotto.wasm` could export the 16 kHz pair. To reach more fricatives, the voicing
   pattern search could weight frames that v3.8's rules sent U more heavily, so fewer of them
   land in voiced patterns.
 - Not tried: a residual for the interpolated frames (as sotto 1200's B frame), which needs bits

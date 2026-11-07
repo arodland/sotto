@@ -48,7 +48,24 @@ typedef void (*lr_hiss_hook_t)(void *ctx, int code, const double *res, int side,
                                const short *out, int flushed);
 void sotto_lr_dec_set_hook(struct sotto_lr_dec *d, lr_hiss_hook_t hook, void *ctx);
 const struct sotto_dec *sotto_lr_dec_core(const struct sotto_lr_dec *d);
-/* and its encoder: sotto 1200's coder fed the frames after v3.8's rules */
+
+/* sotto 600 / 400 hiss (VARIANT=v3.8): the float sotto 600 / 400 decoder (sotto_vlr_dec.c)
+   calls the hook after every 20 ms frame the core takes, with the frame's number g, voicing
+   code and concealment run, whether its superframe arrived or was rebuilt (avail), whether it
+   was rebuilt (reb), and the core's 160 samples out; flushed = 1 (g = -1) for the core's last
+   output. sotto_hiss.c reads the superframes' hiss fields itself. */
+struct sotto_vlr_dec;
+typedef void (*vlr_hiss_hook_t)(void *ctx, int g, int code, int run, int avail, int reb, const short *out,
+                                int flushed);
+void sotto_vlr_dec_set_hook(struct sotto_vlr_dec *d, vlr_hiss_hook_t hook, void *ctx);
+const struct sotto_dec *sotto_vlr_dec_core(const struct sotto_vlr_dec *d);
+/* and its encoder: sotto 600 / 400's coder (sotto_vlr.c) fed the frames after v3.8's rules,
+   then sotto_vlr_enc_pop */
+struct sotto_vlr_enc;
+struct sotto_vlr_enc *sotto_vlr_enc_create_frames(int rate);
+void sotto_vlr_enc_push(struct sotto_vlr_enc *e, const sotto_fparams_t *p);
+void sotto_vlr_enc_end(struct sotto_vlr_enc *e);
+/* sotto 1200 hiss's encoder: sotto 1200's coder fed the frames after v3.8's rules */
 struct sotto_lr_enc;
 struct sotto_lr_enc *sotto_lr_enc_create_frames(void);
 void sotto_lr_enc_push(struct sotto_lr_enc *e, const sotto_fparams_t *p);

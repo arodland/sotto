@@ -22,7 +22,7 @@ C2FILES = codec2.c codec2_fft.c kiss_fft.c kiss_fftr.c sine.c nlp.c phase.c post
 C2GENFILES = codebook.c codebookd.c codebookjmv.c codebookge.c codebooknewamp1.c \
              codebooknewamp1_energy.c codebooknewamp2.c codebooknewamp2_energy.c
 SRCS = sotto_wasm.c ../sotto.c ../sotto_hiss.c ../sotto_codebook.c ../sotto_hiss_tables.c \
-       ../sotto_lr.c ../sotto_vlr.c ../sotto_vlr_tables.c \
+       ../sotto_lr.c ../sotto_vlr.c ../sotto_vlr_dec.c ../sotto_vlr_tables.c \
        $(addprefix $(C2SRC)/,$(C2FILES)) $(addprefix $(C2GEN)/src/,$(C2GENFILES))
 OBJS = $(patsubst %.c,obj/%.o,$(notdir $(SRCS)))
 vpath %.c . .. $(C2SRC) $(C2GEN)/src
