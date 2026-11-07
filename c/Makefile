@@ -46,7 +46,7 @@ else
 CB = sotto_codebook_gen
 endif
 # sotto 600 / 400 (very low rate): the float encoder and its tables
-VLR_OBJS = sotto_vlr.o sotto_vlr_tables.o
+VLR_OBJS = sotto_vlr.o sotto_vlr_dec.o sotto_vlr_tables.o
 PREFIX ?= /usr/local
 LIBDIR ?= $(PREFIX)/lib
 INCDIR ?= $(PREFIX)/include
@@ -76,7 +76,7 @@ endif
 fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm \
 	fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0 fixed/sotto_vlr_dec_fx
 fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h sotto_lr_tables.h sotto_lr_dec.inc \
-	sotto_vlr.h sotto_vlr_tables.h
+	sotto_vlr.h sotto_vlr_tables.h sotto_vlr_dec.inc
 	$(CC) $(CFLAGS) $(FXFLAGS) -c -o $@ $<
 # very-low-rate sotto (sotto 600 / 400): the fixed-point decoder, on the v3.7 decoder core
 # (the encoder is float, sotto_vlr.c in libsotto)
@@ -133,6 +133,7 @@ sotto_hiss.o: sotto_hiss.c sotto.h sotto_internal.h sotto_hiss_tables.h
 sotto_hiss_tables.o: sotto_hiss_tables.c sotto_hiss_tables.h
 sotto_vlr.o: sotto_vlr.c sotto.h sotto_internal.h sotto_vlr.h sotto_vlr_tables.h
 sotto_vlr_tables.o: sotto_vlr_tables.c sotto_vlr_tables.h
+sotto_vlr_dec.o: sotto_vlr_dec.c sotto_vlr_dec.inc sotto.h sotto_internal.h sotto_vlr.h sotto_vlr_tables.h
 $(CB).o: $(CB).c sotto_codebook.h
 
 libsotto.a: sotto.o sotto_lr.o $(VLR_OBJS) $(CB).o $(HISS_OBJS)

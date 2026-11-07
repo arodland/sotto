@@ -13,6 +13,9 @@
  * Python's framing implies (HB_LAG, the predictor on decoded audio, 40 ms of flicker
  * bridging) makes the 16 kHz output SOTTO_DEC16_DELAY_FRAMES frames late.
  *
+ * The same layer runs under sotto 1200 (sotto_lr_enc16 / sotto_lr_dec16) and sotto 600 / 400
+ * (sotto_vlr_enc16 / sotto_vlr_dec16), whose decoders feed it frame by frame through a hook.
+ *
  * Each function names the Python it mirrors. SPDX-License-Identifier: MIT */
 #define SOTTO_BUILD
 #include <limits.h>
@@ -57,8 +60,9 @@
 #endif
 #define FRING 128                           /* frames of history the rules see */
 /* STFT frames of features kept: the sotto 1200 hiss encoder reaches 2 * SOTTO_RULE_LAG + 29
-   back (49 at the default lag) */
-#define SRING (2 * SOTTO_RULE_LAG + 29 <= 64 ? 64 : 128)
+   back (49 at the default lag), sotto 400 hiss's about 2 * SOTTO_RULE_LAG + 100 (its coder's
+   anchor search, local decoder and stage 2 each wait a superframe or two) */
+#define SRING (2 * SOTTO_RULE_LAG + 120 <= 256 ? 256 : 512)
 #define PCT_MAX 12000                       /* frames the running percentile remembers (120 s) */
 #define ALIGN_CALLS 2                       /* core decoder calls before its output lines up with the input */
 
@@ -214,7 +218,7 @@ static void up2(const double *x8_at_n, double *y) {      /* pointer to x8[n - 10
 /* ================================================================== decoder */
 #define DY8 4096                            /* 8 kHz samples kept (power of 2) */
 #define DY16 8192
-#define MRING 64                            /* model frames (10 ms) */
+#define MRING 128                           /* model frames (10 ms) */
 #define GRING 32                            /* codec frames */
 #define TRING 32                            /* STFT frames between stage A and B */
 #define ORING 8192                          /* output samples (OLA) */
@@ -433,10 +437,11 @@ static void dec_output(struct sotto_dec16 *d, short *speech) {
 
 /* one 20 ms frame through the core: its 160 samples y8 (frame n - 1 synthesised), the core's
    envelope and classes of those halves, frame n's voicing code, hiss correction and
-   concealment run, and its side-channel bit (read when the frame is unvoiced and arrived:
-   hiss_band._read_pc). Then the hiss stages, and one 20 ms block out once past the delay. */
+   concealment run, and its side-channel bit (read when the frame carries one and arrived:
+   hiss_band._read_pc; v3.8 and sotto 1200 hiss: every unvoiced frame). Then the hiss stages,
+   and one 20 ms block out once past the delay. */
 static void dec_push(struct sotto_dec16 *d, const short *y8, const sotto_dec_info_t *info, int code,
-                     const double *res, int run, int side, int sgood, short *speech) {
+                     const double *res, int run, int side, int carrier, int sgood, short *speech) {
   long n = d->n;
   if (n >= ALIGN_CALLS)
     for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) d->y8[d->y8n++ & (DY8 - 1)] = y8[i] / 32768.0;
@@ -455,7 +460,7 @@ static void dec_push(struct sotto_dec16 *d, const short *y8, const sotto_dec_inf
   memcpy(d->pc[n % GRING], d->cur, sizeof d->cur);
   if (d->ok && d->ngot < MSG_BITS) {
     if (!sgood) d->ok = 0;
-    else if (code == 0) {
+    else if (carrier) {
       d->got[d->ngot++] = side;
       if (d->ngot == MSG_BITS && unpack_pc(d->got, d->cur)) memcpy(d->pc[n % GRING], d->cur, sizeof d->cur);
     }
@@ -489,7 +494,8 @@ void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PE
   const sotto_dec_info_t *info = sotto_dec_info(d->core);
   double res[4];
   for (int b = 0; b < 4; b++) res[b] = sotto_hiss_cb6[index6(info->b2) * 4 + b];
-  dec_push(d, y8, info, frame_code(info->b2), res, info->run, frame_bit(in, 8), good, speech);
+  int code = frame_code(info->b2);
+  dec_push(d, y8, info, code, res, info->run, frame_bit(in, 8), code == 0, good, speech);
 }
 
 /* the end of the stream: returns 1 and 320 samples while output remains */
@@ -520,7 +526,7 @@ static void lr_hook(void *ctx, int code, const double *res, int side, int sgood,
   }
   short blk[N16];
   long n = d->n;
-  dec_push(d, out, info, code, res, run, side, sgood, blk);
+  dec_push(d, out, info, code, res, run, side, code == 0, sgood, blk);
   if (n + 1 > SOTTO_DEC16_DELAY_FRAMES) memcpy(d->q + N16 * d->qn++, blk, sizeof blk);
 }
 
@@ -830,11 +836,8 @@ static void enc_rules(struct sotto_enc16 *e) {
 #undef RF
 }
 
-/* feed frame g (final voicing) to the local decoder: its output is frame g - 1 */
-static void enc_feed_local(struct sotto_enc16 *e, long g) {
-  short y8[SOTTO_SAMPLES_PER_FRAME];
-  sotto_decode(e->ldec, e->rf[g % FRING].bits, 1, y8);
-  const sotto_dec_info_t *info = sotto_dec_info(e->ldec);
+/* the local decoder took frame g: its output y8 (frame g - 1) and that frame's envelope */
+static void local_store(struct sotto_enc16 *e, long g, const short *y8, const sotto_dec_info_t *info) {
   if (g >= ALIGN_CALLS)
     for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) e->ly8[e->ly8n++ & (EX8 - 1)] = y8[i] / 32768.0;
   if (g >= 1)
@@ -844,6 +847,20 @@ static void enc_feed_local(struct sotto_enc16 *e, long g) {
       e->lcls[k % MRING] = info->cls[h];
       e->lkmax = k;
     }
+}
+
+/* the local decoder's flush after nf frames (its output is frame nf - 1), then the Python's
+   zero padding */
+static void local_end(struct sotto_enc16 *e, long nf, const short *y8, const sotto_dec_info_t *info) {
+  local_store(e, nf, y8, info);
+  while (e->ly8n < 160 * nf + 10) e->ly8[e->ly8n++ & (EX8 - 1)] = 0;
+}
+
+/* feed frame g (final voicing) to the local decoder: its output is frame g - 1 */
+static void enc_feed_local(struct sotto_enc16 *e, long g) {
+  short y8[SOTTO_SAMPLES_PER_FRAME];
+  sotto_decode(e->ldec, e->rf[g % FRING].bits, 1, y8);
+  local_store(e, g, y8, sotto_dec_info(e->ldec));
 }
 
 /* the local decoder's 16 kHz output and its STFT predictor, as far as possible */
@@ -960,16 +977,7 @@ static void enc_run(struct sotto_enc16 *e) {
   if (e->nend >= 0 && e->nfed == e->nend && e->ly8n < 160 * e->nend + 10) {
     short y8[SOTTO_SAMPLES_PER_FRAME];
     sotto_dec_flush(e->ldec, y8);
-    if (e->nend >= ALIGN_CALLS)
-      for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) e->ly8[e->ly8n++ & (EX8 - 1)] = y8[i] / 32768.0;
-    const sotto_dec_info_t *info = sotto_dec_info(e->ldec);
-    for (int h = 0; h < 2; h++) {
-      long k = 2 * (e->nend - 1) + h;
-      memcpy(e->lenv[k % MRING], info->env[h], sizeof info->env[h]);
-      e->lcls[k % MRING] = info->cls[h];
-      e->lkmax = k;
-    }
-    while (e->ly8n < 160 * e->nend + 10) e->ly8[e->ly8n++ & (EX8 - 1)] = 0;
+    local_end(e, e->nend, y8, sotto_dec_info(e->ldec));
   }
   enc_advance_local(e);
   e->nfinal = nfinal;
@@ -1100,19 +1108,9 @@ static void lr_take(struct sotto_lr_enc16 *L) {
 
 /* one 20 ms frame into the local decoder (its output is the frame before) */
 static void lr_feed_local(struct sotto_enc16 *e, const sotto_fparams_t *p) {
-  long g = e->nfed++;
   short y8[SOTTO_SAMPLES_PER_FRAME];
   sotto_dec_frame(e->ldec, p, 0, y8);
-  const sotto_dec_info_t *info = sotto_dec_info(e->ldec);
-  if (g >= ALIGN_CALLS)
-    for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) e->ly8[e->ly8n++ & (EX8 - 1)] = y8[i] / 32768.0;
-  if (g >= 1)
-    for (int h = 0; h < 2; h++) {
-      long k = 2 * (g - 1) + h;
-      memcpy(e->lenv[k % MRING], info->env[h], sizeof info->env[h]);
-      e->lcls[k % MRING] = info->cls[h];
-      e->lkmax = k;
-    }
+  local_store(e, e->nfed++, y8, sotto_dec_info(e->ldec));
 }
 
 /* A(s)'s 6-bit index and quantised hiss (unvoiced A frames) */
@@ -1190,19 +1188,9 @@ static void lr_run(struct sotto_lr_enc16 *L) {
     lr_feed_local(e, &b);
   }
   if (L->nsf_end >= 0 && L->nloc == L->nsf_end && !L->lflushed) {
-    long nf = 2 * L->nsf_end;
     short y8[SOTTO_SAMPLES_PER_FRAME];
     sotto_dec_flush(e->ldec, y8);
-    if (nf >= ALIGN_CALLS)
-      for (int i = 0; i < SOTTO_SAMPLES_PER_FRAME; i++) e->ly8[e->ly8n++ & (EX8 - 1)] = y8[i] / 32768.0;
-    const sotto_dec_info_t *info = sotto_dec_info(e->ldec);
-    for (int h = 0; h < 2; h++) {
-      long k = 2 * (nf - 1) + h;
-      memcpy(e->lenv[k % MRING], info->env[h], sizeof info->env[h]);
-      e->lcls[k % MRING] = info->cls[h];
-      e->lkmax = k;
-    }
-    while (e->ly8n < 160 * nf + 10) e->ly8[e->ly8n++ & (EX8 - 1)] = 0;
+    local_end(e, 2 * L->nsf_end, y8, sotto_dec_info(e->ldec));
     L->lflushed = 1;
   }
   enc_advance_local(e);
@@ -1223,4 +1211,447 @@ int sotto_lr_enc16_flush(struct sotto_lr_enc16 *L, unsigned char out[SOTTO_BYTES
   if (L->h.nend < 0) enc_end_input(&L->h);
   lr_run(L);
   return enc_pop(&L->h, out);
+}
+
+/* ================================================================== sotto 600 / 400 hiss */
+/* SottoVLRHiss (sim/sotto_vlr_hiss.py): the pitch fields that carry nothing hold the hiss.
+ * Kind 0, no pitched frame in the voicing pattern: pitch centre = 6-bit index << 1 | side bit,
+ * slope = a level slope across the superframe (q = cb6[index] + slope x t). Kind 1, one pitched
+ * frame: its pitch is the centre, the slope = 2-bit offset << 1 | side bit over the
+ * neighbours' hiss. Kind 2, two or more (and lost superframes): the neighbours' hiss plus k2.
+ * The neighbours' hiss of frame g is the mean of the nearest kind-0 frame before and after
+ * within 2 superframes (SottoVLRHiss._base), h0 when there is none. One side bit per kind 0
+ * or 1 superframe, in its first unvoiced frame (the "carrier"). */
+#include "sotto_vlr.h"
+#include "sotto_vlr_tables.h"
+
+#define VLR_REACH 2                         /* SottoVLRHiss.REACH, superframes */
+
+typedef struct {                            /* a superframe's hiss fields */
+  int good, kind, v, wc, ws;
+} vlr_hf_t;
+
+static const vlr_mode_t *vlr_mode(int rate, int *mi) {
+  *mi = rate == 400;
+  return rate == 600 ? &vlr_mode600 : rate == 400 ? &vlr_mode400 : NULL;
+}
+
+static int get_field(const unsigned char *b, int pos, int w) {
+  int x = 0;
+  for (int i = 0; i < w; i++) x = (x << 1) | frame_bit(b, pos + i);
+  return x;
+}
+
+static void put_field(unsigned char *b, int pos, int w, int v) {
+  for (int i = 0; i < w; i++) set_bit(b, pos + i, (v >> (w - 1 - i)) & 1);
+}
+
+/* SottoVLRHiss.kind on the unpacked fields */
+static void vlr_parse(const vlr_mode_t *m, const unsigned char *b, int good, vlr_hf_t *f) {
+  int np = 0;
+  f->good = good;
+  f->v = get_field(b, 0, m->bv);
+  f->wc = get_field(b, m->bv, 7);
+  f->ws = get_field(b, m->bv + 7, m->bs);
+  for (int k = 0; k < m->n; k++) np += m->vpat[f->v * m->n + k] != 0;
+  f->kind = np == 0 ? 0 : np == 1 ? 1 : 2;
+}
+
+static double vlr_t(const vlr_mode_t *m, int k) { return k - (m->n - 1) / 2.0; }
+
+/* frame k of a kind-0 superframe: cb6[wc >> 1] + slope[ws] x t */
+static void vlr_q(const vlr_mode_t *m, int mi, const vlr_hf_t *f, int k, double *q) {
+  double sl = sotto_vlr_hiss_slope[mi * 8 + f->ws] * vlr_t(m, k);
+  for (int b = 0; b < 4; b++) q[b] = sotto_hiss_cb6[(f->wc >> 1) * 4 + b] + sl;
+}
+
+/* SottoVLRHiss._base (raw): the mean of the nearest kind-0 frame before and after g among
+   superframes 0 .. nsf - 1 (ring[u % rsz]); returns how many were found */
+static int vlr_base(const vlr_hf_t *ring, int rsz, long nsf, const vlr_mode_t *m, int mi, long g, double *base) {
+  long n = m->n, r = VLR_REACH * n;
+  int nx = 0;
+  for (int b = 0; b < 4; b++) base[b] = 0;
+  for (int dir = -1; dir <= 1; dir += 2)
+    for (long h = g + dir; h >= 0 && h < nsf * n && labs(h - g) <= r; h += dir) {
+      const vlr_hf_t *f = &ring[(h / n) % rsz];
+      if (f->good && f->kind == 0) {
+        double q[4];
+        vlr_q(m, mi, f, (int)(h % n), q);
+        for (int b = 0; b < 4; b++) base[b] += q[b];
+        nx++;
+        break;
+      }
+    }
+  for (int b = 0; nx && b < 4; b++) base[b] /= nx;
+  return nx;
+}
+
+/* ------------------------------------------------------------------ decoder */
+#define VRING 8                             /* superframes received (s - 2 .. s + 2 are needed) */
+#define VQ (3 * VLR_MAX_N)                  /* 20 ms blocks out */
+
+struct sotto_vlr_dec16 {
+  struct sotto_dec16 h;
+  struct sotto_vlr_dec *vlr;                /* the float sotto 600 / 400 decoder */
+  const vlr_mode_t *m;
+  int mi;                                   /* the hiss tables' row: 0 sotto 600, 1 sotto 400 */
+  vlr_hf_t sf[VRING];
+  long nin;                                 /* superframes received */
+  int taken;                                /* the superframe playing has met its carrier */
+  short q[VQ * N16];
+  int qn;
+};
+
+/* SottoVLRHiss.decode_audio16 for frame g as the decoder plays it (superframe g / N has the
+   two after it in) */
+static void vlr_dec_hook(void *ctx, int g, int code, int run, int avail, int reb, const short *out, int flushed) {
+  struct sotto_vlr_dec16 *V = ctx;
+  struct sotto_dec16 *d = &V->h;
+  const vlr_mode_t *m = V->m;
+  const sotto_dec_info_t *info = sotto_dec_info(sotto_vlr_dec_core(V->vlr));
+  if (flushed) {
+    dec_end(d, out, info);
+    return;
+  }
+  int k = g % m->n, mi = V->mi, carrier = 0, side = 0;
+  const vlr_hf_t *f = &V->sf[(g / m->n) % VRING];
+  int kind = f->good ? f->kind : 2;
+  double res[4] = {0, 0, 0, 0};
+  if (k == 0) V->taken = 0;
+  if (code == 0) {
+    if (kind == 0) {
+      vlr_q(m, mi, f, k, res);
+    } else {
+      double base[4];
+      int nx = vlr_base(V->sf, VRING, V->nin, m, mi, g, base);
+      for (int b = 0; b < 4; b++)
+        res[b] = kind == 1 ? (nx ? base[b] : sotto_vlr_hiss_h0[mi * 4 + b]) + sotto_vlr_hiss_off[mi * 16 + (f->ws >> 1) * 4 + b]
+                           : nx ? base[b] + sotto_vlr_hiss_k2[mi * 4 + b] : sotto_vlr_hiss_h0[mi * 4 + b];
+    }
+    if (kind <= 1 && !V->taken) carrier = V->taken = 1, side = (kind == 0 ? f->wc : f->ws) & 1;
+  }
+  short blk[N16];
+  long n = d->n;
+  dec_push(d, out, info, code, res, run, side, carrier, avail && !reb, blk);
+  if (n + 1 > SOTTO_DEC16_DELAY_FRAMES) memcpy(V->q + N16 * V->qn++, blk, sizeof blk);
+}
+
+struct sotto_vlr_dec16 *sotto_vlr_dec16_create(int rate) {
+  int mi;
+  const vlr_mode_t *m = vlr_mode(rate, &mi);
+  struct sotto_vlr_dec16 *V;
+  if (!m || !(V = calloc(1, sizeof *V))) return NULL;
+  struct sotto_dec16 *d = &V->h;
+  init_tables();
+  V->m = m, V->mi = mi;
+  V->vlr = sotto_vlr_dec_create(rate);
+  d->fwd = codec2_fftr_alloc(HN, 0, NULL, NULL);
+  d->inv = codec2_fftr_alloc(HN, 1, NULL, NULL);
+  if (!V->vlr || !d->fwd || !d->inv) {
+    sotto_vlr_dec16_destroy(V);
+    return NULL;
+  }
+  sotto_vlr_dec_set_hook(V->vlr, vlr_dec_hook, V);
+  d->nend = -1;
+  d->kmax = -1;
+  d->last_true = -1;
+  d->ok = 1;
+  d->rng = 0x9E3779B9u;
+  return V;
+}
+
+void sotto_vlr_dec16_destroy(struct sotto_vlr_dec16 *V) {
+  if (!V) return;
+  sotto_vlr_dec_destroy(V->vlr);
+  codec2_fftr_free(V->h.fwd);
+  codec2_fftr_free(V->h.inv);
+  free(V);
+}
+
+int sotto_vlr_samples16(const struct sotto_vlr_dec16 *V) { return V->m->n * N16; }
+
+/* one superframe's worth (N blocks) from the queue, or silence while it fills */
+static int vlr_pop(struct sotto_vlr_dec16 *V, short *speech) {
+  int n = V->m->n;
+  if (V->qn < n) {
+    memset(speech, 0, (size_t)n * N16 * sizeof(short));
+    return 0;
+  }
+  memcpy(speech, V->q, (size_t)n * N16 * sizeof(short));
+  memmove(V->q, V->q + n * N16, (size_t)(V->qn - n) * N16 * sizeof(short));
+  V->qn -= n;
+  return 1;
+}
+
+void sotto_vlr_decode16(struct sotto_vlr_dec16 *V, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
+                        short *speech) {
+  short y[VLR_MAX_N * SOTTO_SAMPLES_PER_FRAME];
+  vlr_parse(V->m, in, good != 0, &V->sf[V->nin++ % VRING]);
+  sotto_vlr_decode(V->vlr, in, good, y);
+  vlr_pop(V, speech);
+}
+
+int sotto_vlr_dec16_flush(struct sotto_vlr_dec16 *V, short *speech) {
+  struct sotto_dec16 *d = &V->h;
+  int n = V->m->n;
+  short y[SOTTO_SAMPLES_PER_FRAME];
+  if (V->nin == 0) return 0;
+  while (d->nend < 0 && V->qn < n)            /* the sotto 600 / 400 decoder's last frames */
+    if (!sotto_vlr_dec_flush_frame(V->vlr, y)) break;
+  while (d->nend >= 0 && V->qn < n && d->outn < 320 * d->nend) dec_output(d, V->q + N16 * V->qn++);
+  if (!V->qn) return 0;
+  if (V->qn < n) memset(V->q + N16 * V->qn, 0, (size_t)(n - V->qn) * N16 * sizeof(short)), V->qn = n;
+  return vlr_pop(V, speech);
+}
+
+/* ------------------------------------------------------------------ encoder */
+/* SottoVLRHiss.encode: v3.8's front end (core, input features, voicing rules) feeds its final
+ * 20 ms frames to sotto 600 / 400's coder (sotto_vlr.c). Each superframe out of it gets the
+ * flat pitch of a one-pitched-frame superframe and goes through a local decoder (the float
+ * sotto 600 / 400 decoder with the hiss pitch rule), whose envelope gives the guess and whose
+ * output the side channel's predictor. Stage 1 quantises a kind-0 superframe's index and
+ * slope once its envelope is in; stage 2 finishes superframe s once stage 1 has reached s + 2:
+ * a kind-1 offset over the neighbours, the side bit, the fields packed. */
+#define VSQ 16                              /* superframes coded but not finished */
+#define VCW 1024                            /* frames' code and pitch after the rules */
+
+struct sotto_vlr_enc16 {
+  struct sotto_enc16 h;                     /* front end, local streams, side channel, output queue */
+  struct sotto_vlr_enc *vlr;                /* sotto 600 / 400's coder */
+  struct sotto_vlr_dec *loc;                /* the local decoder */
+  const vlr_mode_t *m;
+  int mi;
+  short cw[VCW][2];                         /* code and pitch index of each frame after the rules */
+  long npushed;                             /* frames given to the coder */
+  int ended;                                /* the coder has had all frames */
+  unsigned char sf[VSQ][SOTTO_BYTES_PER_FRAME];
+  vlr_hf_t hf[VSQ];
+  long nsf, n1, ndone;                      /* superframes coded, through stage 1, finished */
+  long nsf_end;                             /* superframes in all once known, else -1 */
+  int lflushed;                             /* local decoder flushed */
+};
+
+static void vlr_local_hook(void *ctx, int g, int code, int run, int avail, int reb, const short *out,
+                           int flushed) {
+  struct sotto_vlr_enc16 *V = ctx;
+  const sotto_dec_info_t *info = sotto_dec_info(sotto_vlr_dec_core(V->loc));
+  if (flushed) {
+    local_end(&V->h, V->nsf_end * V->m->n, out, info);
+    V->lflushed = 1;
+  } else {
+    local_store(&V->h, g, out, info);
+  }
+}
+
+struct sotto_vlr_enc16 *sotto_vlr_enc16_create(int rate) {
+  int mi;
+  const vlr_mode_t *m = vlr_mode(rate, &mi);
+  struct sotto_vlr_enc16 *V;
+  if (!m || !(V = calloc(1, sizeof *V))) return NULL;
+  enc_init(&V->h);
+  sotto_dec_destroy(V->h.ldec);             /* the local decoder is sotto 600 / 400's */
+  V->h.ldec = NULL;
+  V->m = m, V->mi = mi;
+  V->vlr = sotto_vlr_enc_create_frames(rate);
+  V->loc = sotto_vlr_dec_create(rate);
+  if (!V->h.core || !V->h.fwd || !V->vlr || !V->loc) {
+    sotto_vlr_enc16_destroy(V);
+    return NULL;
+  }
+  sotto_vlr_dec_set_hook(V->loc, vlr_local_hook, V);
+  V->nsf_end = -1;
+  return V;
+}
+
+void sotto_vlr_enc16_destroy(struct sotto_vlr_enc16 *V) {
+  if (!V) return;
+  sotto_enc_destroy(V->h.core);
+  codec2_fftr_free(V->h.fwd);
+  sotto_vlr_enc_destroy(V->vlr);
+  sotto_vlr_dec_destroy(V->loc);
+  free(V);
+}
+
+/* SottoVLRHiss.encode, one pitched frame: the pitch centre is that frame's input pitch (or
+   the median of the superframe's voiced input frames, or the coded line's value there) */
+static void vlr_flat_pitch(struct sotto_vlr_enc16 *V, long s, unsigned char *b, vlr_hf_t *f) {
+  const vlr_mode_t *m = V->m;
+  int n = m->n, k = 0, nv = 0;
+  long nreal = V->h.nend >= 0 ? V->h.nend : LONG_MAX;
+  if (f->kind != 1) return;
+  while (!m->vpat[f->v * n + k]) k++;
+  long g = s * n + k;
+  double target, wv[VLR_MAX_N];
+  for (int i = 0; i < n; i++)
+    if (s * n + i < nreal && V->cw[(s * n + i) % VCW][0]) wv[nv++] = V->cw[(s * n + i) % VCW][1];
+  if (g < nreal && V->cw[g % VCW][0]) target = V->cw[g % VCW][1];
+  else if (nv) target = median(wv, nv);
+  else {                                    /* SottoVLR.pitch_frames */
+    int x = (int)floor(f->wc + m->slope16[f->ws] / 16.0 * vlr_t(m, k) + 0.5);
+    target = x < 0 ? 0 : x > 127 ? 127 : x;
+  }
+  int wc = (int)ceil(target - 0.5);         /* argmin |wc - target|, the lower on a tie */
+  f->wc = wc < 0 ? 0 : wc > 127 ? 127 : wc;
+  f->ws = 0;
+  put_field(b, m->bv, 7, f->wc);
+  put_field(b, m->bv + 7, m->bs, 0);
+}
+
+/* the last frame takes the STFT frames past its own (hiss_band.frame_map's clip) */
+static long vlr_tlast(const struct sotto_vlr_enc16 *V, long g) {
+  long t = 2 * g - 1;
+  return V->nsf_end >= 0 && g == V->nsf_end * V->m->n - 1 && V->h.nst - 1 > t ? V->h.nst - 1 : t;
+}
+
+/* stage 1, kind 0: the index and level slope nearest the superframe's residuals (joint search) */
+static void vlr_stage1(struct sotto_vlr_enc16 *V, long s) {
+  const vlr_mode_t *m = V->m;
+  vlr_hf_t *f = &V->hf[s % VSQ];
+  const double *hsl = sotto_vlr_hiss_slope + 8 * V->mi;
+  int n = m->n, nk = 0, hi = 0, hs = 0;
+  double R[VLR_MAX_N][4], tt[VLR_MAX_N];
+  if (f->kind != 0) return;
+  for (int k = 0; k < n; k++)
+    if (enc_residual(&V->h, s * n + k, vlr_tlast(V, s * n + k), R[nk])) tt[nk++] = vlr_t(m, k);
+  if (!nk) {
+    for (int j = 1; j < 8; j++)
+      if (fabs(hsl[j]) < fabs(hsl[hs])) hs = j;
+  } else {
+    double best = HUGE_VAL;
+    for (int i = 0; i < 64; i++)
+      for (int j = 0; j < 8; j++) {
+        double e = 0;
+        for (int r = 0; r < nk; r++)
+          for (int b = 0; b < 4; b++) {
+            double x = sotto_hiss_cb6[i * 4 + b] + hsl[j] * tt[r] - R[r][b];
+            e += x * x;
+          }
+        if (e < best) best = e, hi = i, hs = j;
+      }
+  }
+  f->wc = hi << 1, f->ws = hs;              /* the side bit goes in at stage 2 */
+}
+
+/* stage 2: superframe s's kind-1 offset and side bit, packed */
+static void vlr_stage2(struct sotto_vlr_enc16 *V, long s) {
+  struct sotto_enc16 *e = &V->h;
+  const vlr_mode_t *m = V->m;
+  vlr_hf_t *f = &V->hf[s % VSQ];
+  int n = m->n, mi = V->mi, carrier = -1, sbit = 0;
+  if (f->kind <= 1)
+    for (int k = 0; k < n && carrier < 0; k++)
+      if (!m->vpat[f->v * n + k]) carrier = k;
+  for (int k = 0; k < n; k++) {
+    int sd = enc_side(e, s * n + k, k == carrier ? 0 : 1);
+    if (k == carrier) sbit = sd > 0;
+  }
+  unsigned char *b = e->outq[(e->qh + e->qn++) % OUTQ];
+  memcpy(b, V->sf[s % VSQ], SOTTO_BYTES_PER_FRAME);
+  if (f->kind == 0) {
+    put_field(b, m->bv, 7, f->wc | sbit);
+    put_field(b, m->bv + 7, m->bs, f->ws);
+  } else if (f->kind == 1) {
+    double R[VLR_MAX_N][4], B[VLR_MAX_N][4];
+    int ng = 0, ho = 0;
+    for (int k = 0; k < n; k++) {
+      long g = s * n + k;
+      if (m->vpat[f->v * n + k] || !enc_residual(e, g, vlr_tlast(V, g), R[ng])) continue;
+      if (!vlr_base(V->hf, VSQ, V->nsf, m, mi, g, B[ng])) memcpy(B[ng], sotto_vlr_hiss_h0 + 4 * mi, sizeof B[0]);
+      ng++;
+    }
+    if (ng) {
+      double best = HUGE_VAL;
+      for (int o = 0; o < 4; o++) {
+        double d = 0;
+        for (int i = 0; i < ng; i++)
+          for (int c = 0; c < 4; c++) {
+            double x = B[i][c] + sotto_vlr_hiss_off[mi * 16 + o * 4 + c] - R[i][c];
+            d += x * x;
+          }
+        if (d < best) best = d, ho = o;
+      }
+    }
+    put_field(b, m->bv + 7, m->bs, (ho << 1) | sbit);
+  }
+}
+
+/* stage 1 for s: its frames' decoded envelope and input STFT frames are in */
+static int vlr_ready1(const struct sotto_vlr_enc16 *V, long s) {
+  const struct sotto_enc16 *e = &V->h;
+  long gl = (s + 1) * V->m->n - 1;
+  return V->lflushed || (e->lkmax >= 2 * gl + 1 && (e->nend >= 0 || e->nst > 2 * gl - 1));
+}
+
+/* stage 2 for s: stage 1 through s + 2, and the local output for the side channel */
+static int vlr_ready2(const struct sotto_vlr_enc16 *V, long s) {
+  const struct sotto_enc16 *e = &V->h;
+  long gl = (s + 1) * V->m->n - 1;
+  int near = V->n1 >= s + 1 + VLR_REACH || (V->nsf_end >= 0 && V->n1 == V->nsf_end);
+  return near && (V->lflushed || e->lnst > 2 * gl - 3) && (e->nend >= 0 || e->nst > 2 * gl - 3);
+}
+
+/* the local decoder's output into its 16 kHz stream, then both stages as far as they go */
+static void vlr_stages(struct sotto_vlr_enc16 *V) {
+  struct sotto_enc16 *e = &V->h;
+  enc_advance_local(e);
+  while (V->n1 < V->nsf && vlr_ready1(V, V->n1)) vlr_stage1(V, V->n1++);
+  while (V->ndone < V->n1 && e->qn < OUTQ && vlr_ready2(V, V->ndone)) vlr_stage2(V, V->ndone++);
+}
+
+static void vlr_run(struct sotto_vlr_enc16 *V) {
+  struct sotto_enc16 *e = &V->h;
+  sotto_enc_frame_t fr;
+  while (sotto_enc_pop_frame(e->core, &fr)) e->rf[e->nraw++ % FRING].raw = fr;
+  enc_rules(e);
+  long nfinal = e->nend >= 0 ? e->nraw : (e->nraw - SOTTO_RULE_LAG > 0 ? e->nraw - SOTTO_RULE_LAG : 0);
+  for (; V->npushed < nfinal; V->npushed++) {  /* Sotto1200Hiss._v38_rules -> p["code"], p["wi"] */
+    const rframe_t *r = &e->rf[V->npushed % FRING];
+    sotto_fparams_t p = r->raw.p;
+    p.code = r->code;
+    p.wi = 0;
+    for (int i = 2; i < 9; i++) p.wi = (p.wi << 1) | frame_bit(r->bits, i);
+    V->cw[V->npushed % VCW][0] = (short)p.code, V->cw[V->npushed % VCW][1] = (short)p.wi;
+    sotto_vlr_enc_push(V->vlr, &p);
+  }
+  if (e->nend >= 0 && !V->ended) sotto_vlr_enc_end(V->vlr), V->ended = 1;
+  /* one superframe at a time, so that the local streams' rings never run more than a few
+     superframes ahead of the stages */
+  for (;;) {
+    unsigned char b[SOTTO_BYTES_PER_FRAME];
+    short y[VLR_MAX_N * SOTTO_SAMPLES_PER_FRAME];
+    vlr_stages(V);
+    if (V->nsf - V->ndone >= VSQ - 2 * VLR_REACH - 1) break;
+    if (sotto_vlr_enc_pop(V->vlr, b)) {
+      long s = V->nsf++;
+      vlr_hf_t *f = &V->hf[s % VSQ];
+      vlr_parse(V->m, b, 1, f);
+      vlr_flat_pitch(V, s, b, f);
+      memcpy(V->sf[s % VSQ], b, sizeof b);
+      sotto_vlr_decode(V->loc, b, 1, y);     /* SottoVLR.decode(self, self._sb_enc) */
+    } else if (V->ended && V->nsf_end < 0) {
+      V->nsf_end = V->nsf;
+      while (sotto_vlr_dec_flush_frame(V->loc, y)) enc_advance_local(e);
+    } else {
+      break;
+    }
+  }
+}
+
+void sotto_vlr_encode16(struct sotto_vlr_enc16 *V, const short *speech, int n160) {
+  struct sotto_enc16 *e = &V->h;
+  for (int j = 0; j < n160; j++) {
+    for (int i = 0; i < 160; i++) e->x16[e->x16n++ & (EX16 - 1)] = speech[160 * j + i];
+    enc_analyse(e);
+    vlr_run(V);
+  }
+}
+
+int sotto_vlr_enc16_pop(struct sotto_vlr_enc16 *V, unsigned char out[SOTTO_BYTES_PER_FRAME]) {
+  return enc_pop(&V->h, out);
+}
+
+int sotto_vlr_enc16_flush(struct sotto_vlr_enc16 *V, unsigned char out[SOTTO_BYTES_PER_FRAME]) {
+  if (V->h.nend < 0) enc_end_input(&V->h);
+  vlr_run(V);
+  return enc_pop(&V->h, out);
 }

@@ -111,7 +111,7 @@ pager_host_vlr_cbi: $(VLR_SRC:%.c=host-vlrcbi/%.o) $(VLR_DEC:%=host-vlrcbi/%) ho
 	$(CC) -o $@ $^
 VLR_HDRS = sotto_pager.h sp_cb.h sp_vlr.h ../sotto_vlr.h ../sotto_vlr_tables.h
 VLR_FX_HDRS = ../fixed/fx.h ../fixed/fx_tables.h ../fixed/fx_internal.h ../sotto_lr_dec.inc ../sotto_lr_tables.h \
-	../sotto_vlr.h ../sotto_vlr_tables.h
+	../sotto_vlr.h ../sotto_vlr_tables.h ../sotto_vlr_dec.inc
 host-vlr/%.o: %.c $(VLR_HDRS)
 	@mkdir -p host-vlr
 	$(CC) $(CFLAGS) $(K6FLAGS) $(VLRFLAGS) -c -o $@ $<

@@ -49,7 +49,7 @@ int main(void) {
 #ifdef SOTTO_V38
   {   /* the 16 kHz path: the same tone with a hiss burst, upsampled by sample repetition
          (its images above 4 kHz are what the high band has to code) */
-    static short in16[N * SOTTO_SAMPLES_PER_FRAME_16K], out16[(N + 8) * SOTTO_SAMPLES_PER_FRAME_16K];
+    static short in16[N * SOTTO_SAMPLES_PER_FRAME_16K], out16[(N + 24) * SOTTO_SAMPLES_PER_FRAME_16K];
     unsigned s = 12345;
     for (int i = 0; i < N * SOTTO_SAMPLES_PER_FRAME_16K; i++) {
       int burst = i >= N * SOTTO_SAMPLES_PER_FRAME_16K / 2 && i < N * SOTTO_SAMPLES_PER_FRAME_16K * 3 / 4;
@@ -94,6 +94,30 @@ int main(void) {
     printf("sotto 1200 hiss: superframes %d (%d before flush), %d blocks out; tone %.1f -> %.1f dBFS, hiss burst %.1f -> %.1f dBFS\n",
            nh, earlyh, no, ti, to, bi, bo);
     ok = ok && nh == ns && earlyh == ns - 11 && no == ns + SOTTO_LR_DEC16_DELAY && fabs(to - ti) < 3.0 && fabs(bo - bi) < 4.0;
+    /* sotto 600 / 400 hiss */
+    for (int r = 600; r >= 400; r -= 200) {
+      int n = r == 600 ? 4 : 6, want = (N + n - 1) / n, nv = 0, earlyv;
+      struct sotto_vlr_enc16 *ev = sotto_vlr_enc16_create(r);
+      for (int f = 0; f < 2 * N; f++) {
+        sotto_vlr_encode16(ev, in16 + f * SOTTO_SAMPLES_PER_FRAME_16K / 2, 1);
+        while (sotto_vlr_enc16_pop(ev, bits[nv])) nv++;
+      }
+      earlyv = nv;
+      while (sotto_vlr_enc16_flush(ev, bits[nv])) nv++;
+      sotto_vlr_enc16_destroy(ev);
+      struct sotto_vlr_dec16 *dv = sotto_vlr_dec16_create(r);
+      int ss = sotto_vlr_samples16(dv);
+      no = 0;
+      for (int f = 0; f < nv; f++) sotto_vlr_decode16(dv, bits[f], 1, out16 + (no++) * ss);
+      while (sotto_vlr_dec16_flush(dv, out16 + no * ss)) no++;
+      sotto_vlr_dec16_destroy(dv);
+      d0 = SOTTO_VLR_DEC16_DELAY(r) * ss;
+      to = rms_dbfs(out16 + d0 + 3200, q - 6400), bo = rms_dbfs(out16 + d0 + 2 * q + 1600, q - 3200);
+      printf("sotto %d hiss: superframes %d (%d before flush), %d out; tone %.1f -> %.1f dBFS, hiss burst %.1f -> %.1f dBFS\n",
+             r, nv, earlyv, no, ti, to, bi, bo);
+      ok = ok && ss == n * SOTTO_SAMPLES_PER_FRAME_16K && nv == want && earlyv >= want - (r == 600 ? 10 : 9) &&
+           no == nv + SOTTO_VLR_DEC16_DELAY(r) && fabs(to - ti) < 3.0 && fabs(bo - bi) < 4.0 && !sotto_vlr_enc16_create(1200);
+    }
   }
 #endif
   /* sotto 600 / 400 encoder: one superframe per 4 / 6 frames, most of them before the flush */

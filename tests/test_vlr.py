@@ -139,3 +139,60 @@ def test_hiss_band_rides_free_pitch_bits(mode):
         f = c.unpack(r)
         if c.kind(f) == 1:
             assert len(set(c.sf_pitch(f))) == 1
+
+
+def _c_has_vlr_hiss():
+    import subprocess
+    exe = os.path.join(ROOT, "c", "sotto_dec")
+    return os.path.exists(exe) and subprocess.run([exe, "-16", "-600", "/dev/null", "/dev/null"],
+                                                  capture_output=True).returncode == 0
+
+
+need_c38 = pytest.mark.skipif(not _c_has_vlr_hiss(), reason="needs the VARIANT=v3.8 C build (make -C c)")
+
+
+@need_c38
+@pytest.mark.parametrize("mode", ["600", "400"])
+def test_c_hiss_decoder_follows_python(mode):
+    """sotto 600 / 400 hiss in C (c/sotto_hiss.c sotto_vlr_dec16, sotto_dec -16 -600/-400) on the
+    Python encoder's bits, with lone and repeated losses: the 0-4 kHz parts agree sample by
+    sample, the 4-8 kHz noise (random phase) by level (tools/check_vlr_hiss.py)."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import check_vlr_hiss as ch
+    import sotto_vlr_hiss as vh
+    from scipy.signal import resample_poly
+    from test_lr_hiss import band_db
+    x16 = resample_poly(np.fromfile(HTS1A, "<i2").astype(float) / 32768, 2, 1)
+    x16 = x16[:len(x16) // 320 * 320]
+    c = vh.SottoVLRHiss(mode)
+    b = c.encode(x16)
+    good = np.ones(len(b), bool)
+    good[[5, 9, 10]] = False
+    for g in (None, good):
+        yp = c.decode_audio16(b, g, n16=len(x16))
+        yc = ch.c_decode(b, mode, g)
+        n = min(len(yp), len(yc))
+        assert len(yc) >= len(yp)
+        lp, lc = resample_poly(yp[:n], 1, 2), resample_poly(yc[:n], 1, 2)
+        assert 10 * np.log10(np.sum(lp ** 2) / np.sum((lp - lc) ** 2)) > 20
+        hp, hc = band_db(yp[:n], 4000, 8000), band_db(yc[:n], 4000, 8000)
+        live = hp > -60
+        assert live.sum() > 50 and np.mean(np.abs(hp - hc)[live]) < 1.5
+
+
+@need_c38
+@pytest.mark.parametrize("mode", ["600", "400"])
+def test_c_hiss_encoder_follows_python(mode, monkeypatch):
+    """The C hiss encoder (sotto_vlr_enc16, sotto_enc -16 -600/-400) writes the Python's bits,
+    with the Python running the C's fixed-lag pitch tracker and whisper rule."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import check_vlr_hiss as ch
+    import sotto_vlr_hiss as vh
+    from scipy.signal import resample_poly
+    monkeypatch.setitem(vl.TRACK2, "lag", 8)
+    x16 = np.round(resample_poly(np.fromfile(HTS1A, "<i2").astype(float) / 32768, 2, 1) * 32767).astype(np.int16)
+    x16 = x16[:len(x16) // 320 * 320]
+    bp = vh.SottoVLRHiss(mode, whisper_lag=10).encode(x16 / 32767.0)
+    bc = ch.c_encode(x16, mode)
+    assert bc.shape == bp.shape
+    assert np.all(bp == bc, 1).mean() >= 0.95

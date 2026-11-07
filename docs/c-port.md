@@ -162,8 +162,9 @@ the decoded audio for the predictor, one inverse for the hiss) and in the encode
 the input, one on the local decoder's output, plus the whole core decoder running inside
 the encoder. The radio is half duplex, so the encoder's local decoder reuses the decoder's
 cycles; the FFTs are a few MHz on the C5517's accelerator. The encoder's ring of 128 frames
-and 64 STFT frames of features is about 40 KB as doubles and would shrink to 16-bit
-fields. The running percentile of the side channel keeps every frame level so far (the
+and 256 STFT frames of features (sotto 600 / 400 hiss reaches about 140 back, 2400 and 1200
+fewer than 64) is about 90 KB as doubles and would shrink to 16-bit fields and a ring sized
+to the mode. The running percentile of the side channel keeps every frame level so far (the
 Python does); a 1 dB histogram would replace it on the DSP, changing a vowel-frame
 decision only when a level sits within the bin.
 
@@ -171,6 +172,11 @@ decision only when a level sits within the bin.
 40 ms (`sotto_lr_enc16` / `sotto_lr_dec16` in `c/sotto_hiss.c`, float only for now): 14 of
 the 16 test voices bit-exact with `sim/sotto_lr_hiss.py`, the other two one superframe off.
 Details, delay and check in `docs/sotto-1200-hiss.md` ("C port").
+
+**sotto 600 / 400 hiss.** *2026-11-07.* And under sotto 600 / 400 (`sotto_vlr_enc16` /
+`sotto_vlr_dec16`, float only): bit-exact with `sim/sotto_vlr_hiss.py` on the 16 test
+voices at both rates. Its decoder is the float twin of the K6's fixed-point one: both now
+include `sotto_vlr_dec.inc`. Details in `docs/sotto-vlr.md` ("Hiss band", "C port").
 
 ## Fixed point: status
 

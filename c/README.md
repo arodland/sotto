@@ -23,6 +23,8 @@ c/sotto_enc in.raw out.bit       # without -16: the 8 kHz v3.7 encoder and decod
 c/sotto_dec out.bit dec.raw [good.u8]
 c/sotto_enc -16 -1200 in.raw out.bit   # sotto 1200 hiss: 16 kHz in, 6 bytes per 40 ms
 c/sotto_dec -16 -1200 out.bit dec.raw [good.u8]   # (-1200 alone: sotto 1200 at 8 kHz)
+c/sotto_enc -16 -600 in.raw out.bit    # sotto 600 hiss: 16 kHz in, 6 bytes per 80 ms (-400: 120 ms)
+c/sotto_dec -16 -600 out.bit dec.raw [good.u8]    # (plain sotto 600 / 400: fixed/sotto_vlr_dec_fx)
 make -C c install PREFIX=/usr/local
 ```
 
@@ -77,8 +79,12 @@ frame. The v3.8 pair (`sotto_enc16_*`, `sotto_dec16_*`) works in 320-sample bloc
 sotto 1200 hiss (`sotto_lr_enc16_*`, `sotto_lr_dec16_*`, `docs/sotto-1200-hiss.md`) works in
 640-sample blocks at 16 kHz, one 48-bit superframe each: the encoder's first comes on the
 12th call, and the decoder plays `SOTTO_LR_DEC16_DELAY` (4) superframes late.
-`tools/check_lr_hiss.py` checks it against `sim/sotto_lr_hiss.py`. The fixed-point build has
-no sotto 1200 hiss yet (its create functions return NULL).
+`tools/check_lr_hiss.py` checks it against `sim/sotto_lr_hiss.py`. sotto 600 / 400 hiss
+(`sotto_vlr_enc16_*`, `sotto_vlr_dec16_*` in `sotto_vlr.h`, `docs/sotto-vlr.md`) takes 10 ms
+blocks at 16 kHz and pops superframes as they are ready (about 10 superframes late at 600, 9
+at 400); the decoder plays `SOTTO_VLR_DEC16_DELAY(rate)` (4 or 3) superframes late.
+`tools/check_vlr_hiss.py` checks it against `sim/sotto_vlr_hiss.py`. The fixed-point build has
+no sotto 1200 or 600 / 400 hiss yet (their create functions return NULL).
 
 ## Checked against Python
 

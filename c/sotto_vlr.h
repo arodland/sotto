@@ -47,4 +47,39 @@ SOTTO_API int sotto_vlr_decode_frame(struct sotto_vlr_dec *d, const unsigned cha
 SOTTO_API int sotto_vlr_dec_flush_frame(struct sotto_vlr_dec *d, short speech[SOTTO_SAMPLES_PER_FRAME]);
 SOTTO_API int sotto_vlr_dec_bytes(void);         /* sizeof the decoder's own state (the core's apart) */
 
+/* ---- sotto 600 / 400 hiss: v3.8's 4-8 kHz band in the same 48 bits, 16 kHz (VARIANT=v3.8) ----
+ * docs/sotto-vlr.md, "Hiss band"; sim/sotto_vlr_hiss.py. The pitch fields that carry nothing
+ * (superframes with no pitched frame, or one) hold the hiss, so sotto_vlr_decode plays a hiss
+ * stream at 8 kHz (with a wrong pitch slope where one frame is pitched). Float VARIANT=v3.8
+ * builds only (sotto_hiss.c); the fixed-point build's create functions return NULL.
+ *
+ * sotto_vlr_enc16_create(600 or 400). sotto_vlr_encode16 takes n160 blocks of 160 samples
+ * (10 ms at 16 kHz; up to about a second per call); then call sotto_vlr_enc16_pop until it
+ * returns 0. A superframe comes out about 10 superframes (sotto 600, 800 ms) or 9 (sotto 400,
+ * 1.08 s) after its speech went in: the core's look-ahead and v3.8's rules (16 frames), the
+ * anchor search, the local decoder's 2 superframes, and the hiss of the 2 superframes after it.
+ * At the end call sotto_vlr_enc16_flush until it returns 0.
+ *
+ * sotto_vlr_dec16_create(600 or 400). sotto_vlr_decode16 takes one superframe (good = 0: lost)
+ * and writes sotto_vlr_samples16(d) samples (N x 320 at 16 kHz), SOTTO_VLR_DEC16_DELAY(rate)
+ * superframes behind (the first calls give silence): sotto 600 / 400's 2 plus v3.8's 16 kHz
+ * layer's 5 frames, rounded up. Then sotto_vlr_dec16_flush until it returns 0. */
+#define SOTTO_VLR_DEC16_DELAY(rate) ((rate) == 400 ? 3 : 4)
+#define SOTTO_VLR_MAX_SAMPLES16 (6 * SOTTO_SAMPLES_PER_FRAME_16K)
+
+struct sotto_vlr_enc16;
+SOTTO_API struct sotto_vlr_enc16 *sotto_vlr_enc16_create(int rate);
+SOTTO_API void sotto_vlr_enc16_destroy(struct sotto_vlr_enc16 *e);
+SOTTO_API void sotto_vlr_encode16(struct sotto_vlr_enc16 *e, const short *speech, int n160);
+SOTTO_API int sotto_vlr_enc16_pop(struct sotto_vlr_enc16 *e, unsigned char out[SOTTO_BYTES_PER_FRAME]);
+SOTTO_API int sotto_vlr_enc16_flush(struct sotto_vlr_enc16 *e, unsigned char out[SOTTO_BYTES_PER_FRAME]);
+
+struct sotto_vlr_dec16;
+SOTTO_API struct sotto_vlr_dec16 *sotto_vlr_dec16_create(int rate);
+SOTTO_API void sotto_vlr_dec16_destroy(struct sotto_vlr_dec16 *d);
+SOTTO_API int sotto_vlr_samples16(const struct sotto_vlr_dec16 *d);
+SOTTO_API void sotto_vlr_decode16(struct sotto_vlr_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
+                                  short *speech);
+SOTTO_API int sotto_vlr_dec16_flush(struct sotto_vlr_dec16 *d, short *speech);
+
 #endif
