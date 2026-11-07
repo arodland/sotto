@@ -562,6 +562,26 @@ locked (2 rejects, lead fit 14) and step 3 took one reject: the lead fits read 5
 against 70-87 with the model's templates, nearer `IFRX_ACQ_Q` (48), so acquisition has less
 margin. Step 9 is past the end of the sender's audio, as always.
 
+The lead check (a window of 32 lead symbols with more than 8 misses throws the acquisition
+out) now counts a miss only when the decision lands in the other half of the tones: for 4FSK the
+lead tone's neighbour no longer counts, since the K6-trained templates read 900 Hz as 1500
+often enough early in the lead to throw out good acquisitions. A false start on a bare carrier
+still misses about half its symbols and is thrown out (no lock on the model's bare carrier at
+44-70 dB-Hz with either template set). The module size is unchanged.
+
+On the bench (2026-11-07 06:01, aura-pager-b03c3af): all 9 data steps locked with no rejects,
+2.4-2.6% on steps 1-8 and 1.2% on step 0 (the pager's AGC, -23 dBm). Each step counted about
+8130 bits against 9120 in the run before: the sender started later after the upload, so the
+K6's steps covered less of each segment's PN9.
+
+**Coding it.** Over the real channel, rate-1/2 K=7 with soft decisions removes these errors:
+drawing each sent symbol's four metrics from the held-out captures' pool for that tone
+(trained 4-bit templates, raw 2.2-2.4%), 24,000 coded sotto 1200 bits (20 s, 40 ms
+interleaving) decode with no errors, at any LLR scale and with |c| or |c|^2 metrics. That
+assumes the symbols' noise is independent, as the captures show (white from symbol to symbol).
+4FSK at 1200 baud with rate 1/2 carries sotto 1200 (1200 bit/s); the decoder (64 states, 1200
+bits a second) is a few percent of the K6's CPU.
+
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
 Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential

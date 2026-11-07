@@ -314,7 +314,10 @@ IFRX_NOINLINE static void finish(ifrx_t *s) {
   if (lead) {
     /* the lead's symbol is known: steer on its best template */
     tone = ((s->q + (uint32_t)s->parity) & 1) ? IFRX_MM(s) - 1 : 0;
-    j = s->sym != tone;
+    /* a miss: a tone in the other half (4FSK: the neighbour of the lead's tone doesn't count,
+       a false start reads the far half as often; templates trained on the K6 read 900 Hz as
+       1500 often enough early in the lead to throw out good acquisitions) */
+    j = (uint32_t)(s->sym ^ tone) >= (uint32_t)IFRX_MM(s) / 2;
     if (IFRX_STATS) s->lead_err += j;
     s->win_err += j;
     s->win_n++;
