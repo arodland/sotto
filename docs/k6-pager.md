@@ -241,6 +241,7 @@ can't be undone all the way down to DC.
 |---|---|
 | Bit 1 = +deviation (D) or 1200 Hz (F) | Calibration step 2 (`rx` reports inverted packets) |
 | FIFO words go high byte first | **Settled 2026-11-04: the chip sends each word low byte first.** The K6's first test burst (recorded on the IC-7100's USB audio) decoded bit-perfect in D and F once words were swapped; `rx` now accepts swapped packets and says so |
+| The K6's own 2400-baud CAL burst decodes | **Settled 2026-11-04 09:28 UTC (image f190a46):** the IC-7100's recording decodes 2/2 in D/2400 (inverted) and 2/2 in F/2400 as test packet 0, no word swap needed. The 2.8 s cut is `tests/data/k6/air/k6cal-2400-20261104T0928.flac`, replayed through `rx` in CI (`tests/test_k6_air.py`). The first D/F 1200 recording isn't kept |
 | The chip accepts 64-byte frames | **Settled 2026-11-04: yes, with timed FIFO reads** in the receiver (packet mode's FIFO interrupt can't keep up past 16 bytes). 0 bit errors in F |
 | ±2.5 kHz deviation suits the K6's receiver | Steps 2-3 (match the K6's own transmitter) |
 | The IC-7100's DATA2 9600 input is flat to ~20 Hz | `cal` / `fit`. Its USB audio in FM-D is flat 20 Hz-2 kHz on receive (measured 2026-11-04); transmit untested |
