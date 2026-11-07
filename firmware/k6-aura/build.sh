@@ -43,9 +43,9 @@ fit() {
     $1 == ".data" { flash += $2; ram += $2 }
     $1 == ".bss" || $1 == ".uninit" { ram += $2 }
     $1 == ".ram0" { ram0 += $2 }
-    END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 17720 (%d left for the stack); RAM0 %d of 4096\n",
-            flash, 122880 - flash, ram, 17720 - ram, ram0
-          if (17720 - ram < 12288) print "warning: under 12 KB of stack left (on the radio Aura had used 8.3 KB of it when playback started; the decoder needs 3.5 KB more)"
+    END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 20440 (%d left for the stack); RAM0 %d of 4096\n",
+            flash, 122880 - flash, ram, 20440 - ram, ram0
+          if (20440 - ram < 12288) print "warning: under 12 KB of stack left (on the radio Aura had used 8.3 KB of it when playback started; the decoder needs 3.5 KB more)"
           if (flash > 122880) { print "DOES NOT FIT in the 120 KB application flash"; exit 1 } }'
 }
 # where the flash goes: demangled symbols grouped by Rust module path (C symbols by name)
@@ -126,8 +126,8 @@ variant() {
     "$SIZE" -A "$ELF" | awk -v f="$OUT/frames-$name.txt" '
       $1 == ".data" || $1 == ".bss" || $1 == ".uninit" { ram += $2 }
       END { while ((getline l < f) > 0) { split(l, w, " "); if (w[2] == "aura::__cortex_m_rt_main" || w[2] == "aura::place_app") boot += w[1] }
-            printf "boot stack: main + place_app %d of %d B free (%d to spare)\n", boot, 17720 - ram, 17720 - ram - boot
-            if (17720 - ram - boot < 384) print "warning: under 384 B of stack to spare at boot: the boot may overwrite the top of .bss" }' \
+            printf "boot stack: main + place_app %d of %d B free (%d to spare)\n", boot, 20440 - ram, 20440 - ram - boot
+            if (20440 - ram - boot < 384) print "warning: under 384 B of stack to spare at boot: the boot may overwrite the top of .bss" }' \
       | tee -a "$OUT/size-$name.txt"
   fi
 }

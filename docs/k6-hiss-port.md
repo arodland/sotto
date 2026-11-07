@@ -412,7 +412,7 @@ line up after the delay above (lag 10 samples at 8 kHz, the interpolator).
 
 | Change | Saved |
 |---|---:|
-| Message store 4 KB -> 2.5 KB (1200 holds 17 s stored; a stream's ring holds two XL groups at depth 8, so 1200 messages over about 13 s need depth 4, below) | 1.5 KB |
+| Message store 4 KB -> 2.5 KB (1200 holds 17 s stored; a stream's ring holds two XL groups at depth 8, so 1200 messages over about 13 s needed depth 4, below). Undone the same night: the RAM above Aura's region (below) gave the 4 KB back | 1.5 KB |
 | Decoder pool sized to the three states (core 904, 600 / 400 wrapper 592, hiss 736 B on the M0) instead of a round figure | 0.4 KB |
 | Model rings for the two odd halves only (`LM 2`), one 32-sample resampler ring, level ring 13 deep, 5 superframes of side channel | 0.5 KB |
 | PN9 table in flash, `const`; core model bands for half 1 only | 0.1 KB |
@@ -454,11 +454,32 @@ depth 8 and a short dropout near the end, and the same clip at depth 4 played MA
 The cause is the 2.5 KB store, not CPU: in stream mode the store is a ring of whole interleave
 groups, and at XL depth 8 it holds two groups of 160 sotto 1200 frames, so a message over about
 12.8 s has its next group land on frames not yet played. At depth 4 a group is 80 frames and five
-fit. So 1200 messages longer than 13 s go at `--depth 4` on this image (`modem.k6 send --depth 4`);
-600 and 400 messages are shorter per frame slot and were fine at depth 8 up to the 15 s tried.
-Decode times: 14.7-18.3 ms mean per 20 ms frame across the rates, worst single frame 39.4 ms, which
-the three-segment PWM ring covered (`late=0`). `ram_free` while playing: 332 (600), 388 (1200),
-588 (400) B. Run dir on hamlet: `~/sotto-work/runs/2026-11-07-hiss1/`.
+fit. So 1200 messages longer than 13 s went at `--depth 4` on that image (`modem.k6 send --depth 4`);
+600 and 400 messages are shorter per frame slot and were fine at depth 8 up to the 15 s tried. With
+the 4 KB store back (below) the limit is the plain images' 25.6 s again.
+Decode times: 14.7-18.3 ms mean per 20 ms frame across the rates (Lynden, continuous speech,
+18.2-18.3 at every rate; the female voice 14.7), worst single frame 39.4 ms. `ram_free` while
+playing: 332 (600), 388 (1200), 588 (400) B. Run dir on hamlet: `~/sotto-work/runs/2026-11-07-hiss1/`.
+
+**What Jeff heard (23:30 UTC, cable out).** The female and male clips were clean at all three rates.
+Every Lynden clip popped and snapped, at 600, 1200 and 400 alike, 1200 worst. Replayed from the
+store with MENU, the same Lynden 1200 was clean, and so was Lynden 1200 received with stream mode off
+(control action 9) and played after the last packet. So the decoded samples, the gain and the
+pre-emphasis are fine (the `pcm=` MATCH said as much), and the pops are streaming's: decoding to the
+speaker while packets still arrive. With a 3-segment ring the decoder has 20-40 ms for each 20 ms
+frame, Lynden's frames take 18.3 ms on average with runs over 20, and the receive code's own work
+between refills eats the rest; the DMA catches the segment being written and plays stale or
+half-new samples. `late=` never counted one: it only sees a long gap between fills, so PR #126 adds
+`under=` to the PLAY line, counted when the DMA's segment at the end of a fill has reached the
+one written (`stream_fill`). Stream mode off is the workaround on the 3-segment image.
+
+**The RAM above Aura's region (23:50 UTC).** Aura's `memory.x` ended RAM at 0x20005560 (0x20001028 +
+17720), but the KD32F328 has 24 KB of SRAM, to 0x20006000. `c/k6/mod/ramprobe.c`, a RAM module,
+wrote two patterns to every word of 0x20005560-0x20005FFF on the radio and read them back:
+`good=2a8` (all 680 words), no fault, no reset, and the K6 ran on. So `memory.x` grows to 20440 B,
+and the hiss image gets its fourth PWM segment (the decoder has 40-60 ms per frame again) and its
+4 KB store back; every image gains 2720 B of stack margin. The second probe pass (hold and mirror
+check) and the streaming retest are below when they are in.
 
 **On the bench.** Encode a 16 kHz clip with `c/sotto_enc -16 -600 in.raw out.sot` (also `-1200`,
 `-400`; `make -C c sotto_enc`, VARIANT v3.8), send it with `python -m modem.k6 send ... --codec 600`,
