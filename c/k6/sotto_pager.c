@@ -291,6 +291,10 @@ static int packet(const uint8_t *p, int fpp, uint8_t profile) {
    never starts a message, and is ignored for a group the store can't vouch for (a truncated
    store, or a ring place a later group took). p is restored afterwards (sp_last_packet). */
 static int parity(uint8_t *p, int fpp, uint8_t profile) {
+#ifdef SP_NO_PARITY
+  (void)p, (void)fpp, (void)profile;
+  return SP_DUP;                      /* this build only takes them in, as an older image ignores them */
+#else
   int dep = GROUP >> (p[2] >> 6), g = (p[2] & 0x1F) << 8 | p[3], total = p[4] << 8 | p[5];
   int n, k, s, i, r, miss = -1, seq0;
   if (!S.st.have || S.st.profile != profile || (p[0] & ~PARITY) != S.magic || p[1] != S.st.msg_id ||
@@ -325,6 +329,7 @@ static int parity(uint8_t *p, int fpp, uint8_t profile) {
   if (r > SP_DUP) rebuilt++;
   p[0] |= PARITY, p[2] = (uint8_t)((p[2] & 0xE0) | g >> 8), p[3] = (uint8_t)g;
   return r;
+#endif
 }
 
 int sp_packet(const uint8_t *payload, int len) {

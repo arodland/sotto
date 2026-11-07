@@ -104,7 +104,9 @@ int sp_magic(void);              /* the stored message's magic byte (its codec),
    0xBC, 0xBD) and whose bytes 6 .. len-3 are the XOR of the group's data packets' bytes there.
    sp_packet takes it like a voice packet; when exactly one of the group's packets is missing
    it rebuilds that one (its frames become good, its seq counts as received, sp_missing no
-   longer lists it) and returns SP_ADDED or SP_COMPLETE, else SP_DUP. */
+   longer lists it) and returns SP_ADDED or SP_COMPLETE, else SP_DUP. Builds with -DSP_NO_PARITY
+   (tools/k6_build.sh sets it for the images that link the 30 KB codebook into the MCU's flash,
+   which have no room) take parity packets as SP_DUP and rebuild nothing. */
 int sp_rebuilt(void);
 /* The seqs (packets of one pass) not received yet, up to max of them into out; returns how many
    are missing in all (0 while the total is unknown). */
