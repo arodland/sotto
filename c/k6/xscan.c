@@ -204,6 +204,7 @@ static int new_hit(xs_t *s, int g, uint32_t b, uint32_t hz, int lvl, int r) {
   }
   h->hz = c, h->bin = (uint16_t)b;
   starts(h, s->api->ms(), lvl, r);
+  if (s->news < 255) s->news++;
   p = num(fq(s->line, "N ", c), " ", lvl, 0);
   p = num(p, " fl", dbm8(s->sfl[g]), 0);
   say(s, num(p, " b", (int)b, 0));
@@ -324,13 +325,35 @@ static void refloor(xs_t *s) {
     if (fl[b] < lo) fl[b] = lo;
 }
 
+/* XS_BURST new hits in one sweep of a segment: its floor rose under it, not a crowd keying up at
+   once. Bench 6 (2026-11-07 22:32-22:38): with the serial cable unplugged and plugged back in, 55
+   one-over hits 2-5 dB over the floor filled the list before the minute's refloor. Read the floor
+   now, and let this sweep's new entries go quietly (no H line, no candidate) unless they still
+   stand hit_db over it. */
+static void burst(xs_t *s) {
+  const xs_seg_t *G = &s->seg[s->g];
+  uint32_t top = G->lo_hz + G->nbins * G->step_hz;
+  xs_hot_t *h = s->hot;
+  int i, n = 0;
+  refloor(s);
+  for (i = 0; i < XS_HOT; i++, h++)
+    if (h->hz >= G->lo_hz && h->hz < top && h->up && !h->spur && h->overs == 1 &&
+        h->up - s->sweep_t0 < 0x80000000u && h->lvl < s->sfl[s->g] + s->hit_db) {
+      uint8_t *d = (uint8_t *)h;
+      unsigned k;
+      for (k = 0; k < sizeof *h; k++) d[k] = 0;
+      n++;
+    }
+  say(s, num(num(num(s->line, "B", s->g, 0), " ", s->news, 0), " drop ", n, 0));
+}
+
 /* the start of segment g's sweep: clear its row and park on its first bin */
 static void sweep_start(xs_t *s) {
   const xs_seg_t *G = &s->seg[s->g];
   uint32_t i;
   s->cols = (uint8_t)cols_of(G);
   for (i = 0; i < s->cols; i++) s->row[i] = 0;
-  s->b = 0, s->hz = G->lo_hz, s->conf = s->hits = s->col = s->acc = 0;
+  s->b = 0, s->hz = G->lo_hz, s->conf = s->hits = s->col = s->acc = 0, s->news = 0;
   s->sf = (int16_t)dbm8(s->sfl[s->g]);
   s->sweep_t0 = s->api->ms();
   s->api->tune(s->hz, s->wide);
@@ -426,6 +449,7 @@ int xs_step(xs_t *s) {
     while (s->acc >= n && s->col + 1 < s->cols) s->acc -= n, s->col++;
   }
   if (s->b < n) return XS_RUN;
+  if (s->news >= XS_BURST) burst(s);
   sweep_end(s);
   sweep_start(s);
   return XS_ROW;

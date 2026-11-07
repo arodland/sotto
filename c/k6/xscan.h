@@ -29,6 +29,7 @@ extern "C" {
 #define XS_HOT 10
 #define XS_BLOCK 32
 #define XS_DESENSE_DB 15   /* a floor read this far under the last is desense (held once) */
+#define XS_BURST 4         /* this many new hits in one segment sweep: its floor moved, read it again */
 #define XS_COLS 128        /* waterfall row: max-pooled to this many columns a segment at most */
 
 typedef struct {
@@ -73,7 +74,8 @@ typedef struct {
   uint16_t last_ms;          /* the last finished segment sweep's time */
   xs_hot_t hot[XS_HOT];
   char line[64];
-  uint8_t held, pad2[3];      /* segments whose last floor read was held as desense (a bit each) */
+  uint8_t held;              /* segments whose last floor read was held as desense (a bit each) */
+  uint8_t news, pad2[2];     /* new hot entries in this segment's sweep (XS_BURST) */
 } xs_t;
 
 /* the usual settings: 1.5 ms quick reads, 12 ms full, wide, noise 6 dB, hits 10 dB, refine on */

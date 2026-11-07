@@ -4179,10 +4179,10 @@ index 0000000..7f6e8e1
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..2f0fd40
+index 0000000..2c97159
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1383 @@
+@@ -0,0 +1,1449 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4203,7 +4203,7 @@ index 0000000..2f0fd40
 +//! 0 Listen for ID (the CW ID decoder, c/k6/xlisten.c, up to 25 minutes, any key stops);
 +//! 5 Save (the repeater table in SPI flash, c/k6/rt.c, through module API level 5's checks);
 +//! * ignore; # the next band set; 1 automatic Listen for ID on/off; 9 its speaker on/off (on
-+//! at start); 7 the list and the table on the serial report (K6 CAND,
++//! at start); 3 twice on a saved row deletes its table entry; 7 the list and the table on the serial report (K6 CAND,
 +//! K6 RT lines); EXIT twice back to VOICE MSG (the list is in RAM only and goes with it).
 +//!
 +//! RAM: none of its own beyond this file's statics. While EXPLORE runs it borrows the message
@@ -4378,6 +4378,8 @@ index 0000000..2f0fd40
 +        pub fn ex_init(e: *mut Ex, store: *mut Cand, cap: u32);
 +        pub fn ex_known_store(e: *mut Ex, buf: *mut u32, cap: u32);
 +        pub fn ex_know(e: *mut Ex, hz: u32);
++        pub fn ex_unknow(e: *mut Ex, hz: u32);
++        pub fn ex_find(e: *mut Ex, hz: u32) -> *mut Cand;
 +        pub fn ex_rank(e: *mut Ex, i: u32) -> *mut Cand;
 +        pub fn ex_view(e: *mut Ex, i: u32) -> *mut Cand;
 +        pub fn ex_view_n(e: *const Ex) -> u32;
@@ -4389,6 +4391,7 @@ index 0000000..2f0fd40
 +        pub fn rt_find(t: *mut Rt, id: u16, rx_hz: u32, tol: u32, out: *mut RtRec) -> i32;
 +        pub fn rt_next(t: *mut Rt, slot: i32, out: *mut RtRec) -> i32;
 +        pub fn rt_put(t: *mut Rt, r: *mut RtRec) -> i32;
++        pub fn rt_delete(t: *mut Rt, id: u16) -> i32;
 +        pub fn rt_cw_check(t: *mut Rt, rx_hz: u32, tol: u32, call: *const u8, out: *mut RtRec) -> i32;
 +        pub fn rt_cw_apply(
 +            t: *mut Rt,
@@ -4467,6 +4470,8 @@ index 0000000..2f0fd40
 +    sel: u8,
 +    band: u8,
 +    leave_armed: bool,
++    /// key 3 pressed once on a saved row: a second press deletes its table entry
++    del_armed: bool,
 +    dirty: bool,
 +    last_draw: u16,
 +    msg: [u8; 21],
@@ -4515,6 +4520,7 @@ index 0000000..2f0fd40
 +    sel: 0,
 +    band: 0,
 +    leave_armed: false,
++    del_armed: false,
 +    dirty: true,
 +    last_draw: 0,
 +    msg: [0; 21],
@@ -4824,13 +4830,16 @@ index 0000000..2f0fd40
 +    }
 +    // EXIT counts presses, not repeats: on the bench one held EXIT armed, left, and its next
 +    // repeat opened EXPLORE again from VOICE MSG (2026-11-07 18:20)
-+    if ev.key == KeyId::Exit && !matches!(ev.kind, KeyEventKind::Single) {
++    if matches!(ev.key, KeyId::Exit | KeyId::Digit3) && !matches!(ev.kind, KeyEventKind::Single) {
 +        return;
 +    }
 +    let t = st();
 +    t.dirty = true;
 +    if ev.key != KeyId::Exit {
 +        t.leave_armed = false;
++    }
++    if ev.key != KeyId::Digit3 {
++        t.del_armed = false;
 +    }
 +    match t.view {
 +        View::Listen => {
@@ -4895,6 +4904,7 @@ index 0000000..2f0fd40
 +                t.auto = !t.auto;
 +                note(if t.auto { "AUTO ID ON" } else { "AUTO ID OFF" });
 +            }
++            KeyId::Digit3 => delete(app, syst),
 +            KeyId::Digit9 => {
 +                t.auto_spk = !t.auto_spk;
 +                note(if t.auto_spk { "AUTO ID SPEAKER ON" } else { "AUTO ID SPEAKER OFF" });
@@ -5077,7 +5087,15 @@ index 0000000..2f0fd40
 +            t.ask = rec;
 +            t.view = View::Ask;
 +        }
-+        _ => note("ID HEARD (NOT SAVED)"),
++        // a new frequency: saved with its call, so it goes under the rule (Jeff 2026-11-07 22:46)
++        _ => {
++            let c = unsafe { ffi::ex_find(&mut t.ex, t.hz) };
++            if t.rt_res >= 0 && !c.is_null() {
++                save_cand(app, syst, unsafe { &mut *c });
++            } else {
++                note("ID HEARD (NOT SAVED)");
++            }
++        }
 +    }
 +}
 +
@@ -5131,6 +5149,12 @@ index 0000000..2f0fd40
 +        shown(t.sel as u32)
 +    };
 +    let Some(c) = c else { return };
++    save_cand(app, syst, c);
++}
++
++/// a candidate into the table (a new entry, or a new version of the saved one there)
++fn save_cand(app: &mut App, syst: &mut SYST, c: &mut Cand) {
++    let t = st();
 +    let mut r: RtRec = unsafe { core::mem::zeroed() };
 +    let mut old: RtRec = unsafe { core::mem::zeroed() };
 +    unsafe { ffi::ex_to_rt(c, &mut r) };
@@ -5164,6 +5188,48 @@ index 0000000..2f0fd40
 +        write!(b, "SAVED #{} ({} in table)", r.id, t.rt.live).ok();
 +    } else {
 +        write!(b, "SAVE FAILED {}", slot).ok();
++    }
++    note(b.as_str());
++}
++
++/// Key 3 on a saved row, twice: its table entry goes, and the row is new again (Jeff 2026-11-07:
++/// "Is there a way to delete entries from the table")
++fn delete(app: &mut App, syst: &mut SYST) {
++    let t = st();
++    let Some(c) = shown(t.sel as u32) else { return };
++    if c.flags & EX_F_KNOWN == 0 || t.rt_res < 0 {
++        note("NOT IN THE TABLE");
++        return;
++    }
++    if !t.del_armed {
++        t.del_armed = true;
++        note("3 AGAIN: DELETE");
++        return;
++    }
++    t.del_armed = false;
++    let hz = c.hz;
++    let mut old: RtRec = unsafe { core::mem::zeroed() };
++    ctx_on(app, syst);
++    let mut n = 0;
++    let mut r = 0;
++    // every entry within the tolerance (a frequency saved twice goes at once)
++    while n < 8 && unsafe { ffi::rt_find(&mut t.rt, 0, hz, RT_TOL_HZ, &mut old) } >= 0 {
++        r = unsafe { ffi::rt_delete(&mut t.rt, old.id) };
++        if r < 0 {
++            break;
++        }
++        n += 1;
++    }
++    if r >= 0 {
++        unsafe { ffi::ex_unknow(&mut t.ex, hz) };
++    }
++    ctx_off();
++    say(format_args!("K6 EX delete {} n={} r={} live={}", hz, n, r, t.rt.live));
++    let mut b: TextBuf<21> = TextBuf::new();
++    if r >= 0 {
++        write!(b, "DELETED ({} in table)", t.rt.live).ok();
++    } else {
++        write!(b, "DELETE FAILED {}", r).ok();
 +    }
 +    note(b.as_str());
 +}

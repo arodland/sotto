@@ -189,7 +189,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
         text, data, bss = (int(x) for x in size.split()[:3])
         assert data == 0 and bss == 0
         sizes[f] = text
-    assert sizes["xscan.c"] < 5120 and sizes["xlisten.c"] < 1700, sizes
+    assert sizes["xscan.c"] < 5376 and sizes["xlisten.c"] < 1700, sizes
 
 
 def test_finds_a_repeater_feeds_the_list_and_the_log_replays_the_same(lib):
@@ -288,13 +288,16 @@ def test_floors_dragged_down_by_a_strong_carrier_come_back(lib):
         said = lambda k: {l.split()[5] for l in radio.lines if f" say {k} " in l}
         return said("N"), said("H"), said("X")
 
-    # the old way: the phantoms stay up until they pass for spurs (on air, 20 minutes up)
-    _, _, radio0, _ = run(0)
-    n, h, x = tally(radio0)
-    assert len(n) >= 5 and not h and x == n
-    info, ex, radio, res = run(60)
-    n, h, x = tally(radio)
-    assert len(n) >= 5 and h == n and not x and info.up == 0, (n, h, x)   # every phantom ends
+    # five or more at once in a segment's sweep is a burst (XS_BURST): the floor is read again at
+    # the sweep's end and the phantoms go quietly, no H line, no candidate, with or without the
+    # minute's refloor (before the burst rule, refloor_s 0 left them up until they passed for
+    # spurs: on air, 20 minutes)
+    for refloor_s in (0, 60):
+        info, ex, radio, res = run(refloor_s)
+        n, h, x = tally(radio)
+        bursts = [l for l in radio.lines if " say B" in l]
+        assert len(n) >= 5 and not h and not x and info.up == 0 and bursts, (n, h, x, bursts)
+        assert ex.e.n == 0
     assert all(-140 <= info.floor_dbm[g] <= -134 for g in range(2)), list(info.floor_dbm)
     assert 2 not in res and radio.longest < 200_000, radio.longest   # the re-read is a step of its own
     assert len([l for l in radio.lines if " F0 " in l]) >= 3            # at the start and every minute
