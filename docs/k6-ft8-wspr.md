@@ -488,6 +488,10 @@ and decoded as if it stood still. On simulated slow random wander of +-1.8 and +
 decodes at -24 dB (the linear search: not at all at +-1.8 Hz, even at 0 dB); with no wander it
 matches the linear search (-27 dB 4/4, -29 dB 1/4), with no false decodes on noise, in 0.2 s.
 The linear search stays as the fallback for drift faster than 0.27 Hz/s.
+The scores are plain power over the median: on the bench's +37 dB stream both a clip and log
+power lost the track to the skirt the K6's path puts around a strong signal. And since a
+strong signal also decodes from a neighbouring 40 Hz window (through the resampler's skirt,
+25 Hz off), `tools/k6_wspr.py decode` keeps each message's most central decode.
 
 ### Beacon: `wsprtx`, `wsprbcn` (level 3)
 

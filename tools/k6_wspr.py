@@ -96,14 +96,16 @@ def decode(z, rate, fcs=(0.0,), span=20.0):
     """-> [(offset Hz from WSPR_AUDIO, start s, drift Hz, score, text)]"""
     from scipy.signal import resample
     from sim.k6digi import wsprref
-    out = []
+    best = {}                                       # text -> (|f0| in its window, the result)
     t = np.arange(len(z)) / rate
     for fc in fcs:
         y = resample(z * np.exp(-2j * np.pi * fc * t), int(round(len(z) * WSPR_RATE / rate)))
         for text, f0, dt, drift, score in wsprref.decode_baseband(y, WSPR_RATE, span):
-            if text not in [o[4] for o in out]:
-                out.append((fc + f0, dt, drift, score, text))
-    return out
+            # a strong signal can also decode from a neighbouring window, through the resampler's
+            # skirt (the bench's +37 dB, 2026-11-07, read 25 Hz off): keep the most central
+            if text not in best or abs(f0) < best[text][0]:
+                best[text] = (abs(f0), (fc + f0, dt, drift, score, text))
+    return [r for _, r in best.values()]
 
 
 def cmd_decode(a):
