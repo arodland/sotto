@@ -83,7 +83,9 @@ New repeaters are listed first. A thin rule separates them from the known ones u
 frequencies already saved in the table (read at the start, and added on each Save). The rows
 under the rule move down 2 px. The selected row is drawn inverted, dark on a lit bar (Jeff's
 idea: no '>' column). Grades: R likely a repeater (score 6 or more), r maybe one, ? not seen
-enough yet, s simplex or a spur or a louder signal's skirt, x ignored with *. The level bar
+enough yet, s simplex or a louder signal's skirt, x ignored with *. A spur (a birdie, or a carrier
+that never moves) shows a little gull in place of the grade, and its footer says "birdie, not a
+station". The level bar
 (Jeff's "4 revised", 2026-11-07) is 2 px of loudest level, 5 dB a pixel from -120 dBm (21 px
 full), over a dotted line for the score (10 points full).
 
@@ -208,6 +210,27 @@ was -93 (the first F0 line, at 20:27:14). Three faults locked together, all fixe
 - **The quick floor read 40 dB low** (q-134) because each quick read came straight after the
   1/8-segment hop between floor points. The quick read now comes one bin over a settled full
   read, as in the sweep.
+
+## Birdies (2026-11-07)
+
+birdie-path-1 (hamlet `~/sotto-work/runs/birdie-path-1/`, hfprobe, RX only, the IC-7100 sending
+PSK31 AG7EW TEST on 440.850 as a reference) read each birdie with the RX front end on and off
+(PA13 and PA14 low):
+
+| MHz | front end on | off | drop |
+|---|---|---|---|
+| 144.000 (6 x 24) | -77 | -132 | 55 dB |
+| 168.000 (7 x 24) | -80 | -134 | 54 dB |
+| 240.000 (10 x 24) | -96 | -142 | 46 dB |
+| 156.000 (6 x 26) | -94 | -118 | 24 dB |
+| 440.850 (PSK31, -18 dBm) | -18 | -72 | 54 dB |
+
+The MCU clock's harmonics come in through the antenna path like a station, so switching the
+front end off can't tell them apart; only the FD6818's own 26 MHz family stays (and a strong
+station leaks through too, so a test would have to compare the drop). So the sweep marks a new
+hit within 2.5 kHz of n x 24 MHz a spur at once (`ex_own_clock`), not after 60 s up, and lists it
+with its level and the gull. The 26 MHz family is left alone: in our bands it only lands on
+442.000, a channel.
 
 ## Not built yet
 

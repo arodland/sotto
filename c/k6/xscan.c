@@ -172,6 +172,14 @@ static xs_hot_t *slot(xs_t *s, int lvl) {
   return o ? o : st8(lvl) >= w->lvl + s->hit_db ? w : 0;
 }
 
+/* h passes for a spur: the revisits leave it, it's never in xs_up, its slot stays taken (so it
+   isn't found again) */
+static void spur(xs_t *s, xs_hot_t *h) {
+  h->spur = 1;
+  if (s->ex) ex_spur(s->ex, h->hz, dbm8(h->lvl));
+  say(s, num(fq(s->line, "X ", h->hz), " ", dbm8(h->lvl), 0));
+}
+
 static int new_hit(xs_t *s, int g, uint32_t b, uint32_t hz, int lvl, int r) {
   uint32_t c = hz, half = s->seg[g].step_hz >> 1;
   xs_hot_t *h = near(s, hz, half, 0);
@@ -199,6 +207,10 @@ static int new_hit(xs_t *s, int g, uint32_t b, uint32_t hz, int lvl, int r) {
   p = num(fq(s->line, "N ", c), " ", lvl, 0);
   p = num(p, " fl", dbm8(s->sfl[g]), 0);
   say(s, num(p, " b", (int)b, 0));
+  /* the K6's own clock: a spur at once, not after spur_s up (bench 2: 144.000 listed a minute).
+     It comes in through the antenna path like a station (birdie-path-1: the front end off took
+     55 dB off both), so only its frequency gives it away */
+  if (ex_own_clock(c)) spur(s, h);
   return 1;
 }
 
@@ -231,9 +243,7 @@ static void revisit(xs_t *s) {
         if (st8(l) > h->lvl) h->lvl = st8(l);
       }
       if (now - h->up > (uint32_t)s->spur_s * 1000u && h->hi - h->lo <= SPUR_DB) {
-        h->spur = 1;
-        if (s->ex) ex_spur(s->ex, h->hz);
-        say(s, num(fq(s->line, "X ", h->hz), " ", dbm8(h->lvl), 0));
+        spur(s, h);
       }
     } else if (h->up && ++h->miss >= 2) {
       ends(s, h);

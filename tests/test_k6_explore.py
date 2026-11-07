@@ -77,7 +77,7 @@ def test_simplex_calling_with_wandering_levels_is_simplex(lib):
 def test_one_over_is_unknown_and_a_spur_stays_a_spur(lib):
     x = List(lib)
     assert x.over(442_500_000, 0, 4000, -90).grade == b"?"
-    x.spur(442_500_000)
+    x.spur(442_500_000, -90)
     for k in range(5):
         c = x.over(442_500_000, (k + 1) * MIN, 30_000, -90)
     assert c.grade == b"s" and c.flags & F_SPUR and c.score == -100     # last in the list

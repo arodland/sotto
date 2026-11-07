@@ -88,7 +88,9 @@ void ex_init(ex_t *e, ex_cand_t *store, unsigned cap);
 /* the scan's H line: an over at hz from start_ms for dur_ms at level dBm. The candidate, or 0
    (the list full of better ones) */
 ex_cand_t *ex_over(ex_t *e, uint32_t hz, uint32_t start_ms, uint32_t dur_ms, int level);
-void ex_spur(ex_t *e, uint32_t hz);                       /* the scan's X line */
+void ex_spur(ex_t *e, uint32_t hz, int lvl);              /* the scan's X line */
+/* within 2.5 kHz of a harmonic of the K6's own 24 MHz MCU clock (144.000 the loudest) */
+int ex_own_clock(uint32_t hz);
 void ex_input(ex_t *e, uint32_t hz, int32_t off_hz);       /* a user heard at hz + off_hz */
 void ex_tone(ex_t *e, uint32_t hz, uint16_t tone);
 void ex_cw(ex_t *e, uint32_t hz, const char *call);

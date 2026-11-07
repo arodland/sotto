@@ -106,7 +106,7 @@ static ex_cand_t *slot(ex_t *e) {
 /* the K6's own MCU clock: 24 MHz harmonics, 72-336 MHz seen on rxmap, 144.000 at -72 dBm the
    loudest (the HF thread, 2026-11-07). Nobody transmits on exactly n x 24 MHz, and no repeater
    output sits there. (The FD6818's 13 / 26 MHz family is left alone: 442.000 is a channel.) */
-static int own_clock(uint32_t hz) {
+int ex_own_clock(uint32_t hz) {
   uint32_t f;
   for (f = 24000000u; f < 1000000000u; f += 24000000u)
     if (dist(hz, f) <= 2500) return 1;
@@ -119,7 +119,7 @@ static ex_cand_t *get(ex_t *e, uint32_t hz, uint32_t t) {
   if (!(c = slot(e))) return 0;
   zero(c, sizeof *c);
   c->hz = hz, c->first_ms = c->last_ms = t, c->grade = '?';
-  if (own_clock(hz)) c->flags = EX_F_SPUR;
+  if (ex_own_clock(hz)) c->flags = EX_F_SPUR;
   if (known(e, hz)) c->flags |= EX_F_KNOWN;
   return c;
 }
@@ -156,9 +156,11 @@ ex_cand_t *ex_over(ex_t *e, uint32_t hz, uint32_t start_ms, uint32_t dur_ms, int
   return c;
 }
 
-void ex_spur(ex_t *e, uint32_t hz) {
+void ex_spur(ex_t *e, uint32_t hz, int lvl) {
   ex_cand_t *c = get(e, hz, 0);
-  if (c) c->flags |= EX_F_SPUR, ex_grade(c);
+  if (!c) return;
+  if (!c->overs) c->lo = c->hi = (int16_t)lvl;   /* a birdie up since it was found: its level */
+  c->flags |= EX_F_SPUR, ex_grade(c);
 }
 
 void ex_input(ex_t *e, uint32_t hz, int32_t off_hz) {
