@@ -1,10 +1,13 @@
-# WebAssembly build of the sotto v3.8 decoder for the listening page (docs/index.html).
+# WebAssembly build of the sotto codecs for the listening page (docs/index.html): v3.8 (2400),
+# sotto 1200 hiss, and sotto 600 / 400 (float encoder in sotto.wasm, fixed-point decoder on the
+# v3.7 core in sotto_vlr.wasm, the same code the K6 plays).
 # Needs clang and wasm-ld with a wasm32-wasi sysroot (Debian/Ubuntu: apt install clang lld
 # wasi-libc libclang-rt-dev-wasm32). Run `make` in the repository root first: build/codec2 holds
 # Codec 2's generated codebooks (sotto's own tables are committed in c/).
-#   make            sotto.wasm
-#   make install    copies it to docs/sotto.wasm (the file the page loads)
-#   make check      decodes with node and compares against c/sotto_dec -16
+#   make            sotto.wasm and sotto_vlr.wasm
+#   make install    copies them to docs/ (the files the page loads)
+#   make check      runs both under node against the native tools (c/sotto_enc, c/sotto_dec and
+#                   a VARIANT=v3.7 c/fixed/sotto_vlr_dec_fx, built in ../../build/c37 if missing)
 #   make sotto_fx.wasm   the fixed-point codec (c/fixed) behind the same entry points
 CC_WASM ?= clang
 WASI_SYSROOT ?=
@@ -19,9 +22,12 @@ C2FILES = codec2.c codec2_fft.c kiss_fft.c kiss_fftr.c sine.c nlp.c phase.c post
 C2GENFILES = codebook.c codebookd.c codebookjmv.c codebookge.c codebooknewamp1.c \
              codebooknewamp1_energy.c codebooknewamp2.c codebooknewamp2_energy.c
 SRCS = sotto_wasm.c ../sotto.c ../sotto_hiss.c ../sotto_codebook.c ../sotto_hiss_tables.c \
+       ../sotto_lr.c ../sotto_vlr.c ../sotto_vlr_tables.c \
        $(addprefix $(C2SRC)/,$(C2FILES)) $(addprefix $(C2GEN)/src/,$(C2GENFILES))
 OBJS = $(patsubst %.c,obj/%.o,$(notdir $(SRCS)))
 vpath %.c . .. $(C2SRC) $(C2GEN)/src
+
+all: sotto.wasm sotto_vlr.wasm
 
 sotto.wasm: $(OBJS)
 	$(CC_WASM) $(TARGET) -mexec-model=reactor -Wl,--gc-sections -Wl,--strip-all \
@@ -55,12 +61,42 @@ objfx/%.o: ../fixed/%.c | objfx
 objfx:
 	mkdir -p objfx
 
-install: sotto.wasm
-	cp sotto.wasm ../../docs/sotto.wasm
+# sotto 600 / 400 decoder: fixed point on the v3.7 core (no SOTTO_V38), as sotto_vlr_dec_fx and
+# the K6 pager build it
+VLR_SRCS = sotto_wasm.c ../fixed/fx_math.c ../fixed/fx_tables.c ../fixed/sotto_fx_dec.c ../fixed/sotto_fx_vlr.c \
+           ../sotto_vlr_tables.c
+VLR_OBJS = $(patsubst %.c,objvlr/%.o,$(notdir $(VLR_SRCS)))
+VLR_CFLAGS = $(TARGET) -O2 -std=gnu99 -ffunction-sections -fdata-sections -DSOTTO_WASM_VLR \
+             -DSOTTO_V36 -DSOTTO_PITCH_THIRD -I.. -I../fixed -w
 
-check: sotto.wasm
-	cd ../.. && node c/wasm/check_wasm.mjs
+sotto_vlr.wasm: $(VLR_OBJS)
+	$(CC_WASM) $(TARGET) -mexec-model=reactor -Wl,--gc-sections -Wl,--strip-all \
+	  -Wl,-z,stack-size=262144 -Wl,--initial-memory=2097152 -Wl,--max-memory=67108864 \
+	  -o $@ $(VLR_OBJS)
+
+objvlr/%.o: %.c | objvlr
+	$(CC_WASM) $(VLR_CFLAGS) -c -o $@ $<
+objvlr/%.o: ../fixed/%.c | objvlr
+	$(CC_WASM) $(VLR_CFLAGS) -c -o $@ $<
+objvlr/%.o: ../%.c | objvlr
+	$(CC_WASM) $(VLR_CFLAGS) -c -o $@ $<
+objvlr:
+	mkdir -p objvlr
+
+install: sotto.wasm sotto_vlr.wasm
+	cp sotto.wasm ../../docs/sotto.wasm
+	cp sotto_vlr.wasm ../../docs/sotto_vlr.wasm
+
+# the native 600 / 400 reference decoder is a VARIANT=v3.7 fixed build (c/ itself is v3.8)
+C37 = ../../build/c37
+$(C37)/fixed/sotto_vlr_dec_fx:
+	rm -rf $(C37) && mkdir -p $(C37) && cp -r ../*.c ../*.h ../*.inc ../Makefile ../fixed $(C37)/
+	$(MAKE) -C $(C37) clean
+	$(MAKE) -C $(C37) VARIANT=v3.7 fixed/sotto_vlr_dec_fx
+
+check: sotto.wasm sotto_vlr.wasm $(C37)/fixed/sotto_vlr_dec_fx
+	cd ../.. && node c/wasm/check_wasm.mjs c/wasm/sotto.wasm c/wasm/sotto_vlr.wasm
 
 clean:
-	rm -rf obj objfx sotto.wasm sotto_fx.wasm
-.PHONY: install check clean
+	rm -rf obj objfx objvlr sotto.wasm sotto_fx.wasm sotto_vlr.wasm
+.PHONY: all install check clean

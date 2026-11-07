@@ -50,3 +50,16 @@ LibriSpeech (V. Panayotov, G. Chen, D. Povey, S. Khudanpur, ICASSP 2015) is lice
 ## sotto's decoder against FARGAN (`fargan/`)
 
 The page's Part 4. `fargan/<voice>__fargan_v38.flac` is Opus's FARGAN neural vocoder (stock Opus 1.6.1 weights) resynthesising the v3.8 decoder's output from the same `v38/<voice>__No_radio_channel.bit` bits, so its 4-8 kHz bands carry sotto's hiss index; `__fargan_v38_blindhf` guesses those bands from the lower ones instead; `__fargan_ceiling` is FARGAN fed the original speech's own features (not sendable at 2400 bit/s). 16 kHz, made by `tools/fargan_study.py`; scores in `docs/results/fargan_study.json`, write-up in `docs/fargan-study.md`.
+
+## Four rates (`rates/`)
+
+The page's "Four rates" section plays one original per voice (`v38/<voice>__original16.flac`, cut to whole 40 ms) encoded at each sotto rate, with no radio channel. `rates/<voice>__<rate>.bit` holds the frames, 6 bytes each:
+
+| Rate | Mode | Frame | Encode | Decode |
+|---|---|---|---|---|
+| 2400 | sotto v3.8 | 20 ms | `c/sotto_enc -16` | `c/sotto_dec -16` (16 kHz) |
+| 1200 | sotto 1200 hiss | 40 ms | `c/sotto_enc -16 -1200` | `c/sotto_dec -16 -1200` (16 kHz) |
+| 600 | sotto 600 | 80 ms | `c/sotto_enc -600` (8 kHz in) | `sotto_vlr_dec_fx 600` (8 kHz, VARIANT=v3.7 fixed build) |
+| 400 | sotto 400 | 120 ms | `c/sotto_enc -400` (8 kHz in) | `sotto_vlr_dec_fx 400` |
+
+The 8 kHz input for 600 / 400 is the original through scipy's `resample_poly(x, 1, 2)`, rounded. Made by `tools/render_page_rates.py`; narrowband PESQ in `docs/results/page_rates.json` (mean of the six voices: 2.89, 2.60, 2.09, 1.76).
