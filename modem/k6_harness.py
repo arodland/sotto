@@ -40,6 +40,7 @@ before any inversion. The harness redoes the K6's own bit-error count (`be`) and
 per-byte error map and a bit-slip estimate.
 SPDX-License-Identifier: MIT
 """
+from dataclasses import replace
 import argparse
 import copy
 import queue
@@ -59,7 +60,8 @@ def test_packets(profile):
     """The spec's 70-frame test message, whitened, as the K6 compares against (16 in L, 8 in
     XL, 40 in S)."""
     if profile not in _TEST:
-        pk = pager.PROFILES[profile].pack(TEST_FRAMES, 5 if profile == "S" else 0x42)
+        prof = replace(pager.PROFILES[profile], short_last=False)    # the spec's full groups
+        pk = prof.pack(TEST_FRAMES, 5 if profile == "S" else 0x42)
         _TEST[profile] = np.array([np.frombuffer(p, np.uint8) for p in pk])
     return _TEST[profile]
 
