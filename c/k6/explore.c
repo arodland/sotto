@@ -130,6 +130,15 @@ void ex_know(ex_t *e, uint32_t hz) {
   if (!known(e, hz) && e->known_n < e->known_cap) e->known[e->known_n++] = hz;
 }
 
+void ex_unknow(ex_t *e, uint32_t hz) {
+  ex_cand_t *c = ex_find(e, hz);
+  unsigned i;
+  if (c) c->flags &= (uint8_t)~EX_F_KNOWN;
+  for (i = 0; i < e->known_n;)
+    if (dist(e->known[i], hz) <= e->tol_hz) e->known[i] = e->known[--e->known_n];
+    else i++;
+}
+
 ex_cand_t *ex_over(ex_t *e, uint32_t hz, uint32_t start_ms, uint32_t dur_ms, int level) {
   ex_cand_t *c = get(e, hz, start_ms);
   unsigned i;

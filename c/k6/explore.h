@@ -102,6 +102,8 @@ ex_cand_t *ex_find(ex_t *e, uint32_t hz);
    each saved entry at the start) and marks its candidate, now and when it first appears */
 void ex_known_store(ex_t *e, uint32_t *buf, unsigned cap);
 void ex_know(ex_t *e, uint32_t hz);
+/* the entry was deleted from the table (key 3 twice): new again */
+void ex_unknow(ex_t *e, uint32_t hz);
 /* rescore one (after any event the caller adds itself) */
 void ex_grade(ex_cand_t *c);
 /* the i-th best (0 first) by score, then most overs, then most recent; 0 past the end. New

@@ -44,7 +44,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
     assert und == [], und
     size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
     text, data, bss = (int(x) for x in size.split()[:3])
-    assert text < 2560 and data == 0 and bss == 0   # 2194 with the known list (2026-11-07)
+    assert text < 2688 and data == 0 and bss == 0   # 2602 with ex_unknow (2026-11-07)
 
 
 def test_a_repeater_output_grades_up_with_its_cw_id(lib):
@@ -164,6 +164,11 @@ def test_known_repeaters_rank_after_the_new_ones(lib):
     assert x.ranked() == [146_520_000, 443_100_000, 442_375_000]
     x.find(146_520_000).flags |= F_IGNORED                  # ignored: last of the new ones
     assert x.ranked()[0] == 146_520_000
+    lib.ex_unknow(ctypes.byref(x.e), 443_100_000)            # deleted from the table: new again
+    assert x.e.known_n == 1 and not x.find(443_100_000).flags & F_KNOWN
+    assert x.ranked() == [443_100_000, 146_520_000, 442_375_000]
+    x.over(443_100_000, 9 * MIN, 5000, -80)                 # and stays new
+    assert not x.find(443_100_000).flags & F_KNOWN
 
 
 def test_a_full_list_drops_the_weakest_but_keeps_ignored_and_tried(lib):

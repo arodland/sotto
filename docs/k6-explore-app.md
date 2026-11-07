@@ -63,7 +63,9 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
 - **The table** (`c/k6/rt.c`): Save writes one 64-byte record in SPI flash at 0x0F0000-0x0FFFFF,
   through the same checks as module API level 5. A confirmed CW ID follows Jeff's rule: a saved
   entry with no call takes it at once, and a different saved call waits for MENU. With no saved
-  entry, the call stays on the candidate in RAM until Save. Nothing else writes flash. On entry,
+  entry, the frequency is saved with its call as a new entry (Jeff 2026-11-07 22:46), so it
+  goes under the rule. Key 3 twice on a saved row deletes its entry (`rt_delete`, `ex_unknow`)
+  and the row is new again. Nothing else writes flash. On entry,
   the table mounts. If 0x0F0000-0x0FFFFF holds anything that isn't blank or a table, the screen
   says `TABLE AREA NOT BLANK`, and Save stays off.
 
@@ -88,12 +90,14 @@ under the rule move down 2 px. The selected row is drawn inverted, dark on a lit
 idea: no '>' column). Grades: R likely a repeater (score 6 or more), r maybe one, ? not seen
 enough yet, s simplex or a louder signal's skirt, x ignored with *. A spur (a birdie, or a carrier
 that never moves) shows a little gull in place of the grade, and its footer says "birdie, not a
-station". The level bar
+station". A row with a confirmed call shows a check mark in place of the grade (Jeff's pick
+"B", 2026-11-07, mock-ups in /mnt/project-files/k6-explore/explore-check-marks.png). The level bar
 (Jeff's "4 revised", 2026-11-07) is 2 px of loudest level, 5 dB a pixel from -120 dBm (21 px
 full), over a dotted line for the score (10 points full).
 
-The header (Jeff, 2026-11-07) has an icon pair that swaps every second. While sweeping, it shows
-half-lidded eyes looking left, then right, followed by the band set and how many candidates
+The header (Jeff, 2026-11-07) has an icon pair. While sweeping, it shows half-lidded eyes that
+look the other way each time a sweep of the band set ends, so how fast they glance shows how fast
+the scan is going (Jeff 22:38), followed by the band set and how many candidates
 were found. While listening for a CW ID, it shows dit-dah / dah-dit, the frequency, and a watch
 face at the right end whose wedge empties clockwise over the listen's time limit (for the
 automatic listen 2 min, less for a station already listened to). The automatic listen keeps the list on screen, with an arrow in the call
@@ -213,6 +217,23 @@ was -93 (the first F0 line, at 20:27:14). Three faults locked together, all fixe
 - **The quick floor read 40 dB low** (q-134) because each quick read came straight after the
   1/8-segment hop between floor points. The quick read now comes one bin over a settled full
   read, as in the sweep.
+
+## Bench 6 (2026-11-07 22:26-22:45 UTC, main 64d4fc7)
+
+The full-pass gate and loudest-first worked: the first pick came after a whole pass, and 440.850
+at -21 dBm went before its skirts. Bare IDs from the bench (no carrier before them) were joined
+about 4 s in, so only the tail decoded ("T SOTTO TEST"). With 15 s of Jeff's voice before the
+ID, as a repeater sounds, the listener was on frequency in time: AG7EW on 441.000 was confirmed
+over two sends (Jeff heard both on the speaker, the CW "mushy" but decoded), and after that the
+listener left 441.000 alone. Two changes from it: a confirmed call on a new frequency now saves
+it (above), and key 3 deletes.
+
+Unplugging the serial cable and plugging it back in moved the floor: 55 one-over hits 2-5 dB
+over it (22 on 70 cm, 17 on 1.25 m on a 20 kHz grid) filled the list to 64 before the minute's
+refloor. Now `XS_BURST` (4) new hits in one sweep of a segment read its floor at the sweep's end,
+and that sweep's new entries go quietly (a `B<g> <news> drop <n>` line, no H line, no candidate)
+unless they still stand `hit_db` over the new floor. The eyes also glance once per pass now, not
+once a second (Jeff 22:38: how fast the scan is going).
 
 ## Bench 5 (2026-11-07 21:35-21:40 UTC, main 32cd262)
 
