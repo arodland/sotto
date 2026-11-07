@@ -210,27 +210,41 @@ static void ends(sw_t *s, hot_t *h) {
   say(s, num(p, " a", (int)a, 0));
 }
 
-/* a confirmed bin: an entry's next over, or (refined, read again at its centre) a new entry */
-static void new_hit(sw_t *s, int g, uint32_t b, uint32_t hz, int lvl, int r) {
+/* where a new entry goes: a free one, else the one down longest, else the weakest (up, or a
+   spur) if this hit is hit_db louder; 0: no room (a list full of weak carriers keeps its room
+   for a louder one, as a repeater keying up) */
+static hot_t *slot(sw_t *s, int lvl) {
+  hot_t *h = s->hot, *o = 0, *w = 0;
+  int i;
+  for (i = 0; i < HOT; i++, h++) {
+    if (!h->hz) return h;
+    if (!h->up && !h->spur && (!o || h->last < o->last)) o = h;
+    if (!w || h->lvl < w->lvl) w = h;
+  }
+  return o ? o : st8(lvl) >= w->lvl + s->q.hit_db ? w : 0;
+}
+
+/* a confirmed bin: an entry's next over, or (refined, read again at its centre) a new entry.
+   0: no room, and nothing refined (70 cm, 2026-11-07: a full list of weak carriers made every
+   other hit cost a refine, every sweep, and the sweep took 14 s) */
+static int new_hit(sw_t *s, int g, uint32_t b, uint32_t hz, int lvl, int r) {
   uint32_t c = hz, half = s->q.step_hz[g] >> 1;
-  hot_t *h = near(s, hz, half, 0), *o = 0;
+  hot_t *h = near(s, hz, half, 0);
   char *p;
   int i;
-  if (!h && (s->q.flags & 2)) {
-    c = refine(s, hz, g);
-    h = near(s, c, half, 0);
-    if (!h) lvl = full(s, c, 0);
+  if (!h) {
+    if (!slot(s, lvl)) return 0;
+    if (s->q.flags & 2) {
+      c = refine(s, hz, g);
+      h = near(s, c, half, 0);
+      if (!h) lvl = full(s, c, 0);
+    }
   }
   if (h) {
     if (!h->up && !h->spur) starts(h, s->api->ms(), lvl, r);
-    return;
+    return 1;
   }
-  /* a free entry, else the one down longest (spurs stay: they keep their bins quiet) */
-  for (i = 0, h = s->hot; i < HOT; i++, h++) {
-    if (!h->hz) break;
-    if (!h->up && !h->spur && (!o || h->last < o->last)) o = h;
-  }
-  if (i == HOT && !(h = o)) return;
+  if (!(h = slot(s, lvl))) return 0;
   {
     uint8_t *d = (uint8_t *)h;
     for (i = 0; i < (int)sizeof *h; i++) d[i] = 0;
@@ -241,6 +255,7 @@ static void new_hit(sw_t *s, int g, uint32_t b, uint32_t hz, int lvl, int r) {
   p = num(p, " fl", dbm8(s->sfl[g]), 0);
   p = num(p, " z", s->api->fd_read(0x63), 0);
   say(s, num(p, " b", (int)b, 0));
+  return 1;
 }
 
 static void revisit(sw_t *s) {
@@ -309,14 +324,15 @@ static int sweep(sw_t *s, int g, uint8_t *fl) {
       conf++;
       if (lvl >= sf + s->q.hit_db) {
         hits++;
-        new_hit(s, g, (uint32_t)(fl - s->fl) + b, hz, lvl, dbm8((uint8_t)r));
+        /* no room for it: take it into this bin's quick floor, so it costs nothing until louder */
+        if (!new_hit(s, g, (uint32_t)(fl - s->fl) + b, hz, lvl, dbm8((uint8_t)r))) fl[b] = (uint8_t)(r - 3);
         r = lvl - sf + f;          /* the row shows a hit at its settled level over the floor */
       } else {
         if (lvl < sf) sf = lvl;
         else if ((conf & 3) == 0) sf++;
         s->sfl[g] = st8(sf);
         /* no hit: raise this bin's quick floor to 3 dB under the read, so a bin whose quick
-           reads jump about (70 cm, 2026-11-07: 114 bins/s) isn't confirmed every sweep */
+           reads jump about isn't confirmed every sweep */
         fl[b] = (uint8_t)(r - 3);
       }
     }
@@ -384,8 +400,7 @@ int k6_main(const k6_api_t *api) {
      floor 3 dB over the quick one, so a carrier that's up all through it still shows. */
   for (g = 0; g < s->q.nseg; g++) {
     uint32_t k = s->q.nbins[g] >> 3, f = s->q.lo_hz[g] + ((k >> 1) + 3) * s->q.step_hz[g];
-    uint8_t a[2] = {255, 255}, b[2] = {255, 255};
-    p = put(s->line + 20, ":");
+    uint8_t a[2] = {255, 255}, b[2] = {255, 255}, rd[8];
     for (i = 0; i < 16; i++) {
       uint8_t v;
       int j = i & 1;
@@ -394,21 +409,17 @@ int k6_main(const k6_api_t *api) {
         api->delay_us(s->q.quick_us);
         v = st8(rssi(api));
       } else {
-        v = st8(full(s, f, s->q.quick_us));
-        p = num(p, " ", dbm8(v), 0);
+        v = rd[i >> 1] = st8(full(s, f, s->q.quick_us));
         f += k * s->q.step_hz[g];
       }
       if (v < a[j]) b[j] = a[j], a[j] = v;
       else if (v < b[j]) b[j] = v;
     }
     s->qfl[g] = b[0] + 3, s->sfl[g] = b[1];
-    {
-      /* "F0 -137 q-160" then the 8 full reads, written past it above: close the gap */
-      char *e = p, *src = s->line + 20;
-      p = num(num(num(s->line, "F", g, 0), " ", dbm8(b[1]), 0), " q", dbm8(b[0]), 0);
-      while (src < e) *p++ = *src++;
-      say(s, p);
-    }
+    p = num(num(num(s->line, "F", g, 0), " ", dbm8(b[1]), 0), " q", dbm8(b[0]), 0);
+    *p++ = ':';
+    for (i = 0; i < 8; i++) p = num(p, " ", dbm8(rd[i]), 0);
+    say(s, p);
   }
   t0 = s->rev = api->ms();
   for (;;) {

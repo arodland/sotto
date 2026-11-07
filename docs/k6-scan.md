@@ -74,7 +74,7 @@ still lacks (the first run: 0.92 ms; the emulator charges 0.42 ms, the design as
 ## Memory
 
 The module is 3.5 KB of the 4 KB store. The scratch RAM after it holds the state (176 B) and the
-hot list (10 × 28 B), which leaves about 150 B to spare with this machine's clang and about 130 B
+hot list (10 × 28 B), which leaves about 84 B to spare with this machine's clang and about 60 B
 with CI's (CI's build comes out about 24 B bigger). The stack holds the floors, one byte a bin
 and up to 1,024 bins in all, then the waterfall row: bins plus row columns up to 1,184. Phase 0's
 run measured 3,504 B of stack room at a module's call, and the first scan run left 1,140 B
@@ -137,20 +137,29 @@ would explain it. The next run tests this with `--no-rows`.
   to -106, up for the remaining 91-95 s. 440.000 and 440.525 were marked spurs. That's about
   35 dB over the floor, so it's real energy, most likely from the bench (the IC-7100 or the PC
   next to the K6). A drive away from the bench will tell.
-- **Bins a second fell to 114** once the confirms started: `Z sw=36 bins=14400 ms=125773
-  bps=114 hot=9`. That's about 3.5 s a sweep instead of 1. The emulator puts nine up entries at
-  about 20 % of the time, so most of the loss must be confirms that never make a hit. A bin whose
-  quick read passes the noise test but whose confirm fails now has its quick floor raised to 3 dB
-  under that read. It is confirmed again only if it gets louder, or after its floor has fallen
-  back. In the emulator, with quick reads that jump 4-9 dB on a third of the bins, that takes
-  the rate from 276 to 345 bins/s (`test_quick_reads_that_jump_are_confirmed_less_and_less`).
+- **Bins a second fell to 114**: `Z sw=36 bins=14400 ms=125773 bps=114 hot=9`. The S lines
+  explain it. Sweeps 0-22 took 952 ms with no confirms. After the floor fell, from sweep 29 on,
+  each sweep took 13.2-14.9 s with `c106-120` and `h` equal to `c`. Every one of those bins was a
+  *hit*: about -105 dBm, against a segment floor of -142. The hot list was full of the first
+  nine weak carriers, all still up, so every other hit was refined (about 80 ms of narrow reads)
+  and then dropped, on every sweep. The emulator shows the same thing: 20 weak carriers in a
+  2 m test segment took it to 71 bins/s
+  (`test_a_list_full_of_weak_carriers_stays_fast_and_takes_a_repeater`).
+
+  **Fixed:** a hit first checks for a place on the list and isn't refined if there's none. A
+  hit with no place is taken into its bin's quick floor, so it costs nothing until it gets
+  louder. A place is a free entry, else the one down longest, else the weakest entry (one that's
+  up, or a spur) if the new hit is `hit_db` louder. So a list full of weak carriers still takes a
+  repeater that keys up. In the emulator that keeps 369 bins/s and records the repeater's over.
+  Also, a confirm that misses now raises that bin's quick floor to 3 dB under its read, which
+  helps quick reads that jump about.
 
 The logs are on hamlet in `~/sotto-work/runs/explorer-scan-2/`.
 
 ## Next bench run
 
-Receive only, nothing flashed, with the module built from the branch head (3,480 B, 136 B of
-scratch to spare):
+Receive only, nothing flashed, with the module built from the branch head (3,532 B here, 84 B
+of scratch to spare; about 60 B in CI's build):
 
 1. `run 2m --seconds 60 --no-rows`: if bin 0 is clean without the R lines, the serial burst is
    the cause, and the fix is a park long enough for the UART to drain.
