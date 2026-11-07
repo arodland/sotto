@@ -90,10 +90,11 @@ the first send. The telemetry keeps only the newest 684 bytes, so the per-bin li
   above the edge, and "no path" is the clean way to look for internal markers. UHF path -124, both paths
   -114. REG_3E at 0x8000 or 0xC000 changed nothing visible.
 
-### Run 2 (planned): PSK31 from the IC-7100
+### Runs 2 and 3: PSK31 from the IC-7100 into a dummy load
 
-Jeff OK'd a test into a dummy load, RF power 0.0, PSK31 "AG7EW TEST" over and over (project rule from
-2026-11-07: every test transmission carries ident, and continuous carriers are PSK31):
+Jeff OK'd it: RF power 0.0, PSK31 "AG7EW TEST" over and over. It also set a project rule on 2026-11-07:
+every test transmission carries ident, and continuous carriers go out as PSK31, so `cal` sends PSK31 on
+2 m / 70 cm too.
 
 ```sh
 python3 tools/k6_rxmap.py cal --hf --bin mod-rxmap.bin --key-file ~/.config/sotto/k6-mod.key
@@ -102,3 +103,11 @@ python3 tools/k6_rxmap.py cal --hf --bin mod-rxmap.bin --key-file ~/.config/sott
 USB dial 18.100 is the positive control (above the spec) and 14.070 (20 m) is the question. The K6 listens
 1 kHz up (18.101, 14.071), where the PSK31 tone puts the signal. `modem/psk31.py` is the encoder: G3PLX
 varicode, matching fldigi's table, with a raised-cosine envelope.
+
+- Run 2 (15:18-15:20 UTC): the bursts went out, but the tool missed the K6's report. With no carrier seen,
+  the module reports at max_s, and the tool listened for only 60 s. Fixed: it now waits until max_s + 30 s,
+  and `--hf` leaves 440.850 out of the K6's points.
+- **Run 3 (15:25-15:27 UTC): the K6 heard neither burst**: `C 18.101:-105 14.071:-110`, `K ev=0`, returned -6.
+  Because 18.101 (inside the spec) didn't show either, this says nothing about 14 MHz. It only shows that
+  2 W into a dummy load doesn't reach the K6's front end at HF. A real test needs a radiating source near the
+  K6, such as a short wire on the IC-7100's HF port at power 0 (on air, with ident: Jeff's call).
