@@ -9,6 +9,7 @@ build/
 *.flac
 !docs/samples/**/*.flac
 !docs/course/audio/*.flac
+!tests/data/k6/air/*.flac
 c/fixed/c55x/build*/
 c/fixed/c55x/run*/
 c/fixed/c55x/b3*/
