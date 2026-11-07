@@ -118,6 +118,24 @@ static int last_g = -1, last_m;     /* the short last group (seq bit 13): its gr
 static int avail;                   /* frames below this are final: playable */
 static int ended, overruns, playing;
 static uint32_t pcm_hash, pcm_n;    /* FNV-1a of the samples played since sp_play_start */
+static int bit(const uint8_t *m, int i) { return (m[i >> 3] >> (i & 7)) & 1; }
+static void set_bit(uint8_t *m, int i) { m[i >> 3] |= (uint8_t)(1u << (i & 7)); }
+
+/* pause frames (sotto 2400 and 1200, senders from 2026-11-07): a good slot of voicing 0, Wo 127,
+   energy 0, a 10-bit count N and PAUSE_MARKER plays as N slots of fill: the last real slot again,
+   with its good flag */
+#define PAUSE_MARKER 0xA5304Bu
+static uint8_t fill_frame[6];
+static int fill_good = -1;          /* the last real slot's good flag; -1 none played yet */
+static int fill_left;               /* fill slots still to play */
+
+static int pause_slots(int r) {
+  const uint8_t *q = S.frames + 6 * r;
+  if (fill_good < 0 || !bit(S.good, r) || q[0] != 0x3F || (q[1] & 0xFC) != 0x80 ||
+      ((uint32_t)q[3] << 16 | (uint32_t)q[4] << 8 | q[5]) != PAUSE_MARKER)
+    return 0;
+  return (q[1] & 3) << 8 | q[2];
+}
 
 static void hash_pcm(const int16_t *pcm) {
   uint32_t h = pcm_hash;
@@ -136,8 +154,6 @@ uint32_t sp_pcm_hash(unsigned *samples) {
 }
 static int32_t emph1, emph2;
 
-static int bit(const uint8_t *m, int i) { return (m[i >> 3] >> (i & 7)) & 1; }
-static void set_bit(uint8_t *m, int i) { m[i >> 3] |= (uint8_t)(1u << (i & 7)); }
 
 int sp_init(void *mem, unsigned bytes) {
   /* per frame: 6 bytes, 1 good bit, 1/2 seen bit (room for 2-frame packets, as the retired
@@ -372,6 +388,7 @@ void sp_play_start(void) {
   /* -1: the other codec's message, or no tables to decode with (sp_cb.h, sp_vlr.h) */
   play_end = S.st.have && MSG_PLAYS && TABLES_READY ? S.st.stored : -1;
   playing = 1;
+  fill_good = -1, fill_left = 0;
   emph1 = emph2 = 0;
   pcm_hash = 2166136261u, pcm_n = 0;
 }
@@ -380,15 +397,24 @@ void sp_play_start(void) {
 /* sotto 1200: each 6-byte slot is 40 ms, played as two 20 ms halves (no 320-sample buffer);
    the decoder runs SOTTO_LR_DEC_DELAY slots behind, and its flush plays the last ones */
 static int lr_half(int16_t pcm[SP_FRAME_SAMPLES]) {
-  int half = play_half, r;
-  if (play_pos < play_end) {
-    if (ring && play_pos >= avail) return SP_PLAY_WAIT;
-    r = pos_of(play_pos);
-    sotto_lr_decode_half(dec, S.frames + 6 * r, bit(S.good, r), half, pcm);
+  int half = play_half, r, n;
+  if (fill_left || play_pos < play_end) {
+    if (!fill_left) {
+      if (ring && play_pos >= avail) return SP_PLAY_WAIT;
+      r = pos_of(play_pos);
+      if (!half && (n = pause_slots(r)) > 0) fill_left = n, play_pos++;
+    }
+    if (fill_left) {
+      sotto_lr_decode_half(dec, fill_frame, fill_good, half, pcm);
+      if (half) fill_left--;
+    } else {
+      r = pos_of(play_pos);
+      sotto_lr_decode_half(dec, S.frames + 6 * r, bit(S.good, r), half, pcm);
+      if (half) memcpy(fill_frame, S.frames + 6 * r, 6), fill_good = bit(S.good, r), play_pos++;
+    }
   } else if (!sotto_lr_dec_flush_half(dec, half, pcm))
     return 0;
   play_half = !half;
-  if (half) play_pos++;
   return 1;
 }
 
@@ -429,11 +455,21 @@ int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
 #else
 int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
   if (!dec || play_end < 0) return 0;
-  if (play_pos < play_end) {
-    int r = pos_of(play_pos);
-    if (ring && play_pos >= avail) return SP_PLAY_WAIT;
-    sotto_decode(dec, S.frames + 6 * r, bit(S.good, r), pcm);
-    play_pos++;
+  if (fill_left || play_pos < play_end) {
+    int r, n;
+    if (!fill_left) {
+      if (ring && play_pos >= avail) return SP_PLAY_WAIT;
+      if ((n = pause_slots(pos_of(play_pos))) > 0) fill_left = n, play_pos++;
+    }
+    if (fill_left) {
+      sotto_decode(dec, fill_frame, fill_good, pcm);
+      fill_left--;
+    } else {
+      r = pos_of(play_pos);
+      sotto_decode(dec, S.frames + 6 * r, bit(S.good, r), pcm);
+      memcpy(fill_frame, S.frames + 6 * r, 6), fill_good = bit(S.good, r);
+      play_pos++;
+    }
     hash_pcm(pcm);
     return 1;
   }
@@ -561,7 +597,7 @@ unsigned sp_static_bytes(void) {
 #ifdef SP_VLR
                     + sizeof vdec + 2 * sizeof(int)
 #endif
-                    + 2 * sizeof(int32_t) + 2 * SP_FRAME_SAMPLES
+                    + 2 * sizeof(int32_t) + 2 * SP_FRAME_SAMPLES + sizeof fill_frame + 2 * sizeof(int)
 #ifdef FX_OA_PACKED
                     + 2048u                       /* fx_cs512's table (fx_math.c) */
 #endif

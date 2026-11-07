@@ -225,6 +225,131 @@ def trim_silence(frames, codec="2400", keep_s=0.06, below=TRIM_BELOW):
     return frames[a * FRAME_BYTES:b * FRAME_BYTES], a, n - b
 
 
+# ---- pause frames (2026-11-07): one slot stands for a run of silent slots ------------------
+#
+# A pause frame is a 6-byte slot: voicing 0 (unvoiced), Wo 127, energy 0, then a 10-bit count N
+# (bits 14-23) and the 24-bit marker PAUSE_MARKER (bits 24-47). A K6 from 2026-11-07 plays N slots
+# of fill in its place: the last real slot before it again, with that slot's good flag (so a lost
+# one is concealed, never a held speech frame). Older receivers decode it as one silent slot
+# (energy 0; in sotto 1200 the B half's energy step is -6 and its voicing unvoiced too). sotto
+# 2400 and sotto 1200 only (sotto 600 / 400 lay their bits out differently).
+
+PAUSE_MARKER = 0xA5304B      # bits 32-33 (1200 voicing B) = 00, bits 37-39 (1200 energy B step) = 000
+PAUSE_MAX = 1023
+PAUSE_CODECS = ("2400", "1200")
+_PAUSE_HEAD = 0x3F80         # bits 0-13: voicing 00, Wo 1111111, energy 00000 (as the top 14 of 16)
+
+
+def pause_frame(n):
+    """The pause slot standing for n (1..1023) slots of fill."""
+    if not 1 <= n <= PAUSE_MAX:
+        raise ValueError(f"a pause frame holds 1..{PAUSE_MAX} slots")
+    v = (_PAUSE_HEAD >> 2) << 34 | n << 24 | PAUSE_MARKER
+    return v.to_bytes(6, "big")
+
+
+def pause_count(slot):
+    """N if this 6-byte slot is a pause frame, else 0."""
+    v = int.from_bytes(bytes(slot), "big")
+    if v >> 34 != _PAUSE_HEAD >> 2 or v & 0xFFFFFF != PAUSE_MARKER:
+        return 0
+    return v >> 24 & 0x3FF
+
+
+def _voicing_codes(slot, codec):
+    """The 2-bit voicing codes a slot feeds the decoder, in order (sotto 1200: A, then B)."""
+    v = int.from_bytes(bytes(slot), "big")
+    return (v >> 46,) if codec == "2400" else (v >> 46, v >> 14 & 3)
+
+
+def _prev_v(state, codes):
+    """The decoder's prev_v (second-half voicing) after these codes: 0..2 as they are, code 3 the
+    edge whose voiced half the previous frame decides (sotto_fx_dec.c)."""
+    for c in codes:
+        state = c if c < 3 else (2 if state == 0 else 0)
+    return state
+
+
+def compact_pauses(frames, codec="2400", below=TRIM_BELOW, min_run=4):
+    """Runs of min_run or more silent slots (as trim_silence: `below` codes under the 98th
+    percentile; sotto 1200 needs its next slot's A energy quiet too, since B interpolates to it)
+    become their first slot plus a pause frame: the receiver replays the first slot in the gap.
+    When replaying it would leave the decoder's voicing state (prev_v) other than the real run
+    leaves it, the run's last slot is sent too. Real slots that look like a pause frame's head
+    get Wo 126. -> (frames, slots saved). Other codecs: unchanged."""
+    frames = bytes(frames)
+    sl = _split(frames)
+    if codec not in PAUSE_CODECS or not sl:
+        return frames, 0
+    e = energy_codes(frames, codec).astype(int)
+    peak = int(np.percentile(e, 98, method="higher"))
+    quiet = (e <= peak - below) | (e == 0)
+    silent = quiet.copy() if codec == "2400" else quiet & np.append(quiet[1:], True)
+    fix = []
+    for f in sl:          # Wo 127 + energy 0 is the pause head: move real slots off it
+        v = int.from_bytes(f, "big")
+        if (v >> 34) & 0xFFF == (_PAUSE_HEAD >> 2) & 0xFFF:
+            v ^= 1 << 39  # Wo 127 -> 126 (still silent: energy 0)
+        fix.append(v.to_bytes(6, "big"))
+    sl = fix
+    out, state, i, n = [], 0, 0, len(sl)
+    while i < n:
+        if not silent[i]:
+            out.append(sl[i])
+            state = _prev_v(state, _voicing_codes(sl[i], codec))
+            i += 1
+            continue
+        j = i
+        while j < n and silent[j]:
+            j += 1
+        run = sl[i:j]
+        real = state
+        for f in run:
+            real = _prev_v(real, _voicing_codes(f, codec))
+        hold = _voicing_codes(run[0], codec)
+        plan = None
+        if len(run) >= min_run:
+            if _prev_v(state, hold * len(run)) == real:
+                plan = (len(run) - 1, False)
+            elif len(run) >= min_run + 1 and \
+                    _prev_v(_prev_v(state, hold * (len(run) - 1)), _voicing_codes(run[-1], codec)) == real:
+                plan = (len(run) - 2, True)
+        if plan is None:
+            out.extend(run)
+        else:
+            gap, last = plan
+            out.append(run[0])
+            while gap > 0:
+                k = min(gap, PAUSE_MAX)
+                out.append(pause_frame(k))
+                gap -= k
+            if last:
+                out.append(run[-1])
+        state = real
+        i = j
+    return b"".join(out), n - len(out)
+
+
+def expand_pauses(frames, good=None, codec="2400"):
+    """Undo compact_pauses as the K6 plays it: each good pause frame becomes N copies of the last
+    real slot before it, with that slot's good flag. -> (frames, good as uint8)."""
+    sl = _split(frames)
+    good = np.ones(len(sl), np.uint8) if good is None else np.asarray(good, np.uint8)
+    if codec not in PAUSE_CODECS:
+        return bytes(frames), good
+    out, og, last = [], [], None
+    for f, g in zip(sl, good):
+        k = pause_count(f) if g else 0
+        if k and last is not None:
+            out += [last[0]] * k
+            og += [last[1]] * k
+        else:
+            out.append(f)
+            og.append(int(g))
+            last = (f, int(g))
+    return b"".join(out), np.array(og, np.uint8)
+
+
 def profile(name, codec="2400", depth=GROUP, short_last=True):
     """The packet profile for a codec: "2400" (sotto v3.7), "1200" (sotto 1200, magic 0xA9), "600"
     or "400" (0xAC, 0xAD; the last three L and XL only, since profile S has no magic byte), with

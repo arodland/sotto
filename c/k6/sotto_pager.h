@@ -17,7 +17,9 @@
  * frames g*F*D + s*D + k (F frames per packet). Seq bit 13 marks a short last group (senders
  * from 2026-11-07): its rem < F*D frames take m = ceil(rem / F) packets instead of D, packet k
  * carrying frames g*F*D + s*m + k; m comes from total. (Profile S, 16 bytes, is no longer
- * taken: the radio reads 64-byte packets fine.)
+ * taken: the radio reads 64-byte packets fine.) Pause frames (sotto 2400 and 1200, senders from
+ * 2026-11-07): a good slot with voicing 0, Wo 127, energy 0 and marker 0xA5304B in bits 24-47
+ * plays as N slots (bits 14-23) of the last real slot again, with its good flag.
  *
  * No heap, no floating point, no 64-bit division: everything lives in the caller's buffer
  * (sp_init) and in this library's static decoder state (about 0.9 KB plus a 2 KB cos/sin

@@ -181,7 +181,7 @@ def test_civ_frames():
 def test_cli(tmp_path):
     sot, wav, back, good = (str(tmp_path / n) for n in ("m.sot", "tx.wav", "b.sot", "g.u8"))
     open(sot, "wb").write(VOICE)
-    assert cli(["tx", sot, wav, "--cw-id", "N0CALL", "--rate", "44100", "--passes", "2"]) == 0
+    assert cli(["tx", sot, wav, "--cw-id", "N0CALL", "--rate", "44100", "--passes", "2", "--no-pause"]) == 0
     assert cli(["rx", wav, back, "--good", good]) == 0
     assert open(back, "rb").read() == VOICE
     assert np.fromfile(good, np.uint8).all()
@@ -310,7 +310,7 @@ def test_codec_1200_magic(tmp_path, capsys):
         pager.profile("S", "1200")
     sot, wav, back = (str(tmp_path / n) for n in ("m.sot", "tx.wav", "b.sot"))
     open(sot, "wb").write(VOICE)
-    assert cli(["tx", sot, wav, "--phy", "F", "--payload", "XL", "--codec", "1200"]) == 0
+    assert cli(["tx", sot, wav, "--phy", "F", "--payload", "XL", "--codec", "1200", "--no-pause"]) == 0
     n = len(VOICE) // 6
     assert f"({n * 0.04:.1f} s of speech)" in capsys.readouterr().err
     assert cli(["rx", wav, back, "--phy", "F", "--payload", "XL", "--codec", "1200"]) == 0
@@ -366,7 +366,8 @@ def test_tx_trims_and_shortens(tmp_path, capsys):
     assert "206 frames" in err and "11 packets" in err           # 160 + 46: the last group m = 3 of 8
     assert cli(["tx", str(src), str(rec), "--phy", "F", "--payload", "XL", "--no-short-last"]) == 0
     assert "16 packets" in capsys.readouterr().err
-    assert cli(["tx", str(src), str(tmp_path / "all.wav"), "--phy", "F", "--payload", "XL", "--no-trim"]) == 0
+    assert cli(["tx", str(src), str(tmp_path / "all.wav"), "--phy", "F", "--payload", "XL", "--no-trim",
+                "--no-pause"]) == 0
     assert "310 frames" in capsys.readouterr().err
     if os.path.exists(os.path.join(ROOT, "c", "k6", "pager_host")):
         t = pager.trim_silence(fr)[0]

@@ -160,6 +160,10 @@ def _tx_opts(p):
                         "(slots 34 dB or more under the message's level; no K6 change needed)")
     p.add_argument("--trim-keep-ms", type=float, default=60.0,
                    help="silence kept before the first and after the last loud slot (default 60)")
+    p.add_argument("--pause", action=argparse.BooleanOptionalAction, default=True,
+                   help="tx/send, sotto 2400 and 1200: each inner run of 4+ silent slots goes as its first "
+                        "slot and one pause frame, which a K6 from 2026-11-07 fills by replaying that slot "
+                        "(older ones play it as one silent slot, so pauses come out short)")
     p.add_argument("--level", type=float, default=0.5, help="peak audio, 0..1 (default 0.5)")
     p.add_argument("--invert", action="store_true", help="flip the bit polarity")
     p.add_argument("--comp", help="pre-compensate: a fit JSON, 'voice' (generic model) or 'preemph'")
@@ -196,10 +200,16 @@ def _profile(a):
 
 
 def _trimmed(a, frames):
-    """frames as sent: with --trim, dead air cut from both ends -> (frames, slots cut, slots cut)"""
-    if not getattr(a, "trim", False):
-        return frames, 0, 0
-    return pager.trim_silence(frames, getattr(a, "codec", "2400"), getattr(a, "trim_keep_ms", 60.0) / 1000)
+    """frames as sent: with --trim, dead air cut from both ends; with --pause, inner silences as
+    pause frames -> (frames, slots cut at the start, at the end, slots saved by pauses)"""
+    codec = getattr(a, "codec", "2400")
+    cut0 = cut1 = 0
+    if getattr(a, "trim", False):
+        frames, cut0, cut1 = pager.trim_silence(frames, codec, getattr(a, "trim_keep_ms", 60.0) / 1000)
+    saved = 0
+    if getattr(a, "pause", False):
+        frames, saved = pager.compact_pauses(frames, codec)
+    return frames, cut0, cut1, saved
 
 
 def _payloads(a, frames):
@@ -338,6 +348,9 @@ def main(argv=None):
                    help="the codec the packets carry (1200: magic 0xA9, 600: 0xAC, 400: 0xAD), as tx")
     r.add_argument("--baud", type=float, default=None, help="default: F 1800, D 1200, as tx")
     r.add_argument("--invert", action="store_true")
+    r.add_argument("--expand", action=argparse.BooleanOptionalAction, default=True,
+                   help="play pause frames out as the K6 does (N copies of the slot before; default), "
+                        "so the .sot is the full-length message")
     r.add_argument("--tones", type=lambda v: tuple(float(t) for t in v.split(",")), metavar="MARK,SPACE",
                    help="F only: the tones sent (Hz, bit 1 then bit 0), as tx --tones, e.g. 1200,1800 at --baud 2400")
     r.add_argument("--iq", type=int, metavar="RATE", help="input is complex64 IQ at RATE samples/s")
@@ -363,13 +376,15 @@ def main(argv=None):
     log = lambda *m: print(*m, file=sys.stderr)   # noqa: E731
 
     if a.cmd in ("tx", "send"):
-        frames, cut0, cut1 = _trimmed(a, open(a.input, "rb").read())
+        frames, cut0, cut1, saved = _trimmed(a, open(a.input, "rb").read())
         pk, mid = _payloads(a, frames)
         x = build_audio(pk, a, a.rate)
         n, fs_ = len(frames) // 6, _profile(a).frame_s
         if cut0 or cut1:
             log(f"trimmed {cut0 * fs_:.2f} s of dead air at the start, {cut1 * fs_:.2f} s at the end "
                 f"(--no-trim sends it all)")
+        if saved:
+            log(f"pause frames stand for {saved} silent slots ({saved * fs_:.2f} s; --no-pause sends them)")
         if n > K6_STORE_FRAMES:
             log(f"warning: {n} frames is more than the K6 receiver holds by default "
                 f"({K6_STORE_FRAMES} frames, {K6_STORE_FRAMES * fs_:.1f} s); split the message")
@@ -521,6 +536,11 @@ def main(argv=None):
         fr, gd = asm.frames(mid)
         log(f"msg_id {mid}: {len(gd)} frames, {int(gd.sum())} received, "
             f"{len(gd) - int(gd.sum())} to conceal")
+        if a.expand:
+            n0 = len(gd)
+            fr, gd = pager.expand_pauses(fr, gd, a.codec)
+            if len(gd) != n0:
+                log(f"pause frames: {n0} slots played out to {len(gd)}")
         if a.output:
             open(a.output, "wb").write(fr)
         if a.good:
