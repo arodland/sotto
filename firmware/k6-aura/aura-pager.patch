@@ -223,10 +223,10 @@ index 5f006e4..69607f8 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..024ac23
+index 0000000..7072045
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3725 @@
+@@ -0,0 +1,3729 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -1020,8 +1020,8 @@ index 0000000..024ac23
 +/// reads, takes GP0 code 13's stream, decodes each packet with the soft Viterbi decoder into the
 +/// message store, and plays the message when the burst is over. Receive only
 +const CTL_ACT_IFRX: u8 = 10;
-+/// Action 11: the speaker sweep (sotto_pager.h sp_sweep_pwm): 14 steady tones, 250 Hz to
-+/// 7.5 kHz, on the speaker at 16 kHz updates, to measure the audio chain with a microphone
++/// Action 11 (images that aren't lean): the speaker sweep (sotto_pager.h sp_sweep_pwm): 14 steady
++/// tones, 250 Hz to 7.5 kHz, on the speaker at 16 kHz updates, to measure the audio chain
 +const CTL_ACT_SWEEP: u8 = 11;
 +/// the session waits this long for the lead (it follows the control packet by about 0.5 s)
 +const IFRX_WAIT_MS: u32 = 6000;
@@ -2944,6 +2944,7 @@ index 0000000..024ac23
 +    }
 +    match action {
 +        1 if app.pager.status.have != 0 => app.pager.play_pending = true,
++        #[cfg(not(feature = "lean"))]
 +        CTL_ACT_SWEEP if !stream_on() => {
 +            app.pager.sweep_pending = true;
 +            app.pager.play_pending = true; // main runs play(), which runs the sweep
@@ -3089,6 +3090,8 @@ index 0000000..024ac23
 +
 +/// Control action 11: the speaker sweep, blocking (about 19 s), with the radio not listening.
 +/// The PWM ring's 160-value segments last 10 ms at the sweep's 16 kHz. The power switch stops it.
++/// Not in the lean images (no room in the codebook install image).
++#[cfg(not(feature = "lean"))]
 +#[inline(never)]
 +fn sweep(app: &mut App, syst: &mut SYST, power: &PowerSwitch) {
 +    disarm(app, syst);
@@ -3141,6 +3144,7 @@ index 0000000..024ac23
 +#[inline(never)] // its locals only while it runs, not in main's frame for good
 +pub(super) fn play(app: &mut App, syst: &mut SYST, power: &PowerSwitch) {
 +    app.pager.play_pending = false;
++    #[cfg(not(feature = "lean"))]
 +    if app.pager.sweep_pending {
 +        app.pager.sweep_pending = false;
 +        sweep(app, syst, power);
