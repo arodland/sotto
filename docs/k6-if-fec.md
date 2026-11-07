@@ -10,9 +10,11 @@ The pager's usual link is the FD6818's own FFSK modem at 1800 baud (PHY F). The 
 decisions, so any bit error costs the whole packet. PHY G carries the same XL packets (128 bytes,
 whitened, the same CRC, interleave groups, parity packets and playback) a different way:
 
-- 4FSK at 1200 baud, with tones at 900, 1500, 2100 and 2700 Hz, Gray coded, at 0.12 peak.
+- 4FSK at 1200 baud, with tones at 600, 1200, 1800 and 2400 Hz (four tones on the half-baud
+  grid, below; `--g-plan 4fsk` sends the older 900, 1500, 2100, 2700 Hz for images before it),
+  Gray coded, at 0.12 peak.
 - A rate-1/2 K=7 convolutional code (polynomials 133 and 171), or the same code punctured to
-  rate 2/3 (`--g-rate 2/3`, below).
+  rate 2/3 (`--g-rate 2/3`) or 3/4 (`--g-rate 3/4`, below).
 - On the K6, the IF matched filter `ifrx.c` decides on GP0 code 13's stream, as the `iflive`
   modules do. Each tone's metric becomes a soft bit, and a soft Viterbi decoder recovers the
   packet.
@@ -26,13 +28,18 @@ code clears: the soft decoder over the real metrics made 0 errors in 24,000 bits
 A burst is:
 
 1. A control packet (F/1800, XL, two copies) with action 10. Byte 4 holds the session's longest
-   time in units of 2 s; byte 3 is 1 for rate 2/3 (images before PR #108 ignore it).
+   time in units of 2 s; byte 3's bit 0 is rate 2/3 (images before PR #108 ignore it), bit 2
+   rate 3/4 (images with the 600-2400 Hz tones).
 2. 0.5 s of bare carrier.
 3. A lead of 2400 symbols (2.0 s), tones 0 and 3 in turn, starting with 0. `ifrx` acquires on it.
    Its 256 symbols of lead steering end before the data, even when the lock comes 1.3 s in.
 4. For each packet, a sync word of 24 symbols (`100100000111111001101010`, 1 = tone 3,
    0 = tone 0), then 1032 coded symbols. No window of the lead running into the sync word is
-   closer than 10 symbols to it. The receiver takes a window with up to 6 wrong.
+   closer than 10 symbols to it. The receiver takes a window with up to 6 wrong, where an inner
+   tone is wrong, and so is an outer tone whose opposite's metric is within 3/4 of its own: an
+   unmodulated carrier decides as tones 0 and 3 with both metrics high (the 600 and 2400 Hz
+   templates each hold a half-turn or whole turns of it), and once made a sync word 78 symbols
+   after a burst's last packet.
 5. 48 more symbols of the lead's pattern.
 
 A packet's coding is as follows. Its 128 bytes, MSB first, are followed by 8 zero bits: the
@@ -46,12 +53,19 @@ apart.
 the block size are unchanged. The decoder takes LLR 0 for each missing bit, and a step that
 needs a bit of the next block waits for it.
 
+**Rate 3/4** punctures the same code with the usual K=7 pattern (133: 1 0 1, 171: 1 1 0): of
+each three steps it sends both bits of the first, the second bit of the second and the first bit
+of the third. 4 bits for each 3 steps, 1376 coded bits in exactly 16 blocks, 688 symbols. The
+decoder's puncture phase restarts at each packet (1032 steps is a multiple of 3).
+
 One packet takes 1056 symbols (0.88 s) and carries 20 sotto 1200 slots (0.8 s of speech). So
 PHY G runs at 0.91x real time. **A 12 s clip** (15 XL packets) takes 15.2 s for the burst and
 17.3 s with the control packet. At F/1800 the same clip takes 10.8 s. PHY G trades air time for
 margin. At rate 2/3 a packet takes 798 symbols (0.665 s): 1.2x real time, about 1540 bit/s
 net. The same clip's burst takes 12.0 s, 14.1 s with the control packet; the 2 s lead is
-now the largest overhead.
+now the largest overhead. At rate 3/4 a packet takes 712 symbols (0.593 s): 1.35x real time,
+about 1730 bit/s net; the clip's burst takes 10.9 s, 13.0 s with the control packet, against
+F/1800's 10.8 s.
 
 ## On the K6
 
@@ -241,7 +255,13 @@ overhead. Ways to get ahead of it, roughly in order of cost:
   overrun at rate 2/3 showed was needed.
 - **A shorter lead.** The session now starts at the control packet: a 1 s lead (`--g-lead 1.0`)
   locked on air and played 13/14 twice (the first packet failed its CRC each time); try 1.5 s.
-- **A faster symbol rate**: receiver and live test modules done (see below), not on air yet.
+- **Puncture to rate 3/4** on the 600-2400 Hz tones: done (PR #120), on air 13/14 and 14/14
+  (image 3e72ea7, below). On the model it needs about 2 dB more than rate 2/3 (every packet at
+  49 dB-Hz 164 Hz off, rate 1/2 at 45 on these tones). The emulated M0 decodes it at the
+  image's timing with no counts lost.
+- **A faster symbol rate**: tried on air with live modules (below). 1350 and 1440 baud make
+  2.4-3.9% raw errors where 1200 makes none, so the speed is better bought with the lighter
+  code at 1200 baud. Rate 5/6 (2000 bit/s) would be the next step on that road.
 
 - **Play while receiving** (stream mode), so a long message starts after its first interleave
   group, and its length is no longer limited by the store. That needs the decoder to share the
@@ -292,4 +312,75 @@ The IF model (sim/k6if, the float receiver `mcu.Rx`), 1% information bit errors 
   gave 2.2-2.8%, so a capture and training pass comes next if the rate looks good. The IC-7100's
   deviation falls off faster than the model's above 2.7 kHz (69% of the model's there), which
   could cost the 3000 and 3200 Hz tones.
+
+### On air, 2026-11-07 20:09 (RAM modules, no flash)
+
+The K6 received only (EXPLORE image bc7e44a in VOICE MSG); the IC-7100 sent each module's live
+run (`k6_ifcap.py live`, nine 6 s steps at stepped front-end gains), all with the model's
+templates:
+
+| Module, sender | Bit errors (steps 0-8) | Notes |
+|---|---|---|
+| iflive, `4fsk` (today's 900-2700 Hz, 1200 baud) | 4.7-6.4% (11% step 0) | lost 15-30 counts on 5 steps, idle 60% |
+| iflive_h1500, `4h1500` (750-3000 Hz) | 5.5-7.4% | idle 71% |
+| iflive_h1600, `4h1600` (800-3200 Hz) | 6.0-6.4%, PN9 sync lost on several steps | idle 68% |
+| iflive_h1200, `4h1200` (600-2400 Hz) | **0 in 80,400 bits** | idle 71% |
+
+- Four tones on the half-baud grid at 1200 baud make no errors at all on this link with the
+  model's templates, where today's tones made 5-6% in the same session (2.2-2.8% with templates
+  trained on the K6). That is the mode for PHY G, and its margin can buy speed through a lighter
+  code (rate 3/4: 1800 bit/s before packet overhead).
+- 1500 and 1600 baud are no better than today's mode: their top tones (3000, 3200 Hz) sit where
+  the IC-7100's deviation falls off. The next tries keep the top tone at today's 2700 Hz or a
+  little over: 1350 baud (675, 1350, 2025, 2700 Hz) and 1440 baud (720-2880 Hz), modules
+  `iflive_h1350` and `iflive_h1440` (`k6_ifcap.py live 4h1350`, `4h1440`). On the model they need
+  41.0 and 41.4 dB-Hz at rate 1/2 (1200 on this grid 40.2), and both lock with no counts lost on
+  the emulated M0 (idle 52-54%).
+
+### On air, 2026-11-07 20:54 (1350 and 1440 baud, RAM modules, no flash)
+
+The same bench (K6 receiving on explore 8a8c677, the IC-7100 sending `k6_ifcap.py live`), run
+dir `runs/2026-11-07-4h2`:
+
+| Module, sender | Bit errors | Notes |
+|---|---|---|
+| iflive_h1350, `4h1350` (675-2700 Hz) | 2.5-2.9% on the 5 steps that locked | 3 of 9 steps decoded nothing (no lock, no reject), one rejected (q=9); L=0, idle 72-75% |
+| iflive_h1440, `4h1440` (720-2880 Hz) | 2.4-3.9% | locked every step, fit 86-101; L=0, idle 70-74% |
+
+- Keeping the top tone at 2.7-2.9 kHz halves 1500 baud's errors, but neither rate is clean
+  where 1200 baud on the same grid made none. 1440 is the steadier of the two: 1350 loses its
+  lead on a third of the steps (not chased: the rate's 12% gain is less than rate 3/4's 50% at
+  1200 baud, which has no raw errors to spend).
+- So the faster link is **PHY G at 1200 baud on the 600-2400 Hz tones with a lighter code**, not
+  a faster symbol rate on this radio.
+
+### On air, 2026-11-07 21:00 (PHY G on the new tones, image 3e72ea7)
+
+The pager image aura-pager-lr at 3e72ea7 (PR #120) flashed (the decoder is in the image), the
+IC-7100 sending `lynden11.sot` (14 XL packets, 11 s of sotto 1200) as PHY G, the K6 storing and
+playing; `tools/k6_pcmhash.py --check` on each PLAY. Run dir `runs/2026-11-07-phyg5`:
+
+| Send | On air | `K6 IFP` | Packets | Playback |
+|---|---|---|---|---|
+| rate 1/2 | 24.8 s | `ret=14 fl=0 lost=0 q=55 idle=30 gap=103@1 lag=86 ld=0` | `211111111C1111`, 13/14 | MATCH (packet 9 missing) |
+| rate 2/3 | 21.8 s | `ret=14 fl=1 lost=0 q=59 idle=30 gap=103@1 lag=87 ld=0` | `21111111111113`, 14/14 | MATCH |
+| rate 3/4 | 20.8 s | `ret=14 fl=4 lost=0 q=53 idle=29 gap=103@1 lag=86 ld=0` | `2111111C111111`, 13/14 | MATCH (packet 7 missing) |
+| rate 3/4, 1.5 s lead | 20.3 s | `ret=14 fl=4 lost=0 q=54 idle=29 gap=103@1 lag=86 ld=1` | `21111111111113`, 14/14 | MATCH |
+
+- Every send locked, found all 14 sync words, lost no counts, and the lead was decided with
+  0-1 wrong symbols per mille (`ld`): the raw channel on these tones is clean, as the module
+  runs said. The sync words' wrong symbols (`miss`) were 0-2 of 24.
+- Rate 3/4 works on air, at 29% idle (rate 1/2 30%): the K6 has the CPU for it.
+- Two packets in 56 failed their CRC, one at rate 1/2 and one at rate 3/4, with no raw errors
+  in the lead and lost=0. With one per run at the two ends of the rate range, that is not the
+  code's margin; the earlier 4709d7e runs on the old tones made 0 in 28 at the same two rates.
+  Worth a look if it recurs: a slip in the symbol clock through a long run of one tone, or a
+  burst of interference, would both fit.
+- The 1.5 s lead was fine (ld=1, 14/14), where a 1 s lead had lost the first packet twice on
+  the old tones. The times above include the CW ID (about 7 s); the burst itself with its
+  control packet is 12.9 s at rate 3/4 with the 1.5 s lead, 17.3 s at rate 1/2, and about
+  10 s for the same 14 packets at F/1800 (short last group, trimmed). Rate 3/4 is now within
+  30% of the chip's modem, with soft decoding where F has none.
+- The sender for this is `python3 -m modem.k6 tx CLIP.sot g.wav --phy G --payload XL --codec
+  1200 --g-rate 3/4 [--g-lead 1.5] --msg-id N --cw-id "AG7EW SOTTO TEST"`.
 

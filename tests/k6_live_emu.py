@@ -295,7 +295,7 @@ def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma
     from modem import k6g
     from sim.k6if import mcu, study as st
     code, entry = k6mod.build(IFPAGER)
-    a = k6g.audio(k6g.burst_symbols(payloads, r23=bool(flags & 1)), st.FSA, level)
+    a = k6g.audio(k6g.burst_symbols(payloads, r23=1 if flags & 1 else 2 if flags & 4 else 0), st.FSA, level)
     s = st.fm(st.ic7100(np.concatenate([np.zeros(int(pre_s * st.FSA)), a,
                                         np.zeros(int(after_s * st.FSA))])), f_off)
     fdma = fdma or mcu.FDMA
@@ -303,7 +303,7 @@ def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma
     ib = bits.astype(np.uint8) * 2
     e = Emu(code, entry, ib, 0, fdma, cpi, stall=stall, max_s=len(ib) / fdma + 8.0,
             flash_cpi=flash_cpi)
-    # the flags (1 rate 2/3, 2 no decoding) for ifpager_emu.c, then its sp_packet yield's slots
+    # the flags (1 rate 2/3, 2 no decoding, 4 rate 3/4) for ifpager_emu.c, then its sp_packet yield's slots
     e.mu.mem_write(e.scr + 1216 + 4 + 128 * 64, int(flags).to_bytes(4, "little") + bytes(8))
     r = e.run()
     ret, used = r if r else (None, None)
@@ -348,7 +348,7 @@ def run_module(path, cpi=1.5, seconds=14.0, profile=False):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("mode", nargs="?", default="4fsk", choices=["4fsk", "ffsk", "4h1200", "4h1500", "4h1600"])
+    ap.add_argument("mode", nargs="?", default="4fsk", choices=["4fsk", "ffsk", "4h1200", "4h1350", "4h1440", "4h1500", "4h1600"])
     ap.add_argument("--cn0", type=float, default=46.0)
     ap.add_argument("--off", type=float, default=0.0)
     ap.add_argument("--steps", type=int, default=10)

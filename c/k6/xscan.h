@@ -28,6 +28,7 @@ extern "C" {
 #define XS_NSEG 4
 #define XS_HOT 10
 #define XS_BLOCK 32
+#define XS_DESENSE_DB 15   /* a floor read this far under the last is desense (held once) */
 #define XS_COLS 128        /* waterfall row: max-pooled to this many columns a segment at most */
 
 typedef struct {
@@ -72,6 +73,7 @@ typedef struct {
   uint16_t last_ms;          /* the last finished segment sweep's time */
   xs_hot_t hot[XS_HOT];
   char line[64];
+  uint8_t held, pad2[3];      /* segments whose last floor read was held as desense (a bit each) */
 } xs_t;
 
 /* the usual settings: 1.5 ms quick reads, 12 ms full, wide, noise 6 dB, hits 10 dB, refine on */
@@ -105,7 +107,8 @@ typedef struct {
   uint8_t pad[2];
 } xs_info_t;
 void xs_info(const xs_t *s, xs_info_t *out);
-/* the hot entries that are up now (not spurs): their centres into out, at most max; how many */
+/* the hot entries that are up now worth a listen (not spurs, skirts, or weak), loudest first:
+   their centres into out, at most max; how many */
 unsigned xs_up(const xs_t *s, uint32_t *out, unsigned max);
 /* reads the level at hz now (a tune and a full read), for the details screen */
 int xs_level(xs_t *s, uint32_t hz);

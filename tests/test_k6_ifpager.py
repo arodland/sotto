@@ -30,7 +30,7 @@ def lib():
         pytest.skip("needs a C compiler")
     d = tempfile.mkdtemp()
     so = os.path.join(d, "libifp.so")
-    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-DIFRX_T4_K6",
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC",
                     os.path.join(K6, "ifpager_host.c"), "-o", so], check=True)
     L = ctypes.CDLL(so)
     L.ifp_host_run.argtypes = [P, I, ctypes.c_uint, I, P, I, P, I]
@@ -44,12 +44,12 @@ def message(npk=6, seed=4):
     return pager.profile("XL", "1200").pack(rng.integers(0, 256, 6 * 20 * npk, dtype=np.uint8).tobytes(), 0x31)
 
 
-def c_syms(L, sym, met, r23=False):
+def c_syms(L, sym, met, rate=0):
     sym = np.ascontiguousarray(sym, np.uint8)
     met = np.ascontiguousarray(met, np.uint32)
     out, info = np.zeros(128 * 64, np.uint8), np.zeros(4, np.int32)
     n = L.ifp_host_syms(sym.ctypes.data, met.ctypes.data, len(sym), out.ctypes.data, 64, info.ctypes.data,
-                        int(r23))
+                        int(rate))
     return [out[i * 128:(i + 1) * 128].tobytes() for i in range(n)], info
 
 
@@ -71,14 +71,14 @@ def test_sync_word_is_far_from_the_lead():
     assert int(k6g.SYNC, 2) == 0x907E6A                  # ifpager.h's IFP_SYNC
 
 
-@pytest.mark.parametrize("r23", [False, True])
-def test_reference_receiver_round_trip(r23):
+@pytest.mark.parametrize("rate", [0, 1, 2])
+def test_reference_receiver_round_trip(rate):
     pk = message()
-    s = k6g.burst_symbols(pk, r23=r23)
-    assert len(s) == k6g.LEAD_SYMS + len(pk) * (24 + k6g.pkt_syms(r23)) + k6g.TAIL_SYMS
-    assert k6g.pkt_syms(r23) == (774 if r23 else 1032)
+    s = k6g.burst_symbols(pk, r23=rate)
+    assert len(s) == k6g.LEAD_SYMS + len(pk) * (24 + k6g.pkt_syms(rate)) + k6g.TAIL_SYMS
+    assert k6g.pkt_syms(rate) == (1032, 774, 688)[rate]
     met = noisy(s, 0.0)
-    assert k6g.receive(s, met, r23=r23) == pk
+    assert k6g.receive(s, met, r23=rate) == pk
 
 
 def test_rate_23_punctures_the_same_code():
@@ -94,21 +94,36 @@ def test_rate_23_punctures_the_same_code():
     assert np.array_equal(sent, np.delete(c, np.arange(3, len(c), 4)))
 
 
-@pytest.mark.parametrize("r23,sd,lo,hi", [(False, 250.0, 0.04, 0.07), (True, 200.0, 0.015, 0.04)])
-def test_k6_decoder_matches_the_code(lib, r23, sd, lo, hi):
+def test_rate_34_punctures_the_same_code():
+    """rate 3/4 (133: 1 0 1, 171: 1 1 0): of each three steps both bits of the first, the second
+    bit of the second and the first of the third; 1376 coded bits, 16 whole blocks"""
+    pk = message(1, seed=2)[0]
+    bits = np.unpackbits(np.frombuffer(pk, np.uint8))
+    c = k6g.conv_encode(np.concatenate([bits, np.zeros(k6g.TAIL_BITS, np.int8)]))
+    g = k6g.GRAY[k6g.packet_symbols(pk, r23=2)].reshape(-1, 43)
+    sent = np.concatenate([g >> 1, g & 1], axis=1).reshape(-1)
+    drop = np.sort(np.concatenate([np.arange(2, len(c), 6), np.arange(5, len(c), 6)]))
+    assert len(sent) == 1376 == 16 * k6g.BLOCK
+    assert np.array_equal(sent, np.delete(c, drop))
+
+
+@pytest.mark.parametrize("rate,sd,lo,hi", [(0, 250.0, 0.04, 0.07), (1, 200.0, 0.015, 0.04),
+                                           (2, 170.0, 0.005, 0.025)])
+def test_k6_decoder_matches_the_code(lib, rate, sd, lo, hi):
     """the K6's integer decoder (sliding traceback, int16 metrics, per-block LLRs) decodes what
     the sender coded: clean, and through noise that leaves some symbols wrong (rate 1/2: 4-6%,
-    the live floor; rate 2/3: 1.5-4%), where the reference receiver does too"""
+    the old tones' live floor; rate 2/3: 1.5-4%; rate 3/4: 0.5-2.5%), where the reference
+    receiver does too"""
     pk = message(8)
-    s = k6g.burst_symbols(pk, r23=r23)
-    got, info = c_syms(lib, s, noisy(s, 0.0), r23)
+    s = k6g.burst_symbols(pk, r23=rate)
+    got, info = c_syms(lib, s, noisy(s, 0.0), rate)
     assert got == pk and info[0] == len(pk)
     met = noisy(s, sd, seed=3)
     ser = np.mean(met.argmax(1) != s)
     assert lo < ser < hi, ser
-    got, info = c_syms(lib, met.argmax(1), met, r23)
+    got, info = c_syms(lib, met.argmax(1), met, rate)
     assert got == pk, (ser, info)
-    assert k6g.receive(met.argmax(1), met, r23=r23) == pk
+    assert k6g.receive(met.argmax(1), met, r23=rate) == pk
 
 
 def test_lost_symbol_still_finds_the_next_sync(lib):
@@ -123,27 +138,47 @@ def test_lost_symbol_still_finds_the_next_sync(lib):
     assert got[0] == pk[0] and got[2:] == pk[2:] and got[1] != pk[1]
 
 
-def gp0_counts(pk, cn0, f_off, seed=1, level=k6g.LEVEL, r23=False):
+def gp0_counts(pk, cn0, f_off, seed=1, level=k6g.LEVEL, rate=0):
     from sim.k6if import mcu, study as st
-    a = k6g.audio(k6g.burst_symbols(pk, r23=r23), st.FSA, level)
+    a = k6g.audio(k6g.burst_symbols(pk, r23=rate), st.FSA, level)
     s = st.fm(st.ic7100(np.concatenate([np.zeros(int(0.3 * st.FSA)), a, np.zeros(int(0.3 * st.FSA))])), f_off)
     c = st.fe.receive(s, st.FZ, cn0, seed=seed, fdma=mcu.FDMA, floor=0.05)
     return np.ascontiguousarray(np.clip(c, -127, 127).astype(np.int8)), mcu
 
 
-@pytest.mark.parametrize("cn0,off,r23", [(60.0, -164.0, False), (47.0, 164.0, False),
-                                         (60.0, 164.0, True), (49.0, -164.0, True)])
-def test_whole_receiver_on_the_model(lib, cn0, off, r23):
-    """ifrx (the K6-trained 4FSK templates, as the image builds it) and the decoder over the
-    modelled link, 164 Hz either side: every packet (on the model the trained templates lose
-    1-2 dB against its own; on the K6 they win). Rate 2/3 with about 2 dB more"""
+@pytest.mark.parametrize("cn0,off,rate", [(60.0, -164.0, 0), (45.0, 164.0, 0),
+                                          (60.0, 164.0, 1), (47.0, -164.0, 1),
+                                          (60.0, -164.0, 2), (49.0, 164.0, 2)])
+def test_whole_receiver_on_the_model(lib, cn0, off, rate):
+    """ifrx (the 600-2400 Hz tones on the half-baud grid, as the image builds it) and the
+    decoder over the modelled link, 164 Hz either side: every packet. Rates 2/3 and 3/4 with
+    about 2 dB more each"""
     pk = message(6)
-    c, mcu = gp0_counts(pk, cn0, off, r23=r23)
+    c, mcu = gp0_counts(pk, cn0, off, rate=rate)
     out, info = np.zeros(128 * 16, np.uint8), np.zeros(8, np.int32)
     n = lib.ifp_host_run(c.ctypes.data, len(c), round(mcu.FDMA / 1000), int(0.02 * mcu.FC),
-                         out.ctypes.data, 16, info.ctypes.data, int(r23))
+                         out.ctypes.data, 16, info.ctypes.data, rate)
     got = [out[i * 128:(i + 1) * 128].tobytes() for i in range(n)]
     assert got == pk, info
+
+
+def test_carrier_after_the_burst_raises_no_sync_word(lib):
+    """the unmodulated carrier around a burst (0.5 s before the lead, and whatever the sender
+    leaves after it) decides as tones 0 and 3 with both metrics high, which once made a sync word
+    78 symbols after the last packet (a ninth, garbage packet for sp_packet to reject, and a
+    longer session): the hunt takes such a decision as bad. 1.5 s of carrier after the burst at
+    the modelled floor and above: exactly the packets sent, no more sync words"""
+    from sim.k6if import mcu, study as st
+    pk = message(5, seed=6)
+    for cn0 in (47.0, 55.0):
+        a = k6g.audio(k6g.burst_symbols(pk), st.FSA, k6g.LEVEL)
+        s = st.fm(st.ic7100(np.concatenate([np.zeros(int(0.5 * st.FSA)), a, np.zeros(int(1.5 * st.FSA))])), -164.0)
+        c = st.fe.receive(s, st.FZ, cn0, seed=2, fdma=mcu.FDMA, floor=0.05)
+        c = np.ascontiguousarray(np.clip(c, -127, 127).astype(np.int8))
+        out, info = np.zeros(128 * 16, np.uint8), np.zeros(8, np.int32)
+        n = lib.ifp_host_run(c.ctypes.data, len(c), round(mcu.FDMA / 1000), 0, out.ctypes.data, 16, info.ctypes.data, 0)
+        assert [out[i * 128:(i + 1) * 128].tobytes() for i in range(n)] == pk, (cn0, info)
+        assert info[1] == len(pk), (cn0, info)
 
 
 def test_control_record_carries_the_session_length():
@@ -154,7 +189,7 @@ def test_control_record_carries_the_session_length():
     assert pager.parse_control(pager.control_packet(7, None, "ifrx", 128, arg=11, val=1)) == r[:6]
 
 
-@pytest.mark.parametrize("rate", ["1/2", "2/3"])
+@pytest.mark.parametrize("rate", ["1/2", "2/3", "3/4"])
 def test_tx_builds_a_g_burst(tmp_path, rate):
     """modem.k6 tx --phy G: the control packet, 0.5 s of carrier, the burst, at its length"""
     from modem import k6
@@ -165,7 +200,7 @@ def test_tx_builds_a_g_burst(tmp_path, rate):
                     "--no-trim", "--no-pause", "--g-rate", rate]) == 0
     import soundfile as sf
     x, fs = sf.read(str(wav))
-    burst = k6g.burst_seconds(5, r23=rate == "2/3")
+    burst = k6g.burst_seconds(5, r23=k6g.RATES[rate])
     assert burst + 0.5 < len(x) / fs < burst + 3.0              # the control packet: two XL at F/1800
     assert abs(np.max(np.abs(x[-int(burst * fs):])) - k6g.LEVEL) < 0.01
 
@@ -211,7 +246,7 @@ def test_ram_block_is_self_contained():
     subprocess.run(["clang", "--target=thumbv6m-none-eabi", "-mcpu=cortex-m0", "-mthumb", "-mfloat-abi=soft",
                     "-nostdinc", "-isystem", os.path.join(K6, "..", "fixed", "cm4", "inc"), "-isystem",
                     os.path.join(res, "include"), "-ffunction-sections", "-fdata-sections", "-std=c99",
-                    "-ffreestanding", "-I" + os.path.join(K6, ".."), "-O2", "-Os", "-DIFRX_T4_K6", "-c",
+                    "-ffreestanding", "-I" + os.path.join(K6, ".."), "-O2", "-Os", "-c",
                     os.path.join(K6, "ifpager.c"), "-o", o], check=True)
     secs = subprocess.run(["llvm-readelf", "-S", o], capture_output=True, text=True, check=True).stdout
     assert ".rel.text.ifrx_ram" not in secs
@@ -225,8 +260,9 @@ def test_ram_block_is_self_contained():
 
 
 @need_clang
-@pytest.mark.parametrize("fdma,flash_cpi,r23", [(None, None, False), (5.9e6, 2.0, False), (5.9e6, 2.0, True)])
-def test_session_on_m0(fdma, flash_cpi, r23):
+@pytest.mark.parametrize("fdma,flash_cpi,rate", [(None, None, 0), (5.9e6, 2.0, 0), (5.9e6, 2.0, 1),
+                                                 (5.9e6, 2.0, 2)])
+def test_session_on_m0(fdma, flash_cpi, rate):
     """the session (ifpager_emu.c: ifpager.c with a stand-in sp_packet of the same cost) on the
     emulated M0 against a modelled 8-packet burst 164 Hz off: every packet handed over, in
     order, no counts lost (each trellis step and packet check waits for a gap between the
@@ -237,15 +273,16 @@ def test_session_on_m0(fdma, flash_cpi, r23):
     pytest.importorskip("unicorn")
     import k6_live_emu as emu
     pk = message(8)
-    ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0, fdma=fdma, flash_cpi=flash_cpi, flags=int(r23))
+    ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0, fdma=fdma, flash_cpi=flash_cpi,
+                                          flags=(0, 1, 4)[rate])
     assert ret == len(pk), said
     assert got == pk, said
     f = dict(kv.split("=") for kv in said[-1].split()[2:])
     assert int(f["L"]) == 0 and int(f["syncs"]) == len(pk), said
     assert int(f["ram"]) > 0, said                       # the RAM block was copied and used
-    # the decoder within one block (coded bits; rate 2/3's step across two blocks waits for the
-    # second, one bit more, and the writer reaches that bit's place 42 symbols later)
-    assert int(f["lag"]) <= 86 + r23, said
+    # the decoder within one block (coded bits; a punctured rate's step across two blocks waits
+    # for the second, one bit more, and the writer reaches that bit's place 42 symbols later)
+    assert int(f["lag"]) <= 86 + (rate > 0), said
     # CPU to spare with sp_packet at the 400 us it took on the K6 (on air fe25ec8 idled 30-33%)
     assert int(f["i"]) >= (20 if flash_cpi else 30), said
     # 3.56 KB: on air (fe25ec8) the session left 596 B to spare at 3.45 KB here; sp_packet's

@@ -53,10 +53,13 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
   up, the sweep goes and listens to it (quietly, with the speaker off). If several are up at
   once, it picks the one listened to fewest times (`ex_pick_id`), and every listen moves that
   one to the back, so two repeaters that ID together take turns and neither starves. It stays
-  while the carrier is up, then 3 s more, 2 minutes at most, and then leaves 5 s of sweeping
-  before the next listen. A call heard once is kept, and a second decode alike, on the same
+  while the carrier is up, then 3 s more, 2 minutes at most, halved for each full minute already
+  spent listening to that station, 20 s at least (`ex_listen_cap`). The next pick waits for a full
+  pass over the band set and takes the loudest of those listened to fewest times. A call heard once is kept, and a second decode alike, on the same
   listen or a later one, confirms it. Spurs, skirts, simplex frequencies, ignored candidates and
-  's' grades are never picked. Key 1 turns it off and on.
+  's' grades are never picked. Key 1 turns it off and on. It plays on the speaker (Jeff
+  2026-11-07 22:10); key 9 turns the speaker off or back on for every automatic listen after
+  that, until the radio is switched off.
 - **The table** (`c/k6/rt.c`): Save writes one 64-byte record in SPI flash at 0x0F0000-0x0FFFFF,
   through the same checks as module API level 5. A confirmed CW ID follows Jeff's rule: a saved
   entry with no call takes it at once, and a different saved call waits for MENU. With no saved
@@ -83,15 +86,17 @@ New repeaters are listed first. A thin rule separates them from the known ones u
 frequencies already saved in the table (read at the start, and added on each Save). The rows
 under the rule move down 2 px. The selected row is drawn inverted, dark on a lit bar (Jeff's
 idea: no '>' column). Grades: R likely a repeater (score 6 or more), r maybe one, ? not seen
-enough yet, s simplex or a spur or a louder signal's skirt, x ignored with *. The level bar
+enough yet, s simplex or a louder signal's skirt, x ignored with *. A spur (a birdie, or a carrier
+that never moves) shows a little gull in place of the grade, and its footer says "birdie, not a
+station". The level bar
 (Jeff's "4 revised", 2026-11-07) is 2 px of loudest level, 5 dB a pixel from -120 dBm (21 px
 full), over a dotted line for the score (10 points full).
 
 The header (Jeff, 2026-11-07) has an icon pair that swaps every second. While sweeping, it shows
 half-lidded eyes looking left, then right, followed by the band set and how many candidates
 were found. While listening for a CW ID, it shows dit-dah / dah-dit, the frequency, and a watch
-face at the right end whose wedge empties clockwise over the listen's time limit (2 min for the
-automatic listen). The automatic listen keeps the list on screen, with an arrow in the call
+face at the right end whose wedge empties clockwise over the listen's time limit (for the
+automatic listen 2 min, less for a station already listened to). The automatic listen keeps the list on screen, with an arrow in the call
 column pointing at the row being listened to. On serial, a known candidate has flag 0x20 in its K6 CAND line.
 
 ```text
@@ -208,6 +213,74 @@ was -93 (the first F0 line, at 20:27:14). Three faults locked together, all fixe
 - **The quick floor read 40 dB low** (q-134) because each quick read came straight after the
   1/8-segment hop between floor points. The quick read now comes one bin over a settled full
   read, as in the sweep.
+
+## Bench 5 (2026-11-07 21:35-21:40 UTC, main 32cd262)
+
+The auto listen now stays up for a whole ID and ends 2-3 s after the carrier drops, and no floor
+was held. But at 21:37:17 it went to 440.7375, a steady carrier only 10 dB over the floor (-103,
+fl-113), sat the full 2 minutes on it (no CW), and missed the keeper's ID. Before, the 3 s bug had
+cut such listens short. The tone detector can't decode at 10 dB anyway, so `xs_up` now leaves out
+anything under 15 dB over its segment's floor (XS_PICK_DB): the sweep still lists it, the automatic
+listener just doesn't go there.
+
+Jeff's two follow-ups (21:48), from the same run's list: off the band plan's channel raster (25
+kHz from 440.000 on 70 cm; `ex_plan_t.raster_khz`, none set on 2 m and 1.25 m yet) a carrier
+needs 10 dB more (25 dB over the floor) before the listener goes there: every 12.5 kHz-offset hit
+on the bench so far was junk, but WWARA has splinter channels, so it's a higher bar, not a ban.
+And skirts are folded into the carrier beside them on the screen (`ex_view`): the run's exit
+dump had four skirts of our -20 dBm ID (440.825 to 440.900) in seven rows. They stay in the
+serial dump (key 7).
+
+And his priority rule (21:54): when several carriers are up, the loudest goes first. `xs_up` gives
+them loudest first, and `ex_pick_id` takes the first among those listened to fewest times, so a
+carrier just evaluated moves to the back and the next loudest goes when it's up again.
+The listener also picks only at the end of a full pass over the band set, two passes after a
+listen ends so one is whole (Jeff 21:57: "spend a couple seconds to do a full sweep first"), not
+the moment the first carrier shows partway through a sweep.
+
+And his listen-time rule (22:01: "reduces the time spent listening for CW the longer a given
+station has actually been listened to"): each candidate keeps the seconds its automatic listens
+lasted (`heard_s`, added by `ex_heard` when a listen ends or a key stops it), and the next
+listen's cap is 120 s halved per full minute of that: 120, 60, 30, then 20 s for good. A
+repeater that IDs every 10 minutes still gets a 20 s window each time it keys up, which covers an
+ID at 13 wpm or faster, while a chatty carrier with no ID stops eating whole sweeps. The serial
+line `K6 EX auto` now shows `heard=` and `max=`.
+
+## Bench 4 (2026-11-07 21:07-21:12 UTC, PR #122 head 7a591c0)
+
+The floor fix and the birdie fix worked: 2 m read -92 to -94 every minute, no 2 m phantoms, and
+144.000 was a spur on the first sweep (21:07:36), never picked. The AG7EW entry survived the
+reflash, and an ID sent at 21:11:32 decoded clean. Log: `~/sotto-work/runs/explore-bench-4/`.
+Two faults turned up around the keeper's ID at 21:09:24, both fixed in #122:
+
+- **The automatic listen on 440.850 ended after 3 s with the ID still on air.** A carrier keyed
+  for the first time has no over yet, so its level was 0 and the -18 dBm ID never counted as up.
+  Now such a listen takes the level from its reads, and the loudest read sets what counts as up.
+- **The floor read after that listen ran with the -18 dBm carrier still up,** came back 30 dB low
+  (F2 -139 for -109), and five phantoms came up against it (444.550 at -116, which the next
+  automatic listen went to). A floor read 15 dB or more under the last is now held once (`F2 held
+  -109`) and tried again in 5 s; a floor that really dropped stands on the second read.
+
+## Birdies (2026-11-07)
+
+birdie-path-1 (hamlet `~/sotto-work/runs/birdie-path-1/`, hfprobe, RX only, the IC-7100 sending
+PSK31 AG7EW TEST on 440.850 as a reference) read each birdie with the RX front end on and off
+(PA13 and PA14 low):
+
+| MHz | front end on | off | drop |
+|---|---|---|---|
+| 144.000 (6 x 24) | -77 | -132 | 55 dB |
+| 168.000 (7 x 24) | -80 | -134 | 54 dB |
+| 240.000 (10 x 24) | -96 | -142 | 46 dB |
+| 156.000 (6 x 26) | -94 | -118 | 24 dB |
+| 440.850 (PSK31, -18 dBm) | -18 | -72 | 54 dB |
+
+The MCU clock's harmonics come in through the antenna path like a station, so switching the
+front end off can't tell them apart; only the FD6818's own 26 MHz family stays (and a strong
+station leaks through too, so a test would have to compare the drop). So the sweep marks a new
+hit within 2.5 kHz of n x 24 MHz a spur at once (`ex_own_clock`), not after 60 s up, and lists it
+with its level and the gull. The 26 MHz family is left alone: in our bands it only lands on
+442.000, a channel.
 
 ## Not built yet
 

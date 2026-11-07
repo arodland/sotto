@@ -564,7 +564,30 @@ what would settle it.
       for example two 1 s carriers 2 s apart.
     - It would buy: long-running modules (beacons, scanners, loggers) on an unattended bench.
     - Settled by: `k6_bench.py stop` ending `wsprbcn` between frames without anyone at the radio.
-32. **Build Aura's `App` in its static instead of on the boot stack.**
+32. **A sync hunt on outer tones must also see modulation.**
+    - From: the PHY G thread, 2026-11-07 ([k6-if-fec.md](k6-if-fec.md)). Settled on the model
+      and on air (PR #120).
+    - On the half-baud tone grid an unmodulated carrier correlates well with both outer tones
+      (600 Hz is a half turn a symbol, 2400 Hz two turns), so the hard decisions in the carrier
+      before a lead and after a burst are runs of 0 and 3 with few inner tones, and a sync hunt
+      that counts only inner tones as wrong found a sync word 78 symbols after a burst's last
+      packet. The hunt now also counts an outer tone as wrong when the other outer tone's metric
+      is within 3/4 of the winner's, which on a sent tone happens 5% of the time at the floor.
+    - It would buy: the same check for any future tone plan or sync word; a bare-carrier
+      detector for free (both outer metrics high, no inner) if a module ever wants one.
+    - Settled by: 56 packets on air with no false sync, and the model at 45-55 dB-Hz.
+33. **Rate 5/6 on the 600-2400 Hz tones.**
+    - From: the PHY G thread, 2026-11-07. Not built.
+    - The new tones made 0 raw errors in 80,400 bits on air and rate 3/4 decodes 13-14 of 14.
+      The K=7 code's rate 5/6 pattern (133: 1 0 1 0 1 / 171: 1 1 0 1 0, 6 bits each 5 steps)
+      would give 2064 x 3/5 = 1238 coded bits a packet, not a whole number of 86-bit blocks, so
+      it needs a 14-block padding rule or a block size of 1238/2 = 619 (prime: no). The nearest
+      clean fit is 6 bits each 5 steps over 1032 steps = 206.4 groups, so the tail would need
+      8 steps' worth of extra zeros (1040 steps, 1248 bits, still not a multiple of 86) or a
+      block of 78 bits (16 blocks of 78 = 1248). About 2000 bit/s net, 1.3x F/1800.
+    - It would buy: the first K6 link clearly faster than the chip's modem, with soft decoding.
+    - Settled by: the model at about 51 dB-Hz for every packet, and a bench run as for rate 3/4.
+34. **Build Aura's `App` in its static instead of on the boot stack.**
     - From: the hiss band thread, 2026-11-07 ([k6-hiss-port.md](k6-hiss-port.md)). Not built.
     - `place_app` (firmware/k6-aura, main.rs) builds `App::new`'s 3 KB result in its own stack
       frame and copies it into `APP_SLOT`: 3448 B of stack at boot, on top of main's 2952, that

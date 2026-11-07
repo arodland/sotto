@@ -1,14 +1,15 @@
 /* ifpager: the K6 pager's coded 4FSK receiver (PHY G, docs/k6-if-fec.md, modem/k6g.py).
 
    The pager's XL packets (128 bytes, whitened, CRC: sotto_pager.h) come as 4FSK at 1200 baud
-   with a rate-1/2 K=7 code. The IF matched filter (ifrx.c) decides each symbol and gives each
-   tone's metric; this turns them into soft bits, finds each packet's sync word, undoes the
-   interleave and runs a soft Viterbi decoder, one or two trellis steps a symbol (a few percent
-   of the K6's M0), with a sliding traceback in 640 bytes.
+   (tones 600, 1200, 1800, 2400 Hz) with a rate-1/2 K=7 code. The IF matched filter (ifrx.c)
+   decides each symbol and gives each tone's metric; this turns them into soft bits, finds each
+   packet's sync word, undoes the interleave and runs a soft Viterbi decoder, one or two trellis
+   steps a symbol (a few percent of the K6's M0), with a sliding traceback in 640 bytes.
 
      ifp_init / ifp_sym: the decoder alone (for tests on a PC and inside the session)
      Rate 2/3 punctures the same code (the odd steps' second bit, from polynomial 171, isn't
-   sent): the decoder takes 0 for it.
+   sent), and rate 3/4 more (of each three steps, the second's first bit and the third's second
+   bit aren't sent): the decoder takes 0 for a bit not sent.
 
      ifp_session: a receive session on the K6: GP0 code 13's stream on PB1 through DMA channel
        1 into ifrx and ifp_sym, every packet into sp_packet, until the burst ends
@@ -25,10 +26,12 @@ extern "C" {
 #define IFP_STEPS (IFP_PAYLOAD * 8 + 8)  /* trellis steps a packet: its bits and 8 zeros */
 #define IFP_BLOCK 86                    /* coded bits an interleave block (43 symbols) */
 #define IFP_HALF (IFP_BLOCK / 2)
-/* data symbols a packet: rate 1/2, one a trellis step; rate 2/3 (every other step's second
-   coded bit not sent: 3 bits each 2 steps), 774 */
+/* data symbols a packet: rate 1/2, one a trellis step; rate 2/3 (3 coded bits each 2 steps),
+   774; rate 3/4 (4 each 3 steps), 688: 16 interleave blocks */
 #define IFP_SYMS12 IFP_STEPS
 #define IFP_SYMS23 (IFP_STEPS * 3 / 4)
+#define IFP_SYMS34 (IFP_STEPS * 2 / 3)
+#define IFP_SYMS(rate) ((rate) == 1 ? IFP_SYMS23 : (rate) == 2 ? IFP_SYMS34 : IFP_SYMS12)
 #define IFP_SYNC_LEN 24
 #define IFP_SYNC 0x907E6Au              /* 1 = tone 3, 0 = tone 0, the first symbol in bit 23 */
 #ifndef IFP_SYNC_MISS
@@ -51,7 +54,8 @@ typedef struct {
   uint32_t step;          /* coded bits the trellis has taken (all packets) */
   int32_t ls;             /* trellis steps run of the packet being decoded */
   int32_t bi;             /* the next step's first coded bit in llr (both blocks, 0..2 IFP_BLOCK-1) */
-  int32_t r23;            /* 1: rate 2/3 (punctured; set after ifp_init) */
+  int32_t rate;           /* 0 rate 1/2, 1 rate 2/3, 2 rate 3/4 (set after ifp_init) */
+  int32_t ph;             /* the next step's place in the puncture pattern (0 .. rate) */
   int32_t out;            /* bits decided (traced back) of that packet */
   int32_t ri;             /* the next step's entry in dec */
   int32_t have;           /* 1: pkt holds a decoded packet (the caller clears it) */
@@ -104,12 +108,13 @@ typedef struct {
    IFP_RING bytes for the DMA, 4-byte aligned (the pager's PWM ring, 1280 B, is free while nothing
    plays).
    Waits wait_ms for the lead, then runs until no sync word for two packets' time, a key, or
-   max_ms. flags (the control packet's byte 3): IFP_R23 for rate 2/3; IFP_NODECODE (a bench test)
-   decodes nothing, only finds the sync words, so their wrong symbols (miss) come without the
-   decoder's load. Uses the module API's level 2 calls (fd_read/fd_write, ms, key_poll). Puts back
-   REG_33, REG_34, TIM17 and DMA channel 1. */
+   max_ms. flags (the control packet's byte 3): IFP_R23 for rate 2/3, IFP_R34 for 3/4;
+   IFP_NODECODE (a bench test) decodes nothing, only finds the sync words, so their wrong symbols
+   (miss) come without the decoder's load. Uses the module API's level 2 calls (fd_read/fd_write,
+   ms, key_poll). Puts back REG_33, REG_34, TIM17 and DMA channel 1. */
 #define IFP_R23 1
 #define IFP_NODECODE 2
+#define IFP_R34 4
 #define IFP_RING 1216u                 /* 19 counts of 64 samples: 206 us at 5.9 MS/s */
 int ifp_session(const k6_api_t *api, uint8_t *ring, uint32_t wait_ms, uint32_t max_ms, int flags,
                 ifp_result_t *res);

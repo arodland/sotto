@@ -1,5 +1,5 @@
 /* ifrx: the K6's IF matched-filter receiver for audio-tone FSK (FFSK and 4FSK at 1200 baud, and
-   built with IFRX_ONLY = IFRX_4H, 4FSK at 1200, 1500 or 1600 baud on a half-baud tone grid),
+   built with IFRX_ONLY = IFRX_4H, 4FSK at 1200 to 1600 baud on a half-baud tone grid),
    working on GP0 code 13's counts (2 * ones - 64 per 64 DMA samples of PB1, ~85.8 kHz).
    docs/k6-if-modem.md has the study; sim/k6if/mcu.py is this receiver in float.
 
@@ -33,7 +33,7 @@ extern "C" {
 #endif
 
 #ifndef IFRX_BAUD
-#define IFRX_BAUD 1200      /* symbols a second: 1200, or (IFRX_ONLY == IFRX_4H) 1500 or 1600 */
+#define IFRX_BAUD 1200      /* symbols a second: 1200, or (IFRX_ONLY == IFRX_4H) 1350, 1440, 1500 or 1600 */
 #endif
 #if IFRX_BAUD == 1200
 #define IFRX_TL 18          /* samples a symbol (template length), about 4 counts apart */

@@ -129,10 +129,10 @@ $CC $CFLAGS -Os -c "$ROOT/c/k6/sp_vlr.c" -o "$OUT/sp_vlr.o"
 if [ "${K6_RAMFUNC:-0}" = 1 ]; then
   $OBJCOPY --rename-section .text.fx_oa_block=.data.ramfunc.fx_oa_block,alloc,load,contents,code "$OUT/fx_math.o"
 fi
-# the coded 4FSK receiver (PHY G: ifrx's IF matched filter with the 4FSK templates trained on the
-# K6, soft Viterbi): linked only by the images that call it (not the lean ones). -Os, as the
+# the coded 4FSK receiver (PHY G: ifrx's IF matched filter on the 600-2400 Hz half-baud tones,
+# soft Viterbi): linked only by the images that call it (not the lean ones). -Os, as the
 # emulator's timing of it (tests/k6_live_emu.py run_ifpager)
-$CC $CFLAGS -Os -DIFRX_T4_K6 -c "$ROOT/c/k6/ifpager.c" -o "$OUT/ifpager.o"
+$CC $CFLAGS -Os -c "$ROOT/c/k6/ifpager.c" -o "$OUT/ifpager.o"
 # the EXPLORE app's engine (docs/k6-explore-app.md): the sweep a block at a time, the candidate
 # list, the repeater table and Listen for ID. -Oz: none of it is hot next to a 1.5 ms read, and
 # only the images that call it link it (rt.c goes in as k6_rt.o: c/fixed/cm0/rt.c is the bench's)

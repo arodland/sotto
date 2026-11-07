@@ -11,6 +11,12 @@
 #if IFRX_BAUD == 1200
 #define IFRX_PC_N 160u
 #define IFRX_PC_D 3u
+#elif IFRX_BAUD == 1350
+#define IFRX_PC_N 1280u
+#define IFRX_PC_D 27u
+#elif IFRX_BAUD == 1440
+#define IFRX_PC_N 400u
+#define IFRX_PC_D 9u
 #elif IFRX_BAUD == 1500
 #define IFRX_PC_N 128u
 #define IFRX_PC_D 3u
@@ -18,7 +24,7 @@
 #define IFRX_PC_N 40u
 #define IFRX_PC_D 1u
 #else
-#error IFRX_BAUD: 1200, 1500 or 1600
+#error IFRX_BAUD: 1200, 1350, 1440, 1500 or 1600
 #endif
 
 /* sin(2 pi k / 64), Q14, k = 0..16 (a quarter turn) */

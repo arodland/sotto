@@ -1,6 +1,7 @@
 /* ifpager: the K6 pager's coded 4FSK receiver (ifpager.h). SPDX-License-Identifier: MIT */
 #ifndef IFRX_ONLY
-#define IFRX_ONLY 1 /* IFRX_4FSK */
+#define IFRX_ONLY 2 /* IFRX_4H at 1200 baud: tones 600, 1200, 1800, 2400 Hz (IFRX_ONLY 1 with
+                       IFRX_T4_K6 builds the older plan, 900 .. 2700 Hz) */
 #endif
 #include "ifpager.h"
 /* the acquisition backs off less from its best offset than the modules' default (1/2): at the
@@ -43,20 +44,29 @@ IFRX_NOINLINE static void traceback(ifp_t *p, uint32_t s, int32_t r, int32_t end
   }
 }
 
-/* one trellis step, on the next one or two coded bits (rate 2/3's odd steps: one, the other 0) */
+/* which of a step's two coded bits were sent (bit 0 the first, polynomial 133; bit 1 the
+   second, 171): rate 2/3 drops every other step's second, rate 3/4 (puncture pattern 110 / 101)
+   the second step's first and the third's second of each three */
+static int32_t ifp_mask(const ifp_t *p) { return p->rate == 1 ? (p->ph ? 1 : 3) : 3 - p->ph; }
+
+/* one trellis step, on the next one or two coded bits (a bit not sent: 0) */
 IFRX_NOINLINE static void step(ifp_t *p) {
   const int8_t *f = p->llr[0];
   int16_t *a = p->pm[p->cur], *b = p->pm[p->cur ^ 1];
-  int32_t bi = p->bi, l0 = f[bi], l1 = 0, bm[4], base = a[0];
+  int32_t bi = p->bi, l0 = 0, l1 = 0, bm[4], base = a[0], mask = ifp_mask(p);
   uint32_t d[2] = {0, 0};
   int j;
-  if (++bi == 2 * IFP_BLOCK) bi = 0;
-  if (!(p->r23 & p->ls & 1)) {
+  if (mask & 1) {
+    l0 = f[bi];
+    if (++bi == 2 * IFP_BLOCK) bi = 0;
+    p->step++;
+  }
+  if (mask & 2) {
     l1 = f[bi];
     if (++bi == 2 * IFP_BLOCK) bi = 0;
     p->step++;
   }
-  p->step++;
+  if (++p->ph > p->rate) p->ph = 0;
   p->bi = bi;
   bm[0] = l0 + l1, bm[1] = l0 - l1, bm[2] = l1 - l0, bm[3] = -l0 - l1;
   for (j = 0; j < 32; j++) {
@@ -88,10 +98,10 @@ IFRX_NOINLINE static void step(ifp_t *p) {
 
 int ifp_work(ifp_t *p) {
   int k;
-  /* its bits: two, or one on rate 2/3's odd steps (a packet starts on an even one) */
-  if (p->have || p->step + 2 - (uint32_t)(p->r23 & p->ls & 1) > p->ready) return -1;
+  /* its bits: two, or one where the code is punctured (a packet starts on a step with both) */
+  if (p->have || p->step + (ifp_mask(p) == 3 ? 2u : 1u) > p->ready) return -1;
   if (p->ls == IFP_STEPS) { /* the next packet's first step: start it afresh */
-    p->ls = 0, p->out = 0, p->ri = 0;
+    p->ls = 0, p->out = 0, p->ri = 0, p->ph = 0;
     ifrx_zero(p->pkt, IFP_PAYLOAD / 4);
     ifrx_zero(p->pm[0], sizeof(p->pm) / 4);
     p->cur = 0;
@@ -123,9 +133,14 @@ int ifp_sym(ifp_t *p, int tone, const uint32_t met[4]) {
   else p->mean_q4 = (uint32_t)((int32_t)p->mean_q4 + (((int32_t)(mx << 4) - (int32_t)p->mean_q4) >> 6));
   p->syms++;
   /* every decision into the hunt's window, so a sync word a symbol or two from where the
-     packet's count put it is still found */
+     packet's count put it is still found. A decision is bad for the hunt when it's an inner tone,
+     or when the other outer tone's metric is within 3/4 of the winner's: an unmodulated carrier
+     (before the lead and after the burst) decides as tones 0 and 3 with both metrics high (the
+     600 and 2400 Hz templates each hold a half-turn or a turn or two of carrier) and made a sync
+     word of a run of it; a sent outer tone leaves the other below 3/4 of it 94.5% of the time
+     on the model at 45 dB-Hz (the receiver's floor), 100% at 55 */
   p->hist = (p->hist << 1) | (tone == 3);
-  p->bad = (p->bad << 1) | (tone == 1 || tone == 2);
+  p->bad = (p->bad << 1) | (tone == 1 || tone == 2 || met[3 - tone] > mx - (mx >> 2));
   if (!p->syncs) p->lead_n++, p->lead_bad += (tone == 1 || tone == 2);
   if (p->state == IFP_DATA) {
     /* Gray: tones 0 1 2 3 are 00 01 11 10; LLR > 0 for a 0 bit */
@@ -136,7 +151,7 @@ int ifp_sym(ifp_t *p, int tone, const uint32_t met[4]) {
     l[0] = (int8_t)clamp_llr((int32_t)m01 - (int32_t)m23, mean);
     l[IFP_HALF] = (int8_t)clamp_llr((int32_t)m03 - (int32_t)m12, mean);
     if (++p->sk == IFP_HALF) p->sk = 0, p->sb ^= 1, p->ready += IFP_BLOCK; /* a block in */
-    if (++p->nsym == (p->r23 ? IFP_SYMS23 : IFP_SYMS12)) p->state = IFP_HUNT;
+    if (++p->nsym == IFP_SYMS(p->rate)) p->state = IFP_HUNT;
     return 0;
   }
   k = ones24((p->hist ^ IFP_SYNC) | p->bad);
@@ -173,8 +188,8 @@ int ifp_sym(ifp_t *p, int tone, const uint32_t met[4]) {
 #define STALL_US 120u  /* well under a lap of the ring */
 /* the burst is over after this many symbols with no sync word: two packets' time (and the
    rest of a 2 s lead before the first) */
-#define END_SYMS(r23) (2 * ((r23) ? IFP_SYMS23 + IFP_SYNC_LEN : IFP_SYMS12 + IFP_SYNC_LEN))
-#define FIRST_SYMS(r23) (2400 + END_SYMS(r23))
+#define END_SYMS(rate) (2 * (IFP_SYMS(rate) + IFP_SYNC_LEN))
+#define FIRST_SYMS(rate) (2400 + END_SYMS(rate))
 
 static uint32_t rd(uint32_t a) { return *(volatile uint32_t *)a; }
 static void wr(uint32_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
@@ -335,14 +350,14 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
   uint32_t code[IFP_RAM_MAX / 4];
   ifrx_zero(&s, sizeof(s) / 4);
   s.p = &p, s.res = res, s.rb = rb, s.cnt = count, s.ks = KS0 * 16;
-  ifrx_init(&s.rx, IFRX_4FSK, s.ks);
+  ifrx_init(&s.rx, IFRX_ONLY, s.ks);
 #ifndef IFP_NO_RAM
   res->ram = (int32_t)ram_block(&s.rx, code, &s.cnt);
 #else
   (void)code, (void)ram_block;
 #endif
   ifp_init(&p);
-  p.r23 = flags & IFP_R23;
+  p.rate = (flags & IFP_R23) ? 1 : (flags & IFP_R34) ? 2 : 0;
 #ifdef SP_PKT_YIELD
   sp_set_packet_yield(svc_yield, &s);
 #endif
@@ -404,7 +419,7 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
       }
       continue;
     }
-    if (p.syncs ? p.syms - p.last_sync > END_SYMS(p.r23) : p.syms - s.lock_sym > FIRST_SYMS(p.r23)) break;
+    if (p.syncs ? p.syms - p.last_sync > END_SYMS(p.rate) : p.syms - s.lock_sym > FIRST_SYMS(p.rate)) break;
   }
   stop();
 #ifdef SP_PKT_YIELD

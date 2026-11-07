@@ -242,7 +242,7 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..0620a3e
+index 0000000..7f6e8e1
 --- /dev/null
 +++ b/src/app/pager.rs
 @@ -0,0 +1,3947 @@
@@ -3186,7 +3186,7 @@ index 0000000..0620a3e
 +        app.pager.ifrx_ms = (vv as u32).max(3) * 2000;
 +        #[cfg(not(feature = "lean"))]
 +        {
-+            app.pager.ifrx_flags = val & 3;
++            app.pager.ifrx_flags = val & 7;
 +        }
 +        report_line(format_args!("K6 CTL seq={} ifrx ms={}", seq, app.pager.ifrx_ms));
 +        app.pager.idle_ticks = 0;
@@ -4195,10 +4195,10 @@ index 0000000..0620a3e
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..497a52f
+index 0000000..7bab6a5
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1286 @@
+@@ -0,0 +1,1382 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4218,7 +4218,8 @@ index 0000000..497a52f
 +//! Keys: UP/DOWN pick a row; MENU Try (listen to it: the sweep stops, the speaker opens);
 +//! 0 Listen for ID (the CW ID decoder, c/k6/xlisten.c, up to 25 minutes, any key stops);
 +//! 5 Save (the repeater table in SPI flash, c/k6/rt.c, through module API level 5's checks);
-+//! * ignore; # the next band set; 7 the list and the table on the serial report (K6 CAND,
++//! * ignore; # the next band set; 1 automatic Listen for ID on/off; 9 its speaker on/off (on
++//! at start); 7 the list and the table on the serial report (K6 CAND,
 +//! K6 RT lines); EXIT twice back to VOICE MSG (the list is in RAM only and goes with it).
 +//!
 +//! RAM: none of its own beyond this file's statics. While EXPLORE runs it borrows the message
@@ -4266,6 +4267,7 @@ index 0000000..497a52f
 +        pub grade: u8,
 +        pub call: [u8; 10],
 +        pub listens: u8,
++        pub heard_s: u16,
 +    }
 +    #[repr(C)]
 +    pub struct Ex {
@@ -4393,7 +4395,11 @@ index 0000000..497a52f
 +        pub fn ex_known_store(e: *mut Ex, buf: *mut u32, cap: u32);
 +        pub fn ex_know(e: *mut Ex, hz: u32);
 +        pub fn ex_rank(e: *mut Ex, i: u32) -> *mut Cand;
++        pub fn ex_view(e: *mut Ex, i: u32) -> *mut Cand;
++        pub fn ex_view_n(e: *const Ex) -> u32;
 +        pub fn ex_cw(e: *mut Ex, hz: u32, call: *const u8);
++        pub fn ex_listen_cap(c: *const Cand, max_s: u32, min_s: u32) -> u32;
++        pub fn ex_heard(e: *mut Ex, hz: u32, s: u32);
 +        pub fn ex_to_rt(c: *const Cand, r: *mut RtRec);
 +        pub fn rt_mount(t: *mut Rt, fl: *const RtFlash, base: u32, force: i32) -> i32;
 +        pub fn rt_find(t: *mut Rt, id: u16, rx_hz: u32, tol: u32, out: *mut RtRec) -> i32;
@@ -4421,17 +4427,23 @@ index 0000000..497a52f
 +const LISTEN_S: u32 = 1500;
 +/// the automatic Listen for ID (Jeff's rule, 2026-11-07): it goes to a candidate with no call
 +/// when it keys up, the one listened to fewest times first (ex_pick_id); it stays while the
-+/// carrier is up, then AUTO_TAIL_MS more, AUTO_MAX_S at most, and leaves AUTO_GAP_MS of sweep
-+/// before the next. A call needs two decodes alike, on one listen or two.
++/// carrier is up, then AUTO_TAIL_MS more, AUTO_MAX_S at most, halved for each minute already
++/// spent listening to it, AUTO_MIN_S at least (Jeff 2026-11-07: "reduces the time spent
++/// listening for CW the longer a given station has actually been listened to"). The next is picked only at the end
++/// of a full pass over the band set (AUTO_PASSES after a listen, so one is whole), from all that
++/// are up then, loudest first (Jeff 2026-11-07: "spend a couple seconds to do a full sweep
++/// first"). A call needs two decodes alike, on one listen or two.
 +const AUTO_MAX_S: u32 = 120;
++const AUTO_MIN_S: u32 = 20;
 +const AUTO_TAIL_MS: u32 = 3000;
-+const AUTO_GAP_MS: u32 = 5000;
++const AUTO_PASSES: u32 = 2;
 +const AUTO_DROP_DB: i16 = 15;
 +const XL_MSG: i32 = 3;
 +const EX_F_IGNORED: u8 = 0x01;
 +const EX_F_TRIED: u8 = 0x02;
 +const EX_F_OFF_HEARD: u8 = 0x04;
 +const EX_F_SIMPLEX: u8 = 0x08;
++const EX_F_SPUR: u8 = 0x10;
 +const EX_F_KNOWN: u8 = 0x20;
 +/// the saved table's frequencies, for the new / known rule on the list (more stay unmarked)
 +const KNOWN_N: usize = 64;
@@ -4496,10 +4508,17 @@ index 0000000..497a52f
 +    /// automatic Listen for ID: on (key 1), this listen is one, its carrier last seen (ms),
 +    /// the level that counts as up, when the last one ended; calls heard once (hz, call)
 +    auto: bool,
++    /// the automatic listen plays on the speaker (Jeff 2026-11-07 22:10: on by default); key 9
++    auto_spk: bool,
 +    auto_now: bool,
 +    auto_seen_ms: u32,
++    auto_start_ms: u32,
++    auto_max_s: u32,
 +    auto_lvl: i16,
-+    auto_end_ms: u32,
++    /// full passes (xs_info sweeps) at the last listen's end or the band's start, and the last
++    /// pass the listener looked at
++    auto_mark: u32,
++    auto_pass: u32,
 +    once: [(u32, [u8; 11]); 6],
 +    once_i: u8,
 +    /// the sweep was left for Try or Listen: its segment reads its floor again on the way back
@@ -4536,10 +4555,14 @@ index 0000000..497a52f
 +    heard_wpm: 0,
 +    level: 0,
 +    auto: true,
++    auto_spk: true,
 +    auto_now: false,
 +    auto_seen_ms: 0,
++    auto_start_ms: 0,
++    auto_max_s: AUTO_MAX_S,
 +    auto_lvl: 0,
-+    auto_end_ms: 0,
++    auto_mark: 0,
++    auto_pass: 0,
 +    once: [(0, [0; 11]); 6],
 +    once_i: 0,
 +    resume: false,
@@ -4616,9 +4639,29 @@ index 0000000..497a52f
 +    }
 +}
 +
++/// the i-th row of the list on the screen: skirts are left out, folded into the louder carrier
++/// beside them (Jeff 2026-11-07: "lump close together signals together")
++fn shown(i: u32) -> Option<&'static mut Cand> {
++    let p = unsafe { ffi::ex_view(&mut st().ex, i) };
++    if p.is_null() {
++        None
++    } else {
++        Some(unsafe { &mut *p })
++    }
++}
++
 +/// set the sweep up on band set b (the candidates stay)
++/// full passes over the band set so far
++fn passes() -> u32 {
++    let mut info: XsInfo = unsafe { core::mem::zeroed() };
++    unsafe { ffi::xs_info(st().xs, &mut info) };
++    info.sweeps
++}
++
 +fn start_band(b: u8) {
 +    let t = st();
++    t.auto_mark = 0;
++    t.auto_pass = 0;
 +    t.band = b % BANDS.len() as u8;
 +    let (_, segs) = BANDS[t.band as usize];
 +    unsafe {
@@ -4743,8 +4786,19 @@ index 0000000..497a52f
 +            }
 +            let key = unsafe { ffi::xs_step(t.xs) } == XS_KEY;
 +            ctx_off();
-+            if !key && t.auto && now_ms().wrapping_sub(t.auto_end_ms) >= AUTO_GAP_MS {
-+                auto_pick(app, syst);
++            // a row can fold away (it turned out a skirt): keep the selection on the list
++            let n = unsafe { ffi::ex_view_n(&t.ex) };
++            if n > 0 && t.sel as u32 >= n {
++                t.sel = (n - 1) as _;
++            }
++            if !key && t.auto {
++                let n = passes();
++                if n != t.auto_pass {
++                    t.auto_pass = n;
++                    if n >= t.auto_mark + AUTO_PASSES {
++                        auto_pick(app, syst);
++                    }
++                }
 +            }
 +        }
 +        View::Listen => {
@@ -4802,7 +4856,7 @@ index 0000000..497a52f
 +            ctx_off();
 +            monitor_off(app, syst);
 +            if core::mem::take(&mut t.auto_now) {
-+                t.auto_end_ms = now_ms();
++                auto_done();
 +            }
 +            note("LISTEN STOPPED");
 +            t.view = View::List;
@@ -4830,7 +4884,7 @@ index 0000000..497a52f
 +        View::List => match ev.key {
 +            KeyId::Up => t.sel = t.sel.saturating_sub(1),
 +            KeyId::Down => {
-+                if (t.sel as u16) + 1 < t.ex.n {
++                if shown(t.sel as u32 + 1).is_some() {
 +                    t.sel += 1;
 +                }
 +            }
@@ -4838,7 +4892,7 @@ index 0000000..497a52f
 +            KeyId::Digit0 => listen_start(app, syst),
 +            KeyId::Digit5 => save(app, syst),
 +            KeyId::Asterisk => {
-+                if let Some(c) = cand(t.sel as u32) {
++                if let Some(c) = shown(t.sel as u32) {
 +                    c.flags ^= EX_F_IGNORED;
 +                    note(if c.flags & EX_F_IGNORED != 0 { "IGNORED" } else { "UNIGNORED" });
 +                }
@@ -4856,6 +4910,10 @@ index 0000000..497a52f
 +            KeyId::Digit1 => {
 +                t.auto = !t.auto;
 +                note(if t.auto { "AUTO ID ON" } else { "AUTO ID OFF" });
++            }
++            KeyId::Digit9 => {
++                t.auto_spk = !t.auto_spk;
++                note(if t.auto_spk { "AUTO ID SPEAKER ON" } else { "AUTO ID SPEAKER OFF" });
 +            }
 +            KeyId::Exit => {
 +                if t.leave_armed {
@@ -4880,7 +4938,7 @@ index 0000000..497a52f
 +
 +fn try_start(app: &mut App, syst: &mut SYST) {
 +    let t = st();
-+    let Some(c) = cand(t.sel as u32) else { return };
++    let Some(c) = shown(t.sel as u32) else { return };
 +    c.flags |= EX_F_TRIED;
 +    t.hz = c.hz;
 +    t.off = c.off_hz;
@@ -4893,7 +4951,7 @@ index 0000000..497a52f
 +fn listen_start(app: &mut App, syst: &mut SYST) {
 +    let t = st();
 +    if t.view != View::Try {
-+        let Some(c) = cand(t.sel as u32) else { return };
++        let Some(c) = shown(t.sel as u32) else { return };
 +        t.hz = c.hz;
 +        t.off = c.off_hz;
 +        pause_sweep(app, syst);
@@ -4907,7 +4965,7 @@ index 0000000..497a52f
 +}
 +
 +/// A candidate with no call keyed up: go and listen (the sweep's hot list stays as it is, so the
-+/// over goes on being followed when the sweep comes back). Quietly: the speaker stays off.
++/// over goes on being followed when the sweep comes back). On the speaker unless key 9 muted it.
 +fn auto_pick(app: &mut App, syst: &mut SYST) {
 +    let t = st();
 +    let mut up = [0u32; 10];
@@ -4923,14 +4981,23 @@ index 0000000..497a52f
 +    t.hz = c.hz;
 +    t.off = c.off_hz;
 +    t.auto_now = true;
-+    t.auto_lvl = c.hi - AUTO_DROP_DB;
++    // a carrier keyed for the first time has no over yet, so no level (bench 4, 21:09: hi 0 made
++    // the -18 dBm ID count as down, and the listen ended after 3 s): auto_check takes it from
++    // the reads then
++    t.auto_lvl = if c.overs == 0 { -127 } else { c.hi - AUTO_DROP_DB };
 +    t.auto_seen_ms = now_ms();
++    t.auto_start_ms = t.auto_seen_ms;
++    t.auto_max_s = unsafe { ffi::ex_listen_cap(c, AUTO_MAX_S, AUTO_MIN_S) };
 +    t.resume = true;
-+    app.radio.retune_rx(syst, t.hz, true);
++    if t.auto_spk {
++        monitor_on(app, syst, t.hz);
++    } else {
++        app.radio.retune_rx(syst, t.hz, true);
++    }
 +    ctx_on(app, syst);
-+    unsafe { ffi::xl_start(t.xl, &MOD_API, t.hz, AUTO_MAX_S) };
++    unsafe { ffi::xl_start(t.xl, &MOD_API, t.hz, t.auto_max_s) };
 +    ctx_off();
-+    say(format_args!("K6 EX auto {} listens={}", t.hz, c.listens));
++    say(format_args!("K6 EX auto {} listens={} heard={} max={}", t.hz, c.listens, c.heard_s, t.auto_max_s));
 +    t.view = View::Listen;
 +    t.dirty = true;
 +}
@@ -4940,8 +5007,11 @@ index 0000000..497a52f
 +fn auto_check(app: &mut App, syst: &mut SYST, r: i32) {
 +    let t = st();
 +    let now = now_ms();
-+    if rssi_dbm(app, syst) >= t.auto_lvl {
++    let lvl = rssi_dbm(app, syst);
++    if lvl >= t.auto_lvl {
 +        t.auto_seen_ms = now;
++        // the loudest read so far sets what counts as up
++        t.auto_lvl = t.auto_lvl.max(lvl - AUTO_DROP_DB);
 +    }
 +    if r == XL_MSG {
 +        t.dirty = true;
@@ -4963,6 +5033,15 @@ index 0000000..497a52f
 +    }
 +}
 +
++/// An automatic listen ended: the next pick waits for a whole pass, and the time it took counts
++/// against the station's next cap (ex_listen_cap).
++fn auto_done() {
++    let t = st();
++    t.auto_mark = passes();
++    let s = now_ms().wrapping_sub(t.auto_start_ms) / 1000;
++    unsafe { ffi::ex_heard(&mut t.ex, t.hz, s) };
++}
++
 +/// A listen ended: a confirmed call goes on the candidate, and into the table by Jeff's rule
 +/// (2026-11-07): a saved entry with no call takes it at once, a different saved call waits for
 +/// MENU, no saved entry keeps it in RAM until Save.
@@ -4976,10 +5055,9 @@ index 0000000..497a52f
 +    }
 +    let auto = core::mem::take(&mut t.auto_now);
 +    if auto {
-+        t.auto_end_ms = now_ms();
-+    } else {
-+        monitor_off(app, syst);
++        auto_done();
 +    }
++    monitor_off(app, syst);
 +    t.view = View::List;
 +    if r != XL_OK {
 +        ctx_off();
@@ -5066,7 +5144,7 @@ index 0000000..497a52f
 +        }
 +        found
 +    } else {
-+        cand(t.sel as u32)
++        shown(t.sel as u32)
 +    };
 +    let Some(c) = c else { return };
 +    let mut r: RtRec = unsafe { core::mem::zeroed() };
@@ -5217,9 +5295,9 @@ index 0000000..497a52f
 +    // new repeaters above a rule, known (saved) ones below it (Jeff 2026-11-07): the
 +    // rows under it move down 2 px, which the 4 px above the footer leave room for
 +    let mut shift = 0;
-+    let mut was_new = top > 0 && cand(top - 1).is_some_and(|c| c.flags & EX_F_KNOWN == 0);
++    let mut was_new = top > 0 && shown(top - 1).is_some_and(|c| c.flags & EX_F_KNOWN == 0);
 +    for k in 0..ROWS as u32 {
-+        let Some(c) = cand(top + k) else { break };
++        let Some(c) = shown(top + k) else { break };
 +        let known = c.flags & EX_F_KNOWN != 0;
 +        let ruled = known && was_new && shift == 0;
 +        if ruled {
@@ -5228,7 +5306,9 @@ index 0000000..497a52f
 +        }
 +        was_new = !known;
 +        let mut b: TextBuf<32> = TextBuf::new();
-+        let g = if c.flags & EX_F_IGNORED != 0 { 'x' } else { c.grade as char };
++        let ign = c.flags & EX_F_IGNORED != 0;
++        let bird = !ign && c.flags & EX_F_SPUR != 0;
++        let g = if ign { 'x' } else if bird { ' ' } else { c.grade as char };
 +        write!(b, "{} ", g).ok();
 +        mhz(&mut b, c.hz);
 +        write!(b, " ").ok();
@@ -5246,6 +5326,18 @@ index 0000000..497a52f
 +        let ink = if sel { BinaryColor::Off } else { BinaryColor::On };
 +        let st = MonoTextStyle::new(&FONT_4X6, ink);
 +        Text::with_baseline(b.as_str(), Point::new(1, y), st, Baseline::Top).draw(lcd).ok();
++        if bird {
++            // a birdie or other spur: a gull in the grade column and the space after it
++            // Jeff's pick "A" (2026-11-07): 5 wide, 2 high
++            const GULL: [u8; 2] = [0x0a, 0x15];
++            for (r, &m) in GULL.iter().enumerate() {
++                for c in 0..5 {
++                    if m & (0x10 >> c) != 0 {
++                        Pixel(Point::new(1 + c, y + 1 + r as i32), ink).draw(lcd).ok();
++                    }
++                }
++            }
++        }
 +        // Jeff's split bar (2026-11-07): the loudest over as a 2 px bar, 5 dB a pixel
 +        // from -120 dBm, and under it a dotted line for the score (10 points = full),
 +        // in the columns the number took; the numbers are in the footer
@@ -5386,13 +5478,17 @@ index 0000000..497a52f
 +                // sweep time doesn't matter to a person)
 +                fill(lcd, 0, 10, BinaryColor::On);
 +                eyes(lcd, now_ms() / 1000 % 2 == 1);
-+                write!(b, "{}  {} found", BANDS[t.band as usize].0, t.ex.n).ok();
++                write!(b, "{}  {} found", BANDS[t.band as usize].0, unsafe { ffi::ex_view_n(&t.ex) }).ok();
 +                head_text(lcd, 19, b.as_str());
 +            }
 +            list_rows(lcd, t, 0);
 +            let mut b: TextBuf<32> = TextBuf::new();
-+            if let Some(c) = cand(t.sel as u32) {
-+                write!(b, "{} dBm  score {}  {} overs", c.hi, c.score, c.overs).ok();
++            if let Some(c) = shown(t.sel as u32) {
++                if c.flags & EX_F_SPUR != 0 {
++                    write!(b, "{} dBm  birdie, not a station", c.hi).ok();
++                } else {
++                    write!(b, "{} dBm  score {}  {} overs", c.hi, c.score, c.overs).ok();
++                }
 +            } else {
 +                write!(b, "listening...").ok();
 +            }
@@ -5449,7 +5545,7 @@ index 0000000..497a52f
 +                ditdah(lcd, now_ms() / 1000 % 2 == 1);
 +                mhz(&mut b, t.hz);
 +                head_text(lcd, 15, b.as_str());
-+                watch(lcd, info.ms, if t.auto_now { AUTO_MAX_S } else { LISTEN_S } * 1000);
++                watch(lcd, info.ms, if t.auto_now { t.auto_max_s } else { LISTEN_S } * 1000);
 +            }
 +            if t.auto_now {
 +                // the automatic listen keeps the list on screen, an arrow at its row

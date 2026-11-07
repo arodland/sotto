@@ -172,6 +172,14 @@ static xs_hot_t *slot(xs_t *s, int lvl) {
   return o ? o : st8(lvl) >= w->lvl + s->hit_db ? w : 0;
 }
 
+/* h passes for a spur: the revisits leave it, it's never in xs_up, its slot stays taken (so it
+   isn't found again) */
+static void spur(xs_t *s, xs_hot_t *h) {
+  h->spur = 1;
+  if (s->ex) ex_spur(s->ex, h->hz, dbm8(h->lvl));
+  say(s, num(fq(s->line, "X ", h->hz), " ", dbm8(h->lvl), 0));
+}
+
 static int new_hit(xs_t *s, int g, uint32_t b, uint32_t hz, int lvl, int r) {
   uint32_t c = hz, half = s->seg[g].step_hz >> 1;
   xs_hot_t *h = near(s, hz, half, 0);
@@ -199,6 +207,10 @@ static int new_hit(xs_t *s, int g, uint32_t b, uint32_t hz, int lvl, int r) {
   p = num(fq(s->line, "N ", c), " ", lvl, 0);
   p = num(p, " fl", dbm8(s->sfl[g]), 0);
   say(s, num(p, " b", (int)b, 0));
+  /* the K6's own clock: a spur at once, not after spur_s up (bench 2: 144.000 listed a minute).
+     It comes in through the antenna path like a station (birdie-path-1: the front end off took
+     55 dB off both), so only its frequency gives it away */
+  if (ex_own_clock(c)) spur(s, h);
   return 1;
 }
 
@@ -231,9 +243,7 @@ static void revisit(xs_t *s) {
         if (st8(l) > h->lvl) h->lvl = st8(l);
       }
       if (now - h->up > (uint32_t)s->spur_s * 1000u && h->hi - h->lo <= SPUR_DB) {
-        h->spur = 1;
-        if (s->ex) ex_spur(s->ex, h->hz);
-        say(s, num(fq(s->line, "X ", h->hz), " ", dbm8(h->lvl), 0));
+        spur(s, h);
       }
     } else if (h->up && ++h->miss >= 2) {
       ends(s, h);
@@ -293,11 +303,22 @@ static int refloor_due(xs_t *s) {
   return 1;
 }
 
-/* no bin's floor more than 6 dB under the segment's quick floor just read */
+/* no bin's floor more than 6 dB under the segment's quick floor just read. A floor 15 dB or more
+   under the last one is a strong carrier's desense, not a quieter band: bench 4 (21:09) read 70 cm
+   at -139 for -109 while a -18 dBm ID was still up after a listen, and five phantoms (444.550 at
+   -116) came up against it. That read is held once and tried again in 5 s; a second one stands. */
 static void refloor(xs_t *s) {
-  uint8_t *fl = s->fl + s->base, lo;
+  uint8_t *fl = s->fl + s->base, lo, osf = s->sfl[s->g], oqf = s->qfl[s->g], bit = (uint8_t)(1u << s->g);
   uint32_t b;
   floors(s, s->g);
+  if (s->sfl[s->g] + XS_DESENSE_DB <= osf && !(s->held & bit)) {
+    s->held |= bit;
+    s->sfl[s->g] = osf, s->qfl[s->g] = oqf;
+    s->fl_t[s->g] = s->api->ms() - s->refloor_s * 1000u + 5000u;
+    say(s, num(num(s->line, "F", s->g, 0), " held ", dbm8(osf), 0));
+    return;
+  }
+  s->held &= (uint8_t)~bit;
   lo = (uint8_t)(s->qfl[s->g] > 9 ? s->qfl[s->g] - 9 : 0);
   for (b = 0; b < s->seg[s->g].nbins; b++)
     if (fl[b] < lo) fl[b] = lo;
@@ -462,20 +483,41 @@ void xs_info(const xs_t *s, xs_info_t *o) {
   }
 }
 
-/* up now, not a spur, and not within XS_SKIRT_HZ of one up XS_SKIRT_DB louder: the bench's
-   -24 dBm ID showed up at 440.900 too (-81), and that's where the automatic listener went */
+/* up now, loudest first, not a spur, and not within XS_SKIRT_HZ of one up XS_SKIRT_DB louder: the bench's
+   -24 dBm ID showed up at 440.900 too (-81), and that's where the automatic listener went. And
+   XS_PICK_DB over its segment's floor: bench 5 (21:37) sat 2 minutes on a steady 440.7375 only
+   10 dB up (-103, fl-113), too weak for the tone detector anyway, and missed the keeper's ID.
+   XS_OFFGRID_DB more off the band plan's raster (Jeff 2026-11-07): every 12.5 kHz-offset hit on
+   70 cm so far was junk (skirts, 440.7375, the band edge), but splinter channels exist */
 #define XS_SKIRT_HZ 100000u
 #define XS_SKIRT_DB 20
+#define XS_PICK_DB 15
+#define XS_OFFGRID_DB 10
+static int floor_of(const xs_t *s, uint32_t hz) {
+  int g;
+  for (g = 0; g < s->nseg; g++)
+    if (hz >= s->seg[g].lo_hz && hz - s->seg[g].lo_hz < (uint32_t)s->seg[g].nbins * s->seg[g].step_hz)
+      return s->sfl[g];
+  return 0;
+}
+
 unsigned xs_up(const xs_t *s, uint32_t *out, unsigned max) {
+  const xs_hot_t *up[XS_HOT];
   unsigned i, j, n = 0;
-  for (i = 0; i < XS_HOT && n < max; i++) {
+  for (i = 0; i < XS_HOT; i++) {
     const xs_hot_t *h = &s->hot[i], *o;
-    if (!h->hz || !h->up || h->spur) continue;
+    if (!h->hz || !h->up || h->spur || h->lvl < floor_of(s, h->hz) + XS_PICK_DB + (ex_on_raster(h->hz) ? 0 : XS_OFFGRID_DB))
+      continue;
     for (j = 0, o = s->hot; j < XS_HOT; j++, o++)
       if (o != h && o->hz && o->up && (o->hz > h->hz ? o->hz - h->hz : h->hz - o->hz) <= XS_SKIRT_HZ &&
           o->lvl >= h->lvl + XS_SKIRT_DB)
         break;
-    if (j == XS_HOT) out[n++] = h->hz;
+    if (j < XS_HOT) continue;
+    /* loudest first (Jeff 2026-11-07: listen to the strongest first) */
+    for (j = n++; j && up[j - 1]->lvl < h->lvl; j--) up[j] = up[j - 1];
+    up[j] = h;
   }
+  if (n > max) n = max;
+  for (i = 0; i < n; i++) out[i] = up[i]->hz;
   return n;
 }
