@@ -211,6 +211,21 @@ was -93 (the first F0 line, at 20:27:14). Three faults locked together, all fixe
   1/8-segment hop between floor points. The quick read now comes one bin over a settled full
   read, as in the sweep.
 
+## Bench 4 (2026-11-07 21:07-21:12 UTC, PR #122 head 7a591c0)
+
+The floor fix and the birdie fix worked: 2 m read -92 to -94 every minute, no 2 m phantoms, and
+144.000 was a spur on the first sweep (21:07:36), never picked. The AG7EW entry survived the
+reflash, and an ID sent at 21:11:32 decoded clean. Log: `~/sotto-work/runs/explore-bench-4/`.
+Two faults turned up around the keeper's ID at 21:09:24, both fixed in #122:
+
+- **The automatic listen on 440.850 ended after 3 s with the ID still on air.** A carrier keyed
+  for the first time has no over yet, so its level was 0 and the -18 dBm ID never counted as up.
+  Now such a listen takes the level from its reads, and the loudest read sets what counts as up.
+- **The floor read after that listen ran with the -18 dBm carrier still up,** came back 30 dB low
+  (F2 -139 for -109), and five phantoms came up against it (444.550 at -116, which the next
+  automatic listen went to). A floor read 15 dB or more under the last is now held once (`F2 held
+  -109`) and tried again in 5 s; a floor that really dropped stands on the second read.
+
 ## Birdies (2026-11-07)
 
 birdie-path-1 (hamlet `~/sotto-work/runs/birdie-path-1/`, hfprobe, RX only, the IC-7100 sending

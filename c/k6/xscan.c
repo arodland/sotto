@@ -303,11 +303,22 @@ static int refloor_due(xs_t *s) {
   return 1;
 }
 
-/* no bin's floor more than 6 dB under the segment's quick floor just read */
+/* no bin's floor more than 6 dB under the segment's quick floor just read. A floor 15 dB or more
+   under the last one is a strong carrier's desense, not a quieter band: bench 4 (21:09) read 70 cm
+   at -139 for -109 while a -18 dBm ID was still up after a listen, and five phantoms (444.550 at
+   -116) came up against it. That read is held once and tried again in 5 s; a second one stands. */
 static void refloor(xs_t *s) {
-  uint8_t *fl = s->fl + s->base, lo;
+  uint8_t *fl = s->fl + s->base, lo, osf = s->sfl[s->g], oqf = s->qfl[s->g], bit = (uint8_t)(1u << s->g);
   uint32_t b;
   floors(s, s->g);
+  if (s->sfl[s->g] + XS_DESENSE_DB <= osf && !(s->held & bit)) {
+    s->held |= bit;
+    s->sfl[s->g] = osf, s->qfl[s->g] = oqf;
+    s->fl_t[s->g] = s->api->ms() - s->refloor_s * 1000u + 5000u;
+    say(s, num(num(s->line, "F", s->g, 0), " held ", dbm8(osf), 0));
+    return;
+  }
+  s->held &= (uint8_t)~bit;
   lo = (uint8_t)(s->qfl[s->g] > 9 ? s->qfl[s->g] - 9 : 0);
   for (b = 0; b < s->seg[s->g].nbins; b++)
     if (fl[b] < lo) fl[b] = lo;

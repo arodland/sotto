@@ -189,7 +189,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
         text, data, bss = (int(x) for x in size.split()[:3])
         assert data == 0 and bss == 0
         sizes[f] = text
-    assert sizes["xscan.c"] < 4700 and sizes["xlisten.c"] < 1700, sizes
+    assert sizes["xscan.c"] < 4900 and sizes["xlisten.c"] < 1700, sizes
 
 
 def test_finds_a_repeater_feeds_the_list_and_the_log_replays_the_same(lib):
@@ -342,6 +342,46 @@ def test_back_from_a_listen_the_segment_reads_its_floor_again(lib):
     assert not n, n
     assert f and " F1 " in f[0], f                       # the segment it was in reads first
     assert 2 not in res and radio.longest < 200_000
+
+
+class Dip(Receiver):
+    """every read db lower from at_us to until_us: a strong carrier's desense"""
+
+    def __init__(self, signals, at_us, until_us, db):
+        super().__init__(signals)
+        self.at, self.until, self.db = at_us, until_us, db
+
+    def level(self, us):
+        return super().level(us) - (self.db if self.at <= us < self.until else 0)
+
+
+def test_a_floor_read_under_desense_is_held(lib):
+    """explore-bench-4 (21:09): the listen on 440.850 ended with the -18 dBm ID still up, the floor
+    read after it came back 30 dB low (F2 -139 for -109), and 440.862, 440.900, 444.550 (-116) ...
+    came up as new against it. A read 15 dB under the last is held once and tried again in 5 s; a
+    floor that really dropped is taken on the second read."""
+    L, kxl = lib
+    segs = [(440_000_000, 12_500, 100, 12_500)]
+
+    def run(model, gap_at):
+        radio = Radio(model)
+        buf, mem, ex = explorer(L, kxl, segs, radio)
+        assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+        run_steps(L, buf, radio, gap_at)
+        L.xs_resume(buf)                              # back from a listen, during the dip
+        mark = len(radio.lines)
+        run_steps(L, buf, radio, gap_at + 30)
+        info = XsInfo()
+        L.xs_info(buf, ctypes.byref(info))
+        return radio.lines[mark - 1:], info
+
+    lines, info = run(Dip([], s_(20), s_(21), 30), 20.2)
+    assert any(" F0 held " in l for l in lines), lines[:3]
+    assert not [l for l in lines if " say N " in l], [l for l in lines if " say N " in l]
+    assert -140 <= info.floor_dbm[0] <= -134, list(info.floor_dbm)
+    # a band that really went 20 dB quieter: the second read stands
+    lines, info = run(Dip([], s_(20), s_(1000), 20), 20.2)
+    assert any(" F0 held " in l for l in lines) and info.floor_dbm[0] <= -150, list(info.floor_dbm)
 
 
 def test_a_spur_does_not_hold_the_floor_off(lib):
