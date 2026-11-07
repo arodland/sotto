@@ -92,7 +92,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("image", help="firmware .bin for flash.py")
     ap.add_argument("--port", default="/dev/ttyUSB2", help="the K6 cable (default /dev/ttyUSB2)")
-    ap.add_argument("--aura", default=os.path.expanduser("~/bf-k61-firmware-aura"),
+    ap.add_argument("--aura", default=os.path.expanduser("~/sotto-work/aura"),
                     help="Aura checkout with tools/flash.py")
     ap.add_argument("--trigger", help="shell command that transmits the reset control packet "
                                       "(run after the port is open)")

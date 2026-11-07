@@ -36,8 +36,8 @@ If you'd rather keep the rules to the sotto checkout only, put the same JSON in
 | `python3 tools/k6_ft8.py`, `k6_gp0.py`, `k6_pcmhash.py`, `k6_frames.py`, `k6_link_sim.py` | Offline: they make WAVs and decode logs. |
 | `python -m modem.k6 tx / test / ctl / mod / cw / reports / rx / cal / fit / bootdump / keyimage` (also `python3 -m`) | These write WAV or image files only. They never key anything. |
 | `python -m modem.k6_harness listen --k6 /dev/ttyUSB2 ...` | The logger, which only reads the port. |
-| `python3 tools/k6_update.py IMAGE ... --trigger "sh ~/k6-reset-trigger.sh" --window 0.6` | Flashing, only when the last `--trigger` is the reset script, which checks the frequency and sends the CW ID. The tool writes to the cable only after `K6 RESET`, while the bootloader is listening. |
-| `make -C c/k6`, `git fetch origin ...`, `git checkout FETCH_HEAD`, `mkdir -p ~/k6-...`, `unzip -o ~/Downloads/aura-pager-*.zip ...`, `date +%s` | Housekeeping used in the bench keys. |
+| `python3 tools/k6_update.py IMAGE ... --trigger "sh ~/sotto-work/bin/k6-reset-trigger.sh" --window 0.6` | Flashing, only when the last `--trigger` is the reset script, which checks the frequency and sends the CW ID. The tool writes to the cable only after `K6 RESET`, while the bootloader is listening. |
+| `make -C c/k6`, `git fetch origin ...`, `git checkout FETCH_HEAD`, `mkdir -p ~/sotto-work/...`, `unzip -o ~/Downloads/aura-pager-*.zip ...`, `date +%s` | Housekeeping used in the bench keys. |
 
 Reading files (`grep`, `tail`, `cat`, `head`) is already allowed by Claude Code itself.
 
@@ -56,10 +56,29 @@ Reading files (`grep`, `tail`, `cat`, `head`) is already allowed by Claude Code 
 `rigctl` takes several commands on one line (`rigctl -m 2 M PKTFM 0 T 1`), so its rules are
 exact, with no `*`. A trailing `*` would let a mode change carry a key-up with it.
 
+## Where bench files go on hamlet
+
+Everything a bench session makes goes under `~/sotto-work/`, not loose in `~`. The checkout itself
+stays at `~/sotto`, which is the folder Claude Code's project and Remote Control session use.
+
+| Folder | What's in it |
+|---|---|
+| `~/sotto-work/images/k6-<sha>/` | Firmware images unpacked from a CI artifact |
+| `~/sotto-work/runs/k6-prNN/`, `k6-prNNw/`, `k6-prNN.log` | One bench run: its images, WAVs and serial log |
+| `~/sotto-work/logs/` | Serial logs and result notes that aren't tied to one run |
+| `~/sotto-work/clips/`, `mods/`, `ci/`, `refdocs/` | Test audio, module WAVs, CI downloads, chip datasheets |
+| `~/sotto-work/worktrees/sotto-<sha>/` | Extra checkouts pinned to an old commit |
+| `~/sotto-work/aura/` | The Aura checkout with `tools/flash.py` (`k6_update.py --aura` default) |
+| `~/sotto-work/bin/` | `k6-reset-trigger.sh` and the helpers it needs |
+| `~/sotto-work/private/` | The K6 boot ROM dump. Never copy it into a git checkout. |
+
+The CW ID log stays reachable at `~/k6-cwid.txt` (a symlink into `logs/`), because the CW ID keeper
+and the run drivers append to that path.
+
 ## Notes for the sessions on hamlet
 
 - Run from `~/sotto` and write commands literally, one per call: `python3 tools/k6_rxmap.py map A
-  --bin ~/k6-rxmap/mod-rxmap.bin --key-file ~/.config/sotto/k6-mod.key`, not `$R map A ...`.
+  --bin ~/sotto-work/runs/k6-rxmap/mod-rxmap.bin --key-file ~/.config/sotto/k6-mod.key`, not `$R map A ...`.
   Claude Code matches the command text, and a leading `KEY=...` assignment stops a rule from
   matching.
 - Use `sh tools/k6_send.sh ctl.wav` wherever the bench keys say `send ctl.wav`. A shell function

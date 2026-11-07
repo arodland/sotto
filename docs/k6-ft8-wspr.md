@@ -340,7 +340,7 @@ write to ttyUSB2, the CW ID keeper runs, and one thread is on the bench at a tim
    back to FM with `rigctl M PKTFM 12000`. A passband of 0 selects the IC-7100's 6 kHz filter,
    too narrow for the module uploads (found by the softmodem thread, PR #81). Leave a full
    15 s slot between any steady tone and the first frame.
-4. **Decode:** `python3 tools/k6_ft8.py decode ~/k6-logs/<log>`.
+4. **Decode:** `python3 tools/k6_ft8.py decode ~/sotto-work/logs/<log>`.
    - If nothing decodes, `rows` dumps the waterfall. A tone outside the window means the offset
      in step 1 is wrong.
    - The `ft8wf gain` line shows whether the noise-filling gain engaged.

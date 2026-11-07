@@ -44,11 +44,11 @@
       "Bash(python3 -m modem.k6 bootdump *)",
       "Bash(python3 -m modem.k6 keyimage *)",
       "Bash(python3 -m modem.k6_harness listen --k6 /dev/ttyUSB2 *)",
-      "Bash(python3 tools/k6_update.py * --trigger \"sh ~/k6-reset-trigger.sh\" --window 0.6)",
+      "Bash(python3 tools/k6_update.py * --trigger \"sh ~/sotto-work/bin/k6-reset-trigger.sh\" --window 0.6)",
       "Bash(make -C c/k6)",
       "Bash(git fetch origin *)",
       "Bash(git checkout FETCH_HEAD)",
-      "Bash(mkdir -p ~/k6-*)",
+      "Bash(mkdir -p ~/sotto-work/*)",
       "Bash(unzip -o ~/Downloads/aura-pager-*.zip *)",
       "Bash(date +%s)"
     ],
