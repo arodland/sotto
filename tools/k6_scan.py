@@ -39,8 +39,9 @@ MAGIC = b"SWEEP v1"
 FMT = "<8sBBBBBB2xHHHHH4H4HH4I4I"     # par_t in scan.c, 76 bytes
 NSEG = 4
 STORE = 4072                         # the module store: code + scratch
-SW_T, HOT_T, HOT = 180, 28, 10       # sw_t, hot_t and HOT in scan.c
+SW_T, HOT_T, HOT = 176, 28, 10       # sw_t, hot_t and HOT in scan.c
 FLMAX = 1024                         # bins in all: their floors live on the module's stack
+ROWMAX = 160                         # and the waterfall row after them: bins + row <= FLMAX + ROWMAX
 TLM_BYTES = 12 * 57
 PAGER_HZ = 440_850_000
 TUNE_US = 920                        # a tune and a read: the first scan run, 2026-11-07 (403 bins/s)
@@ -70,16 +71,22 @@ def code_size():
         return 3460
 
 
-def row_room(code=None):
-    """scratch bytes left for the waterfall row after the module's code, state and hot list"""
+def spare(code=None):
+    """scratch bytes left after the module's code, its state and the hot list (must be >= 0)"""
     return STORE - (code if code is not None else code_size()) - SW_T - HOT * HOT_T
 
 
+def row_room(segs):
+    """the widest waterfall row those segments leave room for on the stack, after their floors"""
+    return min(FLMAX + ROWMAX - sum(n for _, _, n, _ in segs), max(n for _, _, n, _ in segs))
+
+
 def fits(segs, cols=128, code=None):
-    """the floors (a byte a bin, on the stack) and the row (in the scratch) fit"""
+    """the floors and the row (on the stack) and the state (in the scratch) fit"""
     most = max(n for _, _, n, _ in segs)
     row = min(cols, most) if cols else most
-    return sum(n for _, _, n, _ in segs) <= FLMAX and row <= row_room(code)
+    total = sum(n for _, _, n, _ in segs)
+    return total <= FLMAX and total + row <= FLMAX + ROWMAX and spare(code) >= 0
 
 
 def pack(segs, seconds=60, quick_us=1500, confirm_us=12000, hot_ms=100, spur_s=60, wide=1, noise_db=6,
@@ -296,7 +303,8 @@ def blk_of(a, code_len):
     blk = pack(segs, seconds=a.seconds, quick_us=a.quick_us, wide=0 if a.narrow else 1, cols=a.cols,
                refine=not a.no_refine)
     if not fits(segs, a.cols, code_len):
-        sys.exit(f"too many bins: {FLMAX} in all, and the row at most {row_room(code_len)} columns")
+        sys.exit(f"too many bins: {FLMAX} in all, and the row at most {row_room(segs)} columns here "
+                 f"(module {code_len} B, {spare(code_len)} B of scratch to spare)")
     return segs, blk
 
 
@@ -364,7 +372,8 @@ def cmd_watch(a):
 
 def cmd_plan(a):
     c = code_size()
-    print(f"module {c} B; floors for {FLMAX} bins in all (on the stack), rows up to {row_room(c)} columns")
+    print(f"module {c} B, {spare(c)} B of scratch to spare; on the stack, {FLMAX} floors in all and a row "
+          f"of up to {FLMAX + ROWMAX} less the bins")
     print(f"{'segment':<6} {'MHz':<19} {'bins':>4} {'step':>6} {'sweep s':>7} {'fits':>4}  what")
     for name, (lo, step, n, snap, what) in SEGMENTS.items():
         ok = fits([(lo, step, n, snap)], code=c)

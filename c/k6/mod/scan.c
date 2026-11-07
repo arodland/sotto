@@ -36,12 +36,12 @@
      T 146.940 n3 t5 -71 d2                 the summary, one an entry: overs, s up, middle level of
                                             the overs, their spread in dB; " s" = a spur
      Z sw=40 bins=16000 ms=30010 bps=533 hot=3      last: sweeps, bins, ms, bins a second
-   Memory: the state, hot list and row in the scratch RAM; the floors (a byte a bin, FLMAX bins
-   in all) on the stack: Phase 0's run measured 3,504 B of stack room at a module's call, and
-   this module takes about 1.2 KB of it.
+   Memory: the state and hot list in the scratch RAM; the floors (a byte a bin, FLMAX bins in
+   all) and after them the waterfall row on the stack, FLMAX + ROWMAX bytes. Phase 0's run
+   measured 3,504 B of stack room at a module's call, and this module takes about 1.4 KB of it.
    Returns the hot entries that aren't spurs, or -3 (an image below level 2), -8 (more than
-   FLMAX bins, or scratch too small for the row), -11 (a bad parameter block). A key ends the
-   run normally.
+   FLMAX bins, no room for the row after them, or scratch too small for the state), -11 (a bad
+   parameter block). A key ends the run normally.
    CI builds it as mod-scan.bin; tools/k6_scan.py patches the parameter block before it signs.
    No libraries, no division, no writable statics. SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 2
@@ -78,6 +78,7 @@ static const volatile par_t PAR = {
 
 #define HOT 10
 #define FLMAX 1024      /* bins, all segments: their floors live on the stack (3.5 KB free at the call) */
+#define ROWMAX 160      /* stack after the floors for the waterfall row: bins + row <= FLMAX + ROWMAX */
 #define BLOCK 32
 #define CLEAR_DBM (-100)
 #define SPUR_DB 3
@@ -339,7 +340,7 @@ static int sweep(sw_t *s, int g, uint8_t *fl) {
 }
 
 int k6_main(const k6_api_t *api) {
-  uint8_t floors[FLMAX];
+  uint8_t floors[FLMAX + ROWMAX];   /* the floors, then the row */
   sw_t *s;
   uint8_t *mem;
   const volatile uint8_t *src = (const volatile uint8_t *)&PAR;
@@ -363,8 +364,8 @@ int k6_main(const k6_api_t *api) {
   if (s->q.cols && s->q.cols < most) most = s->q.cols;
   s->hot = (hot_t *)(mem + sizeof *s);
   s->fl = floors;
-  s->row = (uint8_t *)(s->hot + HOT);
-  if (total > FLMAX || sizeof *s + HOT * sizeof(hot_t) + most > room) return -8;
+  s->row = floors + total;
+  if (total > FLMAX || total + most > FLMAX + ROWMAX) return -8;
   /* the upload's own carrier on the pager frequency: wait (up to 30 s) for it to drop */
   r = full(s, api->rx_hz(), 0) - 15;
   t0 = api->ms();

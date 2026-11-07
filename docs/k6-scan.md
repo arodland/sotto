@@ -73,11 +73,16 @@ still lacks (the first run: 0.92 ms; the emulator charges 0.42 ms, the design as
 
 ## Memory
 
-The module is 3.4 KB of the 4 KB store. The scratch RAM after it holds the state (180 B), the hot
-list (10 × 28 B) and the row (up to 152 columns). The floors, one byte a bin and up to 1,024 bins
-in all, live on the stack: Phase 0's run measured 3,504 B of stack room at a module's call, and
-this module takes about 1.2 KB of it. So 2 m plus 70 cm 440-445 fit in one run (800 bins).
-`K6 MOD ret ... stack_free=` on the first run will show the real margin.
+The module is 3.5 KB of the 4 KB store. The scratch RAM after it holds the state (176 B) and the
+hot list (10 × 28 B), which leaves about 150 B to spare with this machine's clang and about 130 B
+with CI's (CI's build comes out about 24 B bigger). The stack holds the floors, one byte a bin
+and up to 1,024 bins in all, then the waterfall row: bins plus row columns up to 1,184. Phase 0's
+run measured 3,504 B of stack room at a module's call, and the first scan run left 1,140 B
+untouched, so the 160 B the row moved onto the stack still leaves about 1 KB. 2 m plus 70 cm
+440-445 fit in one run (800 bins, 128 columns).
+
+Until 2026-11-07 08:40 the row was in the scratch too. CI's aae8956 build (3,476 B) then had room
+for only 108 columns, so runs with that binary need `--cols 96`.
 
 ## Tests
 

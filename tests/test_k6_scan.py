@@ -95,6 +95,9 @@ def test_builds_and_fits_2m_and_a_70cm_half():
         assert sw.fits([sw.SEGMENTS[name][:4]], code=len(code)), name
     assert sw.fits([sw.SEGMENTS["2m"][:4], sw.SEGMENTS["125"][:4], (440_000_000, 25_000, 300, 12_500)], code=len(code))
     assert not sw.fits([(144_000_000, 10_000, 1100, 5_000)], code=len(code))
+    assert sw.fits([(144_000_000, 10_000, 1000, 5_000)], cols=128, code=len(code))
+    assert not sw.fits([(144_000_000, 10_000, 1000, 5_000)], cols=0, code=len(code))
+    assert sw.spare(len(code)) >= 64, len(code)          # room to grow, and for another compiler
     blk = sw.pack([sw.SEGMENTS["2m"][:4]], seconds=30)
     assert sw.unpack(blk)["segs"] == [sw.SEGMENTS["2m"][:4]] and sw.unpack(blk)["max_s"] == 30
     with pytest.raises(ValueError):
@@ -201,7 +204,8 @@ def test_key_bad_block_small_scratch_old_image():
     assert go(bytes(bad), m)[0] == -11
     big = sw.pack([(144_000_000, 10_000, 1100, 5_000)])
     assert go(big, m)[0] == -8
-    assert go(two_m(), m, spare=sw.SW_T + sw.HOT * sw.HOT_T + 40)[0] == -8   # no room for the row
+    assert go(two_m(), m, spare=sw.SW_T + sw.HOT * sw.HOT_T - 4)[0] == -8    # no room for the state
+    assert go(sw.pack([(144_000_000, 10_000, 1000, 5_000)], cols=0), m)[0] == -8   # nor for the row
     assert go(two_m(), m, level=1)[0] == -3
 
 
