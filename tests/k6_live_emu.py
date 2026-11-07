@@ -103,11 +103,12 @@ class Emu:
         mu.mem_write(self.base, code)
         mu.mem_write(self.stack_lo - 512, b"\xa5" * (3504 + 512))
         self.names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms",
-                      "key_down", "scratch"]
+                      "key_down", "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read",
+                      "cal_write"]
         for i in range(len(self.names)):
             mu.mem_write(self.stubs + 16 * i, b"\x70\x47")
         mu.mem_write(self.stop, b"\x00\xbf" * 8)
-        mu.mem_write(self.api, (1).to_bytes(2, "little") + (2).to_bytes(2, "little")
+        mu.mem_write(self.api, (1).to_bytes(2, "little") + (4).to_bytes(2, "little")
                      + b"".join((self.stubs + 16 * i | 1).to_bytes(4, "little")
                                 for i in range(len(self.names))))
         mu.hook_add(unicorn.UC_HOOK_CODE, self.on_stub, begin=self.stubs,
@@ -200,7 +201,7 @@ class Emu:
         r0, r1 = uc.reg_read(A.UC_ARM_REG_R0), uc.reg_read(A.UC_ARM_REG_R1)
         ret, us = 0, 1
         if name == "say":
-            self.said.append(bytes(uc.mem_read(r0, 72)).split(b"\0")[0].decode())
+            self.said.append(bytes(uc.mem_read(r0, 128)).split(b"\0")[0].decode())
             us = 5000
         elif name == "ticks":
             ret = int(self.cyc / 9600) & 0xFFFF
@@ -219,6 +220,13 @@ class Emu:
             self.keys += 1
             if self.stall and self.keys % self.stall[0] == 0:
                 us = self.stall[1]                   # now and then much longer (an interrupt)
+        elif name == "key_poll":
+            us = 5                                   # all rows at once, the four columns read
+            self.keys += 1
+            if self.stall and self.keys % self.stall[0] == 0:
+                us = self.stall[1]
+        elif name in ("tx_on", "tx_pa", "cal_read", "cal_write"):
+            ret = -1                                 # refused: receive-only tests
         elif name == "scratch":
             if r0:
                 uc.mem_write(r0, (4096).to_bytes(4, "little"))
@@ -266,6 +274,33 @@ def run_live(mode="4fsk", cn0=46.0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, 
     r = e.run()
     ret, used = r if r else (None, None)
     return ret, e.said, used, e.writes
+
+
+IFPAGER = os.path.join(ROOT, "c", "k6", "mod", "ifpager_emu.c")
+
+
+def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma=None, stall=None,
+                pre_s=0.3, after_s=0.5):
+    """the pager's coded 4FSK session (c/k6/ifpager.c, in the test module ifpager_emu.c) against
+    a modelled burst of these XL payloads (modem/k6g.py), the carrier already up when it starts
+    (as after the control packet): -> (return value, its lines, stack bytes used, the packets
+    it handed to sp_packet)"""
+    from modem import k6g
+    from sim.k6if import mcu, study as st
+    code, entry = k6mod.build(IFPAGER)
+    a = k6g.audio(k6g.burst_symbols(payloads), st.FSA, level)
+    s = st.fm(st.ic7100(np.concatenate([np.zeros(int(pre_s * st.FSA)), a,
+                                        np.zeros(int(after_s * st.FSA))])), f_off)
+    fdma = fdma or mcu.FDMA
+    bits = st.fe.receive(s, st.FZ, cn0, seed=seed, L=0, fdma=fdma)
+    ib = bits.astype(np.uint8) * 2
+    e = Emu(code, entry, ib, 0, fdma, cpi, stall=stall, max_s=len(ib) / fdma + 8.0)
+    r = e.run()
+    ret, used = r if r else (None, None)
+    raw = bytes(e.mu.mem_read(e.scr + 1024, 4 + 128 * 64))
+    n = int.from_bytes(raw[:4], "little")
+    pk = [raw[4 + 128 * i:4 + 128 * (i + 1)] for i in range(min(n, 64))]
+    return ret, e.said, used, pk
 
 
 def symbols(src):

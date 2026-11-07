@@ -422,7 +422,9 @@ CTL_MAGIC = 0xA8
 CTL_BITS = {"phy": 1, "frames": 2, "baud": 4, "auto": 8, "emph": 16, "var": 32, "vol": 64,
             "idlekeep": 128}
 CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 5, "boot": 6,
-               "reset": 7, "stream-on": 8, "stream-off": 9}
+               "reset": 7, "stream-on": 8, "stream-off": 9, "ifrx": 10}
+# "ifrx" (images from 2026-11-07 that aren't lean): a coded 4FSK receive session on the IF for up
+# to byte 4 x 2 s (modem/k6g.py, PHY G): the burst follows the control packet on the same carrier
 # "stream-on" / "stream-off" (images with streaming): sotto 1200 messages play while their later
 # interleave groups arrive (the sotto 1200 image's default), or store then play as before; from
 # the next new message, RAM only
@@ -439,7 +441,7 @@ CTL_ACTIONS = {"none": 0, "play": 1, "clear": 2, "report": 3, "reg": 4, "regs": 
 CTL_REGS = (0x2B, 0x43, 0x44, 0x58, 0x59, 0x5C, 0x5E, 0x72, 0x73, 0x7E, 0x96, 0x9B)
 
 
-def control_record(seq, settings=None, action="none"):
+def control_record(seq, settings=None, action="none", arg=None):
     """settings: {"phy": "F"|"D", "frames": "L"|"XL", "baud": 1200|2400, "auto": 0|1,
     "emph": 0|1, "var": 0..15 (key 0's receive variant), "vol": 0..7 (key Up/Down steps,
     3 = 0 dB), "idlekeep": 0|1 (no re-arm on an idle no-sync RX-done)}; only the ones given
@@ -465,6 +467,8 @@ def control_record(seq, settings=None, action="none"):
             vv |= (min(int(v), 7) & 0x0F) << 4
             on = 0
         val |= bit if on else 0
+    if arg is not None:   # an action's argument in byte 4 (ifrx: the session's length / 2 s)
+        vv = int(arg) & 0xFF
     r = bytes([CTL_MAGIC, seq & 0xFF, mask, val, vv, CTL_ACTIONS[action]])
     c = crc16_ccitt(r)
     return r + bytes([c >> 8, c & 0xFF])
@@ -481,10 +485,10 @@ def control_reg_record(seq, reg, value):
     return r + bytes([c >> 8, c & 0xFF])
 
 
-def control_packet(seq, settings=None, action="none", length=64, reg=None):
+def control_packet(seq, settings=None, action="none", length=64, reg=None, arg=None):
     """A whitened control payload: the record repeated to fill `length` (64 = L, 128 = XL).
-    reg=(register, value) makes a register write instead of a settings change."""
-    rec = control_reg_record(seq, *reg) if reg else control_record(seq, settings, action)
+    reg=(register, value) makes a register write instead of a settings change; arg: byte 4."""
+    rec = control_reg_record(seq, *reg) if reg else control_record(seq, settings, action, arg)
     return _whiten(rec * (length // len(rec)))
 
 
