@@ -8,10 +8,12 @@ This page sizes that port before any firmware change: CPU time, RAM, and the 16 
 
 - The v3.8 hiss layer as it is doesn't fit. It adds about 65 MHz and 23.5 KB of RAM to a decoder
   that already uses 58-77 MHz of the K6's 96 MHz, and the pager has well under 1 KB of RAM free.
-- A lighter K6 layer could fit the CPU, just. It would make the same sound by cheaper means:
-  about 15-25 MHz and 2.5-4 KB of RAM.
-- RAM is the real limit. The message store would have to give up about 3-4 KB. At 400 bit/s
-  that's about a minute of stored message, at 1200 bit/s about 25 s.
+- A lighter K6 layer makes the same sound by cheaper means. In Python it scores within 0.01
+  PESQ and 0.3 dB of band error of the full layer. In fixed point it adds 22.7 MHz on the M0
+  model, and 4.8 KB of RAM once trimmed.
+- RAM is the real limit. The light layer needs about all of the 4 KB message store, so a hiss image
+  would have to keep messages in the SPI flash. That's a choice for Jeff. The CPU is tight too:
+  it only fits with the hot loops in RAM.
 - One exact speed-up came out of the measuring: the resamplers now skip their zero taps.
 
 ## What the v3.8 layer costs on a Cortex-M0
@@ -75,26 +77,36 @@ Step 3 works because the interpolator is a half-band filter. Its complement pass
 2 · stuff(s) − up2(s) is the mirror of s about 4 kHz. Adding it to up2(y8) costs one
 interpolator instead of two.
 
-**Estimate for the light layer:**
+**Estimate for the light layer, and what the fixed-point build measured** (see "The light layer
+in fixed point" below):
 
-- **CPU:** about 15-25 MHz on the model: up2 4, synthesis FFT 5, bins 3.5, predictor 1, 64-bit
-  helpers 3, the 16 kHz PWM conversion 1, the rest 2.
-- **On the radio:** 600 / 400 would land near 75-80 MHz mean with the hot loops in RAM. The worst
-  frames would be around 100 MHz, so they would lean on the PWM ring more than now.
-- **RAM:** about 2.5 KB of state:
-  - the 8 kHz delay line for the 40 ms bridging and look-ahead, 1.3 KB;
-  - the 8 kHz overlap-add, 0.4 KB;
-  - the per-frame levels, 0.4 KB.
+- **CPU:** the estimate was 15-25 MHz on the model. Measured: 22.7 MHz mean (69.7 against the
+  plain decoder's 47.0), 97.4 MHz in the worst frame, and 55.4 / 77.8 MHz with the code in
+  zero-wait RAM.
+- **On the radio:** it ran 1.28 times the model for sotto 400 in flash. Played from flash, 600 / 400
+  plus the light layer would need about 100 MHz mean, so they don't fit. With the hot loops in RAM
+  they might fit on average, but the worst frames would still lean on the PWM ring.
+- **RAM:** the build has 12.9 KB of layer state with generous rings. Trimmed for the K6, the
+  minimum is about 3.5 KB:
+  - about 60 ms of 8 kHz audio waiting for its hiss, 1 KB;
+  - the 8 kHz overlap-add in 16 bits, 1.3 KB;
+  - per-frame levels in 16 bits, 1 KB.
 
-  The FFT scratch can share the decoder's stack depth, because the layer runs after the core
-  returns. Adding the PWM ring's 1.3 KB and the hot code copied to RAM gives about 4-5 KB against
-  0.66 KB free.
+  The FFT scratch (2.5 KB) can share the decoder's stack depth, because the layer runs after the
+  core returns. With the PWM ring growing by 1.3 KB for 16 kHz, that is about 4.8 KB, against
+  0.66 KB free, and that's before any code copied into RAM.
 
-**Where the RAM would come from.** The message store is the only big buffer:
+**Where the RAM would come from.** The message store is the only big buffer, and the layer
+needs about all of it:
 
 - It is 4 KB today. That holds 12.8 s of 2400, 27 s of 1200, 55 s of 600 or 82 s of 400.
-- A 1 KB store keeps 7 s of 1200, 14 s of 600 or 20 s of 400. Streaming mode plays longer
-  messages through the ring.
+- Giving it up for the hiss leaves almost no store. So a hiss image would need the store moved
+  to the SPI flash. The SPI flash already holds the codebooks and the repeater table, and the
+  packets arrive at about 170 bytes/s.
+  - A 4 KB sector erase takes tens of ms and would have to fall between packets. That timing is
+    not measured.
+  - The flash also wears with each message, a sector or two per message, against an endurance
+    of about 100,000 cycles.
 - The other knob, `-DFX_OA_UNPACKED`, frees 2 KB but costs about 10 MHz, which the layer can't
   spare.
 
@@ -112,9 +124,10 @@ interpolator instead of two.
    - a blind pair at the clips' fricative spots.
 
    No firmware.
-2. **If it holds up,** the fixed-point light layer and the M0 bench, with the cycle and RAM
-   figures above checked.
-3. **A store-size decision with Jeff.** That's his call, since it shortens the longest message.
+2. **Done: the fixed-point light layer and the M0 bench** (see below). It adds 22.7 MHz, and needs
+   about 4.8 KB of RAM once trimmed.
+3. **A decision with Jeff on where the message store goes.** The layer needs about all of today's
+   4 KB store, so the store would move to the SPI flash or the K6 stays plain.
 4. **One image** with 16 kHz PWM, the hook and the layer. First a RAM module to check the 16 kHz
    PWM path on air.
 
@@ -164,6 +177,52 @@ Two notes on the table:
   would land above them.
 - PESQ-WB scores the plain decoder higher than any hiss layer, as it did for sotto 1200 hiss.
   Listening rounds 19 and 21 went the other way, so PESQ-WB isn't the judge here.
+
+## The light layer in fixed point (2026-11-07)
+
+`-DFX_HISS_LIGHT` builds the 16 kHz decoder (`c/fixed/sotto_fx_hiss.c`) as the light layer. It is
+a decoder-only build: its local decoder changes the encoder's bits too, so the encoder isn't for
+use.
+
+- **The core** (`c/fixed/sotto_fx_dec.c`) keeps v3.7's unvoiced halves and puts `model_bands`
+  into `fx_dec_info_t.bands`. That is 16 band levels per half from the harmonic levels it already
+  has: 80 interpolations and 16 power sums, with one division per half.
+- **Stage A** applies the vowel predictor's ridge weights to those bands, with no STFT.
+- **Stage B** makes the hiss as a 160-point inverse FFT (5 × 16, the existing radix-5 code) at
+  8 kHz, mirrored.
+- **The output** is `up2_q15(y8 − s)` + 2 s zero-stuffed. `up2_q15` is the interpolator with the
+  taps rounded to Q15, so its sums stay in 32 bits. It isn't exact with anything, and it doesn't
+  need to be.
+
+**Checks:**
+
+- On LibriSpeech 3536 and EARS p020, its fricative and vowel band errors are within 0.2 dB of the
+  Python light layer's on the same bits. Its 4-8 kHz level is within 0.1 dB.
+- Random bits, losses and a one-frame stream run clean under AddressSanitizer,
+  UndefinedBehaviorSanitizer and `FX_CHECK`.
+- The default build is unchanged: the same bits and samples as before.
+
+**Cortex-M0 model** (300 frames of LibriSpeech 3536, decoder only):
+
+| | Mean MHz | Worst frame MHz | Mean, code in RAM | State |
+|---|---:|---:|---:|---:|
+| v3.7 decoder (plain, what the K6 plays) | 47.0 | 74.9 | | 0.8 KB |
+| v3.8 16 kHz decoder (full layer) | 110.2 | 143.1 | | 24.4 KB |
+| **light layer** | **69.7** | **97.4** | **55.4** | 13.7 KB |
+
+The light layer's 22.7 MHz:
+
+| Part | MHz |
+|---|---:|
+| Stage B: per-bin levels, phases, overlap-add (`dec_run`) | 4.4 |
+| 64-bit helpers (`__aeabi_lmul`, `__aeabi_lasr`), mostly stage A's ridge and stage B | 4.2 |
+| The band levels in the core (`fx_db_power_sum`, division) | 3.4 |
+| The 160-point FFT (`fx_fft`, `fft5x`, butterflies, pre-pass) | 5.2 |
+| The output fold (`dec_output` with `up2_q15`) | 2.9 |
+| The rest (`fx_cos`, `fx_exp2`, dB conversions) | 2.6 |
+
+Two cuts were taken on the way: the output's y8 − s is formed once per block, and the band levels
+use one division per half, not two per bin. Together they took the layer from 45.7 to 25.3 MHz.
 
 ## The resampler change (exact)
 

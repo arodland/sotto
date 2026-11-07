@@ -32,6 +32,12 @@
 #else
 #define V38 0
 #endif
+/* the K6 light hiss layer (docs/k6-hiss-port.md) keeps v3.7's unvoiced halves (uv50=False) */
+#if defined(SOTTO_V38) && !defined(FX_HISS_LIGHT)
+#define V38_UV 1
+#else
+#define V38_UV 0
+#endif
 #define UV_GAIN DB(3)
 
 #define NSAMP 80
@@ -245,13 +251,41 @@ static void min_phase(const int32_t *A, int L, uint32_t wo, uint32_t *ph) {
 }
 
 /* one 10 ms half */
+#ifdef FX_HISS_LIGHT
+/* hiss_band.model_bands: the harmonic levels A[1..L] (dB Q8) as a power density (A^2 per f0)
+   on the 50 Hz bins 25, 75, .. 3975 Hz, its mean in the 15 bands of hiss_band.FLO and in
+   3000-3500 Hz, dB Q8. f0: Hz Q4. */
+static void model_bands(const int32_t *A, int L, int32_t f0, int32_t *out) {
+  static const int16_t lo[16] = {5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 60};
+  static const int16_t hi[16] = {10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 79, 70};
+  int32_t g[80], dens = fx_log2_to_db_pow(fx_log2((uint32_t)f0) - 4 * 65536);   /* 10 log10 f0 */
+  uint32_t inv = (1u << 28) / (uint32_t)f0;  /* one division: 2^28 / f0 (f0 >= 800, so < 2^19) */
+  int32_t hh = 0, fh = 0;                    /* harmonic at or below the bin, and its frequency */
+  int b, i;
+  for (i = 0; i < 80; i++) {                 /* np.interp(grid, h f0, A), clamped at both ends */
+    int32_t fg = (50 * i + 25) * 16;
+    while (fh + f0 <= fg) hh++, fh += f0;
+    if (hh < 1) g[i] = A[1];
+    else if (hh >= L) g[i] = A[L];
+    else {
+      int32_t fr = (int32_t)(((uint32_t)(fg - fh) * inv) >> 12);   /* Q16; fg - fh < f0 <= 8000 */
+      int32_t dA = A[hh + 1] - A[hh];
+      if (dA > 32767) dA = 32767; else if (dA < -32767) dA = -32767;   /* 128 dB: keeps 32 bits */
+      g[i] = A[hh] + ((dA * fr + 32768) >> 16);
+    }
+  }
+  for (b = 0; b < 16; b++)
+    out[b] = fx_db_power_sum(g + lo[b], hi[b] - lo[b]) - fx_log2_to_db_pow(fx_log2((uint32_t)(hi[b] - lo[b]))) - dens;
+}
+#endif
+
 static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, int32_t en, int32_t g,
                   short *out, int half) {
   int h, i, j;
   int32_t A[MAXL + 1] = {0};                 /* harmonic levels, dB Q8 */
   uint32_t phi[MAXL + 1], ph[NBIN];
   FX_YIELD();
-  if (!v && (V38 || wo < WO_MIN)) wo = WO_MIN;   /* v3.8: unvoiced noise harmonics 50 Hz apart */
+  if (!v && (V38_UV || wo < WO_MIN)) wo = WO_MIN;   /* v3.8: unvoiced noise harmonics 50 Hz apart */
   int L = (int)(0x80000000u / wo);          /* 8 (500 Hz) .. 80 */
   if (L > MAXL) L = MAXL;
   for (h = 1; h <= L; h++) {
@@ -259,7 +293,7 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
     if ((h & 15) == 0) FX_YIELD();
   }
   int32_t gain = en - fx_db_power_sum(A + 1, L) + g;
-  if (V38 && !v && rk_tilt(rk) < 0) gain += UV_GAIN;   /* a real fricative */
+  if (V38_UV && !v && rk_tilt(rk) < 0) gain += UV_GAIN;   /* a real fricative */
   for (h = 1; h <= L; h++) A[h] += gain;
   {   /* for the hiss band: the levels interpolated at FB (hiss_band.model_env), and the class */
     int32_t f0 = (int32_t)(((fx_uacc)wo * 125) >> 22);   /* Hz Q4, >= 800 */
@@ -274,6 +308,9 @@ static void synth(struct sotto_dec *d, uint32_t wo, int v, const int32_t *rk, in
       }
     }
     d->info.cls[half] = (int16_t)v;
+#ifdef FX_HISS_LIGHT
+    model_bands(A, L, f0, d->info.bands[half]);
+#endif
   }
   int vc = v > 0;                            /* voiced harmonics: all (1), none (0), m < vc */
   if (v == MIXED) {
