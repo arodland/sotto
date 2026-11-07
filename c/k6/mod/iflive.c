@@ -69,6 +69,9 @@
 #endif
 #define STALL_US 120u  /* well under a lap of the ring (1024 samples: 175 us at 5.875 MS/s) */
 #define CARRIER_DBM -100
+#ifndef STEP_GAIN
+#define STEP_GAIN(step) (step) /* the gain step a receiver step runs at */
+#endif
 static const uint16_t gains[10] = {0,      0x03FF, 0x03BE, 0x037E, 0x033E,
                                    0x031E, 0x021E, 0x011E, 0x001E, 0x0018};
 
@@ -220,7 +223,9 @@ IFRX_NOINLINE static int run(const k6_api_t *api, const saved_t *sv, uint8_t *rb
       continue;
     }
     if (a < L) {
+#ifndef LINE_LEAN
       idle += d;
+#endif
       if (++kq & 0xFFFF) continue; /* no counts for that long: the checks all the same */
     } else {
       if (ifrx_push(&rx, count(rb, g.consumed & (RSZ - 1)))) {
@@ -253,17 +258,27 @@ IFRX_NOINLINE static int run(const k6_api_t *api, const saved_t *sv, uint8_t *rb
     if ((int32_t)(api->ms() - t_end) < 0) continue;
     /* the step's end: its line, the next gain, the receiver over */
     stop();
-    v[0] = step, v[1] = (int32_t)pn.n, v[2] = (int32_t)pn.err, v[3] = rssi(api);
+    v[0] = step, v[1] = (int32_t)pn.n, v[2] = (int32_t)pn.err;
+#ifdef LINE_LEAN /* no RSSI or idle (a variant short of room) */
+    v[3] = rx.dphi_f >> 16, v[4] = rx.acq_q, v[5] = rx.acq_rej, v[6] = (int32_t)lost;
+    v[7] = (int32_t)(ks >> 4);
+    say_f(api, "l % b=% e=% f=% q=% j=% L=% k=%", v);
+#else
+    v[3] = rssi(api);
     v[4] = rx.dphi_f >> 16, v[5] = rx.acq_q, v[6] = rx.acq_rej, v[7] = (int32_t)lost;
     v[8] = (int32_t)ifrx_udiv(idle >> 8, (tot >> 16) | 1) * 100 >> 8;
     v[9] = (int32_t)(ks >> 4);
     say_f(api, "l % b=% e=% r=% f=% q=% j=% L=% i=% k=%", v);
+#endif
     r = NG;
     if (++step >= NG) break;
     t_end += STEP_MS;
   fresh:
-    gain(api, sv, step);
+    gain(api, sv, STEP_GAIN(step));
     ifrx_init(&rx, IFRX_ONLY, ks);
+#ifdef STEP_HOOK
+    STEP_HOOK(&rx, step);
+#endif
     ifrx_zero(&pn, sizeof(pn) / 4);
     ifrx_zero(&g, sizeof(g) / 4);
     lost = idle = tot = bp = bt = 0;

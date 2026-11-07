@@ -39,9 +39,10 @@ FCPU = 96e6
 CHUNK = 256
 
 
-def build(mode, defs=()):
-    """the module's code and entry, with #defines (name, value) ahead of its source"""
-    src = LIVE if mode == "4fsk" else LIVE_FFSK
+def build(mode, defs=(), src=None):
+    """the module's code and entry, with #defines (name, value) ahead of its source (src: a
+    variant of the mode's module, e.g. c/k6/mod/iflive_tsweep.c)"""
+    src = os.path.abspath(src) if src else LIVE if mode == "4fsk" else LIVE_FFSK
     if not defs:
         return k6mod.build(src)
     with tempfile.TemporaryDirectory() as d:
@@ -214,14 +215,14 @@ class Emu:
 
 
 def run_live(mode="4fsk", cn0=46.0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, cpi=1.5, seed=1,
-             fdma=None, stall=None):
+             fdma=None, stall=None, src=None):
     """-> (return value, the module's lines, stack bytes used, the FD6818 writes). fdma: the
     DMA's rate (S/s; the module starts on its KS0 and must find it); stall (every, us): every
     so many key checks one takes that long (an interrupt, a slow scan)"""
     defs = []
     if steps != 10 or seg_s != 6.0 or lead_s != 1.5:
         defs = [("NG", steps), ("STEP_MS", f"{int(seg_s * 1000)}u"), ("LEAD_MS", f"{int(lead_s * 1000)}u")]
-    code, entry = build(mode, defs)
+    code, entry = build(mode, defs, src)
     ib, on_at, fdma = stream(mode, cn0, f_off, steps, seg_s, lead_s, seed, fdma=fdma)
     e = Emu(code, entry, ib, on_at, fdma, cpi, stall=stall)
     r = e.run()
@@ -273,6 +274,7 @@ def main():
     ap.add_argument("--cpi", type=float, default=1.5)
     ap.add_argument("--fdma", type=float, help="the DMA's rate, S/s (default the model's 5.49e6)")
     ap.add_argument("--stall", help="EVERY,US: every so many key checks one takes US microseconds")
+    ap.add_argument("--src", help="a variant of the mode's live module (e.g. c/k6/mod/iflive_tsweep.c)")
     ap.add_argument("--module", help="run this module's source instead (e.g. c/k6/mod/gp0dma.c)")
     ap.add_argument("--profile", action="store_true", help="with --module: the time in each function "
                     "(a module's polling loop counts as its own function's time)")
@@ -291,7 +293,7 @@ def main():
         return
     stall = tuple(int(x) for x in a.stall.split(",")) if a.stall else None
     ret, said, used, _ = run_live(a.mode, a.cn0, a.off, a.steps, a.seg, a.lead, a.cpi,
-                                  fdma=a.fdma, stall=stall)
+                                  fdma=a.fdma, stall=stall, src=a.src)
     for ln in said:
         print("K6 MOD say", ln)
     print(f"ret={ret} stack={used} B")

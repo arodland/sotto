@@ -379,8 +379,28 @@ Applied to the captures (that jitter around each capture's best), the old loops'
 on real signals: their zeros sit 0.3 half-samples early and 15 Hz high of the captures' best,
 worth about 1.3% at full size. That number leans on a best picked from only 26 symbols a
 capture, so it overstates. `tests/test_k6_ifrx.py::test_loops_through_the_k6s_detector_noise`
-keeps the new loops honest. The modules are 4062 B (4FSK) and 3914 B (FFSK). Next: the same
-`live` run on the bench.
+keeps the new loops honest. The modules are 4062 B (4FSK) and 3914 B (FFSK).
+
+**On the bench (2026-11-07, 02:55-03:00 UTC, PR #88's CI modules, receive only):**
+
+- **FFSK:** no errors on steps 0-5 and 7, and 3 in 5,147 bits on step 8. Step 6 threw its lock
+  out (`j=1`) and didn't find another before the step ended. Before, steps 0-3 ran at 1.5-5%
+  and steps 4 and 8 never locked.
+- **4FSK:** 3.6-5.0% on steps 0-8, against 4.4-5.0%. The AFC now ends every step within
+  -12 to +4 Hz but one (+29), where it ran -39 to +29.
+
+So the loops' jitter was FFSK's whole problem, but not 4FSK's. What's left for 4FSK is about
+the same on every step and gain, which points at where the loops settle rather than at noise.
+On the captures the timing detector's zero sits about 0.3 half-samples from the best decisions.
+
+**`iflive_tsweep`** (`c/k6/mod/iflive_tsweep.c`) settles that on the bench. It is the 4FSK
+receiver with `(step - 4) * 600` (Q12) added to the timing detector's output, so the loop
+settles a different amount early or late on each step: from about one half-sample early (step
+0) to one late (step 8), with step 4 the plain receiver. Every step runs at gain step 2. Its
+line has no `r=` or `i=` (no room). The bias applies only once tracking: on the lead, ±1200 and more threw the lock out. On the
+emulator (47 dB-Hz, 164 Hz off), steps 0-8 gave 10.1, 9.7, 5.4, 0.68, **0.30**, 0.45, 3.4, 9.6
+and 9.7%: the model's best is the plain receiver, as it should be. On the K6, the step with
+the lowest BER says how far and which way to move the loop's zero.
 
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
