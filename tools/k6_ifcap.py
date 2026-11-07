@@ -13,6 +13,8 @@ the IF matched filter, so the two meet the same samples.
         [--dry-run] [--wav OUT]                 iflive.c, iflive_ffsk.c): 10 segments of 6 s, each
                                                 a 1.5 s lead then PN9, one a gain step
   python3 tools/k6_ifcap.py livelog LOG         iflive's lines as a table: BER, lock, AFC, CPU
+  python3 tools/k6_ifcap.py mcu LOG             gp0cap's captures through the MCU receiver's
+                                                templates (the model's) and ones trained on them
 
 Each pass is 1 s of alternating symbols (the module waits 2 s after the carrier), then the PN9
 sequence (x^9 + x^5 + 1, all-ones seed, period 511) over and over: one bit a symbol in FFSK
@@ -420,6 +422,128 @@ def cmd_simlog(a):
     print(f"wrote {a.out}: {len(lines)} lines")
 
 
+# ---- the MCU receiver's decisions on the captures ----
+
+def mcu_decide(z, T, t0, pc, n):
+    """the MCU receiver's decisions (sim/k6if/mcu.py's grid and templates) for n symbols from
+    count t0: tone index and each tone's metric"""
+    from sim.k6if import mcu
+    starts = t0 + np.arange(n) * pc
+    seg = z[mcu.grid(starts[:, None], pc, np.arange(mcu.TL)[None, :])]
+    met = np.abs(seg @ np.conj(T.reshape(-1, mcu.TL)).T).reshape(n, T.shape[0], -1).max(2)
+    return met.argmax(1), met, seg
+
+
+def mcu_fit(c, T, ref, offs=np.arange(-300, 301, 25)):
+    """data-aided: the IF offset, first symbol's start and PN phase at which T's decisions
+    match the known PN9 best -> (matches, f, t0, p, n, z, pc)"""
+    from sim.k6if import mcu
+    fc = c["ks"] * 1000.0 / 64
+    pc = fc / 1200.0
+    x = c["x"] - c["x"].mean()
+    y = signal.lfilter(mcu.taps(fc=fc), 1, x)
+    n = int((len(x) - mcu.NT - 2 * pc) // pc) - 1
+    best = None
+    k = np.arange(len(y))
+    for f in offs:
+        z = y * np.exp(-2j * np.pi * (st.fe.FIF + f) * k / fc)
+        for t0 in mcu.NT + np.arange(0, pc, pc / 36):
+            sy, met, _ = mcu_decide(z, T, t0, pc, n)
+            # the PN phase: the most matches; then, among equals, the known tones' metrics
+            idx = (np.arange(len(ref))[:, None] + np.arange(n)[None, :]) % len(ref)
+            mt = (ref[idx] == sy[None, :]).sum(1)
+            p = int(np.argmax(mt))
+            kn = ref[(p + np.arange(n)) % len(ref)]
+            sc = (int(mt[p]), float(met[np.arange(n), kn].sum() / (met.sum() + 1e-12)))
+            if best is None or sc > best[0]:
+                best = (sc, f, t0, p, n, z, pc)
+    return (best[0][0],) + best[1:]
+
+
+def mcu_analyze(caps, out=print, train_gain=None):
+    """the MCU receiver's templates (made from the model, as in c/k6/ifrx_tables.h) against
+    templates trained on the strong captures themselves, both at the data-aided best timing
+    and IF offset: per pass and gain step, the bit error rate of each, and how alike the two
+    template sets are. Returns {pass: trained templates}"""
+    from sim.k6if import mcu
+    from sim.k6if import modes as md
+    good = [c for c in caps if c["lost"] == 0 and c["pass_"] in PASSES]
+    res = {}
+    for pas, (name, mode) in PASSES.items():
+        cs = [c for c in good if c["pass_"] == pas]
+        if not cs:
+            continue
+        m = md.Mode(*md.MODES[name + "1200"])
+        Tm, classes, _ = mcu.make_templates(m)
+        ref = pn_symbols(mode)
+        b = m.bits_of
+        steps = sorted({c["gain"] for c in cs})
+        fits = {c["k"]: mcu_fit(c, Tm, ref) for c in cs}
+        gt = train_gain if train_gain is not None else steps[1] if len(steps) > 1 else steps[0]
+        # train: start from the model's templates, each segment to its known tone's best phase
+        # class, averaged; twice (k-means)
+        tr = [c for c in cs if c["gain"] == gt]
+        half = tr[::2]
+        Tr = Tm.copy()
+        for _ in range(3):
+            acc = np.zeros_like(Tr)
+            cnt = np.zeros(Tr.shape[:2])
+            for c in half:
+                mt, f, t0, p, n, z, pc = fits[c["k"]]
+                _, _, seg = mcu_decide(z, Tr, t0, pc, n)
+                sy = ref[(p + np.arange(n)) % len(ref)]
+                for j in range(n):
+                    s = seg[j] / (seg[j, 0] / (abs(seg[j, 0]) + 1e-12))
+                    cl = int(np.argmax(np.abs(Tr[sy[j]] @ np.conj(s))))
+                    acc[sy[j], cl] += s
+                    cnt[sy[j], cl] += 1
+            for i in range(Tr.shape[0]):
+                for j in range(Tr.shape[1]):
+                    if cnt[i, j] >= 2:
+                        Tr[i, j] = acc[i, j] / cnt[i, j] * np.linalg.norm(Tm[i, j]) / (
+                            np.linalg.norm(acc[i, j] / cnt[i, j]) + 1e-12)
+        sim_ = [abs(np.vdot(Tm[i, j], Tr[i, j])) / (np.linalg.norm(Tm[i, j]) * np.linalg.norm(Tr[i, j]) + 1e-12)
+                for i in range(Tr.shape[0]) for j in range(Tr.shape[1])]
+        out(f"pass {pas} ({name}): {len(cs)} captures; trained on step {gt} (every other capture); "
+            f"model vs trained templates alike {min(sim_):.3f} .. {max(sim_):.3f} (1 = the same)")
+        out("  step  caps  rssi  IF Hz  bits   BER model  BER trained   symbol errors (model) sent->got")
+        for g in steps:
+            eb_m = eb_t = nb = 0
+            conf = np.zeros((m.M, m.M), int)
+            fs = []
+            for c in (x for x in cs if x["gain"] == g):
+                if g == gt and c in half:
+                    continue
+                mt, f, t0, p, n, z, pc = fits[c["k"]]
+                sy = ref[(p + np.arange(n)) % len(ref)]
+                dm, _, _ = mcu_decide(z, Tm, t0, pc, n)
+                # trained: its own best timing near the model's
+                bt = None
+                for dt in np.arange(-pc / 6, pc / 6 + 1e-9, pc / 36):
+                    d, _, _ = mcu_decide(z, Tr, t0 + dt, pc, n)
+                    e = int(np.sum(b[d] != b[sy]))
+                    bt = e if bt is None else min(bt, e)
+                eb_m += int(np.sum(b[dm] != b[sy]))
+                eb_t += bt
+                nb += n * m.k
+                fs.append(f)
+                for u, v in zip(sy, dm):
+                    conf[u, v] += 1
+            if not nb:
+                continue
+            rs = int(np.median([c["rssi"] for c in cs if c["gain"] == g]))
+            errs = ", ".join(f"{i}->{j}:{conf[i, j]}" for i in range(m.M) for j in range(m.M)
+                             if i != j and conf[i, j])
+            out(f"  {g:4d}  {len(fs):4d}  {rs:4d}  {int(np.median(fs)):5d}  {nb:5d}  {eb_m / nb:9.4f}  "
+                f"{eb_t / nb:11.4f}   {errs}")
+        res[pas] = Tr
+    return res
+
+
+def cmd_mcu(a):
+    mcu_analyze(parse(open(a.log, errors="replace")), train_gain=a.train_step)
+
+
 def cmd_analyze(a):
     analyze(parse(open(a.log, errors="replace")), a.ncap)
 
@@ -448,6 +572,10 @@ def main():
     z.add_argument("log")
     z.add_argument("--ncap", type=int, default=2160)
     z.set_defaults(fn=cmd_analyze)
+    mc = sub.add_parser("mcu")
+    mc.add_argument("log")
+    mc.add_argument("--train-step", type=int, help="the gain step to train on (default the second)")
+    mc.set_defaults(fn=cmd_mcu)
     sl = sub.add_parser("simlog")
     sl.add_argument("out")
     sl.add_argument("--ncaps", type=int, default=10)

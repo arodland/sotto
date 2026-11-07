@@ -166,7 +166,10 @@ integers (no division in the per-count path, no statics, so it builds into a mod
   halves the table and the multiplies. Templates are 4-bit re and im (-7..7, a byte a sample):
   about 0.1 dB worse than 8-bit at 1% BER, and 144 B smaller.
 - **Timing.** Early-late on the winning template, `(|L|^2 - |E|^2) / 2|C|^2`, with squares (the
-  approximate magnitude biased the loop), gain 1/64 (1/16 for the first 128 lead symbols).
+  approximate magnitude biased the loop), gain 1/64 on the lead and 1/256 once tracking
+  (`IFRX_T_SH`). It was 1/16 for the first 128 lead symbols until 2026-11-07: for FFSK that
+  is a per-symbol gain past 2, an unstable loop, which with the K6's detector noise locked FFSK half a
+  symbol off (see the rerun below).
 - **AFC.** Decision-directed, from the turn between the winning template's two halves.
   Before lock, a frequency-locked loop on the mean turn between samples. FM of zero-mean audio
   keeps the IF's mean frequency on the carrier, but the tones bias the filtered estimate by
@@ -184,8 +187,9 @@ integers (no division in the per-count path, no statics, so it builds into a mod
   carrier-then-lead start locking on a side peak. The clock only moves forward: the old wrap,
   back 11 steps, left the receiver about 300 us of samples to catch up at once, longer than
   the DMA ring lasts. That only showed in the emulated module.
-- **Lead check.** 256 symbols steered on the known lead (AFC gain x4). More than 8 misses in
-  the first 32, or 16 in any later 32, means a false start: it sweeps again.
+- **Lead check.** 256 symbols steered on the known lead (AFC gain x4 for the first 128, x1
+  for the rest, then x1/4 once tracking, `IFRX_F_SH`). More than 8 misses in the first 32, or
+  16 in any later 32, means a false start: it sweeps again.
 
 On the model, 1% BER (C/N0 dB-Hz, 0.6 s of bare carrier, then a 1.5 s lead, then data; the
 `ifrx.c` columns are the median of 4 runs at each C/N0, interpolated):
@@ -275,8 +279,9 @@ the pager image 888ccb0 and its CI modules.
 **`gp0cap` (ret 2):** all 206 captures whole. The IF detector beats the discriminator at every
 level. FFSK has no errors in either detector down to -72 dBm (C/N0 50.7 dB-Hz). 4FSK has an
 error floor of 6-8% (IF) and 8-10% (discriminator) at every level, even -23 dBm, so it isn't
-noise. Nearly all the IF detector's errors are an inner tone read as the outer tone next to
-it: 1500 as 900 (SER 0.25) and 2100 as 2700 (0.26). The outer tones are nearly clean (0.025,
+noise. (Corrected below: this floor was the analyser's own detector, not the radio. Through
+the MCU receiver's templates the same captures give 0.2-0.8%.) Nearly all the IF detector's
+errors are an inner tone read as the outer tone next to it: 1500 as 900 (SER 0.25) and 2100 as 2700 (0.26). The outer tones are nearly clean (0.025,
 0.009), and the error doesn't depend on the tone before. That fits the IC-7100's TX chain
 (about +5 dB/octave of pre-emphasis, limiting near ±4.3 kHz in run 9) squeezing the deviation
 spacing, which 0.12 peak puts at or past the limiter at 2700 Hz. Next: the 4FSK pass at a
@@ -320,6 +325,62 @@ front end); it needs a module change before a rerun.
 
 The sender tools now put the IC-7100 in FM-D with the 12 kHz filter: `rigctl M PKTFM 0`
 selects the 6 kHz one, at about half the deviation.
+
+## The rerun, and what the live errors were (2026-11-07)
+
+Jeff power-cycled the K6 at 01:12 UTC. The K6 only received; the IC-7100 sent `live 4fsk` and
+`live ffsk` on 440.850 (FM-D, 12 kHz passband), into iflive from PR #81 (image 1a89fef). The
+step lines are in `tests/data/k6/iflive-20261107.log.gz`, the gp0cap captures of 2026-11-06 in
+`tests/data/k6/gp0cap-20261106.log.gz`.
+
+- **No hang.** Both runs finished all 10 steps. `k=` was 5566 on every step that locked.
+- **4FSK:** steps 0-8 locked, at 4.4-5.0% BER (check fails / 3 / bits), with the AFC ending
+  anywhere from -39 to +29 Hz. Step 9 (RSSI -98 dBm) never locked.
+- **FFSK:** steps 5-7 had no errors, with the AFC at +5 Hz each time. Steps 1-2 ran at 1.5-1.9%,
+  steps 0 and 3 at about 5%, and steps 4 and 8 never locked (nor 9).
+
+**The captures were fine.** `k6_ifcap.py mcu LOG` puts the captures through the MCU receiver's
+own templates, made from the model, at the best timing and IF for each capture. FFSK had no
+errors down to -72 dBm, and 4FSK had 0.2-0.8% at every level. Templates trained on the captures
+did no better. So the 6-8% 4FSK floor in the first run's report came from the analyser's
+detector, and the limiter idea was wrong.
+
+**The detectors are much noisier on the K6 than on the model.** At the same best timing and IF,
+the per-symbol outputs of the timing detector, `(|L|^2 - |E|^2) / |C|^2`, and the AFC detector,
+`Im(c2 c1*) / mean |c|^2`, were:
+
+| | timing sd | AFC sd |
+|---|---|---|
+| K6, FFSK, steps 1-8 | 0.76 | 0.36 |
+| K6, 4FSK, steps 1-8 | 0.45 | 0.45 |
+| model at 70 dB-Hz, FFSK | 0.06 | 0.09 |
+| model at 70 dB-Hz, 4FSK | 0.11 | 0.12 |
+
+The noise is white from one symbol to the next, and the symbol pattern (the symbol before, this
+one, the one after) explains only 0-16% of it, so it isn't template mismatch. The model only
+gets that noisy near 42 dB-Hz, where its FFSK decisions already make 1% errors, so it isn't plain
+receiver noise either (`docs/k6-modules.md`, insight 27).
+
+**Through the old loops, that noise is enough.** With noise of those sizes added to the host
+receiver's detector outputs (`ifrx_host.c`, info[9]), on the model at 70 dB-Hz:
+
+- **The lead's timing loop was unstable.** At 1/16 its gain a symbol was about 3 for FFSK
+  (1.3-2 for 4FSK), past the 2 where a loop stops settling. Clean signals got away with it. With the K6's
+  noise, FFSK locked 0.4 symbol off at 50% errors in 2 of 4 runs. That is the FFSK steps on the
+  bench that went wrong or never locked. The lead now runs at 1/64 throughout.
+- **The tracking loops followed the noise.** 4FSK's AFC wandered 21 Hz rms (on the bench the
+  steps ended -39 to +29 Hz), and its timing 0.50 half-samples rms (FFSK 16 Hz and 0.72). At
+  1/256 timing and a quarter of the AFC gain, that becomes 8 Hz and 0.25 half-samples (FFSK 6 Hz
+  and 0.36). The timing still follows a 100 ppm clock error between the two radios to 0.04
+  half-samples.
+
+Applied to the captures (that jitter around each capture's best), the old loops' jitter costs
+4FSK about 1.5% BER and the new one about 0.7%. The rest of 4.5% may be where the detectors settle
+on real signals: their zeros sit 0.3 half-samples early and 15 Hz high of the captures' best,
+worth about 1.3% at full size. That number leans on a best picked from only 26 symbols a
+capture, so it overstates. `tests/test_k6_ifrx.py::test_loops_through_the_k6s_detector_noise`
+keeps the new loops honest. The modules are 4062 B (4FSK) and 3914 B (FFSK). Next: the same
+`live` run on the bench.
 
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
