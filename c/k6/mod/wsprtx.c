@@ -8,9 +8,10 @@
    - waits until the channel has been clear (below WSPR_CLEAR_DBM) for WSPR_CLEAR_MS: the first
      time, that's the upload's sender unkeying; later, it skips a slot rather than key over
      someone;
-   - calls tx_on for the frame, the ID and a margin: 300 + 110,592 + 400 + 3,120 + 1,000 ms,
-     about 115.4 s. That needs an image whose module TX cap is 120 s (after 2026-11-07); an
-     older image's 20 s cap keys it down partway (-5);
+   - calls tx_on for the frame, the ID and a margin: 300 + 110,592 + 400 + 3,120 + 3,000 ms,
+     about 117.4 s (the margin covers a lead over 300 ms when tx_on is quick). That needs an
+     image whose module TX cap is 120 s (after 2026-11-07); an older image's 20 s cap keys it
+     down partway (-5);
    - turns tone 1 on (REG_70 = enable | WSPR_GAIN << 8) and sets its frequency word REG_71 once a
      symbol: tone k (0-3) at WSPR_AUDIO + 1.4648 k Hz for 8192 / 12000 s (682.67 ms) each, phase
      continuous, 162 symbols. Symbol k starts at t0 + k x 2048 / 3 ms, kept in thirds of a ms;
@@ -22,14 +23,21 @@
 
    With WSPR_REPEAT > 1 it is a beacon: a transmission every WSPR_EVERY two-minute slots
    (default 5: every 10 minutes, 20% of the time), timed by the module clock (the M0's crystal),
-   until the count is done or a key is held. WSPR frames start 1 s after an even UTC minute;
-   the K6 has no UTC clock, so the host times the first one by when it unkeys after the upload
-   (key-up comes about 2.7-3.2 s after that: the 1 s clear wait and tx_on's 1.4-1.9 s) and the
-   later ones follow on the 2-minute grid.
+   until the count is done or a key is held. WSPR frames start 1 s after an even UTC minute,
+   and the K6 has no UTC clock (only uptime: Aura's TIM14 from the 16 MHz crystal, gone at
+   power-off). Without a sync mark (WSPR_SYNC_MS 0, this build) the first frame's tones start
+   3.3 s after the upload's sender unkeys. With one (wsprbcn: 10 s), the module waits up to
+   WSPR_SYNC_WAIT_MS for a carrier of at least 0.5 s and starts the first frame's tones
+   WSPR_SYNC_MS after it drops; `tools/k6_wspr.py sync` keys the IC-7100 so that it drops 10 s
+   before a slot by the PC's NTP clock (the drop is seen to about 10 ms). Every frame starts on
+   that 2-minute grid, the key-up 3.3 s before its tones (the clear wait, tx_on's 1.4-1.9 s, the
+   lead), and the crystal holds the grid to a few ms an hour.
 
    It says
      K6 MOD say wspr AG7EW CN87 10 f=1500 g=60 n=1 rx=440850000
      K6 MOD say wspr sent 1 sym=162 ms=110592 id=52
+     K6 MOD say wspr sync: waiting for the mark             (WSPR_SYNC_MS; then "wspr no sync
+                                                            mark: starting now" if none came)
      K6 MOD say wspr next 480 s                              (a beacon, between frames)
      K6 MOD say wspr busy, slot skipped                     (a beacon: the channel wasn't clear)
    and returns the frames sent, or a negative error:
@@ -70,6 +78,13 @@
 #ifndef WSPR_WAIT_MS
 #define WSPR_WAIT_MS 30000
 #endif
+#ifndef WSPR_SYNC_MS
+#define WSPR_SYNC_MS 0      /* 0: no sync mark. Else the first frame's tones start this long
+                               after a sync carrier drops (tools/k6_wspr.py sync) */
+#endif
+#ifndef WSPR_SYNC_WAIT_MS
+#define WSPR_SYNC_WAIT_MS 150000  /* covers the next slot the host can mark */
+#endif
 #ifndef ID_TEXT
 #define ID_TEXT "AG7EW"
 #endif
@@ -88,8 +103,13 @@
 #define REG70_ON ((uint16_t)(0x8000u | ((WSPR_GAIN & 0x7Fu) << 8)))
 #define UNIT_MS (1200u / ID_WPM)
 #define ID_UNITS 52                                  /* AG7EW: A 8, G 12, 7 16, E 4, W 12 */
-#define TX_MS (WSPR_LEAD_MS + FRAME_MS + 400u + ID_UNITS * UNIT_MS + 1000u)
+#define TX_MS (WSPR_LEAD_MS + FRAME_MS + 400u + ID_UNITS * UNIT_MS + 3000u)
 #define SLOT_MS (120000u * WSPR_EVERY)
+#define KEYUP_MS 3300u    /* from a slot's channel check to its tones: the clear wait, tx_on's
+                             1.4-1.9 s, the lead */
+#if WSPR_SYNC_MS && WSPR_SYNC_MS < 4000
+#error "WSPR_SYNC_MS leaves no time for the channel check and key-up"
+#endif
 
 /* Morse by code, as cwkey.c: start at 1, then 0 for a dot and 1 for a dash */
 static const char tab[] = "~~ETIANMSURWDKGOHVF~L~PJBXCYZQ~~54~3~~~2~~+~~~~16=/~~~~~7~~~8~90";
@@ -178,14 +198,37 @@ static int mcw(const k6_api_t *api) {
   return r ? r : units;
 }
 
-/* one frame and its ID, keyed; the symbols sent and *id the ID's units, or a negative error */
-static int frame(const k6_api_t *api, int *id) {
-  uint32_t t0, k, j;
+#if WSPR_SYNC_MS
+/* the sync mark: a carrier held for at least half a second, then dropped. *td = the first ms()
+   it read clear (polled every 5 ms); 0, -4 on a key, -7 if none came in WSPR_SYNC_WAIT_MS */
+static int sync(const k6_api_t *api, uint32_t *td) {
+  uint32_t t0 = api->ms(), up = 0, now;
+  while ((now = api->ms()) - t0 < WSPR_SYNC_WAIT_MS) {
+    if (api->key_down()) return -4;
+    if (KM_RSSI_DBM(api->fd_read(0x67)) >= WSPR_CLEAR_DBM) {
+      if (!up) up = now | 1;
+    } else if (up) {
+      if (now - up >= 500u) {
+        *td = now;
+        return 0;
+      }
+      up = 0;
+    }
+    api->delay_us(5000);
+  }
+  return -7;
+}
+#endif
+
+/* one frame, its tones from t0 (or the lead after tx_on if that is later), and its ID, keyed;
+   the symbols sent and *id the ID's units, or a negative error */
+static int frame(const k6_api_t *api, int *id, uint32_t t0) {
+  uint32_t k, j;
   int r;
   if (api->tx_on(TX_MS) != 0) return -3;
   api->fd_write(0x70, 0);
   api->fd_write(0x71, (uint16_t)(WORD(WSPR_AUDIO) + ((WSPR_TONES[0] * TONE_Q16) >> 16)));
-  t0 = api->ms() + WSPR_LEAD_MS;
+  if ((int32_t)(t0 - api->ms()) < WSPR_LEAD_MS) t0 = api->ms() + WSPR_LEAD_MS;
   r = until(api, t0);
   if (!r) api->fd_write(0x70, REG70_ON);
   for (k = 0; !r && k < NSYM; k++) {
@@ -228,26 +271,35 @@ int k6_main(const k6_api_t *api) {
   api->say(line);
   if (api->rx_hz() != WSPR_HZ) return -2;
   if ((r = clear(api, WSPR_WAIT_MS)) != 0) return r;     /* the upload's sender has unkeyed */
+  next = api->ms() + KEYUP_MS;                  /* no sync: the first frame at once */
+#if WSPR_SYNC_MS
+  api->say("wspr sync: waiting for the mark");
+  {
+    uint32_t td;
+    r = sync(api, &td);
+    if (r == -4) return r;
+    next = r ? api->ms() + KEYUP_MS : td + WSPR_SYNC_MS;
+    if (r) api->say("wspr no sync mark: starting now");              /* the host dropped it WSPR_SYNC_MS before a slot */
+  }
+#endif
   for (n = 0; n < WSPR_REPEAT; n++) {
-    if (!n) {
-      next = api->ms();                         /* the first key-up sets the 2-minute grid */
-    } else {                                    /* a beacon: the next slot on the grid */
+    if (n || WSPR_SYNC_MS != 0) {               /* say how long until the slot */
       p = put(line, "wspr next ");
       p = dec(p, ((next - api->ms() + 500u) * 4194u) >> 22);   /* / 1000, no divide */
       p = put(p, " s");
       *p = 0;
       api->say(line);
-      if ((r = until(api, next - WSPR_CLEAR_MS)) != 0) return r;
-      r = clear(api, 200u);                     /* 1 s clear brings it to the slot's key-up */
-      if (r == -4) return r;
-      if (r) {
-        api->say("wspr busy, slot skipped");
-        next += SLOT_MS;
-        continue;
-      }
     }
+    if ((r = until(api, next - KEYUP_MS)) != 0) return r;
+    r = clear(api, 200u);                       /* 1 s clear, then key-up for the slot's tones */
+    if (r == -4) return r;
+    if (r) {
+      api->say("wspr busy, slot skipped");
+      next += SLOT_MS;
+      continue;
+    }
+    sym = frame(api, &id, next);
     next += SLOT_MS;
-    sym = frame(api, &id);
     if (sym < 0) return sym;
     sent++;
     p = put(line, "wspr sent ");

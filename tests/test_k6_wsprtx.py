@@ -8,6 +8,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_k6_i2s import ROOT, START, need_clang, rssi_reg, run  # noqa: E402
@@ -17,7 +18,7 @@ SRC = os.path.join(ROOT, "c", "k6", "mod", "wsprtx.c")
 HDR = os.path.join(ROOT, "c", "k6", "mod", "wsprtx_msg.h")
 WPH = 10.32444
 TEXT = "AG7EW CN87 10"
-TX_MS = 300 + 110592 + 400 + 52 * 60 + 1000
+TX_MS = 300 + 110592 + 400 + 52 * 60 + 3000
 
 
 def test_reference_round_trip_and_sensitivity():
@@ -136,3 +137,28 @@ def test_keys_down_on_the_old_20_s_cap_or_a_key():
     tx = {}
     ret, said, regs, _ = run(START, src=SRC, level=3, tx=tx, keys=((30_000_000, 30_600_000),))
     assert ret == -4 and tx["log"][-1][0] == "tx_off" and regs[0x70] == 0
+
+
+@need_clang
+@pytest.mark.parametrize("mark", [True, False])
+def test_beacon_starts_from_the_sync_mark(tmp_path, mark):
+    """wsprbcn's sync: a carrier from 5.0 s to 6.2 s, then quiet; the first frame's tones start
+    10 s after it dropped (16.2 s), the next one 10 minutes on. With no mark in 150 s it says so
+    and starts at once"""
+    src = tmp_path / "wsprsync.c"
+    src.write_text('#define WSPR_REPEAT 2\n#define WSPR_SYNC_MS 10000\n#include "%s"\n' % SRC)
+
+    def rssi(us):
+        return rssi_reg(-40 if mark and 5_000_000 <= us < 6_200_000 else -120)
+    tx = {}
+    ret, said, regs, _ = run({**START, 0x67: rssi}, src=str(src), level=3, tx=tx)
+    assert ret == 2, said
+    assert said[1] == "wspr sync: waiting for the mark", said
+    (s0, _), (s1, _) = frames(tx["w"])
+    if mark:
+        assert abs(s0[0][1] - 16_200_000) < 20_000, s0[0]
+        assert said[2] == "wspr next 10 s", said
+    else:
+        assert said[2] == "wspr no sync mark: starting now", said
+        assert 150_000_000 < s0[0][1] < 155_000_000, s0[0]
+    assert abs((s1[0][1] - s0[0][1]) - 600_000_000) < 20_000

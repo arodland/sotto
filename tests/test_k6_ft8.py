@@ -204,7 +204,7 @@ def k6_bench(sig, regs, fdma=5.71e6, step=128):
     return mmio, rcc, tim, dma, sim
 
 
-def emulate(src, regs, sig, level=2, cal=None):
+def emulate(src, regs, sig, level=2, cal=None, count=2_000_000_000):
     """run module src on an emulated M0. level: the API level the table says; cal: what level 4's
     cal_read reads (the calibration record's bytes; default a blank sector). Returns (ret, said,
     regs, writes, stack bytes, bench)"""
@@ -271,7 +271,7 @@ def emulate(src, regs, sig, level=2, cal=None):
     mu.reg_write(A.UC_ARM_REG_R0, api)
     mu.reg_write(A.UC_ARM_REG_SP, sp0)
     mu.reg_write(A.UC_ARM_REG_LR, stop | 1)
-    mu.emu_start(base + entry | 1, stop, count=2_000_000_000)
+    mu.emu_start(base + entry | 1, stop, count=count)
     r = mu.reg_read(A.UC_ARM_REG_R0)
     mem = bytes(mu.mem_read(ram + 0x3000, sp0 - ram - 0x3000))
     used = len(mem) - next(i for i, v in enumerate(mem) if v != 0xa5)
