@@ -3176,7 +3176,7 @@ index 0000000..677b2f7
 +        app.pager.ifrx_ms = (vv as u32).max(3) * 2000;
 +        #[cfg(not(feature = "lean"))]
 +        {
-+            app.pager.ifrx_flags = val & 3;
++            app.pager.ifrx_flags = val & 7;
 +        }
 +        report_line(format_args!("K6 CTL seq={} ifrx ms={}", seq, app.pager.ifrx_ms));
 +        app.pager.idle_ticks = 0;

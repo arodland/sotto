@@ -10,9 +10,11 @@ The pager's usual link is the FD6818's own FFSK modem at 1800 baud (PHY F). The 
 decisions, so any bit error costs the whole packet. PHY G carries the same XL packets (128 bytes,
 whitened, the same CRC, interleave groups, parity packets and playback) a different way:
 
-- 4FSK at 1200 baud, with tones at 900, 1500, 2100 and 2700 Hz, Gray coded, at 0.12 peak.
+- 4FSK at 1200 baud, with tones at 600, 1200, 1800 and 2400 Hz (four tones on the half-baud
+  grid, below; `--g-plan 4fsk` sends the older 900, 1500, 2100, 2700 Hz for images before it),
+  Gray coded, at 0.12 peak.
 - A rate-1/2 K=7 convolutional code (polynomials 133 and 171), or the same code punctured to
-  rate 2/3 (`--g-rate 2/3`, below).
+  rate 2/3 (`--g-rate 2/3`) or 3/4 (`--g-rate 3/4`, below).
 - On the K6, the IF matched filter `ifrx.c` decides on GP0 code 13's stream, as the `iflive`
   modules do. Each tone's metric becomes a soft bit, and a soft Viterbi decoder recovers the
   packet.
@@ -26,13 +28,18 @@ code clears: the soft decoder over the real metrics made 0 errors in 24,000 bits
 A burst is:
 
 1. A control packet (F/1800, XL, two copies) with action 10. Byte 4 holds the session's longest
-   time in units of 2 s; byte 3 is 1 for rate 2/3 (images before PR #108 ignore it).
+   time in units of 2 s; byte 3's bit 0 is rate 2/3 (images before PR #108 ignore it), bit 2
+   rate 3/4 (images with the 600-2400 Hz tones).
 2. 0.5 s of bare carrier.
 3. A lead of 2400 symbols (2.0 s), tones 0 and 3 in turn, starting with 0. `ifrx` acquires on it.
    Its 256 symbols of lead steering end before the data, even when the lock comes 1.3 s in.
 4. For each packet, a sync word of 24 symbols (`100100000111111001101010`, 1 = tone 3,
    0 = tone 0), then 1032 coded symbols. No window of the lead running into the sync word is
-   closer than 10 symbols to it. The receiver takes a window with up to 6 wrong.
+   closer than 10 symbols to it. The receiver takes a window with up to 6 wrong, where an inner
+   tone is wrong, and so is an outer tone whose opposite's metric is within 3/4 of its own: an
+   unmodulated carrier decides as tones 0 and 3 with both metrics high (the 600 and 2400 Hz
+   templates each hold a half-turn or whole turns of it), and once made a sync word 78 symbols
+   after a burst's last packet.
 5. 48 more symbols of the lead's pattern.
 
 A packet's coding is as follows. Its 128 bytes, MSB first, are followed by 8 zero bits: the
@@ -46,12 +53,19 @@ apart.
 the block size are unchanged. The decoder takes LLR 0 for each missing bit, and a step that
 needs a bit of the next block waits for it.
 
+**Rate 3/4** punctures the same code with the usual K=7 pattern (133: 1 0 1, 171: 1 1 0): of
+each three steps it sends both bits of the first, the second bit of the second and the first bit
+of the third. 4 bits for each 3 steps, 1376 coded bits in exactly 16 blocks, 688 symbols. The
+decoder's puncture phase restarts at each packet (1032 steps is a multiple of 3).
+
 One packet takes 1056 symbols (0.88 s) and carries 20 sotto 1200 slots (0.8 s of speech). So
 PHY G runs at 0.91x real time. **A 12 s clip** (15 XL packets) takes 15.2 s for the burst and
 17.3 s with the control packet. At F/1800 the same clip takes 10.8 s. PHY G trades air time for
 margin. At rate 2/3 a packet takes 798 symbols (0.665 s): 1.2x real time, about 1540 bit/s
 net. The same clip's burst takes 12.0 s, 14.1 s with the control packet; the 2 s lead is
-now the largest overhead.
+now the largest overhead. At rate 3/4 a packet takes 712 symbols (0.593 s): 1.35x real time,
+about 1730 bit/s net; the clip's burst takes 10.9 s, 13.0 s with the control packet, against
+F/1800's 10.8 s.
 
 ## On the K6
 
@@ -241,6 +255,10 @@ overhead. Ways to get ahead of it, roughly in order of cost:
   overrun at rate 2/3 showed was needed.
 - **A shorter lead.** The session now starts at the control packet: a 1 s lead (`--g-lead 1.0`)
   locked on air and played 13/14 twice (the first packet failed its CRC each time); try 1.5 s.
+- **Puncture to rate 3/4** on the 600-2400 Hz tones: in the code (this branch), not on air yet.
+  On the model it needs about 2 dB more than rate 2/3 (every packet at 49 dB-Hz 164 Hz off,
+  rate 1/2 at 45 on these tones). The emulated M0 decodes it at the image's timing with no
+  counts lost.
 - **A faster symbol rate**: receiver and live test modules done (see below), not on air yet.
 
 - **Play while receiving** (stream mode), so a long message starts after its first interleave

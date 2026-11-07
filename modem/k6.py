@@ -101,16 +101,18 @@ def g_audio(payloads, a, fs):
     if any(len(p) != k6g.PAYLOAD for p in payloads):
         raise SystemExit("--phy G carries XL packets: add --payload XL")
     lead = int(round(a.g_lead * k6g.BAUD)) // 2 * 2
-    r23 = getattr(a, "g_rate", "1/2") == "2/3"
-    secs = k6g.burst_seconds(len(payloads), lead, r23)
+    rate = k6g.RATES[getattr(a, "g_rate", "1/2")]
+    secs = k6g.burst_seconds(len(payloads), lead, rate)
     seq = a.seq if getattr(a, "seq", None) is not None else int(time.time()) & 0xFF
-    flags = int(r23) | (2 if getattr(a, "g_nodecode", False) else 0)
+    # byte 3: bit 0 rate 2/3, bit 1 no decoding, bit 2 rate 3/4
+    flags = (1 if rate == 1 else 4 if rate == 2 else 0) | (2 if getattr(a, "g_nodecode", False) else 0)
     ctl = pager.control_packet(seq, None, "ifrx", k6g.PAYLOAD, arg=int(np.ceil(secs / 2)) + 2,
                                val=flags)
     c = argparse.Namespace(**vars(a))
     c.phy, c.baud, c.stream, c.prime, c.cw_id, c.payload = "F", 1800, False, False, None, "XL"
     x = build_audio([ctl] * 2, c, fs)
-    burst = k6g.audio(k6g.burst_symbols(payloads, lead, r23=r23), fs, a.g_level)
+    burst = k6g.audio(k6g.burst_symbols(payloads, lead, r23=rate), fs, a.g_level,
+                      plan=getattr(a, "g_plan", "4h"))
     return np.concatenate([x, np.zeros(int(0.5 * fs)), burst])
 
 
@@ -167,9 +169,13 @@ def _tx_opts(p):
     p.add_argument("--g-level", type=float, default=0.12,
                    help="--phy G: the 4FSK's peak audio (default 0.12, as the IF receiver's bench "
                         "runs; --level stays the control packet's)")
-    p.add_argument("--g-rate", choices=("1/2", "2/3"), default="1/2",
+    p.add_argument("--g-rate", choices=("1/2", "2/3", "3/4"), default="1/2",
                    help="--phy G: the code's rate (default 1/2; 2/3 punctures it, a quarter less "
-                        "airtime, about 1.5 dB less margin; images from PR #108 on)")
+                        "airtime, about 1.5 dB less margin, images from PR #108 on; 3/4 a third "
+                        "less airtime, about 1800 bit/s, images with the 600-2400 Hz tones)")
+    p.add_argument("--g-plan", choices=("4h", "4fsk"), default="4h",
+                   help="--phy G: the tones (default 4h: 600, 1200, 1800, 2400 Hz, the images from "
+                        "the half-baud grid on; 4fsk: 900 .. 2700 Hz for older images)")
     p.add_argument("--g-nodecode", action="store_true",
                    help="--phy G bench test: the K6 decodes nothing, only finds the sync words and "
                         "counts their wrong symbols (the raw symbol errors without the decoder's load)")
