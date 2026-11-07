@@ -15,6 +15,8 @@ the IF matched filter, so the two meet the same samples.
   python3 tools/k6_ifcap.py livelog LOG         iflive's lines as a table: BER, lock, AFC, CPU
   python3 tools/k6_ifcap.py mcu LOG             gp0cap's captures through the MCU receiver's
                                                 templates (the model's) and ones trained on them
+  python3 tools/k6_ifcap.py fmnoise LOG         the FM noise of a bare carrier (run --level 1e-6
+        [--pass 2]                              sends one in place of the 4FSK pass), Hz rms by band
 
 Each pass is 1 s of alternating symbols (the module waits 2 s after the carrier), then the PN9
 sequence (x^9 + x^5 + 1, all-ones seed, period 511) over and over: one bit a symbol in FFSK
@@ -603,6 +605,38 @@ def cmd_mcu(a):
     mcu_analyze(caps, train_gain=a.train_step)
 
 
+FM_BANDS = ((0, 50), (50, 200), (200, 600), (600, 1500), (1500, 3000), (3000, 4500))
+
+
+def fm_noise(x, ks, bands=FM_BANDS):
+    """a bare carrier's capture -> the IF's instantaneous frequency's rms (Hz) in each band, at
+    the IF offset with the most carrier power"""
+    from sim.k6if import mcu
+    fc = ks * 1000.0 / 64
+    y = signal.lfilter(mcu.taps(fc=fc), 1, x - x.mean())[mcu.NT:]
+    k = np.arange(len(y))
+    z = max((y * np.exp(-2j * np.pi * (st.fe.FIF + f) * k / fc) for f in range(-400, 401, 10)),
+            key=lambda v: abs(v.mean()))
+    fi = np.angle(z[1:] * np.conj(z[:-1])) * fc / (2 * np.pi)
+    fi = signal.filtfilt(signal.firwin(63, 4500, fs=fc), 1, fi)
+    fq, P = signal.welch(fi - fi.mean(), fs=fc, nperseg=1024)
+    return [float(np.sqrt(np.sum(P[(fq >= lo) & (fq < hi)]) * (fq[1] - fq[0]))) for lo, hi in bands]
+
+
+def cmd_fmnoise(a):
+    """the median over the pass's captures at steps 1-8 (the pager's AGC at 0 and the noise at
+    9 left out). The model's tap (sim/k6if at 52 dB-Hz, the captures' C/N0) gives 2, 6, 27,
+    96, 251, 242 Hz; a 4FSK pass's residual on the 2026-11-07 captures had about 440 at
+    1500-3000 Hz (docs/k6-if-modem.md)"""
+    caps = [c for c in parse(open(a.log, errors="replace"))
+            if c["lost"] == 0 and c["pass_"] == a.pass_ and 1 <= c["gain"] <= 8]
+    if not caps:
+        sys.exit("no captures of that pass at steps 1-8")
+    rows = np.array([fm_noise(c["x"].astype(float), c["ks"]) for c in caps])
+    print("band, Hz  " + "".join(f"{f'{lo}-{hi}':>11s}" for lo, hi in FM_BANDS))
+    print("rms, Hz   " + "".join(f"{v:11.0f}" for v in np.median(rows, 0)) + f"   ({len(rows)} captures)")
+
+
 def cmd_analyze(a):
     analyze(parse(open(a.log, errors="replace")), a.ncap)
 
@@ -632,6 +666,10 @@ def main():
     ll = sub.add_parser("livelog")
     ll.add_argument("log")
     ll.set_defaults(fn=cmd_livelog)
+    fm = sub.add_parser("fmnoise")
+    fm.add_argument("log")
+    fm.add_argument("--pass", dest="pass_", type=int, default=2)
+    fm.set_defaults(fn=cmd_fmnoise)
     z = sub.add_parser("analyze")
     z.add_argument("log")
     z.add_argument("--ncap", type=int, default=2160)

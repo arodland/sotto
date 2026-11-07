@@ -480,6 +480,36 @@ BER is the same at 0.065, below that. **`k6_ifcap.py run --level X`** scales the
 pass, so `gp0cap` at a few levels can measure the deviation and this distortion against level
 directly.
 
+### Captures at three levels (2026-11-07 04:29-04:40)
+
+`gp0cap` with `run --level` 0.07, 0.12 and 0.18 (logs in
+`tests/data/k6/gp0lvl-*-20261107.log.gz`), steps 1-8:
+
+| level | 900 Hz | 1500 Hz | 2100 Hz | 2700 Hz | residual 1.5-3 kHz | per-symbol deviation sd | held-out BER |
+|---|---|---|---|---|---|---|---|
+| 0.07 | 1243 | 1917 | 2343 | 1809 | 411 Hz | 13.8% | 6.2% |
+| 0.12 | 1464 | 2101 | 2531 | 2042 | 450 Hz | 14.4% | 5.4% |
+| 0.18 | 1490 | 2085 | 2565 | 2000 | 438 Hz | 14.3% | 5.4% |
+
+(Per-tone deviation in Hz.) **The IC-7100 limits deviation.** From 0.12 to 0.18 (x1.5) it rises
+0-2%; from 0.07 to 0.12 (x1.7) only 10-18%. The limiter makes few harmonics, so it acts like a
+gain control rather than a clipper. At 30% USB MOD the sender already sits at its ceiling.
+
+**The extra noise doesn't follow the signal.** It is the same at all three levels. Its mean over
+a symbol, given the symbol before and after, explains none of it on held-out symbols (624 Hz rms
+-> 625-640), so it isn't intersymbol interference. Model templates rebuilt at the measured
+deviation (all tones x0.77, or per tone) give 5.2-5.9% held out against 5.4%, so it isn't the
+templates either. The confusions lean one way (900 Hz read as 1500 about 120 times, the
+reverse about 8; 2100 as 2700 about 40, the reverse 3-10). 900 Hz has the smallest deviation
+and 2700 Hz the next smallest.
+
+What's left is FM noise of about 450 Hz rms in 1.5-3 kHz, constant whatever the modulation: the
+signature of synthesizer noise (a PLL's phase noise peaks near its loop bandwidth) in the
+IC-7100's transmitter or the K6's receiver. **`k6_ifcap.py fmnoise LOG`** measures it on a bare
+carrier (`run --level 1e-6` sends one in place of the 4FSK pass). The model's tap alone gives
+2, 6, 27, 96, 251, 242 Hz rms in 0-50, 50-200, 200-600, 600-1500, 1500-3000 and 3000-4500 Hz. If
+the bare carrier shows the bump, a K6-to-IC-7100 capture would tell which radio adds it.
+
 ## Jeff's weak-signal idea: PSK on SSB (2026-11-06)
 
 Jeff suggested a weak-signal mode with the IC-7100 in USB data mode sending differential
