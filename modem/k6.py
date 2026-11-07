@@ -10,6 +10,9 @@ sent from an ordinary FM transmitter (the IC-7100) fed by a sound card.
   python -m modem.k6 tx msg.sot tx.wav --phy F --payload XL --codec 1200
                                                        a sotto 1200 message (sotto_enc -1200, 40 ms
                                                        per frame, magic 0xA9): real time at F/1800
+  python -m modem.k6 tx msg.sot tx.wav --phy F --payload XL --codec 1200 --parity
+                                                       ... with an XOR parity packet after each group
+                                                       (a group's one lost packet is rebuilt, spec 14)
   python -m modem.k6 rx rx.wav back.sot --good g.u8    decode a recording (or our own tx.wav)
   python -m modem.k6 test test.wav                     spec test packet 0, repeated (calibration)
   python -m modem.k6 cal cal.wav                       modulation-path calibration signal
@@ -31,6 +34,7 @@ sotto_enc -1200 and sotto_dec -1200 with --codec 1200 here; for sotto 600 / 400,
 and c/fixed/sotto_vlr_dec_fx 600 with --codec 600. Packet format:
 K6 voice-pager FSK packet format v1 (modem/pager.py). Setup notes: docs/k6-pager.md.
 """
+from dataclasses import replace
 import argparse
 import os
 import subprocess
@@ -149,6 +153,25 @@ def _tx_opts(p):
                    help="packets per interleave group (default 8): a streaming K6 starts playing once "
                         "a group is in, so 4 starts about twice as soon; a lost packet's frames are "
                         "then 4 slots apart instead of 8 (L and XL; images from 2026-11-05 on)")
+    p.add_argument("--short-last", action=argparse.BooleanOptionalAction, default=True,
+                   help="a partial last interleave group takes only the packets it fills (seq bit 13; "
+                        "about 9%% fewer XL packets). --no-short-last sends the old padded layout, for "
+                        "K6 images before 2026-11-07, which drop the short group's packets (they still "
+                        "play the full groups)")
+    p.add_argument("--trim", action=argparse.BooleanOptionalAction, default=True,
+                   help="tx/send: cut dead air from both ends of the message, keeping --trim-keep-ms "
+                        "(slots 34 dB or more under the message's level; no K6 change needed)")
+    p.add_argument("--trim-keep-ms", type=float, default=60.0,
+                   help="silence kept before the first and after the last loud slot (default 60)")
+    p.add_argument("--pause", action=argparse.BooleanOptionalAction, default=True,
+                   help="tx/send, sotto 2400 and 1200: each inner run of 4+ silent slots goes as its first "
+                        "slot and one pause frame, which a K6 from 2026-11-07 fills by replaying that slot "
+                        "(older ones play it as one silent slot, so pauses come out short)")
+    p.add_argument("--parity", action="store_true",
+                   help="send one XOR parity packet after each interleave group (spec 14): a K6 that "
+                        "lost one packet of the group rebuilds it exactly instead of concealing its "
+                        "frames. Costs 1/depth more air time (12.5%% at depth 8). L and XL; K6 images "
+                        "without it ignore the parity packets")
     p.add_argument("--level", type=float, default=0.5, help="peak audio, 0..1 (default 0.5)")
     p.add_argument("--invert", action="store_true", help="flip the bit polarity")
     p.add_argument("--comp", help="pre-compensate: a fit JSON, 'voice' (generic model) or 'preemph'")
@@ -180,13 +203,30 @@ def _tx_opts(p):
 
 
 def _profile(a):
-    return pager.profile(a.payload, getattr(a, "codec", "2400"), getattr(a, "depth", pager.GROUP))
+    return pager.profile(a.payload, getattr(a, "codec", "2400"), getattr(a, "depth", pager.GROUP),
+                         getattr(a, "short_last", True), getattr(a, "parity", False))
+
+
+def _trimmed(a, frames):
+    """frames as sent: with --trim, dead air cut from both ends; with --pause, inner silences as
+    pause frames -> (frames, slots cut at the start, at the end, slots saved by pauses)"""
+    codec = getattr(a, "codec", "2400")
+    cut0 = cut1 = 0
+    if getattr(a, "trim", False):
+        frames, cut0, cut1 = pager.trim_silence(frames, codec, getattr(a, "trim_keep_ms", 60.0) / 1000)
+    saved = 0
+    if getattr(a, "pause", False):
+        frames, saved = pager.compact_pauses(frames, codec)
+    return frames, cut0, cut1, saved
 
 
 def _payloads(a, frames):
     prof = _profile(a)
     mid = a.msg_id if a.msg_id is not None else msg_id_for(frames)
     pk = prof.pack(frames, mid)
+    drop = {int(x) for x in (getattr(a, "drop", None) or "").split(",") if x}
+    if drop:              # leave data packets out on purpose (tests of the K6's parity rebuild)
+        pk = [p for p in pk if (q := prof.unpack(p))["parity"] is not None or q["seq"] not in drop]
     pk = pk * a.passes
     if getattr(a, "repeat_first", False) and len(pk) > 1:
         pk = pk + pk[:1]
@@ -195,7 +235,7 @@ def _payloads(a, frames):
 
 def _test_payloads(a):
     frames = b"".join(bytes([f & 0xFF, f >> 8, 0x11, 0x22, 0x33, 0x44]) for f in range(70))
-    prof = _profile(a)
+    prof = replace(_profile(a), short_last=False)     # the spec's full groups: the K6 compares
     pk = prof.pack(frames, 5 if a.payload == "S" else 0x42)
     return pk if a.message else [pk[0]] * a.repeat
 
@@ -211,6 +251,8 @@ def main(argv=None):
     _tx_opts(t)
     t.add_argument("--msg-id", type=int, help="0-255 (default: from the file's CRC)")
     t.add_argument("--passes", type=int, default=1, help="send the message this many times")
+    t.add_argument("--drop", metavar="SEQS", help="leave out these data packets, e.g. 3,17 (to test the K6's "
+                                                  "--parity rebuild; parity packets are always sent)")
 
     e = sub.add_parser("test", help="spec test packet 0, repeated (or the whole test message)")
     e.add_argument("output")
@@ -223,6 +265,7 @@ def main(argv=None):
     _tx_opts(s)
     s.add_argument("--msg-id", type=int)
     s.add_argument("--passes", type=int, default=1)
+    s.add_argument("--drop", metavar="SEQS", help="as tx --drop")
     s.add_argument("--port", help="CI-V / PTT serial port, e.g. /dev/ttyUSB0 or COM5")
     s.add_argument("--ptt", choices=("civ", "rts", "dtr", "none"), default="civ")
     s.add_argument("--hang-ms", type=float, default=500.0,
@@ -319,6 +362,9 @@ def main(argv=None):
                    help="the codec the packets carry (1200: magic 0xA9, 600: 0xAC, 400: 0xAD), as tx")
     r.add_argument("--baud", type=float, default=None, help="default: F 1800, D 1200, as tx")
     r.add_argument("--invert", action="store_true")
+    r.add_argument("--expand", action=argparse.BooleanOptionalAction, default=True,
+                   help="play pause frames out as the K6 does (N copies of the slot before; default), "
+                        "so the .sot is the full-length message")
     r.add_argument("--tones", type=lambda v: tuple(float(t) for t in v.split(",")), metavar="MARK,SPACE",
                    help="F only: the tones sent (Hz, bit 1 then bit 0), as tx --tones, e.g. 1200,1800 at --baud 2400")
     r.add_argument("--iq", type=int, metavar="RATE", help="input is complex64 IQ at RATE samples/s")
@@ -344,10 +390,15 @@ def main(argv=None):
     log = lambda *m: print(*m, file=sys.stderr)   # noqa: E731
 
     if a.cmd in ("tx", "send"):
-        frames = open(a.input, "rb").read()
+        frames, cut0, cut1, saved = _trimmed(a, open(a.input, "rb").read())
         pk, mid = _payloads(a, frames)
         x = build_audio(pk, a, a.rate)
         n, fs_ = len(frames) // 6, _profile(a).frame_s
+        if cut0 or cut1:
+            log(f"trimmed {cut0 * fs_:.2f} s of dead air at the start, {cut1 * fs_:.2f} s at the end "
+                f"(--no-trim sends it all)")
+        if saved:
+            log(f"pause frames stand for {saved} silent slots ({saved * fs_:.2f} s; --no-pause sends them)")
         if n > K6_STORE_FRAMES:
             log(f"warning: {n} frames is more than the K6 receiver holds by default "
                 f"({K6_STORE_FRAMES} frames, {K6_STORE_FRAMES * fs_:.1f} s); split the message")
@@ -498,7 +549,13 @@ def main(argv=None):
             mid = max(asm.messages, key=lambda m: len(asm.messages[m]["pk"]))
         fr, gd = asm.frames(mid)
         log(f"msg_id {mid}: {len(gd)} frames, {int(gd.sum())} received, "
-            f"{len(gd) - int(gd.sum())} to conceal")
+            f"{len(gd) - int(gd.sum())} to conceal"
+            + (f"; {asm.rebuilt} lost packets rebuilt from parity" if asm.rebuilt else ""))
+        if a.expand:
+            n0 = len(gd)
+            fr, gd = pager.expand_pauses(fr, gd, a.codec)
+            if len(gd) != n0:
+                log(f"pause frames: {n0} slots played out to {len(gd)}")
         if a.output:
             open(a.output, "wb").write(fr)
         if a.good:

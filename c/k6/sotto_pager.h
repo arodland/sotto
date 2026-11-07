@@ -13,9 +13,15 @@
  * group g of 8 carries frames g*64 + s*8 + k, s = 0..7. Profile XL: the same 6-byte header,
  * 20 frames, no reserved bytes, CRC (128 bytes); packet k of group g carries frames
  * g*160 + s*8 + k, s = 0..19. The top 2 bits of seq give the interleave depth D (0: 8, 1: 4,
- * 2: 2, 3: 1 packets per group; seq is the low 14 bits), and with it packet k of group g carries
- * frames g*F*D + s*D + k (F frames per packet). (Profile S, 16 bytes, is no longer taken: the
- * radio reads 64-byte packets fine.)
+ * 2: 2, 3: 1 packets per group; seq is the low 13 bits), and with it packet k of group g carries
+ * frames g*F*D + s*D + k (F frames per packet). Seq bit 13 marks a short last group (senders
+ * from 2026-11-07): its rem < F*D frames take m = ceil(rem / F) packets instead of D, packet k
+ * carrying frames g*F*D + s*m + k; m comes from total. (Profile S, 16 bytes, is no longer
+ * taken: the radio reads 64-byte packets fine.) Pause frames (sotto 2400 and 1200, senders from
+ * 2026-11-07): a good slot with voicing 0, Wo 127, energy 0 and marker 0xA5304B in bits 24-47
+ * plays as N slots (bits 14-23) of the last real slot again, with its good flag.
+ * Optional parity packets (magic | 0x10, one after each group) rebuild a group's one lost
+ * packet exactly: sp_rebuilt.
  *
  * No heap, no floating point, no 64-bit division: everything lives in the caller's buffer
  * (sp_init) and in this library's static decoder state (about 0.9 KB plus a 2 KB cos/sin
@@ -52,7 +58,7 @@ extern "C" {
 /* sp_packet results */
 enum {
   SP_BAD_LENGTH = -3,
-  SP_BAD_MAGIC = -2,             /* de-whitened byte 0 is not 0xA7, 0xA9, 0xAC or 0xAD */
+  SP_BAD_MAGIC = -2,             /* de-whitened byte 0 is not 0xA7, 0xA9, 0xAC or 0xAD (or one | 0x10) */
   SP_BAD_CRC = -1,
   SP_DUP = 0,                    /* good packet, nothing new in it */
   SP_ADDED = 1,                  /* good packet with new frames */
@@ -93,6 +99,15 @@ typedef struct {
 } sp_status_t;
 void sp_status(sp_status_t *st);
 int sp_magic(void);              /* the stored message's magic byte (its codec), 0 for none */
+/* Packets of the stored message rebuilt from parity packets (spec 14): after each interleave
+   group the sender may add one packet whose byte 0 is the codec's magic | 0x10 (0xB7, 0xB9,
+   0xBC, 0xBD) and whose bytes 6 .. len-3 are the XOR of the group's data packets' bytes there.
+   sp_packet takes it like a voice packet; when exactly one of the group's packets is missing
+   it rebuilds that one (its frames become good, its seq counts as received, sp_missing no
+   longer lists it) and returns SP_ADDED or SP_COMPLETE, else SP_DUP. Builds with -DSP_NO_PARITY
+   (tools/k6_build.sh sets it for the images that link the 30 KB codebook into the MCU's flash,
+   which have no room) take parity packets as SP_DUP and rebuild nothing. */
+int sp_rebuilt(void);
 /* The seqs (packets of one pass) not received yet, up to max of them into out; returns how many
    are missing in all (0 while the total is unknown). */
 int sp_missing(uint16_t *out, int max);

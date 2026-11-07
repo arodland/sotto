@@ -206,8 +206,18 @@ then `r=3` on chunk 5), so no `--only` resend was needed.
   `--action none` confirm (sent as XL) before the XL module packets.
 - Send a station ID just before the first module, so the ID keeper doesn't key its own ID
   during a run.
-- The raw logs are on hamlet: `~/sotto-work/logs/cwprobe-20261106T0506.log` and
-  `cwlisten-20261106T0529.log`.
+- The raw logs are in the repo, gzipped: `tests/data/k6/air/cwprobe-20261106T0506.log.gz` and
+  `cwlisten-20261106T0529.log.gz` (originals on hamlet under `~/sotto-work/logs/`).
+
+**Replayed in CI** (`tests/test_k6_air.py`). The listener's `CWID d` lines are the tone
+detector's own marks and spaces, so each run's REG_0B timeline can be rebuilt from them and fed
+to today's `cwlisten` on the emulated M0. All three runs come back exactly as on the air: the
+same head lines (speed, lag, tone, q, n), text, call and ok lines, every mark and space to the
+4 ms unit, and `end ok msgs=2 short=7` / `short=3` / `short=6` now that the upload-tail bursts
+are only counted. The probe's raw REG_0B edges (the 13 wpm ID's `A` and the two dashes of `G`)
+also fixed the synthetic detector model in `tests/test_k6_cwid.py`: it used to delay both edges
+by 10 ms, which leaves marks their sent length, while the real detector makes marks 6-12 ms
+longer and spaces as much shorter. `tone_reg` now turns on 10 ms and off 20 ms after the key.
 
 Unknowns for real repeaters: an ID tone outside 600-1350 Hz, an ID sent over voice (the
 detector may not lock), and whether 50 Hz steps are finer than the detector can tell apart

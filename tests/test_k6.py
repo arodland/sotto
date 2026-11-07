@@ -4,6 +4,7 @@ the IC-7100 path models, calibration, CI-V frames and the command line.
 
 Run: python -m pytest tests/test_k6.py
 """
+from dataclasses import replace
 import os
 import sys
 
@@ -34,13 +35,30 @@ PKT0_AIR = bytes.fromhex(
 S_PKT0_AIR = bytes.fromhex("55" * 16 + "07 6b 3e 36 af e1 1d 9a fc a7 00 60 e2 7a c3 1b 43 d3 cb 92")
 
 
+SPEC_L = replace(pager.L, short_last=False)   # the spec's test message: 16 packets, full groups
+
+
+def test_short_last_group():
+    """70 frames in L: one full group of 8 packets, then the last 6 frames in one packet (seq 8,
+    bit 13 set) instead of 8 mostly empty ones; old-layout receivers still get the full group."""
+    pk = pager.L.pack(TEST_FRAMES, 0x42)
+    assert len(pk) == 9 and pk[:8] == SPEC_L.pack(TEST_FRAMES, 0x42)[:8]
+    q = pager.L.unpack(pk[8])
+    assert q["seq"] == 8 and q["short"] and pager.L.packet_frames(8, 70)[:6] == list(range(64, 70))
+    a = pager.Assembler()
+    for p in pk:
+        a.push(p)
+    got, good = a.frames(0x42)
+    assert got == TEST_FRAMES and good.all()
+
+
 def test_crc_and_whitening():
     assert pager.crc16_ccitt(b"123456789") == 0x29B1
     assert pager.pn9(8) == bytes.fromhex("ff e1 1d 9a ed 85 33 24")
 
 
 def test_spec_vectors():
-    pk = pager.L.pack(TEST_FRAMES, 0x42)
+    pk = SPEC_L.pack(TEST_FRAMES, 0x42)
     assert len(pk) == 16
     assert bytes(a ^ b for a, b in zip(pk[0], pager.WHITEN)) == PKT0_PLAIN
     air = pager.Air(lead_ms=0)
@@ -163,7 +181,7 @@ def test_civ_frames():
 def test_cli(tmp_path):
     sot, wav, back, good = (str(tmp_path / n) for n in ("m.sot", "tx.wav", "b.sot", "g.u8"))
     open(sot, "wb").write(VOICE)
-    assert cli(["tx", sot, wav, "--cw-id", "N0CALL", "--rate", "44100", "--passes", "2"]) == 0
+    assert cli(["tx", sot, wav, "--cw-id", "N0CALL", "--rate", "44100", "--passes", "2", "--no-pause"]) == 0
     assert cli(["rx", wav, back, "--good", good]) == 0
     assert open(back, "rb").read() == VOICE
     assert np.fromfile(good, np.uint8).all()
@@ -292,9 +310,67 @@ def test_codec_1200_magic(tmp_path, capsys):
         pager.profile("S", "1200")
     sot, wav, back = (str(tmp_path / n) for n in ("m.sot", "tx.wav", "b.sot"))
     open(sot, "wb").write(VOICE)
-    assert cli(["tx", sot, wav, "--phy", "F", "--payload", "XL", "--codec", "1200"]) == 0
+    assert cli(["tx", sot, wav, "--phy", "F", "--payload", "XL", "--codec", "1200", "--no-pause"]) == 0
     n = len(VOICE) // 6
     assert f"({n * 0.04:.1f} s of speech)" in capsys.readouterr().err
     assert cli(["rx", wav, back, "--phy", "F", "--payload", "XL", "--codec", "1200"]) == 0
     assert open(back, "rb").read() == VOICE
     assert cli(["rx", wav, back, "--phy", "F", "--payload", "XL"]) == 1      # 2400 profile: all dropped
+
+
+def _with_energy(codes, codec="2400"):
+    """6-byte slots with these energy codes (the rest of the bits random-ish)"""
+    rng = np.random.default_rng(3)
+    out = bytearray()
+    for c in codes:
+        b = bytearray(rng.integers(0, 256, 6, dtype=np.uint8).tobytes())
+        if codec in ("600", "400"):
+            v = int.from_bytes(b[1:4], "big") & ~(31 << 14) | c << 14
+            b[1:4] = v.to_bytes(3, "big")
+        else:
+            v = int.from_bytes(b[1:3], "big") & ~(31 << 10) | c << 10
+            b[1:3] = v.to_bytes(2, "big")
+        out += b
+    return bytes(out)
+
+
+@pytest.mark.parametrize("codec,keep", [("2400", 3), ("1200", 2), ("600", 1), ("400", 1)])
+def test_trim_silence(codec, keep):
+    """Dead air at both ends goes, keeping 60 ms (whole slots, at least one); quiet slots inside
+    stay; a level 34 dB or more under the 98th percentile counts as silent, relative to the
+    message, so a quiet talker isn't cut."""
+    for top in (28, 18):
+        codes = [0] * 40 + [top - 16] * 10 + [top] * 50 + [2] * 7 + [top - 3] * 30 + [1] * 25
+        fr = _with_energy(codes, codec)
+        assert list(pager.energy_codes(fr, codec)) == codes
+        out, a, b = pager.trim_silence(fr, codec)
+        assert (a, b) == (50 - keep, 25 - keep)
+        assert out == fr[6 * a:len(fr) - 6 * b]
+    assert pager.trim_silence(_with_energy([0] * 20, codec), codec) == (_with_energy([0] * 20, codec), 0, 0)
+    loud = _with_energy([20] * 10, codec)
+    assert pager.trim_silence(loud, codec) == (loud, 0, 0)
+
+
+def test_tx_trims_and_shortens(tmp_path, capsys):
+    """tx trims dead air (--no-trim keeps it) and packs the short last group (--no-short-last:
+    the old padded layout); k6_pcmhash's reference does the same by default."""
+    sys.path.insert(0, os.path.join(ROOT, "tools"))
+    import k6_pcmhash
+    fr = _with_energy([0] * 50 + [25] * 200 + [0] * 60)
+    src = tmp_path / "m.sot"
+    src.write_bytes(fr)
+    rec = tmp_path / "rec.wav"
+    assert cli(["tx", str(src), str(rec), "--phy", "F", "--payload", "XL"]) == 0
+    err = capsys.readouterr().err
+    assert "trimmed 0.94 s of dead air at the start, 1.14 s at the end" in err
+    assert "206 frames" in err and "11 packets" in err           # 160 + 46: the last group m = 3 of 8
+    assert cli(["tx", str(src), str(rec), "--phy", "F", "--payload", "XL", "--no-short-last"]) == 0
+    assert "16 packets" in capsys.readouterr().err
+    assert cli(["tx", str(src), str(tmp_path / "all.wav"), "--phy", "F", "--payload", "XL", "--no-trim",
+                "--no-pause"]) == 0
+    assert "310 frames" in capsys.readouterr().err
+    if os.path.exists(os.path.join(ROOT, "c", "k6", "pager_host")):
+        t = pager.trim_silence(fr)[0]
+        assert k6_pcmhash.reference(fr, trim_keep_s=0.06, msg_id=1)[0] == k6_pcmhash.reference(t, msg_id=1)[0]
+    got = cli(["rx", str(rec), str(tmp_path / "back.sot"), "--phy", "F", "--payload", "XL"])
+    assert got == 0 and (tmp_path / "back.sot").read_bytes() == pager.trim_silence(fr)[0]

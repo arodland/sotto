@@ -54,9 +54,12 @@ def build(mode, defs=(), src=None):
         return k6mod.build(w)
 
 
-def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=0.25, fdma=None):
+def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=0.25, fdma=None,
+           fine=False):
     """(bytes the DMA reads from GPIOB's IDR at its rate, bit 1 the code 13 output; the
-    sample at which the carrier comes up). pre_s of nothing, then carrier and the live audio."""
+    sample at which the carrier comes up). pre_s of nothing, then carrier and the live audio.
+    fine: the sigma-delta's every bit at its own clock instead (FCLK), for a DMA whose reads
+    fall where the emulated bus puts them (Emu's wobble); the rate returned is still fdma"""
     import k6_ifcap as ic
     from sim.k6if import mcu, study as st
     m = next(mm for n, mm in ic.PASSES.values() if n == mode)
@@ -64,22 +67,31 @@ def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=
     n0 = int(0.2 * st.FSA)                      # key_and_play: carrier 0.2 s before the audio
     s = st.fm(st.ic7100(np.concatenate([np.zeros(n0), a])), f_off)
     fdma = fdma or mcu.FDMA                     # Jeff's K6's rate under gp0dma
-    bits = st.fe.receive(s, st.FZ, cn0, seed=seed, L=0, fdma=fdma)
-    lead = int(pre_s * fdma)
+    fs = st.fe.FCLK if fine else fdma
+    bits = st.fe.receive(s, st.FZ, cn0, seed=seed, L=0, fdma=fs, **({"jit": 0.0} if fine else {}))
+    lead = int(pre_s * fs)
     rng = np.random.default_rng(seed + 1)
     noise = rng.integers(0, 2, lead)            # no carrier: the squelched IF's idle toggling
+    if fine:
+        return np.concatenate([noise, bits]).astype(np.uint8) * 2, int(pre_s * fdma), fdma
     return np.concatenate([noise, bits]).astype(np.uint8) * 2, lead, fdma
 
 
 class Emu:
-    def __init__(self, code, entry, ib, on_at, fdma, cpi=1.5, max_s=None, key_us=60, stall=None):
+    def __init__(self, code, entry, ib, on_at, fdma, cpi=1.5, max_s=None, key_us=60, stall=None,
+                 wobble=None):
         import unicorn
         from unicorn import arm_const as A
         self.U, self.A = unicorn, A
         self.ib, self.on_at, self.fdma, self.cpi = ib, on_at, fdma, cpi
         self.key_us, self.stall, self.keys = key_us, stall, 0
-        self.max_cyc = (max_s or (len(ib) / fdma + 1.0)) * FCPU
+        # wobble w: ib holds the sigma-delta's bits at FCLK, and the DMA runs at fdma while the
+        # CPU computes and fdma * (1 + w) while it polls the ring (a chunk with 3 or more reads
+        # of CNDTR): the K6's channel 1 runs at what the bus leaves it
+        self.wob, self.fhi = wobble, 6.5e6
+        self.max_cyc = (max_s or (len(ib) / (self.fhi if wobble is not None else fdma) + 1.0)) * FCPU
         self.cyc = 0.0
+        self.spos, self.nread, self.bp = 0.0, 0, [(0.0, 0.0)]
         self.said, self.writes, self.reg = [], {}, {}
         self.dma_on, self.dma_t0, self.dma_s0, self.made = False, 0.0, 0, 0
         mu = self.mu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_THUMB | unicorn.UC_MODE_MCLASS)
@@ -109,10 +121,33 @@ class Emu:
         self.pc = self.base + entry | 1
 
     def sample_now(self):
-        return int(self.cyc / FCPU * self.fdma)
+        if self.wob is None:
+            return int(self.cyc / FCPU * self.fdma)
+        return int(self.spos)
+
+    def tick(self, cyc, poll=False):
+        """the clock on by cyc cycles, the DMA on at its rate for what the CPU did"""
+        self.cyc += cyc
+        if self.wob is not None:
+            self.spos += cyc / FCPU * self.fdma * (1 + self.wob * poll)
+            self.bp.append((self.cyc, self.spos))
+
+    def ib_at(self, j0, k):
+        """the k samples the DMA reads from its j0-th on"""
+        if self.wob is None:
+            seg = self.ib[j0:j0 + k] if j0 < len(self.ib) else np.zeros(0, np.uint8)
+            return np.concatenate([seg, np.zeros(k - len(seg), np.uint8)])
+        c, sp = np.array(self.bp).T
+        t = np.interp(j0 + np.arange(k) + 0.5, sp, c) / FCPU
+        idx = (t * self.fhi).astype(np.int64)
+        out = np.zeros(k, np.uint8)
+        ok = idx < len(self.ib)
+        out[ok] = self.ib[idx[ok]]
+        return out
 
     def rssi(self):
-        on = self.on_at <= self.sample_now() < len(self.ib)
+        n = len(self.ib) if self.wob is None else int(len(self.ib) / self.fhi * self.fdma)
+        on = self.on_at <= self.sample_now() < n
         return -60 if on else -125
 
     # ---- the peripherals ----
@@ -124,15 +159,16 @@ class Emu:
             self.made = n - rsz
         while self.made < n:
             k = min(n - self.made, rsz - self.made % rsz)
-            j = self.dma_s0 + self.made
-            seg = self.ib[j:j + k] if j < len(self.ib) else np.zeros(0, np.uint8)
-            seg = np.concatenate([seg, np.zeros(k - len(seg), np.uint8)])
+            seg = self.ib_at(self.dma_s0 + self.made, k)
             self.mu.mem_write(cmar + self.made % rsz, seg.tobytes())
             self.made += k
+        if self.wob is not None:
+            self.bp = self.bp[-1:]
 
     def mmio_r(self, uc, off, size, page):
         a = page + off
         if a == 0x4002000C:                          # DMA_CNDTR1
+            self.nread += 1
             if not self.dma_on:
                 return self.reg.get(a, 0)
             self.dma_fill()
@@ -187,7 +223,7 @@ class Emu:
             if r0:
                 uc.mem_write(r0, (4096).to_bytes(4, "little"))
             ret = self.scr
-        self.cyc += us * 96
+        self.tick(us * 96)
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
 
     def run(self, prof=None):
@@ -201,7 +237,8 @@ class Emu:
             n = int(rng.integers(CHUNK * 3 // 4, CHUNK * 5 // 4 + 1)) if prof is not None else CHUNK
             self.mu.emu_start(pc, self.stop, count=n)
             pc = self.mu.reg_read(A.UC_ARM_REG_PC)
-            self.cyc += n * self.cpi
+            self.tick(n * self.cpi, self.nread >= 3)
+            self.nread = 0
             if pc == self.stop:
                 break
             if prof is not None:
@@ -215,7 +252,7 @@ class Emu:
 
 
 def run_live(mode="4fsk", cn0=46.0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, cpi=1.5, seed=1,
-             fdma=None, stall=None, src=None):
+             fdma=None, stall=None, src=None, wobble=None):
     """-> (return value, the module's lines, stack bytes used, the FD6818 writes). fdma: the
     DMA's rate (S/s; the module starts on its KS0 and must find it); stall (every, us): every
     so many key checks one takes that long (an interrupt, a slow scan)"""
@@ -223,8 +260,9 @@ def run_live(mode="4fsk", cn0=46.0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, 
     if steps != 10 or seg_s != 6.0 or lead_s != 1.5:
         defs = [("NG", steps), ("STEP_MS", f"{int(seg_s * 1000)}u"), ("LEAD_MS", f"{int(lead_s * 1000)}u")]
     code, entry = build(mode, defs, src)
-    ib, on_at, fdma = stream(mode, cn0, f_off, steps, seg_s, lead_s, seed, fdma=fdma)
-    e = Emu(code, entry, ib, on_at, fdma, cpi, stall=stall)
+    ib, on_at, fdma = stream(mode, cn0, f_off, steps, seg_s, lead_s, seed, fdma=fdma,
+                             fine=wobble is not None)
+    e = Emu(code, entry, ib, on_at, fdma, cpi, stall=stall, wobble=wobble)
     r = e.run()
     ret, used = r if r else (None, None)
     return ret, e.said, used, e.writes
@@ -274,6 +312,8 @@ def main():
     ap.add_argument("--cpi", type=float, default=1.5)
     ap.add_argument("--fdma", type=float, help="the DMA's rate, S/s (default the model's 5.49e6)")
     ap.add_argument("--stall", help="EVERY,US: every so many key checks one takes US microseconds")
+    ap.add_argument("--wobble", type=float, help="the DMA this much faster (a fraction) while "
+                    "the CPU polls than while it computes (the sigma-delta's bits then at its clock)")
     ap.add_argument("--src", help="a variant of the mode's live module (e.g. c/k6/mod/iflive_tsweep.c)")
     ap.add_argument("--module", help="run this module's source instead (e.g. c/k6/mod/gp0dma.c)")
     ap.add_argument("--profile", action="store_true", help="with --module: the time in each function "
@@ -293,7 +333,7 @@ def main():
         return
     stall = tuple(int(x) for x in a.stall.split(",")) if a.stall else None
     ret, said, used, _ = run_live(a.mode, a.cn0, a.off, a.steps, a.seg, a.lead, a.cpi,
-                                  fdma=a.fdma, stall=stall, src=a.src)
+                                  fdma=a.fdma, stall=stall, src=a.src, wobble=a.wobble)
     for ln in said:
         print("K6 MOD say", ln)
     print(f"ret={ret} stack={used} B")

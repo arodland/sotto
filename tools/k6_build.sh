@@ -52,6 +52,12 @@ case "${K6_CB:-}" in
   install) OUT=${K6_OUT:-$OUT-cbi}; [ -n "$VLR" ] || CB="-DFX_CB_SPI -DSP_CB_INSTALL" ;;
   *) echo "K6_CB is spi or install" >&2; exit 1 ;;
 esac
+# the images that link the 30 KB shape codebook into the MCU's flash (the -table fallbacks and the
+# install image) have no room for the parity rebuild (spec 14): they ignore parity packets
+NOPAR=
+case "${K6_CB:-}:$VLR" in
+  :*|install:) NOPAR=-DSP_NO_PARITY ;;
+esac
 CC=${K6_CC:-clang}
 AR=${K6_AR:-llvm-ar}
 OBJCOPY=${K6_OBJCOPY:-llvm-objcopy}
@@ -59,7 +65,7 @@ RES=$("$CC" -print-resource-dir)
 CFLAGS="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -nostdinc
   -isystem $ROOT/c/fixed/cm4/inc -isystem $RES/include -ffunction-sections -fdata-sections -std=c99
   -ffreestanding -fno-builtin-calloc -fno-builtin-free -Wall -Wno-unused-function
-  -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DFX_CS512_CONST -DFX_YIELD_HOOK $LR -I$ROOT/c -O2 $*"
+  -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DFX_CS512_CONST -DFX_YIELD_HOOK $LR -I$ROOT/c -O2 $NOPAR $*"
 mkdir -p "$OUT"
 if [ -n "${K6_CB:-}" ]; then
   # the codebook image and its CRC, from this tree's fx_tables.c (a host build of c/k6/sp_cb.c)

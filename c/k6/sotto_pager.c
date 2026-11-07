@@ -55,6 +55,7 @@ void sp_free(void *p) {
 #define GROUP 8                   /* packets per interleave group: the default, and the test message's */
 #define HDR 6                     /* magic, msg_id, seq (2), total (2) */
 #define TEST_FRAMES 70            /* the spec's test message (section 10) */
+#define PARITY 0x10               /* magic | PARITY: an interleave group's XOR parity packet (spec 14) */
 
 static uint8_t pn9[SP_PAYLOAD_MAX];
 static uint8_t last_pkt[SP_PAYLOAD_MAX];
@@ -114,9 +115,29 @@ static int ring;                    /* frames in the ring while a message stream
 static int fpg_now;                 /* frames per interleave group of the message */
 static int gp_now = GROUP;          /* packets per interleave group of the message: 8, 4, 2 or 1 */
 static int hi_group, hi_count;      /* the newest group seen, and how many of its packets */
+static int last_g = -1, last_m;     /* the short last group (seq bit 13): its group, its packets */
 static int avail;                   /* frames below this are final: playable */
 static int ended, overruns, playing;
+static uint16_t rebuilt;            /* packets of the message rebuilt from parity packets */
 static uint32_t pcm_hash, pcm_n;    /* FNV-1a of the samples played since sp_play_start */
+static int bit(const uint8_t *m, int i) { return (m[i >> 3] >> (i & 7)) & 1; }
+static void set_bit(uint8_t *m, int i) { m[i >> 3] |= (uint8_t)(1u << (i & 7)); }
+
+/* pause frames (sotto 2400 and 1200, senders from 2026-11-07): a good slot of voicing 0, Wo 127,
+   energy 0, a 10-bit count N and PAUSE_MARKER plays as N slots of fill: the last real slot again,
+   with its good flag */
+#define PAUSE_MARKER 0xA5304Bu
+static uint8_t fill_frame[6];
+static int fill_good = -1;          /* the last real slot's good flag; -1 none played yet */
+static int fill_left;               /* fill slots still to play */
+
+static int pause_slots(int r) {
+  const uint8_t *q = S.frames + 6 * r;
+  if (fill_good < 0 || !bit(S.good, r) || q[0] != 0x3F || (q[1] & 0xFC) != 0x80 ||
+      ((uint32_t)q[3] << 16 | (uint32_t)q[4] << 8 | q[5]) != PAUSE_MARKER)
+    return 0;
+  return (q[1] & 3) << 8 | q[2];
+}
 
 static void hash_pcm(const int16_t *pcm) {
   uint32_t h = pcm_hash;
@@ -135,8 +156,6 @@ uint32_t sp_pcm_hash(unsigned *samples) {
 }
 static int32_t emph1, emph2;
 
-static int bit(const uint8_t *m, int i) { return (m[i >> 3] >> (i & 7)) & 1; }
-static void set_bit(uint8_t *m, int i) { m[i >> 3] |= (uint8_t)(1u << (i & 7)); }
 
 int sp_init(void *mem, unsigned bytes) {
   /* per frame: 6 bytes, 1 good bit, 1/2 seen bit (room for 2-frame packets, as the retired
@@ -158,11 +177,13 @@ int sp_init(void *mem, unsigned bytes) {
 static int voice_magic(int m) {
   return m == SP_MAGIC || m == SP_MAGIC_LR || m == SP_MAGIC_600 || m == SP_MAGIC_400;
 }
+/* a voice packet, or a voice codec's parity packet */
+static int pager_magic(int m) { return voice_magic(m & ~PARITY); }
 
 static void clear_message(uint8_t msg_id, uint8_t profile, uint8_t magic) {
   uint16_t gp = S.st.good_packets, bp = S.st.bad_packets;
-  ring = fpg_now = hi_count = avail = ended = overruns = playing = 0;
-  hi_group = -1;
+  ring = fpg_now = hi_count = avail = ended = overruns = playing = last_m = rebuilt = 0;
+  hi_group = last_g = -1;
   memset(S.good, 0, (unsigned)S.max_frames / 8u);
   memset(S.seen, 0, (unsigned)S.max_frames / 16u);
   memset(&S.st, 0, sizeof S.st);
@@ -172,6 +193,11 @@ static void clear_message(uint8_t msg_id, uint8_t profile, uint8_t magic) {
 }
 
 static int pos_of(long f) { return ring ? (int)(f % ring) : (int)f; }
+
+/* The message's layout: how many packets group g has (n), and the frame in slot s of its
+   packet k: g*F*D + s*n + k. Packet placement and the parity rebuild both go through these. */
+static int group_packets(int g) { return g == last_g ? last_m : gp_now; }
+static long frame_in(int g, int k, int s) { return (long)g * fpg_now + s * group_packets(g) + k; }
 
 static void put_frame(int f, const uint8_t *src) {
   int r = pos_of(f);
@@ -184,7 +210,7 @@ static void put_frame(int f, const uint8_t *src) {
 /* stream mode: the frames playback may take, once group g's packets are all in or a later
    group's have started (packets come in seq order), or the sender has stopped (ended) */
 static void update_avail(void) {
-  long a = (long)hi_group * fpg_now + (hi_count >= gp_now ? fpg_now : 0);
+  long a = (long)hi_group * fpg_now + (hi_count >= (hi_group == last_g ? last_m : gp_now) ? fpg_now : 0);
   if (ended || S.st.complete) a = S.st.total == 0xFFFF ? (long)(hi_group + 1) * fpg_now : S.st.stored;
   if (a > S.st.stored) a = S.st.stored;
   if (a > avail) avail = (int)a;
@@ -208,30 +234,41 @@ static int finish_packet(int seq, int was_new, unsigned before) {
 
 /* profile L or XL (fpp frames per packet), checked and de-whitened */
 static int packet(const uint8_t *p, int fpp, uint8_t profile) {
-  /* seq's top 2 bits: the interleave depth, 8 >> code packets per group (0: 8, as before) */
-  int dep = GROUP >> (p[2] >> 6), seq = (p[2] & 0x3F) << 8 | p[3], total = p[4] << 8 | p[5];
-  int s, was_new = 0, fpg = fpp * dep;
+  /* seq's top 2 bits: the interleave depth, 8 >> code packets per group (0: 8, as before); bit
+     13: a packet of the short last group, which has m = ceil(rem / fpp) packets for its rem
+     frames, packet k carrying frames g*fpg + s*m + k */
+  int dep = GROUP >> (p[2] >> 6), seq = (p[2] & 0x1F) << 8 | p[3], total = p[4] << 8 | p[5];
+  int s, was_new = 0, fpg = fpp * dep, k = seq % dep;
   unsigned before;
   if (!S.st.have || S.st.profile != profile || p[0] != S.magic || p[1] != S.st.msg_id || total != S.st.total ||
       dep != gp_now) {
     clear_message(p[1], profile, p[0]);
     S.st.total = (uint16_t)total;
     S.st.stored = (uint16_t)(total < S.max_frames ? total : S.max_frames);
-    S.st.packets_total = (uint16_t)((total + fpg - 1) / fpg * dep);
     fpg_now = fpg, gp_now = dep;
+    /* a partial last group short (until one of its packets says otherwise: an old sender) */
+    last_g = total / fpg, last_m = (total - last_g * fpg + fpp - 1) / fpp;
+    if (last_m < 1 || last_m >= dep) last_g = -1, last_m = 0;
+    S.st.packets_total = (uint16_t)(last_g < 0 ? (total + fpg - 1) / fpg * dep : last_g * dep + last_m);
     if (stream_on && S.max_frames >= fpg)   /* the whole message, through a ring of groups */
       ring = S.max_frames / fpg * fpg, S.st.stored = (uint16_t)total;
     was_new = 1;
   }
+  if (p[2] & 0x20) {
+    if (seq / dep != last_g || k >= last_m) return SP_DUP;   /* no such packet */
+  } else if (last_g >= 0 && seq / dep == last_g) {           /* the old padded layout */
+    last_g = -1, last_m = 0;
+    S.st.packets_total = (uint16_t)((total + fpg - 1) / fpg * dep);
+  }
   if (ring) {
-    int g = seq / dep, k, i, groups = ring / fpg;
+    int g = seq / dep, i, j, groups = ring / fpg;
     if (g <= hi_group - groups) return SP_DUP;   /* its place in the ring went to a later group */
     if (g > hi_group) {
-      for (k = hi_group + 1 > g - groups + 1 ? hi_group + 1 : g - groups + 1; k <= g; k++) {
-        /* group k reuses group k - groups's place: an overrun if that wasn't played yet */
-        if (playing && (long)(k - groups + 1) * fpg > play_pos) overruns++;
+      for (j = hi_group + 1 > g - groups + 1 ? hi_group + 1 : g - groups + 1; j <= g; j++) {
+        /* group j reuses group j - groups's place: an overrun if that wasn't played yet */
+        if (playing && (long)(j - groups + 1) * fpg > play_pos) overruns++;
         for (i = 0; i < fpg; i++) {           /* XL at depth 1 has 20-frame groups: by bit */
-          int b = pos_of((long)k * fpg + i);
+          int b = pos_of((long)j * fpg + i);
           S.good[b >> 3] &= (uint8_t)~(1u << (b & 7));
         }
       }
@@ -240,10 +277,59 @@ static int packet(const uint8_t *p, int fpp, uint8_t profile) {
   }
   before = S.st.frames_got;
   for (s = 0; s < fpp; s++) {
-    long f = (long)(seq / dep) * fpg + s * dep + seq % dep;
+    long f = frame_in(seq / dep, k, s);
     if (f < S.st.stored) put_frame((int)f, p + HDR + 6 * s);
   }
   return finish_packet(seq, was_new, before);
+}
+
+/* A parity packet (spec 14), checked and de-whitened in p: byte 0 the codec's magic | PARITY,
+   bytes 2-3 the depth code and group g where a data packet has seq, then the XOR of the group's
+   data packets' bytes 6 .. len-3. If exactly one of the group's packets is missing (its slot-0
+   frame has no good bit), the parity XOR the others' stored frames (frames >= total were sent
+   as zeros) is that packet: it goes in through packet() like a received one. A parity packet
+   never starts a message, and is ignored for a group the store can't vouch for (a truncated
+   store, or a ring place a later group took). p is restored afterwards (sp_last_packet). */
+static int parity(uint8_t *p, int fpp, uint8_t profile) {
+#ifdef SP_NO_PARITY
+  (void)p, (void)fpp, (void)profile;
+  return SP_DUP;                      /* this build only takes them in, as an older image ignores them */
+#else
+  int dep = GROUP >> (p[2] >> 6), g = (p[2] & 0x1F) << 8 | p[3], total = p[4] << 8 | p[5];
+  int n, k, s, i, r, miss = -1, seq0;
+  if (!S.st.have || S.st.profile != profile || (p[0] & ~PARITY) != S.magic || p[1] != S.st.msg_id ||
+      total != S.st.total || dep != gp_now)
+    return SP_DUP;
+  if (!(p[2] & 0x20) != (g != last_g)) return SP_DUP;   /* the short last group's flag must agree */
+  n = group_packets(g), seq0 = g * dep;
+  if (ring && g > hi_group) {
+    if (n != 1) return SP_DUP;        /* none of the group's packets is in yet */
+    miss = 0;                         /* depth 1: the parity is the packet */
+  } else {
+    if (ring ? g <= hi_group - ring / fpg_now : (long)(g + 1) * fpg_now > S.st.stored && S.st.stored < total)
+      return SP_DUP;
+    for (k = 0; k < n; k++) {
+      long f = frame_in(g, k, 0);
+      if (f < total && !bit(S.good, pos_of(f))) {
+        if (miss >= 0) return SP_DUP;   /* two missing: XOR can't tell them apart */
+        miss = k;
+      }
+    }
+    if (miss < 0) return SP_DUP;        /* nothing missing */
+  }
+  for (k = 0; k < n; k++)
+    for (s = 0; k != miss && s < fpp; s++) {
+      long f = frame_in(g, k, s);
+      const uint8_t *q = S.frames + 6 * pos_of(f);
+      if (f < total)
+        for (i = 0; i < 6; i++) p[HDR + 6 * s + i] ^= q[i];
+    }
+  p[0] &= (uint8_t)~PARITY, p[2] = (uint8_t)((p[2] & 0xE0) | (seq0 + miss) >> 8), p[3] = (uint8_t)(seq0 + miss);
+  r = packet(p, fpp, profile);
+  if (r > SP_DUP) rebuilt++;
+  p[0] |= PARITY, p[2] = (uint8_t)((p[2] & 0xE0) | g >> 8), p[3] = (uint8_t)g;
+  return r;
+#endif
 }
 
 int sp_packet(const uint8_t *payload, int len) {
@@ -252,14 +338,17 @@ int sp_packet(const uint8_t *payload, int len) {
   if (!pn9[0]) pn9_init();
   for (i = 0; i < len; i++) last_pkt[i] = payload[i] ^ pn9[i];
   for (; i < SP_PAYLOAD_MAX; i++) last_pkt[i] = 0;
-  if (!voice_magic(last_pkt[0])) { S.st.bad_packets++; return SP_BAD_MAGIC; }
+  if (!pager_magic(last_pkt[0])) { S.st.bad_packets++; return SP_BAD_MAGIC; }
   if (crc16(last_pkt, len - 2) != ((unsigned)last_pkt[len - 2] << 8 | last_pkt[len - 1])) {
     S.st.bad_packets++;
     return SP_BAD_CRC;
   }
   S.st.good_packets++;
   if (!S.max_frames) return SP_DUP;
-  r = packet(last_pkt, fpp_of(len), (len == SP_PAYLOAD_XL ? 'X' : 'L') | (last_pkt[0] != SP_MAGIC ? 0x20 : 0));
+  {
+    uint8_t m = last_pkt[0], prof = (uint8_t)((len == SP_PAYLOAD_XL ? 'X' : 'L') | ((m & ~PARITY) != SP_MAGIC ? 0x20 : 0));
+    r = m & PARITY ? parity(last_pkt, fpp_of(len), prof) : packet(last_pkt, fpp_of(len), prof);
+  }
   return r;
 }
 
@@ -268,7 +357,7 @@ int sp_check(const uint8_t *payload, int len) {
   unsigned c = 0xFFFF;
   if (len != SP_PAYLOAD_L && len != SP_PAYLOAD_XL) return 0;
   if (!pn9[0]) pn9_init();
-  if (!voice_magic(payload[0] ^ pn9[0])) return 0;
+  if (!pager_magic(payload[0] ^ pn9[0])) return 0;
   for (i = 0; i < len - 2; i++) {     /* the CRC as crc16(), de-whitening on the way: no copy */
     int b;
     c ^= (unsigned)(payload[i] ^ pn9[i]) << 8;
@@ -304,6 +393,7 @@ const uint8_t *sp_pn9(void) {
 unsigned sp_crc16(const uint8_t *p, int n) { return crc16(p, n); }
 
 void sp_status(sp_status_t *st) { *st = S.st; }
+int sp_rebuilt(void) { return S.st.have ? rebuilt : 0; }
 int sp_magic(void) { return S.st.have ? S.magic : 0; }
 
 int sp_missing(uint16_t *out, int max) {
@@ -359,6 +449,7 @@ void sp_play_start(void) {
   /* -1: the other codec's message, or no tables to decode with (sp_cb.h, sp_vlr.h) */
   play_end = S.st.have && MSG_PLAYS && TABLES_READY ? S.st.stored : -1;
   playing = 1;
+  fill_good = -1, fill_left = 0;
   emph1 = emph2 = 0;
   pcm_hash = 2166136261u, pcm_n = 0;
 }
@@ -367,15 +458,24 @@ void sp_play_start(void) {
 /* sotto 1200: each 6-byte slot is 40 ms, played as two 20 ms halves (no 320-sample buffer);
    the decoder runs SOTTO_LR_DEC_DELAY slots behind, and its flush plays the last ones */
 static int lr_half(int16_t pcm[SP_FRAME_SAMPLES]) {
-  int half = play_half, r;
-  if (play_pos < play_end) {
-    if (ring && play_pos >= avail) return SP_PLAY_WAIT;
-    r = pos_of(play_pos);
-    sotto_lr_decode_half(dec, S.frames + 6 * r, bit(S.good, r), half, pcm);
+  int half = play_half, r, n;
+  if (fill_left || play_pos < play_end) {
+    if (!fill_left) {
+      if (ring && play_pos >= avail) return SP_PLAY_WAIT;
+      r = pos_of(play_pos);
+      if (!half && (n = pause_slots(r)) > 0) fill_left = n, play_pos++;
+    }
+    if (fill_left) {
+      sotto_lr_decode_half(dec, fill_frame, fill_good, half, pcm);
+      if (half) fill_left--;
+    } else {
+      r = pos_of(play_pos);
+      sotto_lr_decode_half(dec, S.frames + 6 * r, bit(S.good, r), half, pcm);
+      if (half) memcpy(fill_frame, S.frames + 6 * r, 6), fill_good = bit(S.good, r), play_pos++;
+    }
   } else if (!sotto_lr_dec_flush_half(dec, half, pcm))
     return 0;
   play_half = !half;
-  if (half) play_pos++;
   return 1;
 }
 
@@ -416,11 +516,21 @@ int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
 #else
 int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
   if (!dec || play_end < 0) return 0;
-  if (play_pos < play_end) {
-    int r = pos_of(play_pos);
-    if (ring && play_pos >= avail) return SP_PLAY_WAIT;
-    sotto_decode(dec, S.frames + 6 * r, bit(S.good, r), pcm);
-    play_pos++;
+  if (fill_left || play_pos < play_end) {
+    int r, n;
+    if (!fill_left) {
+      if (ring && play_pos >= avail) return SP_PLAY_WAIT;
+      if ((n = pause_slots(pos_of(play_pos))) > 0) fill_left = n, play_pos++;
+    }
+    if (fill_left) {
+      sotto_decode(dec, fill_frame, fill_good, pcm);
+      fill_left--;
+    } else {
+      r = pos_of(play_pos);
+      sotto_decode(dec, S.frames + 6 * r, bit(S.good, r), pcm);
+      memcpy(fill_frame, S.frames + 6 * r, 6), fill_good = bit(S.good, r);
+      play_pos++;
+    }
     hash_pcm(pcm);
     return 1;
   }
@@ -544,11 +654,11 @@ int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e) {
 }
 
 unsigned sp_static_bytes(void) {
-  return (unsigned)(sizeof dec_mem + sizeof pn9 + sizeof last_pkt + sizeof S + sizeof dec + 14 * sizeof(int)
+  return (unsigned)(sizeof dec_mem + sizeof pn9 + sizeof last_pkt + sizeof S + sizeof dec + 14 * sizeof(int) + sizeof rebuilt
 #ifdef SP_VLR
                     + sizeof vdec + 2 * sizeof(int)
 #endif
-                    + 2 * sizeof(int32_t) + 2 * SP_FRAME_SAMPLES
+                    + 2 * sizeof(int32_t) + 2 * SP_FRAME_SAMPLES + sizeof fill_frame + 2 * sizeof(int)
 #ifdef FX_OA_PACKED
                     + 2048u                       /* fx_cs512's table (fx_math.c) */
 #endif

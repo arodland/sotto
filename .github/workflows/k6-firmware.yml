@@ -7,14 +7,14 @@ on:
     paths: ["c/k6/**", "c/fixed/**", "c/sotto.h", "c/sotto_lr_dec.inc", "c/sotto_lr_tables.h", "c/sotto_vlr.h", "c/sotto_vlr_tables.h", "c/sotto_vlr_tables.c", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
             "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "tests/test_k6_cb.py", "tests/test_k6_vlr.py", "modem/k6mod.py", "modem/pager.py", "tools/k6_ifcap.py", "tests/test_k6_ifcap.py", "tests/test_k6_ifrx.py", "tests/k6_live_emu.py", "sim/k6if/**", "tests/test_k6_ft8.py", "tests/test_k6_ft8tx.py", "sim/k6digi/**",
             "tools/k6_ft8.py", "tools/k6_upload.py", "tests/test_k6_i2s.py", "tests/test_k6_cwkey.py",
-            "tests/test_k6_txrules.py", "tests/test_k6_ifcal.py", "tests/test_k6_arq.py", "tests/test_k6_rxmap.py", "tools/k6_rxmap.py", "modem/k6.py", "tools/k6_bench.py", "tests/test_k6_bench.py",
-            "tools/k6_afsweep.py", "tools/k6_update.py", ".github/workflows/k6-firmware.yml"]
+            "tests/test_k6_txrules.py", "tests/test_k6_air.py", "tests/data/k6/air/**", "tests/test_k6_ifcal.py", "tests/test_k6_arq.py", "tests/test_k6_rxmap.py", "tools/k6_rxmap.py", "modem/k6.py", "modem/fsk.py",
+            "tools/k6_bench.py", "tests/test_k6_bench.py", "tools/k6_afsweep.py", "tools/k6_update.py", ".github/workflows/k6-firmware.yml"]
   pull_request:
     paths: ["c/k6/**", "c/fixed/**", "c/sotto.h", "c/sotto_lr_dec.inc", "c/sotto_lr_tables.h", "c/sotto_vlr.h", "c/sotto_vlr_tables.h", "c/sotto_vlr_tables.c", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py",
             "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "tests/test_k6_cb.py", "tests/test_k6_vlr.py", "modem/k6mod.py", "modem/pager.py", "tools/k6_ifcap.py", "tests/test_k6_ifcap.py", "tests/test_k6_ifrx.py", "tests/k6_live_emu.py", "sim/k6if/**", "tests/test_k6_ft8.py", "tests/test_k6_ft8tx.py", "sim/k6digi/**",
             "tools/k6_ft8.py", "tools/k6_upload.py", "tests/test_k6_i2s.py", "tests/test_k6_cwkey.py",
-            "tests/test_k6_txrules.py", "tests/test_k6_ifcal.py", "tests/test_k6_arq.py", "tests/test_k6_rxmap.py", "tools/k6_rxmap.py", "modem/k6.py", "tools/k6_bench.py", "tests/test_k6_bench.py",
-            "tools/k6_afsweep.py", "tools/k6_update.py", ".github/workflows/k6-firmware.yml"]
+            "tests/test_k6_txrules.py", "tests/test_k6_air.py", "tests/data/k6/air/**", "tests/test_k6_ifcal.py", "tests/test_k6_arq.py", "tests/test_k6_rxmap.py", "tools/k6_rxmap.py", "modem/k6.py", "modem/fsk.py",
+            "tools/k6_bench.py", "tests/test_k6_bench.py", "tools/k6_afsweep.py", "tools/k6_update.py", ".github/workflows/k6-firmware.yml"]
 
 jobs:
   host-tests:
@@ -31,7 +31,7 @@ jobs:
         run: |
           make -C c VARIANT=v3.7 fixed PYTHON=false
           make -C c/k6
-          python -m pytest -q tests/test_k6_pager.py tests/test_k6_harness.py tests/test_k6_mod.py tests/test_k6_cb.py tests/test_k6_cwid.py tests/test_k6_ifcap.py tests/test_k6_ifrx.py tests/test_k6_vlr.py
+          python -m pytest -q tests/test_k6_pager.py tests/test_k6_harness.py tests/test_k6_mod.py tests/test_k6_cb.py tests/test_k6_cwid.py tests/test_k6_air.py tests/test_k6_ifcap.py tests/test_k6_ifrx.py tests/test_k6_vlr.py
       - name: FT8 receiver and transmitter (host core, GP0 path sim, ft8wf and ft8tx on an emulated M0)
         run: python -m pytest -q tests/test_k6_ft8.py tests/test_k6_ft8tx.py
       - name: modules on an emulated M0 (the transmit rules for every module that keys up, the IF tap, calibration) and upload ARQ

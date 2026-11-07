@@ -13,7 +13,8 @@ Profile L (primary), 64-byte payload, before whitening:
             0xAD (sotto 400, 120 ms each; docs/sotto-vlr.md)
     1       msg_id
     2-3     big-endian: bits 15-14 the interleave depth (0: 8 packets per group, 1: 4, 2: 2,
-            3: 1; receivers before 2026-11-05 know only 0), bits 13-0 seq, the packet number
+            3: 1; receivers before 2026-11-05 know only 0), bit 13 set on the packets of a
+            short last group (2026-11-07, below), bits 12-0 seq, the packet number
     4-5     total frames in the message, big-endian
     6-53    8 sotto frames, slot 0 first
     54-61   reserved, zero
@@ -33,6 +34,22 @@ F = 8 frames per packet in L, 20 in XL, 2 in S), so a lost packet only costs iso
 slots apart. A smaller D lets a streaming receiver start sooner (a group is in after D packets)
 but spaces a lost packet's frames closer together (D = 1: a lost packet is one 20-frame gap).
 
+Short last group (2026-11-07): when the last group has only rem < F*D frames, it takes
+m = ceil(rem / F) packets instead of D (the rest were padding), seqs G*D .. G*D+m-1, packet k
+of it carrying frames G*F*D + s*m + k; those packets have header bit 13 set, and the receiver
+gets m from total. Full groups are as before, so a receiver from before this change plays every
+full group and loses only the short one (its seqs read as 8192 and up). Profile(short_last=False)
+sends the old padded layout. On XL this is about 9% fewer packets on real clips.
+
+Parity packets (optional, `Profile(parity=True)`, `modem.k6 tx --parity`; spec section 14): after
+the D packets of each interleave group comes one more L or XL packet whose byte 0 is the codec's
+magic | 0x10 (0xB7, 0xB9, 0xBC, 0xBD), bytes 1-5 the header with the group number g in place of
+seq (bits 15-14 the depth as in a data packet), and bytes 6 up to the CRC the XOR of the group's
+data packets' bytes in the same places (their frames, zero padding and L's reserved bytes). A
+receiver missing exactly one of the group's packets rebuilds it: the parity XOR the others.
+Receivers that don't know it drop it (an unknown magic). It costs 1/D more air time (12.5 % at
+the usual depth 8) and turns a group's single lost packet from concealed frames into exact ones.
+
 On air (Air): 0x55 x 16, sync 07 6B 3E 36, payload, MSB first. The chip CRC and scrambler
 are off; all checking is ours. Stream framing (Air(preamble_bytes=0)): the lead-in, then each
 packet as just the sync word and the payload, back to back, for a receiver that finds the sync
@@ -48,9 +65,11 @@ MAGIC = 0xA7                    # sotto v3.7, 20 ms per frame
 MAGIC_1200 = 0xA9               # sotto 1200, 40 ms per frame (0xA8 is the control packet)
 MAGIC_600 = 0xAC                # sotto 600, 80 ms per frame (0xAA: k6_update, 0xAB: RAM modules)
 MAGIC_400 = 0xAD                # sotto 400, 120 ms per frame
+PARITY = 0x10                   # magic | PARITY: the parity packet of an interleave group
 CODECS = {"2400": (MAGIC, 0.020), "1200": (MAGIC_1200, 0.040),     # magic, seconds per frame
           "600": (MAGIC_600, 0.080), "400": (MAGIC_400, 0.120)}
 FRAME_BYTES = 6
+HDR = 6                         # magic, msg_id, seq (2), total (2)
 GROUP = 8                       # packets per interleave group, unless the header says otherwise
 DEPTHS = (8, 4, 2, 1)           # by the depth code in seq's top 2 bits
 SYNC = bytes([0x07, 0x6B, 0x3E, 0x36])
@@ -98,6 +117,8 @@ class Profile:
     slots: int            # sotto frames per packet
     magic: int = MAGIC    # byte 0 (L and XL): which codec the frames are
     depth: int = GROUP    # packets per interleave group: 8, 4, 2 or 1 (L and XL)
+    short_last: bool = True  # a partial last group takes only the packets it fills (seq bit 13)
+    parity: bool = False  # pack: one XOR parity packet after each group (L and XL)
 
     @property
     def frame_s(self):
@@ -108,12 +129,47 @@ class Profile:
     def group_frames(self):
         return self.slots * self.depth
 
-    def packet_frames(self, seq):
+    def last_group(self, total):
+        """(first seq of the last group, its packet count m) when that group is short: with
+        short_last, a last group of rem < F*D frames takes m = ceil(rem / F) packets instead of D,
+        packet k of it carrying frames G*F*D + s*m + k. (None, 0) when the layout is the plain one
+        (no partial group, m = D anyway, short_last off, or profile S)."""
+        if not self.short_last or self.name == "S":
+            return None, 0
+        g, rem = divmod(total, self.group_frames)
+        m = -(-rem // self.slots)
+        return (g * self.depth, m) if 0 < m < self.depth else (None, 0)
+
+    def packet_frames(self, seq, total=None):
+        """The frames packet seq carries (given total, the short last group's layout too)."""
         g, k = divmod(seq, self.depth)
+        if total is not None:
+            first, m = self.last_group(total)
+            if first is not None and seq >= first:
+                return [g * self.group_frames + s * m + seq - first for s in range(self.slots)]
         return [g * self.group_frames + s * self.depth + k for s in range(self.slots)]
 
     def n_packets(self, total):
-        return -(-total // self.group_frames) * self.depth
+        """Data packets (seqs) in a message of `total` frames; parity packets come on top."""
+        first, m = self.last_group(total)
+        return first + m if first is not None else -(-total // self.group_frames) * self.depth
+
+    def group_seqs(self, g, total):
+        """The seqs of interleave group g's data packets: what its parity packet covers."""
+        return range(g * self.depth, min((g + 1) * self.depth, self.n_packets(total)))
+
+    def air_packets(self, total):
+        """Packets on air for one pass: the data packets and, with parity, one per group."""
+        n = self.n_packets(total)
+        return n + (-(-n // self.depth) if self.parity else 0)
+
+    def _header(self, magic, msg_id, field, total):
+        hs = DEPTHS.index(self.depth) << 14 | field
+        return bytes([magic, msg_id & 0xFF]) + hs.to_bytes(2, "big") + total.to_bytes(2, "big")
+
+    def _seal(self, p):
+        p += bytes(self.payload - 2 - len(p))                # L: 8 reserved bytes
+        return _whiten(p + crc16_ccitt(p).to_bytes(2, "big"))
 
     def pack(self, frames, msg_id=0):
         """frames: bytes (6 per frame) -> list of whitened payloads in transmit order."""
@@ -124,22 +180,32 @@ class Profile:
         npk = self.n_packets(total)
         if self.depth not in DEPTHS or (self.name == "S" and self.depth != GROUP):
             raise ValueError(f"interleave depth {self.depth}: L and XL take 8, 4, 2 or 1, S only 8")
-        if self.name != "S" and npk > 0x4000:
-            raise ValueError("message too long: seq has 14 bits")
+        if self.name != "S" and npk > 0x2000:
+            raise ValueError("message too long: seq has 13 bits (bit 13 marks the short last group)")
         if self.name == "S" and npk > 2048:
             raise ValueError("message too long for profile S (2048 packets)")
+        if self.parity and self.name == "S":
+            raise ValueError("profile S has no magic byte, so no parity packets")
         out = []
+        first, _ = self.last_group(total)
+        acc = None
         for seq in range(npk):
-            body = b"".join(fr[f] if f < total else bytes(6) for f in self.packet_frames(seq))
+            body = b"".join(fr[f] if f < total else bytes(6) for f in self.packet_frames(seq, total))
             if self.name != "S":
-                hs = DEPTHS.index(self.depth) << 14 | seq
-                p = bytes([self.magic, msg_id & 0xFF]) + hs.to_bytes(2, "big") + total.to_bytes(2, "big")
-                p += body
-                p += bytes(self.payload - 2 - len(p))         # L: 8 reserved bytes
+                short = first is not None and seq >= first
+                p = self._header(self.magic, msg_id, short << 13 | seq, total) + body
+                out.append(self._seal(p))
+                if self.parity:      # XOR of bytes 6 .. payload-3 of the group's packets
+                    d = _whiten(out[-1])[HDR:-2]
+                    acc = d if acc is None else bytes(a ^ b for a, b in zip(acc, d))
+                    if (seq + 1) % self.depth == 0 or seq == npk - 1:
+                        g = seq // self.depth
+                        out.append(self._seal(self._header(self.magic | PARITY, msg_id, short << 13 | g, total) + acc))
+                        acc = None
             else:
                 last = int(seq // GROUP == npk // GROUP - 1)
                 p = bytes([(msg_id & 15) << 4 | last << 3 | (seq >> 8) & 7, seq & 0xFF]) + body
-            out.append(_whiten(p + crc16_ccitt(p).to_bytes(2, "big")))
+                out.append(_whiten(p + crc16_ccitt(p).to_bytes(2, "big")))
         return out
 
     def unpack(self, payload):
@@ -148,13 +214,16 @@ class Profile:
         if len(p) != self.payload or crc16_ccitt(p[:-2]) != int.from_bytes(p[-2:], "big"):
             return None
         if self.name != "S":
-            if p[0] != self.magic:
+            if p[0] not in (self.magic, self.magic | PARITY):
                 return None
-            return dict(msg_id=p[1], seq=int.from_bytes(p[2:4], "big") & 0x3FFF,
-                        depth=DEPTHS[p[2] >> 6], total=int.from_bytes(p[4:6], "big"), last=None,
-                        frames=[p[6 + 6 * s:12 + 6 * s] for s in range(self.slots)])
-        return dict(msg_id=p[0] >> 4, seq=(p[0] & 7) << 8 | p[1], depth=GROUP, total=None,
-                    last=(p[0] >> 3) & 1, frames=[p[2:8], p[8:14]])
+            q = dict(msg_id=p[1], seq=int.from_bytes(p[2:4], "big") & 0x1FFF,
+                     depth=DEPTHS[p[2] >> 6], short=bool(p[2] & 0x20), total=int.from_bytes(p[4:6], "big"),
+                     last=None, frames=[p[6 + 6 * s:12 + 6 * s] for s in range(self.slots)], parity=None)
+            if p[0] & PARITY:        # a parity packet: seq is the group, the rest the XOR
+                q.update(group=q.pop("seq"), parity=p[HDR:-2], frames=None)
+            return q
+        return dict(msg_id=p[0] >> 4, seq=(p[0] & 7) << 8 | p[1], depth=GROUP, short=False, total=None,
+                    last=(p[0] >> 3) & 1, frames=[p[2:8], p[8:14]], parity=None)
 
 
 L = Profile("L", 64, 8)
@@ -163,17 +232,179 @@ S = Profile("S", 16, 2)
 PROFILES = {"L": L, "XL": XL, "S": S}
 
 
-def profile(name, codec="2400", depth=GROUP):
+def energy_codes(frames, codec="2400"):
+    """Each 6-byte slot's 5-bit energy code (0 = silence; code c is 10 + 70c/31 - 87.3 dBFS): bits
+    9-13 for sotto v3.7 and sotto 1200 (its A frame), the superframe's energy mean (bits 13-17)
+    for sotto 600 / 400. The same fields the K6's automatic gain reads."""
+    b = np.frombuffer(bytes(frames), np.uint8).reshape(-1, FRAME_BYTES).astype(np.uint32)
+    if codec in ("600", "400"):
+        return ((b[:, 1] << 16 | b[:, 2] << 8 | b[:, 3]) >> 14) & 31
+    return ((b[:, 1] << 8 | b[:, 2]) >> 10) & 31
+
+
+TRIM_BELOW = 15       # codes under the message's 98th-percentile level: 15 x 2.26 = 34 dB
+
+
+def trim_silence(frames, codec="2400", keep_s=0.06, below=TRIM_BELOW):
+    """Dead air cut from both ends of a message: slots whose energy code is `below` codes or more
+    under the message's 98th-percentile code (or 0) count as silent, and at most keep_s of them
+    stay before the first and after the last loud slot (at least one slot). The K6's auto gain
+    lifts the peak to -13 dBFS, so what is cut would play at -47 dBFS or lower, under the speaker's
+    own noise (silent-frame-skipping memo, 2026-11-04). -> (frames, slots cut at the start,
+    slots cut at the end). A message with nothing loud in it is left as it is."""
+    frames = bytes(frames)
+    n = len(frames) // FRAME_BYTES
+    if n == 0:
+        return frames, 0, 0
+    e = energy_codes(frames, codec).astype(int)
+    peak = int(np.percentile(e, 98, method="higher"))
+    loud = np.flatnonzero((e > peak - below) & (e > 0))
+    if peak == 0 or len(loud) == 0:
+        return frames, 0, 0
+    keep = max(1, int(np.ceil(keep_s / CODECS[codec][1] - 1e-9)))
+    a, b = max(0, int(loud[0]) - keep), min(n, int(loud[-1]) + 1 + keep)
+    return frames[a * FRAME_BYTES:b * FRAME_BYTES], a, n - b
+
+
+# ---- pause frames (2026-11-07): one slot stands for a run of silent slots ------------------
+#
+# A pause frame is a 6-byte slot: voicing 0 (unvoiced), Wo 127, energy 0, then a 10-bit count N
+# (bits 14-23) and the 24-bit marker PAUSE_MARKER (bits 24-47). A K6 from 2026-11-07 plays N slots
+# of fill in its place: the last real slot before it again, with that slot's good flag (so a lost
+# one is concealed, never a held speech frame). Older receivers decode it as one silent slot
+# (energy 0; in sotto 1200 the B half's energy step is -6 and its voicing unvoiced too). sotto
+# 2400 and sotto 1200 only (sotto 600 / 400 lay their bits out differently).
+
+PAUSE_MARKER = 0xA5304B      # bits 32-33 (1200 voicing B) = 00, bits 37-39 (1200 energy B step) = 000
+PAUSE_MAX = 1023
+PAUSE_CODECS = ("2400", "1200")
+_PAUSE_HEAD = 0x3F80         # bits 0-13: voicing 00, Wo 1111111, energy 00000 (as the top 14 of 16)
+
+
+def pause_frame(n):
+    """The pause slot standing for n (1..1023) slots of fill."""
+    if not 1 <= n <= PAUSE_MAX:
+        raise ValueError(f"a pause frame holds 1..{PAUSE_MAX} slots")
+    v = (_PAUSE_HEAD >> 2) << 34 | n << 24 | PAUSE_MARKER
+    return v.to_bytes(6, "big")
+
+
+def pause_count(slot):
+    """N if this 6-byte slot is a pause frame, else 0."""
+    v = int.from_bytes(bytes(slot), "big")
+    if v >> 34 != _PAUSE_HEAD >> 2 or v & 0xFFFFFF != PAUSE_MARKER:
+        return 0
+    return v >> 24 & 0x3FF
+
+
+def _voicing_codes(slot, codec):
+    """The 2-bit voicing codes a slot feeds the decoder, in order (sotto 1200: A, then B)."""
+    v = int.from_bytes(bytes(slot), "big")
+    return (v >> 46,) if codec == "2400" else (v >> 46, v >> 14 & 3)
+
+
+def _prev_v(state, codes):
+    """The decoder's prev_v (second-half voicing) after these codes: 0..2 as they are, code 3 the
+    edge whose voiced half the previous frame decides (sotto_fx_dec.c)."""
+    for c in codes:
+        state = c if c < 3 else (2 if state == 0 else 0)
+    return state
+
+
+def compact_pauses(frames, codec="2400", below=TRIM_BELOW, min_run=4):
+    """Runs of min_run or more silent slots (as trim_silence: `below` codes under the 98th
+    percentile; sotto 1200 needs its next slot's A energy quiet too, since B interpolates to it)
+    become their first slot plus a pause frame: the receiver replays the first slot in the gap.
+    When replaying it would leave the decoder's voicing state (prev_v) other than the real run
+    leaves it, the run's last slot is sent too. Real slots that look like a pause frame's head
+    get Wo 126. -> (frames, slots saved). Other codecs: unchanged."""
+    frames = bytes(frames)
+    sl = _split(frames)
+    if codec not in PAUSE_CODECS or not sl:
+        return frames, 0
+    e = energy_codes(frames, codec).astype(int)
+    peak = int(np.percentile(e, 98, method="higher"))
+    quiet = (e <= peak - below) | (e == 0)
+    silent = quiet.copy() if codec == "2400" else quiet & np.append(quiet[1:], True)
+    fix = []
+    for f in sl:          # Wo 127 + energy 0 is the pause head: move real slots off it
+        v = int.from_bytes(f, "big")
+        if (v >> 34) & 0xFFF == (_PAUSE_HEAD >> 2) & 0xFFF:
+            v ^= 1 << 39  # Wo 127 -> 126 (still silent: energy 0)
+        fix.append(v.to_bytes(6, "big"))
+    sl = fix
+    out, state, i, n = [], 0, 0, len(sl)
+    while i < n:
+        if not silent[i]:
+            out.append(sl[i])
+            state = _prev_v(state, _voicing_codes(sl[i], codec))
+            i += 1
+            continue
+        j = i
+        while j < n and silent[j]:
+            j += 1
+        run = sl[i:j]
+        real = state
+        for f in run:
+            real = _prev_v(real, _voicing_codes(f, codec))
+        hold = _voicing_codes(run[0], codec)
+        plan = None
+        if len(run) >= min_run:
+            if _prev_v(state, hold * len(run)) == real:
+                plan = (len(run) - 1, False)
+            elif len(run) >= min_run + 1 and \
+                    _prev_v(_prev_v(state, hold * (len(run) - 1)), _voicing_codes(run[-1], codec)) == real:
+                plan = (len(run) - 2, True)
+        if plan is None:
+            out.extend(run)
+        else:
+            gap, last = plan
+            out.append(run[0])
+            while gap > 0:
+                k = min(gap, PAUSE_MAX)
+                out.append(pause_frame(k))
+                gap -= k
+            if last:
+                out.append(run[-1])
+        state = real
+        i = j
+    return b"".join(out), n - len(out)
+
+
+def expand_pauses(frames, good=None, codec="2400"):
+    """Undo compact_pauses as the K6 plays it: each good pause frame becomes N copies of the last
+    real slot before it, with that slot's good flag. -> (frames, good as uint8)."""
+    sl = _split(frames)
+    good = np.ones(len(sl), np.uint8) if good is None else np.asarray(good, np.uint8)
+    if codec not in PAUSE_CODECS:
+        return bytes(frames), good
+    out, og, last = [], [], None
+    for f, g in zip(sl, good):
+        k = pause_count(f) if g else 0
+        if k and last is not None:
+            out += [last[0]] * k
+            og += [last[1]] * k
+        else:
+            out.append(f)
+            og.append(int(g))
+            last = (f, int(g))
+    return b"".join(out), np.array(og, np.uint8)
+
+
+def profile(name, codec="2400", depth=GROUP, short_last=True, parity=False):
     """The packet profile for a codec: "2400" (sotto v3.7), "1200" (sotto 1200, magic 0xA9), "600"
     or "400" (0xAC, 0xAD; the last three L and XL only, since profile S has no magic byte), with
     `depth` packets per interleave group
-    (8, 4, 2 or 1; S only 8)."""
+    (8, 4, 2 or 1; S only 8), and with `parity` an XOR parity packet after each group (L and XL)."""
     magic = CODECS[codec][0]
     if name == "S" and magic != MAGIC:
         raise ValueError("profile S carries sotto v3.7 frames only (it has no magic byte)")
     if depth not in DEPTHS or (name == "S" and depth != GROUP):
         raise ValueError(f"interleave depth {depth}: L and XL take 8, 4, 2 or 1, S only 8")
-    return replace(PROFILES[name], magic=magic, depth=depth)
+    if parity and name == "S":
+        raise ValueError("profile S has no magic byte, so no parity packets")
+    return replace(PROFILES[name], magic=magic, depth=depth, short_last=short_last and name != "S",
+                   parity=parity)
 
 
 # ---- control packets (spec section 13) ----------------------------------------------------
@@ -277,10 +508,13 @@ class Assembler:
     """Collects payloads (any pass, any order) into messages: frames + per-frame good flags.
 
     A packet with a bad CRC or magic is counted and dropped. A new msg_id starts a new
-    message, as on the radio; `messages` keeps them all here for testing."""
+    message, as on the radio; `messages` keeps them all here for testing. Parity packets are
+    kept per group; `frames` rebuilds a group's one missing packet from its parity (counted in
+    `rebuilt`), as the K6 does."""
 
     def __init__(self, profile=L):
         self.profile, self.bad, self.swapped, self.messages = profile, 0, 0, {}
+        self.rebuilt = 0
 
     def push(self, payload):
         """-> the unpacked packet, or None. A payload whose 16-bit words arrive byte-swapped
@@ -294,13 +528,35 @@ class Assembler:
                 return None
             self.swapped += 1
         m = self.messages.setdefault(q["msg_id"], {"total": None, "last_seq": None, "pk": {},
-                                                   "depth": q["depth"]})
+                                                   "depth": q["depth"], "short": False, "parity": {}})
+        m["short"] |= q["short"]
         if q["total"] is not None:
             m["total"] = q["total"]
+        if q["parity"] is not None:
+            m["parity"][q["group"]] = q["parity"]
+            return q
         if q["last"]:
             m["last_seq"] = max(m["last_seq"] or 0, q["seq"])
         m["pk"][q["seq"]] = q["frames"]
         return q
+
+    def _rebuild(self, m, prof):
+        """Each group with exactly one data packet missing and its parity packet in: the
+        missing packet = the parity XOR the group's other packets (frames and padding as sent;
+        L's reserved bytes are zero on both sides)."""
+        nb = prof.slots * FRAME_BYTES
+        for g, par in m["parity"].items():
+            seqs = prof.group_seqs(g, m["total"])
+            lost = [q for q in seqs if q not in m["pk"]]
+            if len(lost) != 1:
+                continue
+            body = bytearray(par[:nb])
+            for q in seqs:
+                if q != lost[0]:
+                    for i, b in enumerate(b"".join(m["pk"][q])):
+                        body[i] ^= b
+            m["pk"][lost[0]] = [bytes(body[6 * s:6 * s + 6]) for s in range(prof.slots)]
+            self.rebuilt += 1
 
     def frames(self, msg_id):
         """-> (frames bytes, good uint8 per frame) for one message."""
@@ -310,9 +566,11 @@ class Assembler:
             top = max(m["pk"]) if m["last_seq"] is None else m["last_seq"] | (GROUP - 1)
             total = (top // GROUP + 1) * self.profile.group_frames
         fr, good = [bytes(6)] * total, np.zeros(total, np.uint8)
-        prof = replace(self.profile, depth=m.get("depth", GROUP))
+        prof = replace(self.profile, depth=m.get("depth", GROUP), short_last=m.get("short", False))
+        if m.get("parity") and m["total"] is not None:
+            self._rebuild(m, prof)
         for seq, body in m["pk"].items():
-            for s, f in enumerate(prof.packet_frames(seq)):
+            for s, f in enumerate(prof.packet_frames(seq, m["total"])):
                 if f < total:
                     fr[f], good[f] = body[s], 1
         if m["total"] is None and m["last_seq"] is not None:
