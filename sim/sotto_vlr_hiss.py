@@ -79,7 +79,8 @@ class SottoVLRHiss(SottoVLR, hb.SottoV38):
         (raw: (mean or zeros, found))"""
         r = self.REACH * self.N
         xs = []
-        for rng in (range(g - 1, max(-1, g - r - 1), -1), range(g + 1, min(nf, g + r + 1))):
+        back = range(g - 1, max(-1, g - r - 1), -1)
+        for rng in (back,) if getattr(self, "causal", None) == "strict" else (back, range(g + 1, min(nf, g + r + 1))):
             h = next((h for h in rng if h in q), None)
             if h is not None:
                 xs.append(q[h])
