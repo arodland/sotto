@@ -205,9 +205,29 @@ Logs: `~/sotto-work/runs/explorer-scan-4/`.
   keying. 440.850 had dropped off the T list by the end: it was down, and a newer entry took its
   place, but its H line is in the log.
 
+## Fifth bench run (2026-11-07 09:03 UTC): the floor holds
+
+The module was f16ff0c, CI run 42357086797, 3,532 B. The K6 was on the new pager image fe25ec8
+(PR #108); the scan's environment is the same. 70 cm for 120 s. There were two CW IDs: the ID
+keeper's at 0.5 s in and ours at 40.5 s. Logs: `~/sotto-work/runs/explorer-scan-5/`.
+
+- **The floor held at -105** (`F0 -105 q-141`) on every N line, through both -22 dBm IDs. The
+  bench noise at 440.0-440.2 never came in as hits.
+- **Both IDs became one entry with two overs:** `H 440.850 7852 -23` and `H 440.850 8653 -22`,
+  then `T 440.850 n2 t17 -22 d1`.
+- **Speed:** `Z sw=112 bins=44800 ms=120286 bps=372 hot=4`. Sweeps take 1,008 ms when it's
+  quiet. Right after each ID they took 1.2-2.6 s with 28-133 confirms and no hits, as the
+  desensed bins recovered. stack_free was 1,060 B.
+- **The carrier's skirts are listed as their own entries:** 440.862 at -58, 440.900 at -79 and
+  440.912 at -73 to -79, each up only while the ID is. The K6 hears a -22 dBm carrier 12.5-62.5
+  kHz either side. The explorer now marks those as skirts (`c/k6/explore.c`, EX_SKIRT_DB 25 dB
+  within EX_SKIRT_HZ 100 kHz, ending within 2 s of the louder over). They rank last.
+
+So on the bench, Phase 1 now does what it should: the right floor, the CW ID found as one
+repeater-like entry, and about 1 s a sweep.
+
 ## Next bench run
 
-Receive only, nothing flashed, with f16ff0c or later (the floor fix): `run 70a --seconds 120`
-with the CW ID about 40 s in. The floor should stay near -105 through the ID (the `fl` on the N
-lines). The bench noise at 440.0-440.2 shouldn't come in as hits, and every sweep should take
-about 1 s. A run of 10 minutes or more would also let 144.000 become an `X` spur on 2 m.
+Away from the bench: a 30-minute 70 cm scan somewhere quieter than the PC, fed to `k6_explore.py
+replay`. That also gives the ID keeper's 9-minute rhythm and lets 144.000 turn into an `X` spur
+on a 2 m run of 10 minutes or more.

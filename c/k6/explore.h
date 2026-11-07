@@ -18,7 +18,10 @@
      a short regular over                  +1      3+ overs of 2-15 s, 5-20 min apart (like an
                                                     ID every 10 minutes)
 
-   A spur scores -100: it ranks last and is the first to go when the list is full.
+   A spur scores -100: it ranks last and is the first to go when the list is full. So does a
+   skirt: a candidate whose every over ended within 2 s of an over EX_SKIRT_DB louder within
+   EX_SKIRT_HZ (the K6 hears a -22 dBm carrier 12.5-62.5 kHz either side at -58 to -79, on air
+   2026-11-07).
    Grades: 's' a spur, a simplex frequency or under 0 points; '?' fewer than EX_MIN_OVERS overs
    with no input heard and no call; 'R' 6 points or more; otherwise 'r'. The offset comes from ex_input when there is one, else
    from the band plan row the output falls in.
@@ -44,6 +47,8 @@ extern "C" {
 #define EX_F_OFF_HEARD 0x04      /* the offset comes from ex_input, not the plan */
 #define EX_F_SIMPLEX 0x08        /* in a simplex range */
 #define EX_F_SPUR 0x10
+#define EX_SKIRT_HZ 100000       /* a carrier this close and EX_SKIRT_DB louder, ending with it: a skirt */
+#define EX_SKIRT_DB 25
 
 typedef struct {
   uint32_t hz;
@@ -55,6 +60,7 @@ typedef struct {
   int16_t lo, hi;                /* lowest and highest over level, dBm */
   uint32_t prev_start;           /* last over's start, for the ID-interval cue */
   uint8_t ids;                   /* short overs at an ID-like interval */
+  uint8_t skirts;                /* overs that were a louder neighbour's skirt */
   uint8_t flags;
   int8_t score;
   char grade;                    /* '?' 'R' 'r' 's' */

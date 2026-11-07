@@ -14,7 +14,7 @@ master plan's: 0 settle-time meter, 1 fast sweep, 2 explorer core, 3 core image 
 | Fast scan (Phase 1) | `c/k6/mod/scan.c`, `tools/k6_scan.py`, docs/k6-scan.md | 3,460 B module | on air: 403 bins/s, a 2 m sweep in 0.97 s |
 | CW ID decoder | `c/k6/cwid.c`, `c/k6/mod/cwlisten.c`, docs/k6-cwid.md | 2.8 KB (cwid.c), 3.95 KB module | on air: 6 of 6 IDs exact |
 | Repeater table | `c/k6/rt.[ch]`, docs/k6-repeater-table.md | 3.0 KB | host tests only; needs flash access (below) |
-| Candidate list and grades | `c/k6/explore.[ch]` | 1.5 KB, 48 B a candidate | host tests only |
+| Candidate list and grades | `c/k6/explore.[ch]` | 1.75 KB, 48 B a candidate | host tests only |
 | Replay | `tools/k6_explore.py replay LOG...` | host | reads scan and cwlisten logs, prints the ranked list |
 
 All of the C is MIT, with no division, no library calls and no writable statics, so each part

@@ -69,9 +69,9 @@ void ex_grade(ex_cand_t *c) {
   }
   if (c->ids >= 2) s += 1;
   if (!(c->flags & EX_F_OFF_HEARD)) c->off_hz = p && !p->simplex ? p->off_hz : 0;
-  if (c->flags & EX_F_SPUR) s = -100;    /* last in the list, and the first to make room */
+  if ((c->flags & EX_F_SPUR) || (c->overs && c->skirts >= c->overs)) s = -100;   /* last, first to go */
   c->score = (int8_t)(s < -100 ? -100 : s > 100 ? 100 : s);
-  if (c->flags & EX_F_SPUR) c->grade = 's';
+  if (s == -100) c->grade = 's';
   else if (c->overs < EX_MIN_OVERS && !(c->flags & EX_F_OFF_HEARD) && !c->call[0]) c->grade = '?';
   else if ((c->flags & EX_F_SIMPLEX) || s < 0) c->grade = 's';
   else c->grade = s >= 6 ? 'R' : 'r';
@@ -102,6 +102,7 @@ static ex_cand_t *get(ex_t *e, uint32_t hz, uint32_t t) {
 
 ex_cand_t *ex_over(ex_t *e, uint32_t hz, uint32_t start_ms, uint32_t dur_ms, int level) {
   ex_cand_t *c = get(e, hz, start_ms);
+  unsigned i;
   if (!c) return 0;
   if (!c->overs || level < c->lo) c->lo = (int16_t)level;
   if (!c->overs || level > c->hi) c->hi = (int16_t)level;
@@ -112,6 +113,14 @@ ex_cand_t *ex_over(ex_t *e, uint32_t hz, uint32_t start_ms, uint32_t dur_ms, int
     c->prev_start = start_ms | 1;
   }
   c->overs++, c->on_ms += dur_ms, c->last_ms = start_ms + dur_ms;
+  /* a skirt: this over and a neighbour's last one ended together, one EX_SKIRT_DB louder */
+  for (i = 0; i < e->n; i++) {
+    ex_cand_t *o = &e->c[i];
+    if (o == c || !o->overs || dist(o->hz, hz) > EX_SKIRT_HZ || dist(o->last_ms, c->last_ms) > 2000)
+      continue;
+    if (o->hi >= level + EX_SKIRT_DB && c->skirts < c->overs) c->skirts++;
+    else if (level >= o->hi + EX_SKIRT_DB && o->skirts < o->overs) o->skirts++, ex_grade(o);
+  }
   ex_grade(c);
   return c;
 }

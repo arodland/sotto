@@ -32,7 +32,8 @@ class Cand(ctypes.Structure):
     _fields_ = [("hz", ctypes.c_uint32), ("first_ms", ctypes.c_uint32), ("last_ms", ctypes.c_uint32),
                 ("on_ms", ctypes.c_uint32), ("off_hz", ctypes.c_int32), ("overs", ctypes.c_uint16),
                 ("tone", ctypes.c_uint16), ("lo", ctypes.c_int16), ("hi", ctypes.c_int16),
-                ("prev_start", ctypes.c_uint32), ("ids", ctypes.c_uint8), ("flags", ctypes.c_uint8),
+                ("prev_start", ctypes.c_uint32), ("ids", ctypes.c_uint8), ("skirts", ctypes.c_uint8),
+                ("flags", ctypes.c_uint8),
                 ("score", ctypes.c_int8), ("grade", ctypes.c_char), ("call", ctypes.c_char * 10)]
 
 
@@ -166,6 +167,8 @@ def row_text(c):
     head = f"{c.grade.decode()} {c.hz / 1e6:9.4f}{off}{tone}{call}{heard}"
     if c.flags & F_SPUR:
         return head + "  spur"
+    if c.overs and c.skirts >= c.overs:
+        return head + f"  skirt of a louder neighbour ({c.overs} overs, {c.hi} dBm)"
     return (f"{head}  score {c.score}, {c.overs} overs, {c.on_ms / 1000:.0f} s up, {c.hi} dBm "
             f"(spread {c.hi - c.lo} dB), ids {c.ids}")
 

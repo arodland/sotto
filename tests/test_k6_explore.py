@@ -180,3 +180,21 @@ def test_replays_a_scan_and_cwlisten_log(lib):
     assert kx.row_text(rows[0]).startswith("R  146.9400 -0.6 MHz W7ABC/R  score 8, 3 overs")
     assert kx.row_text(rows[2]).endswith("spur")
     assert kx.plan_rows(lib)[2] == (146_610_000, 146_970_000, -600_000, False)
+
+
+def test_a_strong_carrier_s_skirts_are_marked(lib):
+    # scan-5 on air (2026-11-07): the CW ID at -22 dBm on 440.850, and 440.862 / .900 / .912 at
+    # -58 to -79, ending with it
+    x = kx.Explorer(lib)
+    for k, t in enumerate((1000, 21000)):
+        x.over(440_862_500, t + 300, 7400, -58)          # its H line comes first
+        x.over(440_850_000, t, 7850, -22)
+        x.over(440_912_500, t + 500, 7000, -76)
+    x.over(440_900_000, 40_000, 3000, -79)              # this one alone: no louder neighbour then
+    rows = {c.hz: c for c in x.ranked()}
+    assert rows[440_850_000].score > -100 and rows[440_850_000].skirts == 0
+    for hz in (440_862_500, 440_912_500):
+        assert rows[hz].skirts == rows[hz].overs == 2 and rows[hz].grade == b"s" and rows[hz].score == -100
+        assert "skirt" in kx.row_text(rows[hz])
+    assert rows[440_900_000].skirts == 0 and rows[440_900_000].score != -100
+    assert x.ranked()[0].hz == 440_850_000
