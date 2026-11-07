@@ -48,7 +48,7 @@ The chunks' data, in order, is the image (the last chunk padded with zeros):
 | 4 | code length, u16 little-endian |
 | 6 | entry offset in the code, u16, even |
 | 8 | serial, u32: must be newer than the last module this boot ran |
-| 12 | API level the module needs (1 to 4; a K6 refuses a newer one), flags (0), telemetry parts (0-12, level 4 images; see below), 1 reserved byte |
+| 12 | API level the module needs (1 to 6; a K6 refuses a newer one), flags (0), telemetry parts (0-12, level 4 images; see below), 1 reserved byte |
 | 16 | code: Thumb, position-independent, no writable statics |
 | 16 + code length | SipHash-2-4 tag of bytes 0 .. 15 + code length, u64 little-endian |
 
@@ -135,6 +135,34 @@ was noisy.
 The lean images (`aura-pager-cbi`, `-only-table`, `-lr-table`, `-vlri`) have no room for any
 of this: they take level 4 modules but send no reports, keep no telemetry and refuse
 `cal_write`.
+
+## API level 6: the module's screen
+
+Added 2026-11-07 for the WSPR modules (Jeff: "Design a module with nice UI"), after level 5's
+flash calls (`docs/k6-explore-app.md`). Until then a module could only talk over the serial
+report; the screen was Aura's. The firmware keeps the state and owns the font and the display;
+a module sends only text and pixel rows (`c/k6/k6_mod.h`):
+
+- `lcd_text(line, s)`: six lines of 21 characters in FONT_6X10 at baselines y = 9, 19 .. 59
+  (the explorer screen's layout), line 0 drawn as an inverted title bar;
+- `lcd_bar(line, num, den)`: a progress bar after that line's text;
+- `lcd_wf(ring, rows, head)`: up to 30 rows of 128 pixels (16 bytes each, MSB leftmost) from
+  y = 21 down, in place of lines 2-4, `ring[head]` on top. The rows stay in the module's
+  memory, so the firmware needs no buffer for them;
+- `lcd_flush()`: draws the whole frame and sends it to the display (about 20-40 ms; 0, or -1
+  with no display: the lean images leave the screen out, 1 KB they don't have, so a module
+  there keeps to its serial lines).
+
+The firmware's part is in the Aura patch: `ModScreen` and the four calls in `app/pager.rs`,
+`draw_mod_screen` in `ui/pager.rs`, and a hook `main.rs` registers once with the display
+(`ui::hook_mod_screen`), since modules run inside the main loop's calls and never while it
+draws. When the module returns, the pager's own screen comes back. About 190 B of RAM.
+
+**One build for old and new images.** A module reads `api->level` at run time and calls the
+screen only when it is 6 or more; its `K6_MODULE_LEVEL` stays what its other calls need. So
+`wsprtx` (level 3) and `wspriq` (level 2) run on today's images without a screen and draw one
+on a level 6 image. The emulators (`tests/test_k6_i2s.py` `run(lcd=...)`, `tests/test_k6_ft8.py`
+`emulate(lcd=...)`) record each flushed frame, and fail a screen call below level 6.
 
 ## Security
 
@@ -525,3 +553,14 @@ what would settle it.
     - It would buy: HF listening with no hardware change. 20 m FT8 through ft8wf's GP0 software
       demodulator would be the showpiece.
     - Settled by: the clock birdies at 12 and 13 MHz turning up at their own frequency, or not.
+31. **Let the PC stop a running module.**
+    - From: the WSPR thread, 2026-11-07 ([k6-ft8-wspr.md](k6-ft8-wspr.md)). Not built.
+    - On the bench the WSPR beacon (`wsprbcn`, 6 frames over 50 minutes) could only be stopped
+      by a key press on the radio, because the pager reads no control packets while a module
+      runs. The bench was held for the rest of the hour. One option is a firmware `stop` flag the
+      pager's receive path sets on a control packet, which modules poll with their key check
+      (`api->stop()`, next to `key_down`). Another needs no firmware: a module that waits on RSSI
+      (as `wsprbcn` does between frames) stops on a two-carrier pattern that a CW ID can't make,
+      for example two 1 s carriers 2 s apart.
+    - It would buy: long-running modules (beacons, scanners, loggers) on an unattended bench.
+    - Settled by: `k6_bench.py stop` ending `wsprbcn` between frames without anyone at the radio.

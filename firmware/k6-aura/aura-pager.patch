@@ -239,10 +239,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..7b98ac3
+index 0000000..aecab49
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3834 @@
+@@ -0,0 +1,3933 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -475,6 +475,11 @@ index 0000000..7b98ac3
 +        pub fl_read: unsafe extern "C" fn(u32, *mut u8, u32) -> i32,
 +        pub fl_prog: unsafe extern "C" fn(u32, *const u8, u32) -> i32,
 +        pub fl_erase: unsafe extern "C" fn(u32) -> i32,
++        // level 6: the screen, for a module's own display (text lines, bars, a waterfall)
++        pub lcd_text: unsafe extern "C" fn(i32, *const u8),
++        pub lcd_bar: unsafe extern "C" fn(i32, u32, u32),
++        pub lcd_wf: unsafe extern "C" fn(*const u8, i32, i32),
++        pub lcd_flush: unsafe extern "C" fn() -> i32,
 +    }
 +    #[repr(C)]
 +    pub struct KmStatus {
@@ -501,7 +506,7 @@ index 0000000..7b98ac3
 +/// through MOD_CTX, set only while a module runs.
 +static MOD_API: ffi::K6Api = ffi::K6Api {
 +    abi: 1,
-+    level: 5,
++    level: 6,
 +    say: mod_say,
 +    ticks: mod_ticks,
 +    fd_read: mod_fd_read,
@@ -521,6 +526,10 @@ index 0000000..7b98ac3
 +    fl_read: mod_fl_read,
 +    fl_prog: mod_fl_prog,
 +    fl_erase: mod_fl_erase,
++    lcd_text: mod_lcd_text,
++    lcd_bar: mod_lcd_bar,
++    lcd_wf: mod_lcd_wf,
++    lcd_flush: mod_lcd_flush,
 +};
 +
 +struct ModCtx {
@@ -668,7 +677,7 @@ index 0000000..7b98ac3
 +// module makes its own modulation (REG_3B, the tone oscillator REG_70/71) and its own CW ID;
 +// REG_30/33/36/37 stay refused (tx_pa is the PA switch, for CW keying).
 +
-+const MOD_TX_MAX_MS: u32 = 20_000;
++const MOD_TX_MAX_MS: u32 = 120_000; // 20 s until 2026-11-07: a WSPR frame is 110.6 s
 +/// REG_30 while a module transmits: Aura's STATE_TX_ON (0xC1FE) with the MICIN ADC (bit 2) off
 +const MOD_TX_STATE: u16 = 0xC1FA;
 +
@@ -917,6 +926,94 @@ index 0000000..7b98ac3
 +    app.storage.norflash.erase_sector(addr);
 +    report_line(format_args!("K6 FL erase {:#x} n={}", addr, n));
 +    0
++}
++
++// ---- level 6: the module's screen ----
++//
++// The calls fill MOD_SCREEN (six lines of 21 characters, a bar per line, and a pointer to the
++// module's waterfall rows); lcd_flush draws it all through the hook main.rs sets
++// (ui::hook_mod_screen) and returns 0, or -1 when there is none. Nothing draws it but
++// lcd_flush, so the main loop's screen comes back when the module returns. Byte loops, no
++// struct copies: a memcpy would pull in compiler_builtins' mem functions.
++
++pub const MOD_LINES: usize = 6;
++pub const MOD_COLS: usize = 21;
++/// the waterfall: up to WF_ROWS rows of 128 pixels (16 bytes, bit 7 of byte 0 leftmost) from
++/// y = WF_TOP down, over text lines 2-4
++pub const WF_TOP: i32 = 21;
++pub const WF_ROWS: i32 = 30;
++
++pub struct ModScreen {
++    pub text: [[u8; MOD_COLS]; MOD_LINES],
++    pub bar: [(u32, u32); MOD_LINES],
++    pub wf: *const u8,
++    pub wf_rows: i32,
++    pub wf_head: i32,
++}
++pub static mut MOD_SCREEN: ModScreen = ModScreen {
++    text: [[0; MOD_COLS]; MOD_LINES],
++    bar: [(0, 0); MOD_LINES],
++    wf: core::ptr::null(),
++    wf_rows: 0,
++    wf_head: 0,
++};
++static mut MOD_LCD: Option<unsafe fn() -> i32> = None;
++
++/// main.rs: the function that draws MOD_SCREEN and flushes the display
++pub fn set_mod_lcd(f: unsafe fn() -> i32) {
++    unsafe { *addr_of_mut!(MOD_LCD) = Some(f) };
++}
++
++fn mod_screen_clear() {
++    let s = unsafe { &mut *addr_of_mut!(MOD_SCREEN) };
++    for l in 0..MOD_LINES {
++        for c in 0..MOD_COLS {
++            s.text[l][c] = 0;
++        }
++        s.bar[l] = (0, 0);
++    }
++    s.wf = core::ptr::null();
++    s.wf_rows = 0;
++    s.wf_head = 0;
++}
++
++/// line 0-5 (0 is the title bar), up to 21 characters; "" or null clears it
++unsafe extern "C" fn mod_lcd_text(line: i32, t: *const u8) {
++    if !(0..MOD_LINES as i32).contains(&line) {
++        return;
++    }
++    let row = unsafe { &mut (*addr_of_mut!(MOD_SCREEN)).text[line as usize] };
++    let mut end = t.is_null();
++    for c in 0..MOD_COLS {
++        let b = if end { 0 } else { unsafe { *t.add(c) } };
++        end |= b == 0;
++        row[c] = if b >= 0x20 && b < 0x7F { b } else if b == 0 { 0 } else { b'?' };
++    }
++}
++
++/// a bar after line's text, num of den full; den 0 takes it away
++unsafe extern "C" fn mod_lcd_bar(line: i32, num: u32, den: u32) {
++    if (0..MOD_LINES as i32).contains(&line) {
++        unsafe { (*addr_of_mut!(MOD_SCREEN)).bar[line as usize] = (num.min(den), den) };
++    }
++}
++
++/// the waterfall: rows x 16 bytes in the module's memory, ring[head] drawn at the top; 0 rows
++/// takes it away (the module's memory: valid until it returns or calls again)
++unsafe extern "C" fn mod_lcd_wf(ring: *const u8, rows: i32, head: i32) {
++    let s = unsafe { &mut *addr_of_mut!(MOD_SCREEN) };
++    let rows = if ring.is_null() { 0 } else { rows.clamp(0, WF_ROWS) };
++    s.wf = ring;
++    s.wf_rows = rows;
++    s.wf_head = if rows > 0 { head.rem_euclid(rows) } else { 0 };
++}
++
++unsafe extern "C" fn mod_lcd_flush() -> i32 {
++    mod_tx_guard();
++    match unsafe { *addr_of!(MOD_LCD) } {
++        Some(f) if !unsafe { (*addr_of!(MOD_CTX)).app.is_null() } => unsafe { f() },
++        _ => -1,
++    }
 +}
 +
 +// ---- telemetry: a module's say lines, kept for the over-the-air report ----
@@ -2792,8 +2889,10 @@ index 0000000..7b98ac3
 +        if st.reply != 0 && st.tlm != 0 {
 +            tlm_start(st.tlm as usize * KM_TLM_PART);
 +        }
++        mod_screen_clear();
 +        let ret = unsafe { ffi::km_run(addr_of_mut!(STORE) as *mut u8, &MOD_API) };
 +        unsafe { mod_tx_off() }; // a module that left the transmitter on
++        mod_screen_clear(); // its waterfall rows were in its own memory
 +        let ms = unsafe { mod_ms() };
 +        unsafe {
 +            let c = &mut *addr_of_mut!(MOD_CTX);
@@ -5363,7 +5462,7 @@ index 0000000..25274cb
 +    }
 +}
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..394045b 100644
+index 9d2b0c0..1842385 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -14,7 +14,7 @@ mod ui;
@@ -5427,7 +5526,15 @@ index 9d2b0c0..394045b 100644
  
      let mut cp = cortex_m::Peripherals::take().unwrap();
      unsafe { cp.NVIC.set_priority(kd32f328_pac::Interrupt::USART1, 0) };
-@@ -149,12 +187,17 @@ fn main() -> ! {
+@@ -109,6 +147,7 @@ fn main() -> ! {
+     lcd.flush().ok();
+     lcd.set_display_on(true).ok();
+     let mut display = Display::new(lcd);
++    ui::hook_mod_screen(&mut display); // module API level 6: a module's own screen
+     writeln!(dbg, "lcd init done").ok();
+ 
+     // rfic
+@@ -149,12 +188,17 @@ fn main() -> ! {
      }
  
      let cal_buf = storage.read_calibration();
@@ -5445,7 +5552,7 @@ index 9d2b0c0..394045b 100644
          writeln!(
              dbg,
              "squelch cal @0xf0c0: th_in={:?} th_out={:?}",
-@@ -234,7 +277,11 @@ fn main() -> ! {
+@@ -234,7 +278,11 @@ fn main() -> ! {
      }
  
      // app class
@@ -5458,7 +5565,7 @@ index 9d2b0c0..394045b 100644
          radio,
          chip_id,
          keypad,
-@@ -265,8 +312,7 @@ fn main() -> ! {
+@@ -265,8 +313,7 @@ fn main() -> ! {
              display.flush();
          }
          3 => {
@@ -5468,7 +5575,7 @@ index 9d2b0c0..394045b 100644
              display.flush();
          }
          _ => {}
-@@ -301,6 +347,63 @@ fn main() -> ! {
+@@ -301,6 +348,63 @@ fn main() -> ! {
      )
      .ok();
  
@@ -5532,7 +5639,7 @@ index 9d2b0c0..394045b 100644
      // scheduler + main loop
      let mut scheduler = scheduler::Scheduler::new();
      let mut applied_contrast: u8 = u8::MAX;
-@@ -329,6 +432,19 @@ fn main() -> ! {
+@@ -329,6 +433,19 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -5552,7 +5659,7 @@ index 9d2b0c0..394045b 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +517,8 @@ fn main() -> ! {
+@@ -401,6 +518,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -5561,7 +5668,7 @@ index 9d2b0c0..394045b 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +583,13 @@ fn main() -> ! {
+@@ -465,9 +584,13 @@ fn main() -> ! {
              }
          }
  
@@ -5579,7 +5686,7 @@ index 9d2b0c0..394045b 100644
                  app.poll_squelch(&mut cp.SYST, 3);
                  app.poll_dual_standby(&mut cp.SYST, app.rssi_open());
 diff --git a/src/ui/mod.rs b/src/ui/mod.rs
-index cdfa0f7..e95cdd0 100644
+index cdfa0f7..91caa2f 100644
 --- a/src/ui/mod.rs
 +++ b/src/ui/mod.rs
 @@ -6,6 +6,7 @@ mod fm;
@@ -5598,10 +5705,35 @@ index cdfa0f7..e95cdd0 100644
  use satellite::draw_satellite;
  use sstv::draw_sstv;
  use scan::draw_scan;
-@@ -62,6 +64,17 @@ impl<const N: usize> core::fmt::Write for TextBuf<N> {
+@@ -62,6 +64,42 @@ impl<const N: usize> core::fmt::Write for TextBuf<N> {
      }
  }
  
++/// A RAM module's screen (module API level 6): app::pager's lcd_flush calls the function this
++/// registers, which draws app::pager::MOD_SCREEN on `display` and flushes it. Modules run inside
++/// the main loop's calls, never while it draws, so nothing else holds the display then. The
++/// `lean` images (the codebook install, the -table fallbacks) have no room for it: lcd_flush
++/// returns -1 there and the module keeps to its serial lines.
++#[cfg(not(feature = "lean"))]
++static mut MOD_DISPLAY: *mut () = core::ptr::null_mut();
++
++#[cfg(not(feature = "lean"))]
++unsafe fn mod_flush<DI: WriteOnlyDataCommand + 'static>() -> i32 {
++    let d = unsafe { &mut *(*core::ptr::addr_of!(MOD_DISPLAY) as *mut Display<'static, DI>) };
++    pager::draw_mod_screen(d.as_draw_target(), unsafe { &*core::ptr::addr_of!(app::pager::MOD_SCREEN) });
++    d.flush();
++    0
++}
++
++#[cfg(not(feature = "lean"))]
++pub fn hook_mod_screen<DI: WriteOnlyDataCommand + 'static>(display: &mut Display<'_, DI>) {
++    unsafe { *core::ptr::addr_of_mut!(MOD_DISPLAY) = display as *mut Display<'_, DI> as *mut () };
++    app::pager::set_mod_lcd(mod_flush::<DI>);
++}
++
++#[cfg(feature = "lean")]
++pub fn hook_mod_screen<DI: WriteOnlyDataCommand + 'static>(_display: &mut Display<'_, DI>) {}
++
 +/// Pager-only image: just the VOICE MSG screen, so the other screens aren't linked.
 +#[cfg(feature = "pager-only")]
 +pub fn draw_pager_only<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &app::App) {
@@ -5616,7 +5748,7 @@ index cdfa0f7..e95cdd0 100644
  pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut app::App) {
      match app.mode() {
          app::Mode::AppMenu => draw_app_menu(display.as_draw_target(), &*app),
-@@ -77,6 +90,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
+@@ -77,6 +115,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
              draw_satellite(display.as_draw_target(), app);
          }
          app::Mode::Sstv => draw_sstv(display.as_draw_target(), app),
@@ -5626,10 +5758,10 @@ index cdfa0f7..e95cdd0 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..b0205d7
+index 0000000..84c730f
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,206 @@
+@@ -0,0 +1,278 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
@@ -5835,4 +5967,76 @@ index 0000000..b0205d7
 +        "MENU play  PTT test"
 +    };
 +    line(lcd, 60, footer);
++}
++
++/// a RAM module's screen (module API level 6, app/pager.rs ModScreen): line 0 as an inverted
++/// title bar, lines 1-5 below at the explorer's baselines (y = 9, 19 ... 59), a bar after a
++/// line's text, and the module's waterfall rows over lines 2-4 (not in the `lean` images)
++#[cfg(not(feature = "lean"))]
++pub fn draw_mod_screen<D>(lcd: &mut D, s: &app::pager::ModScreen)
++where
++    D: DrawTarget<Color = BinaryColor>,
++{
++    use app::pager::{MOD_COLS, MOD_LINES, WF_TOP};
++    Rectangle::new(Point::new(0, 0), Size::new(128, 64))
++        .into_styled(PrimitiveStyle::with_fill(BinaryColor::Off))
++        .draw(lcd)
++        .ok();
++    Rectangle::new(Point::new(0, 0), Size::new(128, 11))
++        .into_styled(PrimitiveStyle::with_fill(BinaryColor::On))
++        .draw(lcd)
++        .ok();
++    let on = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
++    let off = MonoTextStyle::new(&FONT_6X10, BinaryColor::Off);
++    let wf = s.wf_rows > 0 && !s.wf.is_null();
++    for i in 0..MOD_LINES {
++        if wf && (2..5).contains(&i) {
++            continue;
++        }
++        let t = &s.text[i];
++        let mut n = 0;
++        while n < MOD_COLS && t[n] != 0 {
++            n += 1;
++        }
++        let y = 9 + 10 * i as i32;
++        if let Ok(txt) = core::str::from_utf8(&t[..n]) {
++            Text::new(txt, Point::new(1, y), if i == 0 { off } else { on }).draw(lcd).ok();
++        }
++        let (mut num, mut den) = s.bar[i];
++        let x0 = 1 + 6 * n as i32 + if n > 0 { 3 } else { 0 };
++        if den > 0 && x0 < 118 {
++            while den > 0xFFFF {
++                den >>= 1;
++                num >>= 1;
++            }
++            let w = 126 - x0;
++            let fill = (w as u32 * num / den.max(1)) as i32;
++            let c = if i == 0 { BinaryColor::Off } else { BinaryColor::On };
++            Rectangle::new(Point::new(x0, y - 7), Size::new(w as u32 + 1, 8))
++                .into_styled(PrimitiveStyle::with_stroke(c, 1))
++                .draw(lcd)
++                .ok();
++            if fill > 0 {
++                Rectangle::new(Point::new(x0, y - 7), Size::new(fill as u32, 8))
++                    .into_styled(PrimitiveStyle::with_fill(c))
++                    .draw(lcd)
++                    .ok();
++            }
++        }
++    }
++    if wf {
++        let (rows, head) = (s.wf_rows, s.wf_head);
++        let px = (0..rows).flat_map(|r| {
++            let row = unsafe { s.wf.add((((head + r) % rows) * 16) as usize) };
++            (0..128).filter_map(move |x| {
++                let b = unsafe { *row.add((x >> 3) as usize) };
++                if b & (0x80 >> (x & 7)) != 0 {
++                    Some(Pixel(Point::new(x, WF_TOP + r), BinaryColor::On))
++                } else {
++                    None
++                }
++            })
++        });
++        lcd.draw_iter(px).ok();
++    }
 +}

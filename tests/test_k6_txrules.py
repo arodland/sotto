@@ -2,7 +2,8 @@
 emulated Cortex-M0. A new transmitting module is checked here without a test of its own:
 
   - it transmits only on 440.850 MHz, and never while the channel is busy;
-  - it asks tx_on for at most 20 s and finishes inside what it asked for;
+  - it asks tx_on for at most the core's cap (120 s since 2026-11-07, 20 s before) and
+    finishes inside what it asked for;
   - every way out keys down (tx_off last), with the tone oscillator (REG_70 / REG_71) off;
   - it touches no chip register but the tone oscillator's while keyed;
   - it identifies as AG7EW in Morse (PA keying or REG_70 keying);
@@ -25,7 +26,7 @@ IDS = [os.path.basename(p)[:-2] for p in MODS]
 MORSE = {"A": ".-", "G": "--.", "7": "--...", "E": ".", "W": ".--", "S": "...", "O": "---", "T": "-",
          "K": "-.-", "N": "-.", "C": "-.-.", "Q": "--.-", "D": "-..", "I": "..", "R": ".-.", "M": "--"}
 INV = {v: k for k, v in MORSE.items()}
-LIMIT_MS = 20_000
+LIMIT_MS = 120_000                 # the core's module TX cap (MOD_TX_MAX_MS in the Aura patch)
 
 
 def level(src):
