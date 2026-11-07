@@ -1,0 +1,138 @@
+"""The WSPR beacon module (c/k6/mod/wsprtx.c) on an emulated Cortex-M0: it keys up only on
+440.850 once the channel is clear, sets the tone oscillator (REG_71) once a symbol through the
+162 WSPR tones at 8192 / 12000 s each inside the transmit limit it asks for, identifies in MCW,
+and keys down on every way out; as a beacon it keeps the 2-minute grid. Its REG_71 words,
+played as audio, decode to "AG7EW CN87 10" with sim/k6digi/wsprref.py. The reference encoder
+and decoder are tested here too. SPDX-License-Identifier: MIT"""
+import os
+import sys
+
+import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from test_k6_i2s import ROOT, START, need_clang, rssi_reg, run  # noqa: E402
+
+sys.path.insert(0, ROOT)
+SRC = os.path.join(ROOT, "c", "k6", "mod", "wsprtx.c")
+HDR = os.path.join(ROOT, "c", "k6", "mod", "wsprtx_msg.h")
+WPH = 10.32444
+TEXT = "AG7EW CN87 10"
+TX_MS = 300 + 110592 + 400 + 52 * 60 + 1000
+
+
+def test_reference_round_trip_and_sensitivity():
+    from sim.k6digi import wsprref as w
+    t = w.encode(TEXT)
+    assert len(t) == 162 and set(t) <= {0, 1, 2, 3}
+    assert list(t % 2) == list(w.SYNC)                     # the sync vector rides bit 0
+    assert w.unpack(w.pack("AG7EW", "CN87", 10)) == TEXT
+    assert w.unpack(w.pack("K1ABC", "FN42", 37)) == "K1ABC FN42 37"
+    fs, rng = 12000, np.random.default_rng(3)
+    n = int(round(fs * w.SYM))
+    f = np.repeat(1497.0 + w.DF * t.astype(float), n)
+    f += 12.0 * (np.arange(len(f)) / len(f) - 0.5)           # 12 Hz of drift over the frame
+    x = np.concatenate([np.zeros(fs), np.cos(2 * np.pi * np.cumsum(f) / fs), np.zeros(2 * fs)])
+    noise = 0.125 / 10 ** (-25 / 10) / 2500 * fs / 2         # -25 dB in 2500 Hz
+    y = 0.5 * x + rng.standard_normal(len(x)) * np.sqrt(noise)
+    got = w.decode_audio(y, fs, 1500.0)
+    assert got and got[0][0] == TEXT, got
+    assert abs(got[0][1] - 1497.0) < 0.8 and abs(got[0][3] - 12.0) <= 1.5
+
+
+def test_header_is_the_encoders():
+    from tools import k6_ft8
+    assert open(HDR).read() == k6_ft8.wsprhdr(TEXT)
+
+
+def frames(w):
+    """each frame's REG_71 writes [(word, us)] between tone-1 on and off, and the off time"""
+    out, cur = [], None
+    for r, v, us in w:
+        if r == 0x70 and v & 0x8000 and cur is None:
+            cur = []
+        elif r == 0x70 and v == 0 and cur is not None:
+            if len(cur) > 100:
+                out.append((cur, us))
+            cur = None
+        elif r == 0x71 and cur is not None:
+            cur.append((v, us))
+    return out
+
+
+def audio(steps, t_end, fs=12000):
+    t0 = steps[0][1]
+    n = int((t_end - t0) / 1e6 * fs)
+    f = np.zeros(n)
+    for i, (word, us) in enumerate(steps):
+        a = int((us - t0) / 1e6 * fs)
+        b = int((steps[i + 1][1] - t0) / 1e6 * fs) if i + 1 < len(steps) else n
+        f[a:b] = word / WPH
+    x = 0.3 * np.cos(2 * np.pi * np.cumsum(f) / fs)
+    z = np.zeros(2 * fs)
+    return np.concatenate([z, x, z]) + 0.01 * np.random.default_rng(1).standard_normal(n + 4 * fs), fs
+
+
+@need_clang
+def test_builds_level_3_small():
+    from modem import k6mod
+    code, entry = k6mod.build(SRC)
+    assert k6mod.source_level(SRC) == 3 and entry == 0
+    assert 24 + len(code) <= 2048, len(code)
+
+
+@need_clang
+def test_sends_one_frame_that_decodes():
+    from sim.k6digi import wsprref
+    tx = {}
+    ret, said, regs, _ = run(START, src=SRC, level=3, tx=tx)
+    log, w = tx["log"], tx["w"]
+    assert said[0] == "wspr AG7EW CN87 10 f=1500 g=60 n=1 rx=440850000", said
+    assert ret == 1, (ret, said)
+    assert said[-1] == "wspr sent 1 sym=162 id=52", said
+    assert [n for n, *_ in log].count("tx_on") == 1 and log[0][1] == TX_MS
+    assert log[-1][0] == "tx_off" and (log[-1][2] - log[0][2]) / 1000 < TX_MS
+    assert {r for r, *_ in w} <= {0x70, 0x71} and regs[0x70] == 0 and regs[0x71] == 0
+    (steps, t_off), = frames(w)
+    assert len(steps) == 162
+    us = np.array([u for _, u in steps])
+    assert np.all(np.abs(np.diff(us) - 8192 / 12 * 1000) < 1500)       # 682.67 ms a symbol
+    assert abs((t_off - us[0]) - 110_592_000) < 3000
+    words = np.array([v for v, _ in steps]) / WPH
+    assert np.allclose(words, 1500 + wsprref.DF * wsprref.encode(TEXT), atol=0.1)
+    x, fs = audio(steps, t_off)
+    got = wsprref.decode_audio(x, fs, 1500.0)
+    assert got and got[0][0] == TEXT, got
+    assert abs(got[0][1] - 1500.0) < 0.5 and abs(got[0][3]) <= 1
+
+
+@need_clang
+def test_beacon_keeps_the_two_minute_grid(tmp_path):
+    src = tmp_path / "wsprbcn2.c"
+    src.write_text('#define WSPR_REPEAT 2\n#define WSPR_EVERY 2\n#include "%s"\n' % SRC)
+    tx = {}
+    ret, said, regs, _ = run(START, src=str(src), level=3, tx=tx)
+    assert ret == 2, said
+    ons = [us for n, _, us in tx["log"] if n == "tx_on"]
+    assert len(ons) == 2 and abs((ons[1] - ons[0]) - 240_000_000) < 30_000, ons
+    assert any(s.startswith("wspr next ") for s in said)
+
+
+@need_clang
+def test_refuses_and_gives_up():
+    tx = {}
+    ret, *_ = run(START, src=SRC, level=3, tx=tx, rx_hz=446_000_000)
+    assert ret == -2 and "log" not in tx
+    ret, *_ = run({**START, 0x67: lambda us: rssi_reg(-40)}, src=SRC, level=3, tx=tx)
+    assert ret == -7 and "log" not in tx
+    ret, *_ = run(START, src=SRC, level=2)
+    assert ret == -1
+
+
+@need_clang
+def test_keys_down_on_the_old_20_s_cap_or_a_key():
+    tx = {"dead_us": 22_000_000}                    # an image with the old 20 s cap
+    ret, said, regs, _ = run(START, src=SRC, level=3, tx=tx)
+    assert ret == -5 and tx["log"][-1][0] == "tx_off" and regs[0x70] == 0
+    tx = {}
+    ret, said, regs, _ = run(START, src=SRC, level=3, tx=tx, keys=((30_000_000, 30_600_000),))
+    assert ret == -4 and tx["log"][-1][0] == "tx_off" and regs[0x70] == 0

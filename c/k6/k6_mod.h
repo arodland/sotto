@@ -72,7 +72,8 @@ typedef struct k6_api {
                                                    statics and only about 700 B of stack */
   /* level 3: a guarded transmitter (Jeff OK'd a module TX API, 2026-11-06). tx_on keys up on
      the pager's own frequency (rx_hz) only, inside Aura's TX band lock (144-148, 420-450 MHz),
-     FM, low power, no CTCSS, mic ADC off, for at most max_ms (clamped to 20 s): every other
+     FM, low power, no CTCSS, mic ADC off, for at most max_ms (clamped to 120 s on images after
+     2026-11-07, for a 110.6 s WSPR frame; 20 s before): every other
      call (fd_write, delay_us, ms, ticks, key_down, tx_pa) checks the time and keys down when
      it is up, and the core keys down when the module returns. The module makes the modulation
      (REG_3B, the crystal value; the tone oscillator REG_70/71) and sends its own CW ID.

@@ -21,6 +21,9 @@
   python3 tools/k6_ft8.py txhdr [--text "CQ AG7EW CN87"] [--out c/k6/mod/ft8tx_msg.h]
                                                    the 79 tones the K6's FT8 transmit module
                                                    (c/k6/mod/ft8tx.c) builds in
+  python3 tools/k6_ft8.py wsprhdr [--text "AG7EW CN87 10"] [--out c/k6/mod/wsprtx_msg.h]
+                                                   the 162 tones of the K6's WSPR beacon module
+                                                   (c/k6/mod/wsprtx.c), from sim/k6digi/wsprref.py
 
 The K6's own transmissions, recorded from the IC-7100 in FM, decode with
   python3 -m sim.k6digi.ft8_wav REC.wav --lo 1300 --hi 1800
@@ -167,6 +170,23 @@ def txhdr(text):
             "static const uint8_t FT8_TONES[79] = {%s};\n" % (text, rows))
 
 
+def wsprhdr(text):
+    """the C header wsprtx.c builds in: the message and its 162 tones"""
+    from sim.k6digi import wsprref
+    tones = wsprref.encode(text)
+    return ("/* written by tools/k6_ft8.py wsprhdr: WSPR tones for wsprtx.c. SPDX-License-Identifier: MIT */\n"
+            "#define WSPR_TEXT \"%s\"\n"
+            "static const uint8_t WSPR_TONES[162] = {%s};\n" % (text, ", ".join(map(str, tones))))
+
+
+def cmd_wsprhdr(a):
+    h = wsprhdr(a.text)
+    if a.out:
+        open(a.out, "w").write(h)
+    else:
+        sys.stdout.write(h)
+
+
 def cmd_txhdr(a):
     h = txhdr(a.text)
     if a.out:
@@ -279,8 +299,11 @@ def main():
     p = sub.add_parser("txhdr", help="the tone header for c/k6/mod/ft8tx.c")
     p.add_argument("--text", default="CQ AG7EW CN87")
     p.add_argument("--out", help="e.g. c/k6/mod/ft8tx_msg.h (default: stdout)")
+    p = sub.add_parser("wsprhdr", help="the tone header for c/k6/mod/wsprtx.c")
+    p.add_argument("--text", default="AG7EW CN87 10")
+    p.add_argument("--out", help="e.g. c/k6/mod/wsprtx_msg.h (default: stdout)")
     a = ap.parse_args()
-    {"txhdr": cmd_txhdr, "decode": cmd_decode, "rows": cmd_rows, "wav": cmd_wav, "tone": cmd_tone, "track": cmd_track,
+    {"txhdr": cmd_txhdr, "wsprhdr": cmd_wsprhdr, "decode": cmd_decode, "rows": cmd_rows, "wav": cmd_wav, "tone": cmd_tone, "track": cmd_track,
      "tonewav": cmd_tonewav}[a.cmd](a)
 
 

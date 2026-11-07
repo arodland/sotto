@@ -601,7 +601,7 @@ index 0000000..1c60746
 +// module makes its own modulation (REG_3B, the tone oscillator REG_70/71) and its own CW ID;
 +// REG_30/33/36/37 stay refused (tx_pa is the PA switch, for CW keying).
 +
-+const MOD_TX_MAX_MS: u32 = 20_000;
++const MOD_TX_MAX_MS: u32 = 120_000; // 20 s until 2026-11-07: a WSPR frame is 110.6 s
 +/// REG_30 while a module transmits: Aura's STATE_TX_ON (0xC1FE) with the MICIN ADC (bit 2) off
 +const MOD_TX_STATE: u16 = 0xC1FA;
 +
