@@ -68,6 +68,28 @@ configuration. It puts both back, and the core refuses REG_30/33/36/37 as always
 and patch, and `tests/test_k6_hf.py` runs the module on the emulated M0 against a receiver whose
 synthesizer stops at a set frequency.
 
+## A register that might go lower
+
+The FD6818 guide (chip 0x6818) doesn't leave the divider to the chip. REG_1AH takes a band code from its
+table: `Band_740M_1120M` 0x1f80 (divide by 2), 2f50 (/4), 9f30 (/6), 3f48 (/8), af28 (/12), 4f44 (/16),
+bf24 (/24), 5f42 (/32), cf22 (/48), 6f41 (/64), down to `Band_16M_23M` 0xdf21 (/96). That gives a VCO of
+about 1.48-2.24 GHz, so divide by 96 bottoms out at 15.4 MHz. That fits the ~16.5 MHz edge run 1 found.
+The codes come in two series: high nibble 1-6 with low byte 80, 50, 48, 44, 42, 41 (/2^n), and 9-d with
+30, 28, 24, 22, 21 (/3 x 2^n). If the silicon carries the next step of each, **0x7f40 would be /128
+(11.6-17.5 MHz, all of 20 m) and 0xef20 /192 (7.7-11.7 MHz, 30 m and WWV 10)**. The guide doesn't list
+them, and nothing says the K6's 0x4819 has a hand band select at all. But its floor sits where the guide's
+last band ends, which suggests the same divider chain.
+
+The guide also gives **REG_0CH bit 9 = PLL lock**. REG_0C is one of the addresses the regmap found to be
+the same on both chips, so the K6 may report lock directly. That would map the synthesizer's real range
+with no test signal at all.
+
+`c/k6/mod/bandreg.c` (level 2, 860 B, no register writes) is the first step. At each frequency of a list,
+it tunes, dumps registers 0x00-0x7F twice (skipping the FSK FIFO), and prints REG_0C and every register
+that is stable and differs from the 440.850 baseline. `python3 tools/k6_hf.py bandreg --bin mod-bandreg.bin
+--key-file KEY` walks from 440.85 down to 10 MHz. If a register shows the band code, the next step is a
+module that writes the /128 code at 14 MHz and checks lock and the floor. Receive only.
+
 ## Results
 
 ### Run 1, 2026-11-07 15:02-15:06 UTC (receive only, image 4709d7e, stock whip)
