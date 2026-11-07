@@ -316,8 +316,123 @@ def soft_from(z, c, rate=375 / 8):
     return llr
 
 
+# ---- wander: a smooth frequency track by dynamic programming ----
+# Two radios' crystals at 440 MHz wander a few parts in 10^9 within a frame: on the bench
+# (2026-11-07) the IC-7100 -> K6 receive wandered about +-1.8 Hz, more than a tone spacing, and
+# the linear drift search above found nothing. Here each symbol's spectrum, padded so that a tone
+# spacing is 16 bins of 0.092 Hz, scores every tone-0 frequency b by the sync vector's parity
+# (the larger of the two tones the symbol's sync bit allows, less the larger of the two it
+# doesn't), and a Viterbi search finds the best track that moves at most M bins a symbol (each
+# bin moved costs lam). The parity score is what keeps the track from slipping by a tone. The
+# signal is then derotated along the track and decoded as if it stood still.
+PAD = 16
+
+
+def _dp_spec(z, rate):
+    n = int(round(rate * SYM))
+    hop = n // 4
+    nf = (len(z) - n) // hop + 1
+    if nf <= 0:
+        return np.zeros((0, n * PAD)), hop
+    idx = np.arange(n)[None, :] + hop * np.arange(nf)[:, None]
+    sp = np.fft.fftshift(np.abs(np.fft.fft(z[idx], n * PAD, axis=1)) ** 2, axes=1)
+    return sp / (np.median(sp) + 1e-12), hop
+
+
+def _dp_scores(sp, starts, B, clip):
+    c = sp.shape[1] // 2
+    base = c + np.arange(-B, B + 1)
+    rows = starts[:, None] + 4 * np.arange(NSYM)[None, :]
+    Q = np.minimum(sp[rows], clip)                                   # start x symbol x bin
+    t = [Q[:, :, base + PAD * j] for j in range(4)]                  # tone j's power, tone 0 at b
+    s = SYNC[None, :, None] == 1
+    right = np.where(s, np.maximum(t[1], t[3]), np.maximum(t[0], t[2]))
+    wrong = np.where(s, np.maximum(t[0], t[2]), np.maximum(t[1], t[3]))
+    return right - wrong
+
+
+def _viterbi(S, M, lam, back=False):
+    D = S[:, 0, :].copy()
+    nb = D.shape[1]
+    arg = np.zeros(S.shape, np.int8) if back else None
+    for k in range(1, S.shape[1]):
+        best = np.full_like(D, -1e30)
+        bi = np.zeros(D.shape, np.int8)
+        for d in range(-M, M + 1):                  # from bin b + d at symbol k - 1
+            sh = np.full_like(D, -1e30)
+            if d >= 0:
+                sh[:, :nb - d] = D[:, d:]
+            else:
+                sh[:, -d:] = D[:, :nb + d]
+            sh -= lam * abs(d)
+            m = sh > best
+            best = np.where(m, sh, best)
+            bi = np.where(m, d, bi)
+        D = best + S[:, k, :]
+        if back:
+            arg[:, k, :] = bi
+    return D, arg
+
+
+def track(z, rate=375 / 8, fspan=18.0, M=2, lam=0.5, clip=30.0, top=3):
+    """-> [(start s, tone 0's offset Hz per symbol, score)]: the best smooth tracks of the
+    `top` best start times (quarter symbols)"""
+    assert int(round(rate * SYM)) == 32
+    fspan = min(fspan, 18.5)                        # tone 3 stays inside the +-23.4 Hz spectrum
+    B = int(fspan / (DF / PAD))
+    sp, hop = _dp_spec(z, rate)
+    nstart = sp.shape[0] - 4 * (NSYM - 1)
+    if nstart <= 0:
+        return []
+    starts = np.arange(nstart)
+    sc = np.empty(nstart)
+    for i in range(0, nstart, 64):
+        D, _ = _viterbi(_dp_scores(sp, starts[i:i + 64], B, clip), M, lam)
+        sc[i:i + 64] = D.max(axis=1)
+    picks = []
+    for s in np.argsort(sc)[::-1]:
+        if all(abs(s - p) > 2 for p in picks):
+            picks.append(int(s))
+        if len(picks) == top:
+            break
+    D, arg = _viterbi(_dp_scores(sp, np.array(picks), B, clip), M, lam, back=True)
+    out = []
+    for r, s in enumerate(picks):
+        b = int(np.argmax(D[r]))
+        path = [b]
+        for k in range(NSYM - 1, 0, -1):
+            b += int(arg[r, k, b])
+            path.append(b)
+        out.append((s * hop / rate, (np.array(path[::-1]) - B) * DF / PAD, sc[s]))
+    return out
+
+
+def decode_tracked(z, rate=375 / 8, fspan=18.0):
+    """[(text, f0, dt, drift, score)] along the best tracks; f0 is the track's mean and drift
+    its last symbol less its first (Hz)"""
+    t = np.arange(len(z)) / rate
+    found = []
+    for dt, off, score in track(z, rate, fspan):
+        tc = dt + (np.arange(NSYM) + 0.5) * SYM
+        offs = np.convolve(np.pad(off, 2, mode="edge"), np.ones(5) / 5, "valid")
+        zc = z * np.exp(-2j * np.pi * np.cumsum(np.interp(t, tc, offs)) / rate)
+        for df in (0.0, -0.09, 0.09):
+            r = decode_soft(soft_from(zc, dict(dt=dt, f0=df, drift=0.0), rate))
+            if r:
+                if r[0] not in [f[0] for f in found]:
+                    found.append((r[0], float(np.mean(off)), dt, float(off[-1] - off[0]), score))
+                break
+    return found
+
+
 def decode_baseband(z, rate=375 / 8, fspan=20.0, drifts=np.arange(-24, 24.1, 1.0)):
-    """[(text, f0, dt, drift, score)] decoded from complex baseband"""
+    """[(text, f0, dt, drift, score)] decoded from complex baseband: the wander tracker first,
+    then the linear drift search (drifts beyond the tracker's 0.27 Hz/s)"""
+    return decode_tracked(z, rate, fspan) or decode_linear(z, rate, fspan, drifts)
+
+
+def decode_linear(z, rate=375 / 8, fspan=20.0, drifts=np.arange(-24, 24.1, 1.0)):
+    """[(text, f0, dt, drift, score)] by the search over start, frequency and linear drift"""
     found = []
     for c in demod(z, rate, fspan, drifts):
         best = None

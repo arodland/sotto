@@ -477,6 +477,18 @@ symbols from the best candidates and runs a Fano sequential decoder in C
 (`c/k6/wspr/wspr_fano.c`, built for the host through ctypes). It decodes clean audio at -29 dB
 in 2500 Hz, and through 8, 12 and -15 Hz of drift, in about a second.
 
+**Wander tracker** (added after the first bench receive, 2026-11-07, which streamed cleanly but
+wandered about +-1.8 Hz within the frame, more than the 1.46 Hz tone spacing, so the linear
+search found nothing). It now runs first: each symbol's spectrum, padded so that a tone
+spacing is 16 bins of 0.092 Hz, scores every tone-0 frequency by the sync vector's parity (the
+larger of the two tones the sync bit allows, less the larger of the two it doesn't), and a
+Viterbi search finds the best track that moves at most 2 bins a symbol (0.27 Hz/s). The parity
+score is what keeps the track from slipping by a tone. The signal is derotated along the track
+and decoded as if it stood still. On simulated slow random wander of +-1.8 and +-3 Hz it
+decodes at -24 dB (the linear search: not at all at +-1.8 Hz, even at 0 dB); with no wander it
+matches the linear search (-27 dB 4/4, -29 dB 1/4), with no false decodes on noise, in 0.2 s.
+The linear search stays as the fallback for drift faster than 0.27 Hz/s.
+
 ### Beacon: `wsprtx`, `wsprbcn` (level 3)
 
 - **How it sends.** The same tone oscillator path as `ft8tx`: REG_70 = enable | gain,
@@ -530,8 +542,8 @@ radio, the decode on the PC.
   and runs the reference decoder. By default it searches +-50 Hz around 1500 Hz in three 40 Hz
   windows. It prints the audio frequency, start (s into the stream), drift and the message.
 - **Drift.** In USB the K6 sees the carrier's drift directly: run 5 measured 0.05-0.17 Hz/s,
-  5-20 Hz over a frame. The drift search covers +-24 Hz, linear. A non-linear slide (a cold
-  start) is the risk; a warmed-up pair should be fine.
+  5-20 Hz over a frame. The first bench receive (2026-11-07) also wandered about +-1.8 Hz
+  within the frame, which the linear search can't follow; the wander tracker (above) does.
 - **Tests** (`tests/test_k6_wspriq.py`): a steady tone on the emulated M0 lands at +10 Hz with
   the rate fitted to 190-215 Hz; the calibration record moves the mixer; the host decodes
   -24 dB with 6 Hz of drift and 20 lost lines, and a signal 37 Hz off centre through the CLI.

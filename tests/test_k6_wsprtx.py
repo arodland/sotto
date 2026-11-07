@@ -40,6 +40,27 @@ def test_reference_round_trip_and_sensitivity():
     assert abs(got[0][1] - 1497.0) < 0.8 and abs(got[0][3] - 12.0) <= 1.5
 
 
+def test_reference_follows_wander():
+    """the bench's IC-7100 -> K6 receive (2026-11-07) wandered about +-1.8 Hz within the frame,
+    more than a tone spacing: the linear drift search misses it, the tracker decodes it"""
+    from sim.k6digi import wsprref as w
+    rate, rng = 375 / 8, np.random.default_rng(15)
+    t = w.encode(TEXT)
+    f = np.repeat(-3.0 + w.DF * t.astype(float), 32)
+    k = 375                                                  # 8 s: a slow random wander
+    wn = np.convolve(np.convolve(rng.standard_normal(len(f) + 2 * k), np.ones(k) / k, "same"),
+                     np.ones(k) / k, "same")[k:-k]
+    f = f + 1.8 * wn / np.max(np.abs(wn))
+    pad = np.zeros(int(2 * rate))
+    z = np.concatenate([pad, np.exp(2j * np.pi * np.cumsum(f) / rate), pad])
+    sig2 = 10 ** (20 / 10) * rate / 2500                     # -20 dB in 2500 Hz
+    z = z + np.sqrt(sig2 / 2) * (rng.standard_normal(len(z)) + 1j * rng.standard_normal(len(z)))
+    assert not w.decode_linear(z, rate)
+    got = w.decode_tracked(z, rate)
+    assert got and got[0][0] == TEXT, got
+    assert abs(got[0][2] - 2.0) < 0.2 and abs(got[0][1] + 3.0) < 1.0, got
+
+
 def test_header_is_the_encoders():
     from tools import k6_ft8
     assert open(HDR).read() == k6_ft8.wsprhdr(TEXT)
