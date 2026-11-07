@@ -165,6 +165,10 @@ fi
 #   aura-pager-vlri    the same with sotto 600 / 400's codebooks linked: at power-on it writes
 #                      out/sotto-vlr.bin to the SPI flash if it isn't there yet (once; serial
 #                      `K6 VLR r=2`, then r=1). Flash it once per radio, after aura-pager-cbi
+#   aura-pager-vlr-rom sotto 1200, 600 and 400 with sotto 600 / 400's 21 KB of codebooks in the
+#                      MCU's flash, read in place as ROM: it never writes the SPI flash (serial
+#                      `K6 VLR r=1`, no install; it still reads v3.7's codebook at 0x100000 for
+#                      sotto 1200). Lean, as vlri
 #   aura-pager-only-table, aura-pager-lr-table   the table in the MCU's flash, as before: no
 #                      SPI flash needed; lean (no module TX, ARQ reports or calibration
 #                      writes), with little flash to spare (TABLE=0 skips them)
@@ -194,6 +198,11 @@ if [ "${VLR:-1}" = 1 ]; then
   # it holds sotto 600 / 400's 21 KB of codebooks: lean, as the other install image
   variant aura-pager-vlri "pager-only image, sotto 1200 + 600 + 400, installs sotto 600 / 400's codebooks" \
     --features pager-only,lean
+  K6_CODEC=vlr K6_CB=rom sh "$ROOT/tools/k6_build.sh"
+  lib build-vlr-rom
+  # vlri without the installer: the same 21 KB of tables, never written anywhere
+  variant aura-pager-vlr-rom "pager-only image, sotto 1200 + 600 + 400, sotto 600 / 400's codebooks in MCU flash (no SPI writes)" \
+    --features pager-only,lean
 fi
 if [ "${INSTALL:-1}" = 1 ]; then
   K6_CB=install sh "$ROOT/tools/k6_build.sh"
@@ -219,7 +228,7 @@ fi
 [ -f "$OUT/sotto-vlr.bin" ] && (cd "$OUT" && sha256sum sotto-vlr.bin | tee sotto-vlr.bin.sha256)
 
 # The RAM modules' code (docs/k6-modules.md: hello; settle, cwprobe, cwlisten and i2sprobe, level 2; cwkey and
-# ft8tx, level 3; ifcal, level 4; rxmap, level 2, its parameter block patched by tools/k6_rxmap.py; scan, level 2, by tools/k6_scan.py), built as
+# ft8tx, level 3; ifcal, level 4; rxmap, level 2, its parameter block patched by tools/k6_rxmap.py; scan, level 2, by tools/k6_scan.py; hfprobe, level 2, by tools/k6_hf.py), built as
 # modem/k6mod.py builds them, for `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...`
 # (`--api-level 2` for the level 2 ones) on a machine without clang. A module
 # that says #define K6_MODULE_OPT z gets -Oz instead of -Os. Linked at two addresses: the
@@ -227,7 +236,7 @@ fi
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -Werror -I$ROOT/c/k6"
 for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep afsweep gp0cap \
-         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan rtls; do
+         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls; do
   opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
   clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do

@@ -68,7 +68,9 @@
 
 static const int32_t pc_min_q8[3] = {DB(-52), DB(-32), DB(-32)};
 /* 20 log10 of the band edge ramp clip((f - 3900) / 200, 0, 1) at bins 79, 80, 81 (dB Q8); 0 above, off below */
+#ifndef FX_HISS_FB
 static const int32_t ramp_db[3] = {-3083, -1541, -640};
+#endif
 #define RAMP0 79
 /* interpolation of the 4 and 16 band levels onto the bins (np.interp, clamped): segment and Q16 fraction */
 static int16_t seg4[NBIN], seg16[NBIN];
@@ -98,11 +100,13 @@ static void init_tables(void) {
   tables_ready = 1;
 }
 
+#ifndef FX_HISS_FB
 static int32_t lerp(const int32_t *fp, int j, int32_t fr) {
   return fp[j] + (int32_t)(((fx_acc)(fp[j + 1] - fp[j]) * fr + 32768) >> 16);
 }
 static int32_t interp4(const int32_t *p, int k) { return seg4[k] == 3 ? p[3] : lerp(p, seg4[k], frac4[k]); }
 static int32_t interp16(const int32_t *p, int k) { return seg16[k] == 15 ? p[15] : lerp(p, seg16[k], frac16[k]); }
+#endif
 
 #ifdef FX_CHECK
 #include <stdio.h>
@@ -384,7 +388,7 @@ static void up2(const int16_t *x, int16_t *y) {
 }
 
 /* ================================================================== decoder */
-#ifndef FX_HISS_LIGHT
+#if !defined(FX_HISS_LIGHT)
 #define DY8 256                             /* 8 kHz samples kept: a block plus the resampler's window */
 #define DY16 2048                           /* 16 kHz samples: from the output point to the newest */
 #define ORING 2048                          /* overlap-add output, samples Q4 */
@@ -701,7 +705,7 @@ int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAM
   return 1;
 }
 
-#else   /* FX_HISS_LIGHT: the K6 light layer (docs/k6-hiss-port.md, sim/hiss_band.py options
+#elif !defined(FX_HISS_FB)   /* FX_HISS_LIGHT: the K6 light layer (docs/k6-hiss-port.md, sim/hiss_band.py options
            vowel_src="model", synth8=True, uv50=False), decoder only. Same stages as above, but
            stage A reads the vowel predictor's bands from the core (fx_dec_info_t.bands) instead
            of an STFT of the decoded audio, and stage B makes the hiss at 8 kHz as its mirror
@@ -1001,6 +1005,344 @@ int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAM
   }
   if (d->outn >= N16 * d->nend) return 0;
   dec_output(d, speech);
+  return 1;
+}
+#else   /* FX_HISS_LIGHT + FX_HISS_FB: the light layer made in step with the core (sim/hiss_band.py
+           options vowel_src="model", uv50=False, fb=4, fb_order=3, causal="none", synth8=True).
+           Each core call's 8 kHz block gets its hiss at once: stage A and B run for the STFT
+           frames whose centres reach the block's last sample (frame t reads model frame t + 2,
+           the half the core has just made), B sums each frame's 4-8 kHz levels into 4 band
+           gains (no inverse FFT), and four order-3 filters at 8 kHz on one white noise make the
+           mirror s, gains linear between frame centres (8 kHz sample 80 t + 80), folded in as
+           out = up2(y8 - s) + 2 s zero-stuffed. No audio is held back but the interpolator's
+           10 samples: the output is 2 frames and 20 samples (16 kHz) behind the input, and the
+           state is a few hundred bytes. Blend's flicker bridge (a look 4 frames ahead) is off. */
+#define LM 4                                /* model halves kept (frame t reads t + 2) */
+#define GR 4                                /* codec frames kept (f - 1 .. f + 1) */
+#define NG 4                                /* frames of band gains kept */
+#define FBN 4                               /* bands: 4-5, 5-6, 6-7, 7-8 kHz */
+#define FBS 10                              /* filter sections in all */
+#define XR 32                               /* y8 - s kept for the interpolator (21 used), stored twice */
+#define SR8 16                              /* s kept for the even outputs (11 used) */
+
+/* the bands' filters at 8 kHz on the mirror (hiss_band.fb_filters8(4, 3)), Q14: b0 b1 b2 a1 a2 */
+static const int16_t fb_sec[FBS][5] = {
+  {519, -1038, 519, 6786, 0}, {16384, -16384, 0, 17118, 7825},                                 /* 4-5 kHz: high pass 3 kHz */
+  {519, -1038, 519, 9598, 6786}, {16384, 0, -16384, 1289, 10679}, {16384, 32767, 16384, 19374, 12005},
+  {519, 1038, 519, -9598, 6786}, {16384, 0, -16384, -1289, 10679}, {16384, -32767, 16384, -19374, 12005},
+  {519, 1038, 519, -6786, 0}, {16384, 16384, 0, -17118, 7825}};                                /* 7-8 kHz: low pass 1 kHz */
+static const int8_t fb_nsec[FBN] = {2, 3, 3, 2};
+/* per band, dB Q8: 20 log10(32768 sc / sigma) + 10 log10(2 / 320^2), sc the float filter's unit
+   in-band gain, sigma the noise's (uniform +-1024) standard deviation; the second term turns the
+   levels' power sum into the istft's power per sample (hiss_band.fb_gains) */
+static const int16_t fb_amp_db[FBN] = {-1477, -1482, -1481, -1486};
+/* interpolation fractions (Q16) onto the 50 Hz bins: 16 levels at 4125 + 250 i, 4 at 4500 + 1000 i */
+static const int32_t fr16[5] = {6554, 19661, 32768, 45875, 58982};   /* Q16 */
+
+typedef struct {
+  int16_t cls, mask, want;
+  int32_t p[4], vt[16], fade;               /* dB Q8 */
+} tframe_t;
+
+struct sotto_dec16 {
+  struct sotto_dec *core;
+  int32_t n, nend;
+  int32_t y8n;                              /* 8 kHz samples the core has handed over */
+  int32_t env[LM][NFB], bands[LM][16];
+  int16_t mcls[LM];
+  int32_t kmax;
+  int16_t code[GR], idx[GR], run[GR];
+  int32_t pc[GR][3];
+  int32_t cur[3];
+  int16_t got[MSG_BITS], ngot, ok;
+  int32_t ta;                               /* the next STFT frame for stages A and B */
+  int32_t lv[16], wv;
+  int32_t g[NG][FBN];                       /* band amplitudes at frame centres, Q16 */
+  int32_t fs[FBS][2];                       /* filter states (transposed direct form II) */
+  int16_t xr[2 * XR], sr[SR8];             /* xr[i] = xr[i + XR]: a window never wraps */
+  int32_t outn;                             /* 16 kHz samples handed out */
+  int32_t nflush;
+  uint32_t rng;
+};
+
+struct sotto_dec16 *sotto_dec16_create(void) {
+  struct sotto_dec16 *d = calloc(1, sizeof *d);
+  if (!d) return NULL;
+  d->core = sotto_dec_create();
+  d->nend = -1;
+  d->kmax = -1;
+  d->ok = 1;
+  d->rng = 0x9E3779B9u;
+  return d;
+}
+
+void sotto_dec16_destroy(struct sotto_dec16 *d) {
+  if (!d) return;
+  sotto_dec_destroy(d->core);
+  free(d);
+}
+unsigned sotto_fx_dec16_bytes(void) { return (unsigned)sizeof(struct sotto_dec16); }
+
+static int32_t dec_frame_of(const struct sotto_dec16 *d, int32_t t) {
+  int32_t f = (t + HB_LAG) / 2;
+  if (d->nend >= 0 && f > d->nend - 1) f = d->nend - 1;
+  return f;
+}
+
+#define MODEL_REF DB(-27.6)
+
+/* np.interp of levels at uniform centres onto the 50 Hz bins, clamped, walking the bins in order:
+   16 levels at 4125 + 250 i (5 bins a segment, fractions fr16) and 4 at 4500 + 1000 i (20 bins,
+   fraction r / 20). 32-bit products: level steps clamped to 128 dB, fractions Q15. */
+typedef struct { int seg, r; } walk_t;
+static int32_t step_db(const int32_t *p, int s) {
+  int32_t d = p[s + 1] - p[s];
+  return d > 32767 ? 32767 : d < -32767 ? -32767 : d;
+}
+static int32_t lerp16(const int32_t *p, int k, walk_t *w) {   /* call for k = 80, 81, ... */
+  int32_t v;
+  if (k <= 82) return w->seg = 0, w->r = 0, p[0];
+  if (k >= 158) return p[15];
+  v = p[w->seg] + ((step_db(p, w->seg) * (fr16[w->r] >> 1) + 16384) >> 15);
+  if (++w->r == 5) w->r = 0, w->seg++;
+  return v;
+}
+static int32_t lerp4(const int32_t *p, int k, walk_t *w) {
+  int32_t v;
+  if (k <= 90) return w->seg = 0, w->r = 1, p[0];
+  if (k >= 150) return p[3];
+  v = p[w->seg] + ((step_db(p, w->seg) * (w->r * 1638) + 16384) >> 15);   /* r / 20, Q15 */
+  if (++w->r == 20) w->r = 0, w->seg++;
+  return v;
+}
+
+static void dec_stage_a(struct sotto_dec16 *d, int32_t t, tframe_t *s) {
+  int32_t k = t + HB_LAG, f = dec_frame_of(d, t), src = -1;
+  int32_t nlast = d->nend >= 0 ? d->nend - 1 : d->n - 1;
+  const int32_t *E, *pc, *B;
+  int v, code, run, b, c, i, o;
+  int32_t x[16], pr[16], ref;
+  if (k > d->kmax) k = d->kmax;
+  E = d->env[k % LM];
+  B = d->bands[k % LM];
+  v = d->mcls[k % LM];
+  code = d->code[f % GR];
+  if (code == 0) src = f;
+  else if (v == 0) {
+    if (f - 1 >= 0 && d->code[(f - 1) % GR] == 0) src = f - 1;
+    else if (f + 1 <= nlast && d->code[(f + 1) % GR] == 0) src = f + 1;
+  }
+  guess(v, E, s->p);
+  s->mask = 0;
+  if (src >= 0) {
+    for (b = 0; b < 4; b++) s->p[b] += fx_hs_cb6[d->idx[src % GR] * 4 + b];
+    s->mask = 1;
+  } else if (v == 2) {
+    for (b = 0; b < 4; b++) s->p[b] += MIXED_DB;
+    s->mask = 3;
+  }
+  run = d->run[f % GR];
+  s->fade = run == 0 ? 0 : run > 4 ? DB(-80) : -DB(6) * (run - 2 > 0 ? run - 2 : 0);
+  for (b = 0; b < 4; b++) s->p[b] += s->fade + (s->mask == 1 ? UV_GAIN : 0);
+  s->cls = (int16_t)v;
+  s->want = (int16_t)((v == 1 || v == 2) && s->mask != 1);
+  ref = B[15] + MODEL_REF;
+  x[0] = 256;
+  for (b = 0; b < 15; b++) x[1 + b] = B[b] - B[15];
+  for (o = 0; o < 16; o++) {
+    fx_acc a = 0;
+    for (i = 0; i < 16; i++) a += (fx_acc)x[i] * fx_hs_fine_w[i * 16 + o];
+    pr[o] = fx_rshr(a, 14);
+  }
+  pc = d->pc[f % GR];
+  for (b = 0; b < 16; b++) {
+    fx_acc corr = (fx_acc)fx_hs_fine_m0[b] * 16384;
+    for (c = 0; c < 3; c++) corr += (fx_acc)pc[c] * fx_hs_fine_vt[c * 16 + b];
+    s->vt[b] = pr[b] + ref + fx_rshr(corr, 14);
+  }
+}
+
+/* stage B: the levels per 16 kHz bin as the light layer, summed in power over each band's
+   bins (hiss_band.fb_gains: 2 / N^2 sum |X|^2, the istft's power), to an amplitude for the
+   band's filter */
+static void dec_stage_b(struct sotto_dec16 *d, int32_t t, const tframe_t *s) {
+  int b, k, j;
+  int32_t lvo[16], mdb[11], wv_db = 0, *g = d->g[t % NG];   /* the last band: 11 of its 21 bins */
+  walk_t w4 = {0, 0}, w16 = {0, 0};
+  if (t == 0)
+    memcpy(d->lv, s->vt, sizeof d->lv);
+  else
+    for (b = 0; b < 16; b++) d->lv[b] = fx_rshr((fx_acc)SMOOTH_A * d->lv[b] + (fx_acc)SMOOTH_B * s->vt[b], 15);
+  d->wv = fx_rshr((fx_acc)SMOOTH_A * d->wv + (s->want ? (fx_acc)SMOOTH_B * 32768 : 0), 15);
+  if (d->wv > 32767) d->wv = 32767;
+  if (d->wv > 0) wv_db = fx_log2_to_db_amp(fx_log2((uint32_t)d->wv) - 15 * 65536);
+  for (b = 0; b < 16; b++) lvo[b] = d->lv[b] + s->fade + VOICED_TRIM;
+  for (j = 0; j < FBN; j++) {                /* band j: bins 80 + 20 j .. 99 + 20 j (the last to 160) */
+    int k0 = 80 + 20 * j, k1 = j == FBN - 1 ? NBIN : k0 + 20, any = 0;
+    int32_t p;
+    for (k = k0; k < k1; k++) {
+      int32_t m = INT32_MIN, c4 = lerp4(s->p, k, &w4), c16 = lerp16(lvo, k, &w16);
+      if (k & 1) continue;                   /* the power sum reads every other bin (the levels
+                                                are linear in dB over 250 Hz): + 3 dB below */
+      if (s->mask) m = c4 + (s->mask == 3 ? MASK3_DB : 0);
+      if (d->wv > 0) {
+        int32_t m2 = c16 + wv_db;
+        if (m2 > m) m = m2;
+      }
+      if (m != INT32_MIN) any = 1;
+      else m = DB(-200);
+      mdb[(k - k0) >> 1] = m;
+    }
+    if (!any) { g[j] = 0; continue; }
+    p = fx_db_power_sum(mdb, (k1 - k0 + 1) >> 1) + fb_amp_db[j] + (j == FBN - 1 ? 719 : 771);   /* 10 log10(21 / 11), (20 / 10) */
+    g[j] = p > DB(48) ? (1 << 19) - 1 : fx_exp2(fx_db_to_log2_amp(p), 16);   /* Q16, < 8 */
+  }
+}
+
+/* one STFT frame's stages, as soon as its model half and the codes around it are in */
+static void dec_run(struct sotto_dec16 *d, int32_t tneed) {
+  int32_t nlast = d->nend >= 0 ? d->nend - 1 : d->n - 1;
+  int32_t tmax = d->nend >= 0 ? 2 * d->nend - 2 : INT32_MAX;
+  while (d->ta <= tneed && d->ta <= tmax) {
+    tframe_t s;
+    int32_t t = d->ta, k = t + HB_LAG, f = dec_frame_of(d, t);
+    if (d->nend < 0 && (k > d->kmax || f + 1 > nlast)) break;
+    dec_stage_a(d, t, &s);
+    dec_stage_b(d, t, &s);
+    d->ta++;
+  }
+}
+
+/* the band amplitudes at 8 kHz sample j and their step a sample: linear between frame centres
+   (80 t + 80), held past the ends. Steps are (c - a) / 80 to 0.03 %, reset at every centre. */
+static void gains_at(const struct sotto_dec16 *d, int32_t j, int32_t *g, int32_t *dg) {
+  int32_t t = j >= 80 ? (j - 80) / 80 : -1, last = d->ta - 1, b;
+  for (b = 0; b < FBN; b++) {
+    int32_t a, c;
+    if (last < 0) { g[b] = dg[b] = 0; continue; }
+    if (t < 0 || t >= last) { g[b] = d->g[t < 0 ? 0 : last % NG][b], dg[b] = 0; continue; }
+    a = d->g[t % NG][b], c = d->g[(t + 1) % NG][b];
+    dg[b] = ((c - a) * 205 + 8192) >> 14;   /* g < 2^19: (c - a) 205 < 2^27 */
+    g[b] = a + dg[b] * (j - 80 - 80 * t);
+  }
+}
+
+static int16_t th15[11];
+static void up2_q15(const int16_t *x, int16_t *y) {   /* x[0..20], y8 at x[10]; as the light layer */
+  int32_t o = 0, e = th15[0] * (int32_t)x[10];
+  int k;
+  if (!th15[0]) {
+    th15[0] = (int16_t)((fx_hs_taps[20] + 8) >> 4);
+    for (k = 1; k <= 10; k++) th15[k] = (int16_t)((fx_hs_taps[41 - 2 * k] + (fx_hs_taps[41 - 2 * k] >= 0 ? 8 : -8)) / 16);
+  }
+  for (k = 1; k <= 10; k++) o += th15[k] * ((int32_t)x[k] + x[21 - k]);
+  e = (e + (1 << 13)) >> 14, o = (o + (1 << 13)) >> 14;
+  y[0] = (int16_t)(e > 32767 ? 32767 : e < -32768 ? -32768 : e);
+  y[1] = (int16_t)(o > 32767 ? 32767 : o < -32768 ? -32768 : o);
+}
+
+/* band b's sections (transposed direct form II, 2 states each) over n noise samples w, times
+   its gain g (+ dg a sample), into s */
+static void band_run(struct sotto_dec16 *d, int b, int q, const int16_t *w, int16_t *s, int n,
+                     int32_t g, int32_t dg) {
+  int ns = fb_nsec[b], i, k;
+  int32_t z[6];
+  for (k = 0; k < ns; k++) z[2 * k] = d->fs[q + k][0], z[2 * k + 1] = d->fs[q + k][1];
+  for (i = 0; i < n; i++, g += dg) {
+    int32_t x = w[i];
+    for (k = 0; k < ns; k++) {
+      const int16_t *c = fb_sec[q + k];
+      int32_t y = (c[0] * x + z[2 * k] + 8192) >> 14;
+      z[2 * k] = c[1] * x - c[3] * y + z[2 * k + 1];
+      z[2 * k + 1] = c[2] * x - c[4] * y;
+      x = y;
+    }
+    x = x > 4095 ? 4095 : x < -4095 ? -4095 : x;
+    x = s[i] + ((g * x + 32768) >> 16);         /* g < 2^19, |x| < 2^12 */
+    s[i] = (int16_t)(x > 16383 ? 16383 : x < -16384 ? -16384 : x);
+  }
+  for (k = 0; k < ns; k++) d->fs[q + k][0] = z[2 * k], d->fs[q + k][1] = z[2 * k + 1];
+}
+
+/* one 8 kHz block y8 (samples [j0, j0 + 160)): its hiss, then 320 outputs for 8 kHz samples
+   [j0 - 10, j0 + 150) */
+static void dec_block(struct sotto_dec16 *d, const short *y8, int32_t j0, short *speech) {
+  int16_t *w = speech, *sb = speech + N8;     /* the output buffer holds the noise and s until
+                                                 the last loop overwrites them, s behind it */
+  int32_t g[FBN], dg[FBN], i;
+  int b, h, q;
+  dec_run(d, (j0 + N8 - 1 - 80 + 79) / 80);   /* the frame whose centre reaches the block's end */
+  for (i = 0; i < N8; i++) w[i] = (int16_t)((int16_t)(rng_next(&d->rng) >> 16) >> 5), sb[i] = 0;   /* uniform +-1024 */
+  for (h = 0; h < 2; h++) {                   /* two segments: frame centres fall on 80 j */
+    gains_at(d, j0 + 80 * h, g, dg);
+    for (b = 0, q = 0; b < FBN; q += fb_nsec[b++]) band_run(d, b, q, w + 80 * h, sb + 80 * h, 80, g[b], dg[b]);
+  }
+  for (i = 0; i < N8; i++) {
+    int32_t j = j0 + i, s = sb[i], v = y8[i] - s, p = j - 10, e;
+    int16_t y[2];
+    d->xr[j & (XR - 1)] = d->xr[(j & (XR - 1)) + XR] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+    d->sr[j & (SR8 - 1)] = (int16_t)s;
+    up2_q15(d->xr + ((p - 10) & (XR - 1)), y);   /* before the start the ring is still zeros */
+    e = y[0] + (p >= 0 ? 2 * d->sr[p & (SR8 - 1)] : 0);
+    speech[2 * i] = (int16_t)(e > 32767 ? 32767 : e < -32768 ? -32768 : e);   /* at or before sb[i] */
+    speech[2 * i + 1] = y[1];
+  }
+  d->outn += N16;
+}
+
+static void dec_take_core(struct sotto_dec16 *d, int32_t n) {
+  const fx_dec_info_t *info = sotto_dec_info(d->core);
+  int h;
+  for (h = 0; h < 2; h++) {
+    int32_t k = 2 * (n - 1) + h;
+    memcpy(d->env[k % LM], info->env[h], sizeof info->env[h]);
+    memcpy(d->bands[k % LM], info->bands[h], sizeof info->bands[h]);
+    d->mcls[k % LM] = info->cls[h];
+    d->kmax = k;
+  }
+}
+
+void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
+                    short speech[SOTTO_SAMPLES_PER_FRAME_16K]) {
+  short y8[N8];
+  int32_t n = d->n;
+  const fx_dec_info_t *info;
+  sotto_decode(d->core, in, good, y8);
+  info = sotto_dec_info(d->core);
+  if (n >= 1) dec_take_core(d, n);
+  d->code[n % GR] = (int16_t)frame_code(info->b2);
+  d->idx[n % GR] = (int16_t)index6(info->b2);
+  d->run[n % GR] = info->run;
+  if (n % WIN_FRAMES == 0) d->ngot = 0, d->ok = 1;
+  memcpy(d->pc[n % GR], d->cur, sizeof d->cur);
+  if (d->ok && d->ngot < MSG_BITS) {
+    if (!good) d->ok = 0;
+    else if (frame_code(in) == 0) {
+      d->got[d->ngot++] = (int16_t)frame_bit(in, 8);
+      if (d->ngot == MSG_BITS && unpack_pc(d->got, d->cur)) memcpy(d->pc[n % GR], d->cur, sizeof d->cur);
+    }
+  }
+  d->n++;
+  if (n >= ALIGN_CALLS) {
+    dec_block(d, y8, d->y8n, speech);
+    d->y8n += N8;
+  } else
+    memset(speech, 0, N16 * sizeof(short));
+}
+
+int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAME_16K]) {
+  short y8[N8];                             /* SOTTO_DEC16_DELAY_FRAMES blocks: the core's last, then zeros */
+  if (d->n == 0 || d->nflush >= SOTTO_DEC16_DELAY_FRAMES) return 0;
+  if (d->nend < 0) {
+    sotto_dec_flush(d->core, y8);
+    dec_take_core(d, d->n);
+    d->nend = d->n;
+    if (d->n < ALIGN_CALLS) memset(y8, 0, sizeof y8);   /* still the core's start-up delay */
+  } else
+    memset(y8, 0, sizeof y8);
+  dec_block(d, y8, d->y8n, speech);
+  d->y8n += N8;
+  d->nflush++;
   return 1;
 }
 #endif  /* FX_HISS_LIGHT */
