@@ -9,7 +9,7 @@
    before the receiver moves onto the K6.
 
    Lines (base64 of 2 rows, FT8_NB / 2 bytes each, two bins a byte, low nibble first):
-     ft8wf start nb=32 f=1500 inv=0 afc=4691 cal=-16580     (cal: the IF offset the mixer
+     ft8wf start nb=32 f=1500 inv=0 cal=-16580              (cal: the IF offset the mixer
                                                             follows, 0.01 Hz, from the radio's
                                                             calibration record; 0 for none)
      ft8wf gain rms=4.7 g=03ff rms=9.1 r2=27 ks=5490        (noise rms at the AGC, at the gain)
@@ -81,9 +81,10 @@ int k6_main(const k6_api_t *api) {
   int ret, have = 0;
   ret = rx_setup(api, &sv, &r, (uint8_t *)ring);
   if (ret) return ret;
-  /* the build's constants as one string: three number prints fewer (the store is full) */
+  /* the build's constants as one string: three number prints fewer (the store is full). No
+     REG_73 print any more (afc=, runs 2-6): the AFC-off write is proven, and the cal= needed
+     its 46 bytes */
   p = put(line, "ft8wf start nb=" WF_STR(FT8_NB) " f=" WF_STR(FT8_AUDIO) " inv=" WF_STR(FT8_INV));
-  p = hex4(put(p, " afc="), api->fd_read(0x73));
   p = sdec(put(p, " cal="), r.cal);
   say0(api, line, p);
   p = rx_gain(api, &sv, &r, &r2, put(line, "ft8wf gain"));

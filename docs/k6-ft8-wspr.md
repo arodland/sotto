@@ -156,7 +156,8 @@ A decode in `ft8rx` adds a short burst; its pause is zero-filled like any other.
 **Its serial lines:**
 
 ```
-ft8wf start nb=32 f=1500 inv=0 afc=4691                 (afc = REG_73 after the RXON)
+ft8wf start nb=32 f=1500 inv=0 cal=-16596              (cal = the IF offset applied, 0.01 Hz;
+                                                    runs 2-6 printed afc= REG_73 here)
 ft8wf gain rms=4.7 g=03ff rms=9.1 r2=27 ks=5490     (noise rms at the AGC, at the gain chosen)
 w 0 <44 base64 chars>                              (two 80 ms rows of 16 bytes, numbered)
 ft8wf st t=15 lost=0 ks=5492 flo=812 idle=30       (every 15 s; lost = DMA ring overruns,

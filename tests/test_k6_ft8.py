@@ -321,9 +321,7 @@ def test_ft8wf_streams_a_tone(tmp_path):
     def sig(t, regs):
         return 0.5 + 0.3 * np.cos(2 * np.pi * TONE * t)
     ret, said, regs, writes, stack, (rcc, tim, dma, sim) = emulate(ft8wf_short(tmp_path), START, sig)
-    assert said[0].startswith("ft8wf start nb=32 f=1520 inv=0 afc="), said
-    start = dict(kv.split("=") for kv in said[0].split()[2:])
-    assert int(start["afc"], 16) & 0x10 and start["cal"] == "0", said     # a level 2 image: no record
+    assert said[0] == "ft8wf start nb=32 f=1520 inv=0 cal=0", said      # a level 2 image: no record
     assert sim["tunes"] == [(440_850_000, 0, 0x4691 | 0x10)], sim.get("tunes")  # RXON, AFC off
     assert said[1].startswith("ft8wf gain rms=") and " g=" not in said[1], said
     f = dict(kv.split("=") for kv in said[1].split()[2:])
