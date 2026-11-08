@@ -29,7 +29,9 @@
 
 #define DS_GRID 9600u           /* grid points a second */
 #define DS_SLOT 288u            /* grid points a 30 ms slot */
-#define DS_RING 64u             /* y history (the taps reach 46 back) */
+#ifndef DS_RING
+#define DS_RING 64u             /* y history (the taps reach 46 back; a power of 2) */
+#endif
 #define DS_NHIST 3u             /* hits kept per family for the confirmation */
 #define DS_MAXSLOTS 24u
 #define DS_Y0 7222              /* 16927.083 Hz / 9600 in Q12 cycles */
@@ -42,6 +44,12 @@
 #define DS_BP_B0 5574
 #define DS_BP_A1 (-7904)
 #define DS_BP_A2 5235
+#ifdef DS_FRING
+/* the decoder's matched filter (DMR_DECODE builds, c/k6/mod/dmrdec.inc): a 13-tap RRC (alpha
+   0.2) at 2 points a symbol, Q14, centre tap first; its output for grid point g, a quarter of
+   y's scale in 8 bits, is kept in f[] (DS_FRING of them, a power of 2) once y[g + 6] is in */
+static const int16_t DS_RRC[7] = {8547, 5082, -426, -1497, 378, 688, -306};
+#endif
 #ifndef DS_THR_K16
 #define DS_THR_K16 41943u       /* thr^2 in Q16: thr 0.80 */
 #endif
@@ -70,6 +78,9 @@ typedef struct {
   int32_t okg;                  /* grid points since the last gap */
   uint32_t j;                   /* grid points so far */
   int16_t y[DS_RING];
+#ifdef DS_FRING
+  int8_t *f;                    /* DS_FRING of them, the caller's (a module: its scratch) */
+#endif
   int32_t s1[2];
   uint32_t s2[2];
   /* the candidate hit */
@@ -109,6 +120,12 @@ __attribute__((unused)) static void ds_init(ds_t *d, uint32_t cps8) {
 /* the counts stopped (a ring overrun, a pause): start the phase again */
 static void ds_gap(ds_t *d) { d->have = 0, d->okg = 0; }
 
+#ifdef DS_FRING
+/* ... after n counts that never came: the decoder's builds keep the grid's index on time across
+   pauses (bursts are predicted by it), so the grid steps over them unfed */
+__attribute__((unused)) static void ds_skip(ds_t *d, uint32_t n) { d->n += n; }
+#endif
+
 static int32_t ds_clamp(int32_t v) { return v > DS_YMAX ? DS_YMAX : v < -DS_YMAX ? -DS_YMAX : v; }
 
 /* a confirmed DMR hit? (and keep it in its family's history) */
@@ -141,6 +158,16 @@ __attribute__((noinline)) static int ds_grid(ds_t *d, int32_t y) {
   /* after a gap the sums start over and fill for 48 grid points before anything leaves */
   int32_t yo = d->okg >= 48 ? d->y[old] : 0, f, ret = DS_NONE;
   d->y[j & (DS_RING - 1)] = (int16_t)y;
+#ifdef DS_FRING
+  {
+    int32_t a = DS_RRC[0] * d->y[(j - 6u) & (DS_RING - 1)];
+    uint32_t t;
+    for (t = 1; t < 7; t++)
+      a += DS_RRC[t] * (d->y[(j - 6u - t) & (DS_RING - 1)] + d->y[(j - 6u + t) & (DS_RING - 1)]);
+    a >>= 16;                                               /* / 4: +-3 symbols ~ +-104 */
+    d->f[(j - 6u) & (DS_FRING - 1)] = (int8_t)(a > 127 ? 127 : a < -127 ? -127 : a);
+  }
+#endif
   if (d->okg < 2) d->s1[par] = 0, d->s2[par] = 0;
   d->okg++;
   d->s1[par] += y - yo;
@@ -200,12 +227,20 @@ __attribute__((noinline)) static int ds_count(ds_t *d, int32_t x) {
           int r = ds_grid(d, y);
           if (r) ret = r;
         }
+#ifdef DS_FRING
+        else d->j++;
+#endif
         d->phl = ph;
         d->g += d->w16;
       }
     } else {
-      /* a gap: the grid starts again at this crossing */
+      /* a gap: the grid starts again at this crossing (in the decoder's builds, on the old
+         grid's points, counting those it skipped) */
+#ifdef DS_FRING
+      while ((int32_t)(t - d->g) > 0) d->g += d->w16, d->j++;
+#else
       d->g = t + d->w16;
+#endif
       d->phl = d->k << 12;
       if (d->have) ds_gap(d);
       d->have = 0;

@@ -344,8 +344,15 @@ def emb_lc_decode(frag128):
     m = np.zeros(128, np.uint8)
     m[EMB_ORDER] = frag128
     m = m.reshape(8, 16)
+    bad = []
     for r in range(7):
         m[r], _ = _fix(m[r].copy(), ham16_syn, 16)
+        if any(ham16_syn(m[r])):
+            bad.append(r)
+    if len(bad) == 1:                                       # two errors in one row: the columns
+        w = m[bad[0]] ^ (m.sum(axis=0) & 1).astype(np.uint8)  # whose parity fails, if that fits
+        if not any(ham16_syn(w)):
+            m[bad[0]] = w
     flat = m.reshape(-1)
     by = [to_int(flat[EMB_DATA][i * 8:(i + 1) * 8]) for i in range(9)]
     ok = ((m.sum(axis=0) & 1).sum() <= 1                    # one error in row 7 is harmless
@@ -393,8 +400,8 @@ def talker_alias(parts):
     return fmt, txt
 
 
-# CRC-CCITT on 10-byte blocks (CSBK, data headers): candidates (init, final XOR) are checked
-# on real bursts; the per-type masks are ETSI's.
+# CRC-CCITT on 10-byte blocks (CSBK, data headers), then the per-type mask: of the candidate
+# (init, final XOR) pairs, 440.925's preambles and GPS data headers all fit "i0xF".
 CRC_MASK = {"csbk": 0xA5A5, "data_hdr": 0xCCCC, "mbc_hdr": 0xAAAA}
 CRC_VARIANTS = {"i0x0": (0, 0), "i0xF": (0, 0xFFFF), "iFx0": (0xFFFF, 0), "iFxF": (0xFFFF, 0xFFFF)}
 
@@ -416,7 +423,7 @@ def crc_match(by12, kind):
             if crc_ccitt(by12[:10], i, x) ^ CRC_MASK[kind] == got]
 
 
-CRC_USE = "i0xF"          # MMDVM-style: init 0, inverted (to confirm on 440.925)
+CRC_USE = "i0xF"          # init 0, inverted: every CSBK and data header on 440.925 (2026-11-08)
 
 CSBKO = {0x04: "UU voice req", 0x05: "UU ans rsp", 0x07: "ch timing", 0x19: "aloha",
          0x1C: "ahoy", 0x20: "ack", 0x28: "C_BCAST", 0x38: "BS act", 0x3D: "preamble"}

@@ -261,6 +261,7 @@ cwlisten_lo    # level 2, cwlisten with a 400-1300 Hz bank
 cwprobe        # level 2
 dmrcap         # level 2, docs/k6-dmr.md
 dmrdet         # level 2, docs/k6-dmr.md
+dmrrx          # level 2 (its screen at 6), docs/k6-dmr.md
 ft8tx          # level 3
 ft8wf
 ft8wf_inv

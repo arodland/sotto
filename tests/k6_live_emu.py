@@ -80,7 +80,7 @@ def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=
 
 class Emu:
     def __init__(self, code, entry, ib, on_at, fdma, cpi=1.5, max_s=None, key_us=60, stall=None,
-                 wobble=None, flash_cpi=None, level=4):
+                 wobble=None, flash_cpi=None, level=4, stack_win=3504, scratch=4096):
         import unicorn
         from unicorn import arm_const as A
         self.U, self.A = unicorn, A
@@ -99,16 +99,20 @@ class Emu:
         self.spos, self.nread, self.bp = 0.0, 0, [(0.0, 0.0)]
         self.said, self.writes, self.reg = [], {}, {}
         self.led = []                                # level 7: (ms, on) for each api->led call
+        self.lcd = {}                                # level 6: the text on each LCD line
         self.dma_on, self.dma_t0, self.dma_s0, self.made = False, 0.0, 0, 0
         mu = self.mu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_THUMB | unicorn.UC_MODE_MCLASS)
         mu.ctl_set_cpu_model(A.UC_CPU_ARM_CORTEX_M0)
         ram = self.ram = 0x20000000
         mu.mem_map(ram, 1 << 20)
         self.base, self.api, self.stubs = ram + 0x1000, ram + 0x8000, ram + 0x9000
-        self.stop, self.sp0, self.stack_lo = ram + 0x9F00, ram + 0x7F00, ram + 0x7F00 - 3504
+        self.scratch = scratch                       # the API's scratch size (the 4 KB store; more past the code in the arena images)
+        self.stack_win = stack_win                   # the stack measured (3504: the oldest images)
+        self.stop, self.sp0, self.stack_lo = ram + 0x9F00, ram + 0x7F00, ram + 0x7F00 - stack_win
         mu.mem_write(self.base, code)
         self.code_end = self.base + len(code)
-        mu.mem_write(self.stack_lo - 512, b"\xa5" * (3504 + 512))
+        assert self.code_end < self.stack_lo - 512
+        mu.mem_write(self.stack_lo - 512, b"\xa5" * (stack_win + 512))
         self.names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms",
                       "key_down", "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read",
                       "cal_write", "fl_read", "fl_prog", "fl_erase", "lcd_text", "lcd_bar", "lcd_wf",
@@ -238,9 +242,12 @@ class Emu:
             ret = -1                                 # refused: receive-only tests
         elif name == "led":
             self.led.append((self.cyc / 96000, r0))  # a GPIO write on the radio
+        elif name == "lcd_text":
+            self.lcd[r0] = bytes(uc.mem_read(r1, 32)).split(b"\0")[0].decode()
+            us = 50
         elif name == "scratch":
             if r0:
-                uc.mem_write(r0, (4096).to_bytes(4, "little"))
+                uc.mem_write(r0, self.scratch.to_bytes(4, "little"))
             ret = self.scr
         self.tick(us * 96)
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
@@ -266,8 +273,8 @@ class Emu:
             pc |= 1
         else:
             return None
-        st = bytes(self.mu.mem_read(self.stack_lo - 512, 3504 + 512))
-        used = 3504 + 512 - next(i for i, b in enumerate(st) if b != 0xA5)
+        st = bytes(self.mu.mem_read(self.stack_lo - 512, self.stack_win + 512))
+        used = self.stack_win + 512 - next(i for i, b in enumerate(st) if b != 0xA5)
         return self.mu.reg_read(A.UC_ARM_REG_R0), used
 
 

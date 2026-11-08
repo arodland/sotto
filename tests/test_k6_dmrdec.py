@@ -6,6 +6,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sim.k6if import dmr, dmrdec as dd  # noqa: E402
@@ -166,6 +167,14 @@ def test_c_codes_match_python():
         assert lib.h_emb_lc(u8(f), o9) == 1 and list(o9) == by
         f[rng.integers(128, size=4)] ^= 1
         assert lib.h_emb_lc(u8(f), o9) == int(dd.emb_lc_decode(f)[1])
+    by = [int(v) for v in rng.integers(0, 256, 9)]
+    f = dd.emb_lc_encode(by)
+    where = {int(m): a for a, m in enumerate(dd.EMB_ORDER)}   # matrix bit -> place sent
+    for r in range(7):                                      # two errors in one row: the columns
+        g = f.copy()
+        g[[where[16 * r + 3], where[16 * r + 12]]] ^= 1
+        assert lib.h_emb_lc(u8(g), o9) == 1 and list(o9) == by, r
+        assert dd.emb_lc_decode(g) == (by, True), r
     for _ in range(10):
         by = [int(v) for v in rng.integers(0, 256, 10)]
         for i, x in ((0, 0), (0, 0xFFFF), (0xFFFF, 0)):
@@ -174,5 +183,126 @@ def test_c_codes_match_python():
     t = np.array([1, 0, 1, 1], np.uint8)
     cach[dd.TACT_POS] = list(t) + [t[0] ^ t[1] ^ t[2], t[1] ^ t[2] ^ t[3], t[0] ^ t[1] ^ t[3]]
     assert lib.h_tact(u8(cach)) == 0b1011
-    cach[4] ^= 1
-    assert lib.h_tact(u8(cach)) == -1
+    for k in dd.TACT_POS:                                   # one error: corrected, flagged
+        cach[k] ^= 1
+        assert lib.h_tact(u8(cach)) == 0b1011 | 0x10, k
+        cach[k] ^= 1
+
+
+# ---- the K6's decoder: c/k6/mod/dmrdec.inc on the host, and the dmrrx module emulated ----
+
+def k6_counts(sym, cn0, seed=1):
+    """the K6's GP0 counts (2 * ones - 64 per 64 DMA bytes) for a call, as the modules see them"""
+    import test_k6_dmr as T
+    s, _ = dmr.dmr_baseband(sym, pre_s=0.0, post_s=0.0)
+    ib, on, off = T.stream(s, cn0=cn0, seed=seed)
+    b = (ib >> 1) & 1
+    n = len(b) // 64
+    return (b[:n * 64].reshape(n, 64).sum(1) * 2 - 64).astype(np.int16), (ib, on, off)
+
+
+CALL = dict(cc=1, tg=3027, src=3025107, superframes=6, alias="AG7EW TEST", seed=1)
+
+
+def test_c_decoder_on_the_k6_model():
+    """dmrsync.h's grid, its matched filter and dmrdec.inc at 52 dB-Hz (about the K6's level on
+    440.925 with the gain frozen): the LC, every voice burst's EMB, the talker alias"""
+    import shutil
+    import subprocess
+    import tempfile
+    import pytest
+    if not shutil.which("cc"):
+        pytest.skip("no cc")
+    k6 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "c", "k6")
+    exe = os.path.join(tempfile.mkdtemp(), "dmrrx_host")
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", k6, "-o", exe,
+                    os.path.join(k6, "dmrrx_host.c")], check=True)
+    alias = mids = ok = 0
+    for seed in range(1, 5):                # the alias's blocks go once each: a few calls
+        cnt, _ = k6_counts(dd.voice_call_symbols(**dict(CALL, seed=seed)), 52.0)
+        out = subprocess.run([exe, "4476"], input=cnt.tobytes(), capture_output=True, check=True).stdout.decode()
+        print(out)
+        lines = out.splitlines()
+        assert any(ln.startswith("L TS1 CC1 TG 3027 src 3025107 F0") for ln in lines), out
+        assert not any(ln[:2] in ("L ", "E ") and "TG 3027 src 3025107" not in ln for ln in lines), out
+        n = dict(kv.split("=") for kv in lines[-1].split()[1:])
+        assert int(n["L"]) >= 3, lines[-1]
+        alias += "A AG7EW TEST" in lines
+        m, k = map(int, n["mids"].split("/"))
+        mids, ok = mids + m, ok + k
+    assert alias >= 2 and ok >= 88, (alias, mids, ok)
+
+
+@pytest.mark.parametrize("block,max_stack", [(11776, 2900), (13312, 1900)])
+def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
+    """the dmrrx module (dmrdet + the decoder) on the emulated M0 with the modelled DMA: the
+    call's talkgroup and source on the serial line and the screen, its alias, in the shared
+    module block, the receiver's registers put back. The scratch past the code takes the filter's
+    ring, the decoder's state and the DMA ring as far as it goes: in the SPI voice images'
+    11,776-byte block all but the DMA ring; in a bigger one (a slimmer image) all three"""
+    import shutil
+    if not (shutil.which("clang") and shutil.which("ld.lld")):
+        pytest.skip("needs clang and ld.lld")
+    pytest.importorskip("unicorn")
+    import test_k6_dmr as T
+    import k6_live_emu as le
+    from sim.k6if import frontend as fe
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "c", "k6", "mod", "dmrrx.c")
+    code, entry = T.build([("RUN_S", "3u"), ("S_MS", "1000u")], src)
+    assert len(code) + 24 + 512 + 1296 <= 11776 - 256, len(code)  # the shared block: code, the
+                                                               # filter ring and the decoder in scratch, 256 B to spare
+    _, (ib, on, off) = k6_counts(dd.voice_call_symbols(**CALL), 56.0)
+    e = le.Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=len(ib) / fe.FDMA + 0.5, level=6, stack_win=7000,
+               scratch=(block - 24 - len(code)) & ~3)
+    e.rssi = lambda: -60 if on <= e.sample_now() < off else -125
+    ret, stack = e.run()
+    txt = "\n".join(e.said)
+    print(txt, e.lcd, stack)
+    assert ret >= 1, txt
+    assert all(f"TS{n}" not in ln for ln in e.said for n in (0, 3)), txt       # the slot named
+    assert any(ln.startswith("L TS") and "TG 3027 src 3025107" in ln for ln in e.said), txt
+    assert any(ln.startswith("A AG7EW T") for ln in e.said), txt
+    assert e.lcd.get(1) == "TG 3027" and e.lcd.get(2) == "ID 3025107", e.lcd
+    assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0               # put back (reads 0 here)
+    assert stack < max_stack, stack
+    lost = [int(ln.split("lost=")[1].split()[0]) for ln in e.said if ln.startswith("s ")]
+    assert lost and lost[-1] <= 8, txt           # the DMA ring outran: only by housekeeping's lines
+
+
+def test_dmrscore_against_a_key(tmp_path):
+    """tools/k6_dmrscore.py: the K6's lines lined up with the answer key by themselves, a
+    right call, a missed one, a wrong line, a stray one, a data header, the alias"""
+    import json
+    import subprocess
+    t0 = 1794189600.0                                       # 2026-11-09T05:20:00Z
+    iso = lambda t: __import__("datetime").datetime.fromtimestamp(t, __import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    key = [dict(file="a.wav", kind="call", at=iso(t0 + 10), dur=4.0, slot=1, alias="AG7EW TEST",
+                lc=dict(flco=0, fid=16, dst=3027, src=3025107), combined=None),
+           dict(file="a.wav", kind="call", at=iso(t0 + 30), dur=3.0, slot=1, alias=None,
+                lc=dict(flco=0, fid=16, dst=3027, src=3027436), combined=None),
+           dict(file="b.wav", kind="call", at=iso(t0 + 60), dur=5.0, slot=2, alias=None,
+                lc=dict(flco=0, fid=16, dst=91, src=1234567), combined=None),
+           dict(file="b.wav", kind="data", at=iso(t0 + 80), slot=1, crc=True, payload="",
+                hdr=dict(dst=311999, src=3027436))]
+    (tmp_path / "key.jsonl").write_text("".join(json.dumps(e) + "\n" for e in key))
+    start = t0 + 3.2                                        # the module started 3.2 s in
+    at = lambda t: f" @{round((t - start) * 10)}"
+    hdr = "02" + "30" + "04c2bf" + "2e31ec" + "08" + "00"   # DPF 2, SAP 3, 311999 <- 3027436
+    log = [f"05:20:03 dmr start f=440925000 floor=-121",
+           f"05:20:10 L TS1 CC1 TG 3027 src 3025107 F0{at(t0 + 10.3)}",
+           f"05:20:12 A AG7EW TEST{at(t0 + 12.0)}",
+           f"05:20:13 E TS1 TG 3027 src 3025107{at(t0 + 13.1)}",
+           f"05:20:31 L TS1 CC1 TG 3027 src 3025107 F0{at(t0 + 31.0)}",   # wrong: src 3027436
+           f"05:20:31 L TS1 CC1 TG 3027 src 3027436 F0{at(t0 + 31.2)}",
+           f"05:20:45 L TS2 CC1 TG 9 src 7 F0{at(t0 + 45.0)}",             # stray
+           f"05:21:20 H TS1 {hdr}{at(t0 + 80.4)}"]
+    (tmp_path / "k6.log").write_text("\n".join(log) + "\n")
+    tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "k6_dmrscore.py")
+    out = subprocess.run([sys.executable, tool, "--key", str(tmp_path / "key.jsonl"), "--log",
+                          str(tmp_path / "k6.log"), "--json"], capture_output=True, text=True, check=True).stdout
+    r = json.loads(out)
+    assert abs(__import__("datetime").datetime.fromisoformat(r["start"].replace("Z", "+00:00")).timestamp() - start) < 0.6, r
+    assert (r["calls"], r["named"], r["right"], r["wrong"], r["stray"]) == (3, 2, 2, 1, 1), r
+    assert (r["data"], r["data_hit"], r["alias"], r["alias_hit"]) == (1, 1, 1, 1), r
+    assert len(r["miss"]) == 1 and "TG 91" in r["miss"][0], r
+

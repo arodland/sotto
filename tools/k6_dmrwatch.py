@@ -5,7 +5,8 @@ line a call or data packet, so the K6's own DMR decoder can be scored against th
   python tools/k6_dmrwatch.py --watch ~/sotto-work/runs/cwbench-20261108 -o key.jsonl
 
 Files already in the output are skipped, so it can be rerun (or left in --watch) as the
-recorder adds cuts. Each line: file, its start time (file mtime minus length, UTC), the event's
+recorder adds cuts. Each line: file, its start time (UTC, from the name's 20261108T042456Z or
+_060718Z, else the file's mtime less its length), the event's
 offset and absolute time, the slot, and either the call's LC (vote of clean copies, the
 soft-combined headers, the talker alias) or the data packet's header and payload in hex.
 Receive-only: nothing here keys a radio. SPDX-License-Identifier: MIT"""
@@ -28,14 +29,32 @@ def utc(t):
     return dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")[:-4] + "Z"
 
 
+def start_time(p, dur):
+    """the recording's start (Unix time): from a name with 20261108T042456Z, or with _060718Z (the
+    date from the file's mtime), else the mtime less the length"""
+    import re
+    name, mt = os.path.basename(p), os.path.getmtime(p)
+    m = re.search(r"(\d{8})T(\d{6})Z", name)
+    if m:
+        return dt.datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S").replace(
+            tzinfo=dt.timezone.utc).timestamp()
+    m = re.search(r"_(\d{6})Z", name)
+    if m:
+        day = dt.datetime.fromtimestamp(mt - dur, dt.timezone.utc).strftime("%Y%m%d")
+        return dt.datetime.strptime(day + m.group(1), "%Y%m%d%H%M%S").replace(tzinfo=dt.timezone.utc).timestamp()
+    return mt - dur
+
+
 def decode_file(p):
     x, fs = dd._load(p)
-    t0 = os.path.getmtime(p) - len(x) / fs
+    t0 = start_time(p, len(x) / fs)
     pol, ev = dd.decode_stream(dd.audio_symbols(x, fs))
     base = {"file": os.path.basename(p), "start": utc(t0)}
     out = []
     for c in dd.calls(ev):
         cb = c["combined"]
+        if c["lc"] is None and not (cb and cb["rs_ok"]):
+            continue                            # a lone voice sync at a clip's edge
         out.append(dict(base, kind="call", t=round(c["t0"], 3), at=utc(t0 + c["t0"]),
                         dur=round(c["t1"] - c["t0"], 3), slot=c["slot"],
                         lc=dict(zip(("flco", "fid", "dst", "src"), c["lc"])) if c["lc"] else None,
