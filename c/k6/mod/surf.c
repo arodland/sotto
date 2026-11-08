@@ -3,8 +3,10 @@
    The screen is a bargraph of signal strength (Y) across frequency (X): 64 bins, 2 pixels each,
    drawn as the level-6 waterfall bitmap (30 rows of 128 pixels, y = 21-50). The listening
    frequency is a blinking bar (it flips to inverse about 2.5 times a second) with a caret above
-   it; a small tick over a bar marks a peak. The title line says the band and the bin step, line 1
-   the listening frequency and its level in dBm (a settled read), line 5 the window's edges.
+   it; a small tick over a bar marks a peak, a dot in the top row a repeater the explorer saved
+   (its table, c/k6/rt.h, read once at the start). The title line says the band and the bin step,
+   line 1 the listening frequency and its level in dBm (a settled read), line 5 the window's
+   edges, or with the bar on a saved repeater its call, offset and TX tone ("N0CALL +5.0 103.5").
 
    Keys (the module scans the keypad itself: the module API has key_down but no key identity;
    the matrix is Aura's src/device/keypad.rs at edf3b98, rows PB0/PB4/PB10/PB11/PB9, columns
@@ -39,11 +41,12 @@
 
    surfauto.c builds the same module for unattended bench runs: SIDE1 presses itself every
    SURF_AUTO_MS (saying the bar's frequency and level first), it wraps to the band's bottom at
-   the top, and it leaves after SURF_AUTO_S; keys still work.
+   the top, and it leaves after SURF_AUTO_S; keys still work. Before it ends it says its last
+   bargraph ("bar 441.2000 25k" and two lines of a letter a bin, tools/k6_screen.py draws them).
 
    Lines (K6 MOD say ...): "surf 70cm 440.850 25k", "sel 441.2000 -71", "end sw=N".
    Writes REG_47 and GPIOB bit 2 (speaker) and the keypad rows' GPIOB BSRR/BRR bits, all put back.
-   No TX. The bitmap (480 B) and the state (~250 B) live on the stack, about 0.8 KB of the
+   Reads the SPI flash (level 5's fl_read), never writes it. No TX. The bitmap (480 B) and the state (~400 B) live on the stack, about 0.8 KB of the
    3.5 KB a module has at its call; the store holds only the code.
    Returns the sweeps done, or -3 (an image below level 6).
    SPDX-License-Identifier: MIT */
@@ -71,6 +74,9 @@
 #define DECAY_DB 3
 #define MSG_MS 1500
 #define WIDE 1
+#define NK 24                   /* known repeaters (the explorer's table) kept at a time */
+#define RT_BASE 0x0F0000u       /* c/k6/rt.h: 1024 slots of 64 B */
+#define RT_SLOTS 1024
 
 #define GPIOB 0x48000400u
 #define GPIOC 0x48000800u
@@ -99,7 +105,6 @@ static const band_t BANDS[] = {
     {156000000u, 162550000u, 3, "MAR/WX"}};
 #define NBANDS 5
 static const uint32_t STEPS[] = {5000, 10000, 12500, 25000, 50000, 100000};
-static const char STEPN[][6] = {"5k", "10k", "12.5k", "25k", "50k", "100k"};
 #define NSTEPS 6
 
 /* Aura's KEY_TABLE: phase 0 (no row driven) side keys, then rows PB0, PB4, PB10, PB11, PB9;
@@ -110,16 +115,19 @@ static const uint8_t ROWPIN[6] = {0xFF, 0, 4, 10, 11, 9};
 
 typedef struct {
   const k6_api_t *api;
+  const band_t *bd;             /* the band */
   uint8_t *bmp;
   uint32_t step, now;
   uint32_t t_flush, t_open, t_full, t_sfl, t_msg, t_key, t_rep, t_auto;
-  const char *msg;
   int pos, nbb, nv, sel, next, pend, sj, sweeps;
   int sfl, sel_dbm;
-  uint8_t band, zi, qfl, parked, tuned, check, mon, hold, audio, blink, key, raw, full;
+  uint8_t zi, qfl, parked, tuned, check, mon, hold, audio, blink, key, raw, full;
   uint32_t r47, odr;
   uint8_t lvl[NB];              /* bars: quick reads, dBm + 174, 0 unknown */
-  char ln[24];
+  char ln[40];
+  uint32_t khz[NK];             /* the repeater table's valid entries: rx_hz, and their slots */
+  uint16_t kslot[NK];
+  int nk;
 } sf_t;
 
 static uint32_t udiv(uint32_t n, uint32_t d) {
@@ -160,6 +168,14 @@ static char *sint(char *p, int v) {
 
 static char *mhz(char *p, uint32_t hz, int dec) { return fix(p, udiv(hz, dec == 4 ? 100 : 1000), dec); }
 
+/* the bin step in kHz: "12.5k", "25k" */
+static char *stepn(char *p, uint32_t step) {
+  p = fix(p, udiv(step, 100), 1);
+  if (p[-1] == '0') p -= 2;
+  *p++ = 'k';
+  return p;
+}
+
 static void say_end(sf_t *s, char *p) {
   *p = 0;
   s->api->say(s->ln);
@@ -167,7 +183,14 @@ static void say_end(sf_t *s, char *p) {
 
 static int dbm(sf_t *s) { return KM_RSSI_DBM(s->api->fd_read(0x67)); }
 static uint32_t hz_of(sf_t *s, int i) {
-  return BANDS[s->band].lo + (uint32_t)(s->pos + i) * s->step;
+  return s->bd->lo + (uint32_t)(s->pos + i) * s->step;
+}
+
+/* bin i's level in dBm, us after its tune */
+static int read_at(sf_t *s, int i, uint32_t us) {
+  s->api->tune(hz_of(s, i), WIDE);
+  s->api->delay_us(us);
+  return dbm(s);
 }
 
 static void audio(sf_t *s, int on) {
@@ -222,19 +245,11 @@ static int kp_event(sf_t *s) {
 
 /* ---- the window ---- */
 
-static void message(sf_t *s, const char *m) {
-  s->msg = m;
-  s->t_msg = s->now;
-}
-
 /* settled floor: the second lowest of 8 bins' settled reads */
 static void measure_sfl(sf_t *s) {
   int j, a = 999, b = 999;
   for (j = 3; j < s->nv; j += 8) {
-    int d;
-    s->api->tune(hz_of(s, j), WIDE);
-    s->api->delay_us(CHECK_US);
-    d = dbm(s);
+    int d = read_at(s, j, CHECK_US);
     if (d < a) b = a, a = d;
     else if (d < b) b = d;
   }
@@ -262,7 +277,7 @@ static void limits(sf_t *s) {
 
 /* the window and bar centred (as far as the band allows) on hz, at step STEPS[zi] */
 static void window(sf_t *s, uint32_t hz) {
-  const band_t *b = &BANDS[s->band];
+  const band_t *b = s->bd;
   int c, i, mx;
   s->step = STEPS[s->zi];
   s->nbb = (int)udiv(b->hi - b->lo, s->step) + 1;
@@ -303,7 +318,7 @@ static int pan(sf_t *s, int k) {
 
 static int is_peak(sf_t *s, int i) {
   int v = s->lvl[i];
-  if (!v || v < s->qfl + PEAK_DB) return 0;
+  if (v < s->qfl + PEAK_DB) return 0;      /* (an unknown bin, 0, never is) */
   if (i > 0 && s->lvl[i - 1] > v) return 0;
   if (i + 1 < s->nv && s->lvl[i + 1] >= v) return 0;
   return 1;
@@ -322,10 +337,7 @@ static void say_sel(sf_t *s) {
 static int seek(sf_t *s, int d, int j) {
   for (; j >= 0 && j < s->nv; j += d)
     if (is_peak(s, j)) {
-      int v;
-      s->api->tune(hz_of(s, j), WIDE);
-      s->api->delay_us(CHECK_US);
-      v = dbm(s);
+      int v = read_at(s, j, CHECK_US);
       s->tuned = 0;
       if (v < s->sfl + SQ_DB) continue;   /* a noise bump in the quick reads: not a station */
       s->sel = j;
@@ -345,9 +357,9 @@ static void hunt(sf_t *s, int d) {
     s->sj = o - a + d;
     moved(s);
   } else {
-    message(s, "no peak");
+    s->t_msg = s->now + MSG_MS;  /* line 5 says "no peak" till then */
 #ifdef SURF_AUTO_S
-    window(s, BANDS[s->band].lo);
+    window(s, s->bd->lo);
 #endif
   }
 }
@@ -380,9 +392,9 @@ static void on_key(sf_t *s, int k) {
   case 'B': jump(s, -1); break;
   case 'N':
   case '#':
-    s->band = (uint8_t)(s->band + 1 == NBANDS ? 0 : s->band + 1);
-    s->zi = BANDS[s->band].zi;
-    window(s, BANDS[s->band].lo + ((BANDS[s->band].hi - BANDS[s->band].lo) >> 1));
+    s->bd = s->bd + 1 == BANDS + NBANDS ? BANDS : s->bd + 1;
+    s->zi = s->bd->zi;
+    window(s, (s->bd->lo + s->bd->hi) >> 1);
     break;
   case '1':
   case '3':
@@ -407,10 +419,7 @@ static void on_key(sf_t *s, int k) {
 /* ---- sweeping ---- */
 
 static void sweep_bin(sf_t *s, int i) {
-  int r, o = s->lvl[i];
-  s->api->tune(hz_of(s, i), WIDE);
-  s->api->delay_us(SETTLE_US);
-  r = (s->api->fd_read(0x67) & 0x1FF) >> 1;
+  int r = read_at(s, i, SETTLE_US) + 174, o = s->lvl[i];
   if (r < 1) r = 1;
   s->lvl[i] = (uint8_t)(r >= o || !o ? r : (o - r > DECAY_DB ? o - DECAY_DB : r));
 }
@@ -449,10 +458,8 @@ static void sweep_done(sf_t *s) {
 static void check_bar(sf_t *s) {
   int d;
   s->check = 0;
-  s->api->tune(hz_of(s, s->sel), WIDE);
-  s->api->delay_us(CHECK_US);
+  d = s->sel_dbm = read_at(s, s->sel, CHECK_US);
   s->tuned = 1;
-  d = s->sel_dbm = dbm(s);
   if (d < s->sfl) s->sfl = d;
   if (d >= s->sfl + SQ_DB) {
     s->parked = 1;
@@ -475,13 +482,13 @@ static void sweep_step(sf_t *s) {
 static void park_step(sf_t *s) {
   int d;
   if (!s->tuned) {
-    s->api->tune(hz_of(s, s->sel), WIDE);
-    s->api->delay_us(CHECK_US);
+    d = read_at(s, s->sel, CHECK_US);
     s->tuned = 1;
   } else {
     s->api->delay_us(PARK_US);
+    d = dbm(s);
   }
-  d = s->sel_dbm = dbm(s);
+  s->sel_dbm = d;
   if (d >= s->sfl + SQ_DB - HYST_DB) s->t_open = s->now;
   if (!s->mon && s->now - s->t_open > HANG_MS) {
     audio(s, 0);
@@ -505,21 +512,71 @@ static void px(uint8_t *b, int x, int r) {
   if ((unsigned)x < 128) b[16 * r + (x >> 3)] |= (uint8_t)(0x80 >> (x & 7));
 }
 
+/* bin i's two pixels in row r */
+static void pair(uint8_t *b, int i, int r) { b[16 * r + (i >> 2)] |= (uint8_t)(0xC0 >> (2 * (i & 3))); }
+
+/* the explorer's repeater table (c/k6/rt.h, level 5's fl_read): every valid record's rx_hz and
+   slot, read once at the start (1024 reads of 8 bytes, ~0.1 s) */
+static void rt_load(sf_t *s) {
+  uint32_t r[2];
+  int i;
+  for (i = 0; i < RT_SLOTS && s->nk < NK; i++)
+    if (!s->api->fl_read(RT_BASE + 64u * (uint32_t)i, r, 8) && (uint8_t)r[0] == 0xFC && r[1]) {
+      s->khz[s->nk] = r[1];
+      s->kslot[s->nk++] = (uint16_t)i;
+    }
+}
+
+/* line 5 on a known repeater: its call, offset (MHz) and TX tone, from its record */
+static char *rt_info(sf_t *s, int slot) {
+  uint8_t r[44];               /* record bytes 8..51 */
+  char *p = s->ln;
+  int32_t off;
+  int i, tone;
+  s->api->fl_read(RT_BASE + 64u * (uint32_t)slot + 8, r, 44);
+  for (i = 32; i < 42 && r[i] > ' ' && r[i] < 0x7F; i++) *p++ = (char)r[i];
+  off = (int32_t)(r[0] | r[1] << 8 | r[2] << 16 | (uint32_t)r[3] << 24);
+  if (off) {
+    *p++ = ' ';
+    *p++ = off < 0 ? '-' : '+';
+    p = fix(p, udiv((uint32_t)(off < 0 ? -off : off) + 50000, 100000), 1);
+  }
+  tone = r[6] | r[7] << 8;
+  if (tone && !(tone & 0x8000)) {
+    *p++ = ' ';
+    p = fix(p, (uint32_t)tone, 1);
+  }
+  return p;
+}
+
+/* bin i's bar height in pixels, 1..BARH: the quick dB over the window's floor, 7/8 px each */
+static int bar_h(sf_t *s, int i) {
+  int v = s->lvl[i], h = s->qfl && v > s->qfl ? ((v - s->qfl) * 7) >> 3 : 0;
+  if (h < 1) h = 1;
+  if (h > BARH) h = BARH;
+  return h;
+}
+
 static void draw(sf_t *s) {
   const k6_api_t *api = s->api;
   uint8_t *b = s->bmp;
-  int i, r, x;
+  int i, r, x, k;
   char *p;
   s->t_flush = s->now;
   s->blink ^= 1;
   for (i = 0; i < 16 * ROWS; i++) b[i] = 0;
   for (i = 0; i < s->nv; i++) {
-    int v = s->lvl[i], h = s->qfl && v > s->qfl ? ((v - s->qfl) * 7) >> 3 : 0;
-    if (h < 1) h = 1;
-    if (h > BARH) h = BARH;
-    x = 2 * i;
-    for (r = ROWS - h; r < ROWS; r++) b[16 * r + (x >> 3)] |= (uint8_t)(0xC0 >> (x & 7));
-    if (is_peak(s, i)) px(b, x, BAR0 - 2), px(b, x + 1, BAR0 - 2);
+    for (r = ROWS - bar_h(s, i); r < ROWS; r++) pair(b, i, r);
+    if (is_peak(s, i)) pair(b, i, BAR0 - 2);
+  }
+  for (i = 0, k = -1; i < s->nk; i++) {   /* known repeaters: a mark in row 0 */
+    uint32_t lo = hz_of(s, 0), f = s->khz[i] + (s->step >> 1);
+    int j;
+    if (f < lo) continue;
+    j = (int)udiv(f - lo, s->step);
+    if (j >= s->nv) continue;
+    pair(b, j, 0);
+    if (j == s->sel) k = s->kslot[i];
   }
   x = 2 * s->sel;
   for (r = 0; r < 3; r++)
@@ -528,9 +585,9 @@ static void draw(sf_t *s) {
     for (r = BAR0; r < ROWS; r++) b[16 * r + (x >> 3)] ^= (uint8_t)(0xC0 >> (x & 7));
 
   p = put(s->ln, "SURF ");
-  p = put(p, BANDS[s->band].name);
+  p = put(p, s->bd->name);
   *p++ = ' ';
-  p = put(p, STEPN[s->zi]);
+  p = stepn(p, s->step);
   if (s->mon) p = put(p, " MON");
   else if (s->hold) p = put(p, " HOLD");
   *p = 0;
@@ -542,18 +599,17 @@ static void draw(sf_t *s) {
   if (s->audio) p = put(p, " RX");
   *p = 0;
   api->lcd_text(1, s->ln);
-  if (s->msg && s->now - s->t_msg < MSG_MS) {
-    api->lcd_text(5, s->msg);
+  if (k >= 0) {
+    p = rt_info(s, k);
   } else {
     char *e;
-    s->msg = 0;
     p = mhz(s->ln, hz_of(s, 0), 3);
     e = s->ln + 14;
     while (p < e) *p++ = ' ';
     p = mhz(p, hz_of(s, s->nv - 1), 3);
-    *p = 0;
-    api->lcd_text(5, s->ln);
   }
+  *p = 0;
+  api->lcd_text(5, (int32_t)(s->t_msg - s->now) > 0 ? "no peak" : s->ln);
   api->lcd_wf(b, ROWS, 0);
   api->lcd_flush();
 }
@@ -564,6 +620,7 @@ int k6_main(const k6_api_t *api) {
   uint32_t n;
   uint8_t *z = (uint8_t *)s;
   unsigned i;
+  int k;
   char *p;
   if (api->level < 6) return -3;
   for (i = 0; i < sizeof st; i++) z[i] = 0;
@@ -575,22 +632,22 @@ int k6_main(const k6_api_t *api) {
   audio(s, 0);
   {
     uint32_t hz = api->rx_hz();
-    s->band = 2;
+    s->bd = &BANDS[2];
     for (i = 0; i < NBANDS; i++)
-      if (hz >= BANDS[i].lo && hz <= BANDS[i].hi) s->band = (uint8_t)i;
-    s->zi = BANDS[s->band].zi;
+      if (hz >= BANDS[i].lo && hz <= BANDS[i].hi) s->bd = &BANDS[i];
+    s->zi = s->bd->zi;
     s->now = api->ms();
+    rt_load(s);
     window(s, hz);
     p = put(s->ln, "surf ");
-    p = put(p, BANDS[s->band].name);
+    p = put(p, s->bd->name);
     *p++ = ' ';
     p = mhz(p, hz, 3);
     *p++ = ' ';
-    say_end(s, put(p, STEPN[s->zi]));
+    say_end(s, stepn(p, s->step));
   }
   s->t_flush = api->ms() - FLUSH_MS;
   for (;;) {
-    int k;
     s->now = api->ms();
     k = kp_event(s);
 #ifdef SURF_AUTO_S
@@ -616,6 +673,18 @@ int k6_main(const k6_api_t *api) {
     n = kp_scan(s) ? 0 : n + 1;
     api->delay_us(10000);
   }
+#ifdef SURF_AUTO_S
+  /* the last bargraph, for the bench: "bar <first bin MHz> <step>", then the bins, 32 a line, a
+     letter a bin: its height a (1 px) to x (24 px) */
+  p = put(s->ln, "bar ");
+  p = mhz(p, hz_of(s, 0), 4);
+  *p++ = ' ';
+  say_end(s, stepn(p, s->step));
+  for (p = s->ln, k = 0; k < s->nv;) {
+    *p++ = (char)('a' - 1 + bar_h(s, k));
+    if (!(++k & 31) || k == s->nv) say_end(s, p), p = s->ln;
+  }
+#endif
   p = put(s->ln, "end sw=");
   say_end(s, fix(p, (uint32_t)s->sweeps, 0));
   return s->sweeps;

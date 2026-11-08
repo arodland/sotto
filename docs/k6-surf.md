@@ -6,7 +6,7 @@ listening frequency drawn as a blinking bar with a caret above it.
 
 **Status: runs on the radio** (bench run 1, 2026-11-08, below). It is also tested on the emulated M0
 against a modelled receiver and the real keypad matrix. It needs API level 6 (the module screen), so
-it runs on the image already on the K6 (ffa7dbf, level 7) with no reflash: 3.6 KB of code in
+it runs on the image already on the K6 (ffa7dbf, level 7) with no reflash: 3.8 KB of code in
 the 4 KB store, receive only.
 
 ![four emulated screens](img/k6-surf-screens.png)
@@ -14,7 +14,8 @@ the 4 KB store, receive only.
 *Emulated screens, drawn pixel for pixel as the firmware's `draw_mod_screen` draws them
 (`tools/k6_screen.py`): sweeping with the bar on a quiet 440.600; the same a frame later (the bar
 blinks); SIDE1 jumped to the -70 dBm carrier on 440.850 and the audio opened (RX); SIDE1 again,
-to the next peak at 441.200.*
+to the next peak at 441.200, a repeater the explorer saved, so line 5 gives its call, offset and
+tone. The dots in the top row mark saved repeaters.*
 
 ## Using it
 
@@ -35,7 +36,9 @@ starts on the band holding the pager's frequency (70 cm on the bench), centred o
 
 Screen: the title bar says the band and bin step; line 1 the bar's frequency and its level
 (a settled read, dBm) and RX while the audio is open; the bargraph (64 bins x 2 pixels, a
-tick over each peak, the caret over the bar); line 5 the window's edges, or a short message.
+tick over each peak, a dot in the top row over each repeater the explorer saved, the caret over
+the bar); line 5 the window's edges, or with the bar on a saved repeater its call, offset and TX
+tone (`N0CALL +5.0 103.5`), or "no peak" for 1.5 s.
 
 ## How it works
 
@@ -64,15 +67,24 @@ scans Aura's matrix itself. The rows are PB0/PB4/PB10/PB11/PB9 and the columns
 PC13/PC14/PF6/PB14; the side keys read with no row driven (Aura `src/device/keypad.rs` at
 edf3b98). It writes only the row bits' BSRR/BRR, as `key_poll` does, and leaves the rows idle.
 
-**Memory.** The 480 B bitmap and the ~250 B state are on the stack (`-fstack-usage`: about
-1 KB deepest of the 3.5 KB a module has at its call). The store holds only the code, so nothing
+**Saved repeaters.** At the start the module reads the explorer's repeater table (c/k6/rt.h,
+0x0F0000, level 5's `fl_read`, 8 bytes a slot, about 0.1 s) and keeps the frequency and slot of
+up to 24 valid records. With the bar on one it reads that record's call, offset and TX tone for
+line 5. It never writes the flash. This is the first piece of the VFO idea below: the bargraph
+knows which peaks are repeaters, and PTT could later use the offset and tone it shows.
+
+**Memory.** The 480 B bitmap and the ~400 B state are on the stack (`-fstack-usage`: about
+1.2 KB deepest of the 3.5 KB a module has at its call). The store holds only the code, so nothing
 changes when PR #142 grows the store.
 
 ## Bench build (surfauto)
 
 `mod-surfauto.bin` is the same module for unattended runs: SIDE1 presses itself every 4 s, saying
 `sel <MHz> <dBm>` first. It wraps to the band's bottom at the top and leaves after 60 s. The keys
-still work. With `--telemetry 12` the K6 sends those lines back over the air, so the bench needs
+still work. Before it ends it says its last bargraph: `bar <first bin MHz> <step>`, then two
+lines of 32 letters, one a bin, `a` for 1 pixel up to `x` for 24 (about 112 bytes of the 684 the
+telemetry carries). `python tools/k6_screen.py RUN.txt OUT.png` draws it as the screen showed
+it, so a run's spectrum comes back with no serial log. With `--telemetry 12` the K6 sends those lines back over the air, so the bench needs
 no one at the radio and no serial cable:
 
 ```
@@ -140,8 +152,10 @@ It fits, and this module is the way to try it. Points for and against:
 
 - `c/k6/mod/surf.c`: the module; `c/k6/mod/surfauto.c`: the bench build.
 - `tests/test_k6_surf.py`: the emulated runs (bargraph, side keys, UP/DOWN and panning, band
-  and zoom, monitor, squelch hang, EXIT, the bench build). `python tests/test_k6_surf.py OUT.png`
+  and zoom, monitor, squelch hang, EXIT, saved repeaters from a table in the emulated flash, the
+  bench build and its bargraph lines). `python tests/test_k6_surf.py OUT.png`
   redraws the screens above.
-- `tools/k6_screen.py`: draws any level-6 module's emulated frames as the LCD shows them.
+- `tools/k6_screen.py`: draws any level-6 module's emulated frames as the LCD shows them, and
+  (run as a script) the bargraph a surfauto run said.
 - `tests/test_k6_i2s.py`: `run(..., keypad=[(from_us, to_us, key)])` drives the real key matrix
   for modules that scan it.

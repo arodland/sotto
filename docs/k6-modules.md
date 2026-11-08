@@ -334,8 +334,10 @@ when a reset is acceptable. If it holds, `memory.x` can grow by 2720 bytes: the 
 `c/k6/mod/surf.c` (2026-11-08, level 6): a bargraph of signal strength across 64 bins, the
 listening frequency a blinking bar with a caret, the side keys jumping from peak to peak, UP/DOWN
 stepping, BAND/zoom/monitor keys. It listens first (sweeps only while the bar's channel is
-quiet) and scans the keypad matrix itself, since the API has no key identity. `surfauto.c` is
-the unattended bench build. See [k6-surf.md](k6-surf.md).
+quiet) and scans the keypad matrix itself, since the API has no key identity. It marks the
+repeaters the explorer saved (read-only, from the table in SPI flash) and names the one under the
+bar. `surfauto.c` is the unattended bench build; it says its last bargraph over the telemetry.
+See [k6-surf.md](k6-surf.md).
 
 ## Insights (a living list)
 

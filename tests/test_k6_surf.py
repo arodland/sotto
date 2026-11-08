@@ -4,6 +4,7 @@ measured) and the real keypad matrix (test_k6_i2s run(..., keypad=...)): the bar
 caret, peak jumps with the side keys, UP/DOWN with panning, band and zoom keys, monitor, the
 squelch's open and hang, and EXIT putting the audio path back. SPDX-License-Identifier: MIT"""
 import os
+import struct
 import sys
 
 import pytest
@@ -40,14 +41,25 @@ class Bumpy(Receiver):
         return 10 * math.log10(p)
 
 
-def go(signals, keys, rx_hz=440_600_000, level=7, regs=None, src=SRC, bumps=()):
+def rt_record(slot, rx_hz, call=b"", off=0, tx_tone=0, state=0xFFFC):
+    """(slot, 64 bytes): an explorer repeater-table record as c/k6/rt.h lays it out (no CRC: surf
+    doesn't check it)"""
+    return slot, struct.pack("<HHIiHHHBBI16s10sBBBBHII", state, 1, rx_hz, off, 0, tx_tone, 0, 0, 0, 0,
+                             b"", call, 0, 0, 0, 0, slot + 1, slot + 1, 0)
+
+
+def go(signals, keys, rx_hz=440_600_000, level=7, regs=None, src=SRC, bumps=(), table=()):
     from modem import k6mod
     code, entry = k6mod.build(src)
     m = Bumpy([(f, d, a, b) for f, d, a, b in signals], list(bumps))
     lcd = {}
+    mem = bytearray(b"\xff" * 0x110000)
+    for slot, rec in table:
+        mem[64 * slot:64 * slot + 64] = rec
     r = {**START, 0x67: m.rssi, 0x47: 0x6040, **(regs or {})}
     ret, said, regs, writes = run(r, code=(code, entry), tune=m.tune, level=level, lcd=lcd, keypad=keys,
-                                  spare=4072 - len(code), count=3_000_000_000, rx_hz=rx_hz)
+                                  spare=4072 - len(code), count=3_000_000_000, rx_hz=rx_hz,
+                                  flash={"mem": mem})
     return ret, said, regs, writes, lcd
 
 
@@ -68,6 +80,12 @@ def caret(frame):
     return xs[0] // 2 if xs else None
 
 
+def marks(frame):
+    """the bins with a known-repeater mark (row 0)"""
+    row = frame["wf"][0]
+    return {x // 2 for x in range(0, 128, 2) if row[x >> 3] & (0x80 >> (x & 7))}
+
+
 def sels(said):
     return [ln.split()[1] for ln in said if ln.startswith("sel ")]
 
@@ -82,7 +100,7 @@ def test_builds_level_6_and_fits_the_store(src):
     from modem import k6mod
     code, entry = k6mod.build(src)
     assert k6mod.source_level(src) == 6 and entry == 0
-    assert len(code) <= 4072 - 200                 # the store, with room to grow (bitmap: stack)
+    assert len(code) <= 4072 - 100                 # the store, with room to grow (bitmap: stack)
 
 
 @need_clang
@@ -94,6 +112,14 @@ def test_bench_build_surfs_by_itself_and_wraps():
     assert s[:3] == ["440.6000", "440.8500", "441.2000"]
     assert "430.3000" in s and said[-1].startswith("end sw=")
     assert lcd["st"]["us"] >= 60_000_000 and regs[0x47] == 0x6040
+    # the last bargraph comes back as say lines (under 60 characters), and draws as the screen did
+    assert all(len(ln) < 60 for ln in said)
+    f = k6_screen.surf_frame(said)
+    assert f is not None and len(f["heights"]) == 64
+    last = lcd["frames"][-1]
+    same = sum(height(f, i) == height(last, i) for i in range(64))
+    assert same >= 60, same                                 # (the blinking bar, a last sweep)
+    assert max(f["heights"]) > 15 and sorted(f["heights"])[16] == 1     # a station, the floor
 
 
 @need_clang
@@ -139,6 +165,24 @@ def test_side_keys_skip_bumps_a_settled_read_doesnt_confirm():
     got = sels(said)
     assert got[0] == "441.2000"                              # SIDE1 skips them
     assert got[1] not in ("441.0000", "440.7000")            # SIDE2 too (it hunts on down the band)
+
+
+@need_clang
+def test_known_repeaters_marked_and_named():
+    # the explorer's table: 440.850 simplex (AG7EW), 441.200 +5 MHz tone 103.5 (N0CALL), a replaced
+    # record at 441.000 and one out of the window (443.525); the bar visits the first two
+    table = [rt_record(0, 440_850_000, b"AG7EW"), rt_record(1, 441_000_000, b"OLD", state=0xFFF8),
+             rt_record(70, 441_200_000, b"N0CALL", 5_000_000, 1035), rt_record(900, 443_525_000, b"FAR")]
+    sig = [(440_850_000, -70, 0, FOREVER), (441_200_000, -95, 0, FOREVER)]
+    keys = taps("A", 3_000_000) + taps("A", 4_000_000) + [(5_500_000, 5_800_000, "X")]
+    ret, said, regs, writes, lcd = go(sig, keys, table=table)
+    fr = lcd["frames"]
+    quiet = at(fr, 2_000_000)
+    assert marks(quiet) == {42, 56}
+    assert quiet["text"][5] == "439.800       441.375"      # bar on 440.600: not a known one
+    assert at(fr, 3_400_000)["text"][5] == "AG7EW"
+    assert at(fr, 4_400_000)["text"][5] == "N0CALL +5.0 103.5"
+    assert marks(at(fr, 4_400_000)) == {42, 56}
 
 
 @need_clang
@@ -215,10 +259,11 @@ if __name__ == "__main__":
     # python tests/test_k6_surf.py OUT.png: the emulated screens of the side-key run, for docs
     sig = [(440_850_000, -70, 0, FOREVER), (441_200_000, -95, 0, FOREVER), (440_500_000, -105, 0, FOREVER)]
     keys = [(3_000_000, 3_200_000, "A"), (4_000_000, 4_200_000, "A"), (8_000_000, 8_300_000, "X")]
-    _, _, _, _, lcd = go(sig, keys)
+    table = [rt_record(0, 440_850_000, b"AG7EW"), rt_record(1, 441_200_000, b"N0CALL", 5_000_000, 1035)]
+    _, _, _, _, lcd = go(sig, keys, table=table)
     fr = lcd["frames"]
     q = at(fr, 2_000_000)
     k6_screen.png([q, fr[fr.index(q) + 1], at(fr, 3_400_000), at(fr, 4_400_000)],
                   sys.argv[1] if len(sys.argv) > 1 else "surf.png",
                   captions=["sweeping, bar on 440.600", "the bar blinks", "SIDE1: peak 440.850, audio on",
-                            "SIDE1: next peak 441.200"])
+                            "SIDE1: next peak, a known repeater"])

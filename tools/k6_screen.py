@@ -175,3 +175,41 @@ def png(frames, path, scale=3, captions=None):
 
 def ascii_art(frame):
     return "\n".join("".join("#" if v else "." for v in row) for row in render(frame))
+
+
+def surf_frame(lines):
+    """The last bargraph a surfauto run says ("bar <MHz> <step>", then lines of a letter a bin:
+    a = 1 px .. x = 24 px; c/k6/mod/surf.c) as a frame for render() and png(): the bars as the
+    radio drew them, with the window's edges. lines: the run's say lines (with or without the
+    "K6 MOD say " prefix); returns None if it says no bargraph."""
+    lines = [ln.split("K6 MOD say ", 1)[-1].strip() for ln in lines]
+    try:
+        i = max(n for n, ln in enumerate(lines) if ln.startswith("bar "))
+    except ValueError:
+        return None
+    _, lo, step = lines[i].split()[:3]
+    hs = []
+    for ln in lines[i + 1:]:
+        if not ln or not all("a" <= c <= "x" for c in ln):
+            break
+        hs += [ord(c) - ord("a") + 1 for c in ln]
+    kstep = float(step.rstrip("k"))
+    hi = float(lo) + (len(hs) - 1) * kstep / 1000
+    wf = [bytearray(16) for _ in range(30)]
+    for b, h in enumerate(hs):
+        for r in range(30 - h, 30):
+            wf[r][b >> 2] |= 0xC0 >> (2 * (b & 3))
+    text = ["SURF bars " + step, "", "", "", "", f"{float(lo):.3f}".ljust(14) + f"{hi:.3f}"]
+    return {"text": text, "bar": [(0, 0)] * 6, "wf": [bytes(r) for r in wf], "heights": hs,
+            "lo_mhz": float(lo), "step_khz": kstep}
+
+
+if __name__ == "__main__":
+    # python tools/k6_screen.py RUN.txt OUT.png: draw the last bargraph a surfauto run said
+    import sys
+    f = surf_frame(open(sys.argv[1]).read().splitlines())
+    if f is None:
+        sys.exit(f"{sys.argv[1]}: no 'bar' lines")
+    if len(sys.argv) > 2:
+        png([f], sys.argv[2], captions=[f"{f['lo_mhz']:.4f} MHz, {f['step_khz']:g} kHz bins"])
+    print(ascii_art(f))
