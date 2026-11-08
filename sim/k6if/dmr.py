@@ -12,7 +12,9 @@ TS2) finds both. A voice call carries its sync in one burst of six (every 360 ms
 idle and header bursts carry it in every burst (a repeater's idle slot: every 60 ms).
 
 The detector, as the MCU would run it (c/k6/mod/dmrdet.c):
-  counts (2 * ones - 64, ~85.8 kHz) -> rising zero crossings, interpolated -> the IF's phase
+  counts (2 * ones - 64, ~85.8 kHz) -> a band-pass around the IF (2nd-order, +-6.5 kHz: the
+  sigma-delta's noise above the band makes extra crossings) -> rising zero crossings,
+  interpolated -> the IF's phase
   (cycles) at a uniform grid of `sps` points a symbol -> frequency over the last `win` grid
   steps -> for each family, the normalised correlation of the 24 sync symbols (spaced `sps`
   apart) with the pattern: rho = sum(p * y) / sqrt(24 * sum((y - mean)^2)), signed (+ voice,
@@ -176,6 +178,16 @@ def to_counts(s, cn0=None, seed=1, bw=8000.0):
 
 # ---- the detector ----
 
+BP_B0, BP_A1, BP_A2 = 5574, -7904, 5235     # c/k6/dmrsync.h's band-pass, Q14
+
+
+def bandpass(x):
+    """the MCU's band-pass around the IF (dmrsync.h: a 2nd-order Butterworth, 10.4-23.4 kHz at
+    85.8 kHz, the coefficients rounded to Q14), out in counts x 256 as there"""
+    return signal.lfilter([BP_B0 / 16384, 0, -BP_B0 / 16384], [1, BP_A1 / 16384, BP_A2 / 16384],
+                          np.asarray(x, float) * 256)
+
+
 def phase_grid(x, sps=2, fc=FC, rate_err=0.0):
     """counts -> the IF's phase in cycles at a grid of sps points a symbol (the MCU's clock
     off by rate_err: its grid spacing in counts assumes FC, the counts come at FC*(1+rate_err))"""
@@ -256,8 +268,9 @@ def confirm(ev, sps=2, tol_sym=1, max_slots=24):
     return out
 
 
-def detect(x, sps=2, win=1, thr=0.8, rate_err=0.0):
-    ph, g = phase_grid(x, sps, rate_err=rate_err)
+def detect(x, sps=2, win=1, thr=0.8, rate_err=0.0, bp=True):
+    """bp: band-pass the counts first, as the MCU does"""
+    ph, g = phase_grid(bandpass(x) if bp else x, sps, rate_err=rate_err)
     r = rho(freq(ph, sps, win), sps)
     ev = hits(r, thr, sps)
     return ev, confirm(ev, sps), g, r
@@ -297,7 +310,7 @@ def cmd_hist(a):
     for nm, (s, truth) in sig.items():
         cn0 = a.cn0 if nm != "noise" else 30.0
         x = to_counts(s if nm != "noise" else s + 1e-9, cn0)
-        ph, _ = phase_grid(x, a.sps)
+        ph, _ = phase_grid(bandpass(x), a.sps)
         r = rho(freq(ph, a.sps, a.win), a.sps)
         m = np.max(np.abs(np.array(list(r.values()))), axis=0)
         print(f"{nm:22s} |rho| p50 {np.percentile(m, 50):.2f} p99 {np.percentile(m, 99):.2f} "
@@ -390,12 +403,12 @@ def parse_caps(lines):
 
 
 def cap_report(x, ks, sps=2):
-    """one IF capture (counts at ks kS/s / 64) -> a dict: the IF's offset and spread (Hz), and
-    for the family with the best ungated |rho|: rho, the 24 taps' spread there, the mean of
+    """one IF capture (counts at ks kS/s / 64), band-passed as the MCU does -> a dict: the IF's
+    offset and spread (Hz), and for the family with the best ungated |rho|: rho, the 24 taps' spread there, the mean of
     the + and - sync positions (Hz from the window's mean: +-1944 nominal) and whether the
     gate would pass it; the gated hits"""
     fc = ks * 1000.0 / fe.L
-    ph, _ = phase_grid(x, sps, fc=fc)
+    ph, _ = phase_grid(bandpass(x), sps, fc=fc)
     y = np.nan_to_num(freq(ph, sps))
     ru, rg = rho(y, sps, gate=False), rho(y, sps, gate=True)
     span = 23 * sps
@@ -452,7 +465,7 @@ def cmd_cap(a):
         for p in a.files:
             with open(p, errors="replace") as fh:
                 caps = parse_caps(fh)
-            print(f"{os.path.basename(p)}: {len(caps)} captures (best |rho|: zc as the MCU, zc minus"
+            print(f"{os.path.basename(p)}: {len(caps)} captures (best |rho|: bare zc (the MCU before PR #140), zc minus"
                   " running mean, zc after band-pass, complex discriminator)")
             for c in caps:
                 if len(c["x"]) < 500:

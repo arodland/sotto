@@ -129,7 +129,7 @@ def emulate(s, run_s=2, src=MOD, **kw):
 
 
 def st_size():
-    """sizeof(st_t), dmrdet's state in the store's scratch, on thumbv6m"""
+    """sizeof(st_t), dmrdet's state on the module call's stack, on thumbv6m"""
     with tempfile.TemporaryDirectory() as d:
         w, o = os.path.join(d, "w.c"), os.path.join(d, "w.o")
         with open(w, "w") as f:
@@ -142,12 +142,13 @@ def st_size():
 
 @need_clang
 def test_module_fits():
-    """code + header + tag + the 512-byte ring + the state inside the 4 KB store (else the
-    module refuses to run: -8)"""
+    """the code + header + tag in the 4 KB store (the 512-byte ring and the state are on the
+    stack: with ~700 bytes of calls they must leave room in the oldest images' 3.5 KB)"""
     if not shutil.which("llvm-nm"):
         pytest.skip("needs llvm-nm")
     code, _ = k6mod.build(MOD)
-    assert len(code) + 24 + 512 + st_size() <= 4096, (len(code), st_size())
+    assert len(code) + 24 <= 4096 - 64, len(code)    # CI's clang makes it up to ~90 B bigger
+    assert 512 + st_size() + 700 < 3500, st_size()
 
 
 @need_clang
@@ -168,7 +169,7 @@ def test_module_mutes_repeater_dmr():
     assert all(0 < int(ln.split("idle=")[1].split()[0]) <= 100 for ln in s_lines), txt
     ks = int(s_lines[-1].split("ks=")[1])
     assert abs(ks - fe.FDMA / 1000) < 30, s_lines[-1]
-    assert stack < 700, stack
+    assert stack < 2000, stack                       # the ring and the state included
 
 
 @need_clang

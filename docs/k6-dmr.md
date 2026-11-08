@@ -133,9 +133,8 @@ On the emulated Cortex-M0 (`tests/k6_live_emu.py`'s CPU and DMA model, calibrate
   carrier, inside the 150 ms hold, so the speaker never opened. No samples lost, CPU idle
   54-58% (busy 42-46%), the DMA rate tracked to 5490 kS/s.
 - **FM voice:** no DMR, the audio opened after 150 ms, one `c` line with `h=0`.
-- **Size:** 3028 bytes of code. With the 24-byte header and tag, the 512-byte ring and the
-  428-byte state, that's 3992 of the store's 4096 bytes (CI's clang makes the code ~90 bytes
-  bigger: 4080). The ring is 512 bytes (93 us) rather
+- **Size:** 3104 bytes of code (CI's clang makes it ~90 bytes bigger). The 512-byte ring and
+  the state are on the stack (see "Captures of real DMR"). The ring is 512 bytes (93 us) rather
   than gp0dma's 1 KB because the module needs the room. That's why it checks keys with
   `key_poll` (5 us) rather than `key_down` (60 us), and makes only one FD6818 call at a time
   between drains. Getting it to fit cost the screen (the WSPR modules' level 6 calls) and
@@ -262,15 +261,35 @@ band. Even a band-pass ahead of the crossings, or a complex discriminator, only 
 0.8-0.9 on half the captures. (The pager's 1200-baud modes have far more margin per symbol,
 which is why they never showed this.)
 
-Next: dmrcap now cycles each carrier's captures through four gain steps (the pager's AGC, then
-the AGC frozen with REG_7E bit 15 and REG_13 = 0x03FF, 0x03BE, 0x037E, gp0cap's layout) to
-find a gain that keeps the IF up in GP0. If one does, dmrdet freezes it while it listens (a
-few register writes, put back at the end). If none does, the fallbacks are a band-pass ahead of
-the crossings (about +0.1-0.2 in rho on the model at 45-48 dB-Hz) and summing the correlation
-over several slots of a repeater's stream.
+The second run (06:31Z) cycled each carrier's captures through four gain steps: the pager's
+AGC, then the AGC frozen (REG_7E bit 15, index 3) with REG_13 = 0x03FF, 0x03BE, 0x037E. Two
+7 s DMR transmissions, eight captures each:
 
-Run it with the cable in (`tools/k6_upload.py mod-dmrcap.bin --api-level 2 --run-s 620`) while
-440.925 is busy, and record the IC-7100 alongside for ground truth.
+| gain | RSSI reads | counts rms | IF band over the noise | best \|rho\|: bare crossings / band-pass / complex |
+|---|---|---|---|---|
+| pager's AGC | -86 | 4.3 | +4 to +5 dB | 0.60-0.69 / 0.65-0.94 / 0.67-0.95 |
+| REG_13 0x03FF | -79 | 6.8 | +10 dB | 0.71-0.82 / **0.95-0.99** / 0.90-0.97 |
+| REG_13 0x03BE | -86 | 4.3 | +4 to +5 dB | 0.59-0.70 / 0.75-0.88 / 0.68-0.90 |
+| REG_13 0x037E | -94 | 3.5 | +1 dB | 0.60-0.71 / 0.60-0.76 / 0.65-0.72 |
+
+At full gain the real DMR matches the model at about 48 dB-Hz (+10 dB, bare crossings 0.80,
+band-passed 0.95). Bare crossings still miss most syncs there; band-passed ones find them.
+So dmrdet now does both:
+
+- **Gain:** it freezes REG_13 at `GAIN13` (0x03FF) for the run and puts the AGC back after.
+  The RSSI reads ~7 dB higher at that gain, and the floor is measured after the freeze.
+- **Band-pass:** `dmrsync.h` runs each count through a 2nd-order Butterworth biquad around the
+  IF (10.4-23.4 kHz at 85.8 kHz, Q14 coefficients, Q8 out) before the crossings. That's 3
+  multiplies a count. On the model it moves the threshold ~3 dB: at 48 dB-Hz, 30 of 39 syncs
+  and 29 confirmations instead of 3 and 1. At 46 dB-Hz it's 11/10 instead of 0. A 4th-order
+  filter adds ~1 dB more. False hits are still nil (10 s each at 46 and 55 dB-Hz of FM voice,
+  FFSK, a keyed tone, a bare carrier and noise; the largest non-DMR |rho| is 0.77, on FFSK).
+- **Room:** the 512-byte ring and the 452-byte state moved to the module call's stack (the
+  emulator measures under 2 KB in all, against 3.5-6 KB), so the store only has to hold the
+  code: 3104 bytes.
+
+To rerun a capture: cable in, `tools/k6_upload.py mod-dmrcap.bin --api-level 2 --run-s 620`
+while 440.925 is busy, with the IC-7100 recording alongside for ground truth.
 
 ## Bench plan (receive only)
 
