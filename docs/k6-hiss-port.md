@@ -507,8 +507,9 @@ stack 476 B to spare.
 depth 8: `under=0` on all three (39 / 24 / 0 on a65f7e6), bit-exact, `late=0`, every packet
 received (18/18 at 1200, so the shorter hold lost none), `dec_mean` 17.5-17.7 ms (0.9 ms a frame
 back from the yield cadence), worst 33.8. The serial log came through whole, 61 lines, none split.
-`ram_free` while playing 332-500 B (860-1124 on a65f7e6: the 512 B ring). Jeff's listening pass
-with the cable out follows.
+`ram_free` while playing 332-500 B (860-1124 on a65f7e6: the 512 B ring). Jeff listened with the
+cable out at 01:12 and 01:16 UTC, the same three Lynden clips streamed twice: "Perfectly smooth."
+PR #126 merged at 01:11 UTC; the K6 stays on 717f40d with stream mode on.
 
 **On the bench.** Encode a 16 kHz clip with `c/sotto_enc -16 -600 in.raw out.sot` (also `-1200`,
 `-400`; `make -C c sotto_enc`, VARIANT v3.8), send it with `python -m modem.k6 send ... --codec 600`,
