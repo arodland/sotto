@@ -63,14 +63,27 @@ void sp_set_packet_yield(void (*f)(void *), void *ctx) { pk_yield = f, pk_ctx = 
 #else
 #define PK_YIELD(i, m) do {} while (0)
 #endif
+#ifdef SP_DEC_POOL
+/* the K6 build: the pool is part of the firmware's RAM arena (sp_dec_pool), which RAM modules
+   borrow whenever nothing plays; sp_init forgets the decoders that were in it */
+static uint32_t *dec_mem;
+static unsigned dec_cap;
+void sp_dec_pool(void *mem, unsigned bytes) {
+  dec_mem = (uint32_t *)mem, dec_cap = bytes & ~3u;
+}
+#define DEC_CAP dec_cap
+#else
 static uint32_t dec_mem[SP_DEC_MAX / 4];
+#define DEC_CAP (unsigned)sizeof dec_mem
+#endif
+unsigned sp_dec_need(void) { return SP_DEC_MAX; }
 static unsigned dec_used, dec_blocks;
 void *sp_calloc(size_t n, size_t size);
 void sp_free(void *p);
 void *sp_calloc(size_t n, size_t size) {
   size_t b = (n * size + 3u) & ~(size_t)3u;
   void *p;
-  if (b > sizeof dec_mem - dec_used) return 0;
+  if (!dec_mem || b > DEC_CAP - dec_used) return 0;
   p = (uint8_t *)dec_mem + dec_used;
   memset(p, 0, b);
   dec_used += (unsigned)b, dec_blocks++;
@@ -269,6 +282,14 @@ int sp_init(void *mem, unsigned bytes) {
      profile S had; the store size stays as it was) */
   unsigned n = (bytes * 16u) / (6u * 16u + 2u + 1u);
   memset(&S, 0, sizeof S);
+#ifdef SP_DEC_POOL
+  /* no decoder survives: a RAM module may have used the pool since */
+  dec = 0;
+#ifdef SP_VLR
+  vdec = 0;
+#endif
+  dec_used = dec_blocks = 0;
+#endif
   memset(mem, 0, bytes);          /* the good/seen bitmaps start clear (the K6 keeps mem in NOLOAD RAM) */
   n &= ~15u;                      /* the bitmaps round evenly */
   if (n > 65535u) n = 65520u;
@@ -769,7 +790,7 @@ int sp_test_errors(const uint8_t *payload, int len, sp_biterr_t *e) {
 }
 
 unsigned sp_static_bytes(void) {
-  return (unsigned)(sizeof dec_mem + sizeof last_pkt + sizeof S + sizeof dec + 14 * sizeof(int) + sizeof rebuilt
+  return (unsigned)(SP_DEC_MAX + sizeof last_pkt + sizeof S + sizeof dec + 14 * sizeof(int) + sizeof rebuilt
 #ifdef SP_VLR
                     + sizeof vdec + 2 * sizeof(int)
 #endif
