@@ -11,7 +11,8 @@
    PC13/PC14/PF6/PB14, side keys read with no row driven):
      UP / DOWN       the listening bar one bin up / down (held: repeats); past an edge the
                      window pans a quarter span
-     SIDE1 / SIDE2   (the orange side keys) jump to the next peak above / below; with none left
+     SIDE1 / SIDE2   (the orange side keys) jump to the next peak above / below that a settled
+                     read confirms as a signal (SQ_DB over the settled floor); with none left
                      in the window, it pans half a span that way and looks again after the next
                      sweep, on up the band until it finds one or reaches the band's edge
      BAND or #       next band: 2m, 1.25m, 70cm, GMRS, marine + NOAA WX
@@ -315,11 +316,20 @@ static void say_sel(sf_t *s) {
   say_end(s, sint(p, s->sel_dbm));
 }
 
-/* the first peak from bin j on, going d (+1 up, -1 down): the bar moves there; 1 if found */
+/* the first peak from bin j on, going d (+1 up, -1 down) that a settled read confirms (SQ_DB over
+   the settled floor; bench run 1 on 2026-11-08 stopped on -103 to -122 dBm bumps without it):
+   the bar moves there; 1 if found */
 static int seek(sf_t *s, int d, int j) {
   for (; j >= 0 && j < s->nv; j += d)
     if (is_peak(s, j)) {
+      int v;
+      s->api->tune(hz_of(s, j), WIDE);
+      s->api->delay_us(CHECK_US);
+      v = dbm(s);
+      s->tuned = 0;
+      if (v < s->sfl + SQ_DB) continue;   /* a noise bump in the quick reads: not a station */
       s->sel = j;
+      s->sel_dbm = v;
       moved(s);
       return 1;
     }
