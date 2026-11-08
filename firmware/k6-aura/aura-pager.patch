@@ -246,10 +246,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..1988525
+index 0000000..8936b0a
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3960 @@
+@@ -0,0 +1,3973 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -1307,6 +1307,8 @@ index 0000000..1988525
 +const STRAY_IGNORE_MS: u16 = 300;
 +/// After a re-arm, how long poll waits in a tight loop for the next packet (100 us ticks)
 +const NEXT_SYNC_WAIT_TICKS: u16 = 2500;
++/// streaming: no frame is decoded in a packet's last HOLD_WORDS words (see receive_packet)
++const HOLD_WORDS: usize = 2;
 +/// poll's burst loop goes back to the main loop after this many packets regardless
 +const MAX_BURST_PACKETS: u16 = 160;
 +const REARM_SWEEP_STEPS: u8 = 13; // 0, 10, ... 120 ms
@@ -2089,7 +2091,11 @@ index 0000000..1988525
 +static mut Y_SOFT_R: u8 = 0;
 +static mut Y_SOFT_N: u8 = 0;
 +static mut Y_SERVICED: u16 = 0;
-+const YIELD_TICKS: u16 = 20;
++// How often a decode's yields look at the chip: each look is a bit-banged register read
++// (about 0.1 ms), and the FIFO's almost-full comes 4 words (36 ms at 1800 baud) before it
++// overflows, so every 6 ms is early enough. Every 2 ms, as until 2026-11-08, cost the hiss
++// band image about 1 ms of each 20 ms frame.
++const YIELD_TICKS: u16 = 60;
 +
 +fn soft_clear() {
 +    unsafe {
@@ -2603,9 +2609,13 @@ index 0000000..1988525
 +        }
 +        // wait for the next interrupt (timed reads: taking each word as it falls due)
 +        loop {
-+            // streaming: decode a frame while the words come (not in the packet's last
-+            // interrupt's worth, so its end and the re-arm aren't late)
-+            let filled = !timed && words > got / 2 + irq_n && stream_fill(app, syst);
++            // streaming: decode a frame while the words come, but not in the packet's last
++            // HOLD_WORDS, so its end and the re-arm aren't late. With the last irq_n (4) words
++            // held, 36 ms a packet, the hiss band image's decoder (18.6 ms a 20 ms frame) ran
++            // short by about 2 frames a packet (2026-11-08); with 2, a decode starts with 3
++            // words (27 ms) to go, and the end is noticed late only by a decode's excess over
++            // that (8 ms at the worst seen), well inside the 107 ms preamble before the next sync
++            let filled = !timed && words > got / 2 + HOLD_WORDS && stream_fill(app, syst);
 +            if !filled {
 +                delay::us(syst, 500);
 +            }
@@ -3182,6 +3192,7 @@ index 0000000..1988525
 +    }
 +    if action == CTL_ACT_RESET {
 +        report_line(format_args!("K6 RESET seq={}", seq));
++        crate::hal::uart::flush();
 +        delay::ms(syst, 30);
 +        cortex_m::peripheral::SCB::sys_reset();
 +    }
@@ -3979,11 +3990,11 @@ index 0000000..1988525
 +struct Serial;
 +
 +impl core::fmt::Write for Serial {
++    // queued, sent by the USART interrupt (hal::uart): a report line no longer holds the
++    // caller for its 87 us a character
 +    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-+        let u = unsafe { &*kd32f328_pac::Usart1::ptr() };
 +        for &b in s.as_bytes() {
-+            while u.isr().read().txe().bit_is_clear() {}
-+            u.tdr().write(|w| unsafe { w.tdr().bits(b as u16) });
++            crate::hal::uart::send_byte(b);
 +        }
 +        Ok(())
 +    }
@@ -4169,6 +4180,7 @@ index 0000000..1988525
 +        ef.r3(),
 +        ef.r12()
 +    ));
++    crate::hal::uart::flush();
 +    for _ in 0..2_000_000 {
 +        cortex_m::asm::nop();
 +    }
@@ -4191,6 +4203,7 @@ index 0000000..1988525
 +        )),
 +        None => report_line(format_args!("K6 PANIC {} build={}", info.message(), BUILD)),
 +    }
++    crate::hal::uart::flush();
 +    for _ in 0..2_000_000 {
 +        cortex_m::asm::nop();
 +    }
@@ -5804,6 +5817,129 @@ index 0000000..5448a2d
 +        self.running = false;
 +    }
 +}
+diff --git a/src/hal/uart.rs b/src/hal/uart.rs
+index 131f932..f215109 100644
+--- a/src/hal/uart.rs
++++ b/src/hal/uart.rs
+@@ -53,7 +53,56 @@ impl RxRing {
+ 
+ static RX_RING: Mutex<RefCell<RxRing>> = Mutex::new(RefCell::new(RxRing::new()));
+ 
+-/// USART1 IRQ handler: drains RDR into `RX_RING` on every received byte
++// Report lines leave through this ring and the TXE interrupt, not by waiting on TXE for each
++// byte: a `K6 PKT` line is 150-250 characters, 13-22 ms at 115200 baud, and while the pager
++// streamed speech it went out between a packet's end and the next decode, so the decoder lost
++// that time on every packet (2026-11-08, the hiss band image: 2 speaker underruns a packet,
++// docs/k6-hiss-port.md). A writer that finds the ring full sends its oldest byte itself.
++// 512: a PKT line fits; the hiss band image's boot stack has about 480 B to spare with it.
++const TX_RING_CAP: usize = 512;
++
++struct TxRing {
++    buf: [u8; TX_RING_CAP],
++    head: usize,
++    tail: usize,
++    len: usize,
++}
++
++impl TxRing {
++    const fn new() -> Self {
++        TxRing {
++            buf: [0; TX_RING_CAP],
++            head: 0,
++            tail: 0,
++            len: 0,
++        }
++    }
++
++    fn push(&mut self, byte: u8) -> bool {
++        if self.len == TX_RING_CAP {
++            return false;
++        }
++        self.buf[self.head] = byte;
++        self.head = (self.head + 1) % TX_RING_CAP;
++        self.len += 1;
++        true
++    }
++
++    fn pop(&mut self) -> Option<u8> {
++        if self.len == 0 {
++            return None;
++        }
++        let byte = self.buf[self.tail];
++        self.tail = (self.tail + 1) % TX_RING_CAP;
++        self.len -= 1;
++        Some(byte)
++    }
++}
++
++static TX_RING: Mutex<RefCell<TxRing>> = Mutex::new(RefCell::new(TxRing::new()));
++
++/// USART1 IRQ handler: drains RDR into `RX_RING` on every received byte, and feeds TDR from
++/// `TX_RING` while the TXE interrupt is on (off again once the ring is empty)
+ #[no_mangle]
+ pub unsafe extern "C" fn USART1() {
+     let regs = &*kd32f328_pac::Usart1::ptr();
+@@ -65,6 +114,60 @@ pub unsafe extern "C" fn USART1() {
+         let byte = regs.rdr().read().rdr().bits() as u8;
+         cortex_m::interrupt::free(|cs| RX_RING.borrow(cs).borrow_mut().push(byte));
+     }
++    if isr.txe().bit_is_set() && regs.cr1().read().txeie().bit_is_set() {
++        let next = cortex_m::interrupt::free(|cs| TX_RING.borrow(cs).borrow_mut().pop());
++        match next {
++            Some(b) => regs.tdr().write(|w| unsafe { w.tdr().bits(b as u16) }),
++            None => regs.cr1().modify(|_, w| w.txeie().clear_bit()),
++        };
++    }
++}
++
++/// Queue one byte for USART1: the interrupt sends it. With the ring full (or the interrupt
++/// still masked, as before `NVIC::unmask` at boot) the caller sends the oldest byte itself.
++pub fn send_byte(byte: u8) {
++    let regs = unsafe { &*kd32f328_pac::Usart1::ptr() };
++    loop {
++        let queued = cortex_m::interrupt::free(|cs| {
++            let ok = TX_RING.borrow(cs).borrow_mut().push(byte);
++            if ok {
++                regs.cr1().modify(|_, w| w.txeie().set_bit());
++            }
++            ok
++        });
++        if queued {
++            return;
++        }
++        while regs.isr().read().txe().bit_is_clear() {}
++        // TXE checked again inside: the interrupt may have taken this slot meanwhile
++        cortex_m::interrupt::free(|cs| {
++            if regs.isr().read().txe().bit_is_set() {
++                if let Some(b) = TX_RING.borrow(cs).borrow_mut().pop() {
++                    regs.tdr().write(|w| unsafe { w.tdr().bits(b as u16) });
++                }
++            }
++        });
++    }
++}
++
++/// Wait until every queued byte has left (before a reset or a jump to the bootloader), at
++/// most about 100 ms; sends them itself if the interrupt is masked.
++pub fn flush() {
++    let regs = unsafe { &*kd32f328_pac::Usart1::ptr() };
++    for _ in 0..200_000u32 {
++        let left = cortex_m::interrupt::free(|cs| {
++            let mut r = TX_RING.borrow(cs).borrow_mut();
++            if regs.isr().read().txe().bit_is_set() {
++                if let Some(b) = r.pop() {
++                    regs.tdr().write(|w| unsafe { w.tdr().bits(b as u16) });
++                }
++            }
++            r.len
++        });
++        if left == 0 && regs.isr().read().tc().bit_is_set() {
++            return;
++        }
++    }
+ }
+ 
+ /// Pull one byte received on USART1 since the last call, if any.
 diff --git a/src/main.rs b/src/main.rs
 index 9d2b0c0..1842385 100644
 --- a/src/main.rs
