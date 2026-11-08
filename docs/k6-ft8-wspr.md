@@ -616,4 +616,5 @@ without a screen. Frames the emulated modules drew:
 - `tools/k6_ft8.py`: decode, rows, wav, tone, tonewav, track, txhdr and wsprhdr.
 - `tools/k6_wspr.py`: decode, iq, wav and sync.
 - `tests/test_k6_ft8.py`, `tests/test_k6_ft8tx.py`, `tests/test_k6_wsprtx.py`,
-  `tests/test_k6_wspriq.py`: the tests.
+  `tests/test_k6_wspriq.py`: the tests. CI runs only the two FT8 files; the WSPR ones are too slow
+  for every push, so run them by hand after changing the WSPR modules.
