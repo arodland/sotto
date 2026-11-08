@@ -229,6 +229,10 @@ if [ "${HISS:-1}" = 1 ]; then
   # only to test txdog: if it loops, k6_update.py --manual puts a good image back
   variant aura-pager-vlrh-txdog "diagnostic: the hiss band image with txdog's SRAM vector table on" \
     --features pager-only,hiss,txdog
+  # the same without those USART1 lines: acd06ba (txdog, no lines) loops at boot every time and
+  # vlrh-txdog doesn't, so this tells whether the lines' few ms at boot are the difference
+  variant aura-pager-vlrh-txdogq "diagnostic: vlrh-txdog without its USART1 lines" \
+    --features pager-only,hiss,txdog-quiet
 fi
 if [ "${INSTALL:-1}" = 1 ]; then
   K6_CB=install sh "$ROOT/tools/k6_build.sh"
