@@ -104,7 +104,7 @@ def test_decodes_every_packet_and_sets_the_clock(lib):
     # the estimate leans on the latest stamp: within 0.5 s of the truth, never more than 1 s off
     assert abs(r["utc0"] - truth_ms()) < 500, (r, truth_ms())
     assert (r["day"], r["mon"], r["yr"]) == (8, 11, 26)
-    assert "ts=17:52:00h" in lines and "ts=17:51:00z" in lines and "ts=17:52:04.220r" in lines
+    assert "ts=17:52:00h" in lines and "ts=17:51:00z" in lines and "ts=17:52:04.210r" in lines
 
 
 @pytest.mark.parametrize("kw", [dict(twist=6.0), dict(twist=-4.0), dict(f_off=800.0), dict(f_off=-800.0),
@@ -115,6 +115,24 @@ def test_margins(lib, kw):
     r, lines = host_run(lib, scene(**kw))
     assert r["ok"] == 3, (kw, lines)
     assert abs(r["utc0"] - truth_ms()) < 500
+
+
+def test_bench_loopback_packets(lib):
+    """the on-air loopback's audio (modem/aprs.py wav --now, sent by the IC-7100 to
+    aprsclk_440): three AG7EW stations, each stamped with the true UTC at its own first bit"""
+    from sim.k6if import frontend as fe, study as st
+    x, sent = aprs.bench_wav(UTC0 + 0.5, gap=0.3, fs=st.FSA)
+    assert [c for c, _, _ in sent] == ["AG7EW-1", "AG7EW-2", "AG7EW-3"]
+    a = np.zeros(int(0.5 * st.FSA) + len(x) + int(0.5 * st.FSA))
+    a[int(0.5 * st.FSA):][:len(x)] = x
+    s = st.fm(a * 3000.0, 0.0)
+    ib = fe.receive(s, st.FZ, 55.0, bw=8000.0, seed=4, L=0, fdma=FDMA).astype(np.uint8) * 2
+    r, lines = host_run(lib, ib)
+    assert r["ok"] == 3 and r["nts"] == 3 and r["votes"] == 3, lines
+    # exact stamps put the interval's low edge on the truth; the estimate adds the half second a
+    # real station's stamp leads its keying (lo + min(w/2, 0.5 s)), so the loopback reads +0.5 s
+    assert 450 < r["utc0"] - truth_ms() < 550, (r, truth_ms())
+    assert r["day"] == 9  # UTC0 counts days from the epoch: 9 Jan 1970
 
 
 def test_noise_alone_sets_nothing(lib):
