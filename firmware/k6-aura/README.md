@@ -542,7 +542,9 @@ it got. A Rust panic prints `K6 PANIC file:line message` and reboots the radio i
 A CPU fault should print `K6 FAULT pc=... lr=...` and reboot. That only works if the
 bootloader's HardFault handler forwards to ours, though: this MCU has no VTOR, and the
 exception vectors belong to the bootloader. Either way, the last `K6 STEP` line says how far
-playback got.
+playback got. (Since 2026-11-08 the image maps its own vector table in SRAM at address 0, so
+a fault reboots at once and the next boot prints `K6 FAULT last boot pc= lr=`: txdog in
+docs/k6-modules.md.)
 
 **Why 64-byte packets failed (2026-11-04, image 72b6e3b).** The `ev` timing showed the chip
 receives the whole 64-byte packet: RX-done comes about 460-510 ms after the sync, as for 64

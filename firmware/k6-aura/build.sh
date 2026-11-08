@@ -262,6 +262,8 @@ cwprobe        # level 2
 dmrcap         # level 2, docs/k6-dmr.md
 dmrdet         # level 2, docs/k6-dmr.md
 dmrrx          # level 2 (its screen at 6), docs/k6-dmr.md
+dogfault       # level 1, bench test of the crash backstop (hal::txdog)
+dogtx          # level 3, bench test of the stuck key-up backstop (hal::txdog)
 ft8tx          # level 3
 ft8wf
 ft8wf_inv
