@@ -248,16 +248,67 @@ fi
 [ -f "$OUT/sotto-cb.bin" ] && (cd "$OUT" && sha256sum sotto-cb.bin | tee sotto-cb.bin.sha256)
 [ -f "$OUT/sotto-vlr.bin" ] && (cd "$OUT" && sha256sum sotto-vlr.bin | tee sotto-vlr.bin.sha256)
 
-# The RAM modules' code (docs/k6-modules.md: hello; settle, cwprobe, cwlisten and i2sprobe, level 2; cwkey and
-# ft8tx, level 3; ifcal, level 4; rxmap, level 2, its parameter block patched by tools/k6_rxmap.py; scan, level 2, by tools/k6_scan.py; hfprobe and bandreg, level 2, by tools/k6_hf.py; dmrdet and dmrcap, level 2, docs/k6-dmr.md; ctcssprobe, level 2, docs/k6-explore-app.md; cwlisten_lo, level 2, cwlisten with a 400-1300 Hz bank; surf and surfauto, level 6, docs/k6-surf.md; morse, level 6, docs/k6-morse.md), built as
-# modem/k6mod.py builds them, for `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...`
+# The RAM modules (docs/k6-modules.md), built from c/k6/mod/<name>.c. Each module sets its
+# own API level; the notes say which tool patches it or which doc covers it. Keep the list
+# one module per line, in alphabetical order, so PRs that add modules don't collide:
+K6_MODULES=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' <<'EOF'
+afsweep
+bandreg        # level 2, patched by tools/k6_hf.py
+ctcssprobe     # level 2, docs/k6-explore-app.md
+cwkey          # level 3
+cwlisten       # level 2
+cwlisten_lo    # level 2, cwlisten with a 400-1300 Hz bank
+cwprobe        # level 2
+dmrcap         # level 2, docs/k6-dmr.md
+dmrdet         # level 2, docs/k6-dmr.md
+ft8tx          # level 3
+ft8wf
+ft8wf_inv
+gp0cap
+gp0cap_afc
+gp0dma
+gp0fm
+gp0raw
+gp0sweep
+gp0tone
+hello
+hfprobe        # level 2, patched by tools/k6_hf.py
+i2scap
+i2sprobe       # level 2
+ifcal          # level 4
+iflive
+iflive_ffsk
+iflive_fsweep
+iflive_g2
+iflive_h1200
+iflive_h1350
+iflive_h1440
+iflive_h1500
+iflive_h1600
+iflive_k6t
+iflive_tsweep
+morse          # level 6, docs/k6-morse.md
+ramprobe
+rtls
+rxmap          # level 2, its parameter block patched by tools/k6_rxmap.py
+scan           # level 2, patched by tools/k6_scan.py
+settle         # level 2
+spksweep
+surf           # level 6, docs/k6-surf.md
+surfauto       # level 6, docs/k6-surf.md
+wsprbcn
+wspriq
+wsprtx
+xtalstep
+EOF
+)
+# They're built the way modem/k6mod.py builds them, for `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...`
 # (`--api-level 2` for the level 2 ones) on a machine without clang. A module
 # that says #define K6_MODULE_OPT z gets -Oz instead of -Os. Linked at two addresses: the
 # same bytes, or it isn't position-independent.
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -Werror -I$ROOT/c/k6"
-for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep afsweep gp0cap \
-         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t iflive_h1200 iflive_h1350 iflive_h1440 iflive_h1500 iflive_h1600 xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls wsprtx wsprbcn wspriq bandreg ramprobe dmrdet dmrcap surf surfauto ctcssprobe cwlisten_lo morse; do
+for m in $K6_MODULES; do
   opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
   clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do
