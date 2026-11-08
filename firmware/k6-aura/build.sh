@@ -193,9 +193,9 @@ if [ "${LR:-1}" = 1 ]; then
   lib build-lr-cbs
   variant aura-pager-lr "pager-only image, sotto 1200, codebook in SPI flash" --features pager-only
 fi
-# aura-explore: EXPLORE, the K6 signal explorer (docs/k6-explore-app.md), as the start screen of
-# a pager-only image whose library has no voice decoder (K6_VOICE=0, c/k6/sp_novoice.c): the
-# pager's packets, RAM modules (API level 5) and control stay, the voice doesn't play. The
+# aura-explore: EXPLORE, the K6 signal explorer (docs/k6-explore-app.md), in a pager-only image
+# (VOICE MSG first, EXPLORE after 2 quiet minutes) whose library has no voice decoder
+# (K6_VOICE=0, c/k6/sp_novoice.c): the pager's packets, RAM modules (API level 5) and control stay, the voice doesn't play. The
 # explorer and its 13 KB of C don't fit beside the decoder (EXPLORE=0 skips it)
 if [ "${EXPLORE:-1}" = 1 ]; then
   K6_VOICE=0 K6_CB=spi sh "$ROOT/tools/k6_build.sh"

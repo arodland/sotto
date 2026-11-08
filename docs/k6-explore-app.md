@@ -18,7 +18,7 @@ EXPLORE has an image of its own:
 |---|---|---|
 | flash | 97,632 of 122,880 B (25.2 KB free) | 105,680 B (17.2 KB free) |
 | static RAM | 9,668 B (8.0 KB of stack) | 10,580 B (7.1 KB) |
-| starts in | EXPLORE | VOICE MSG |
+| starts in | VOICE MSG, then EXPLORE after 2 quiet minutes | VOICE MSG |
 | voice | none (the decoder is left out) | sotto 1200 |
 | RAM modules | yes, API level 5 | yes, API level 5 |
 
@@ -26,6 +26,15 @@ It is the pager-only image built with the cargo feature `explore` and a library 
 voice decoder (`K6_VOICE=0 sh tools/k6_build.sh`; `c/k6/sp_novoice.c` stands in for it).
 VOICE MSG still receives packets, runs RAM modules and takes control packets, but plays no
 voice. EXIT from VOICE MSG goes back to EXPLORE. To play voice again, flash a pager image.
+
+**Unattended flashing** (2026-11-08, Jeff OK'd it): EXPLORE ignores OTA, so the image starts in
+VOICE MSG (`K6 EX in 120 s with no packets or keys`) and goes into EXPLORE by itself after 2
+minutes with no packet and no key press (`K6 EX quiet 120 s: EXPLORE`). Leaving EXPLORE with EXIT
+twice gets the same 2 minutes. While it sweeps, it reads 440.850 once a second; a carrier there
+stronger than -45 dBm on two reads in a row (the bench IC-7100 reads -18 to -24 dBm) sends it to
+VOICE MSG for 1 minute (`K6 EX beacon -22 dBm: VOICE MSG for 60 s`). So hamlet flashes it without
+Jeff: key up on 440.850 with the CW ID (`k6_bench.py id`), wait for `K6 EX beacon` (a listen going
+on finishes first, 2 minutes at most), then the OTA reset and `k6_update.py` as usual.
 CI builds it as `aura-explore.bin` (`firmware/k6-aura/build.sh`, `EXPLORE=0` skips it).
 
 EXPLORE has no RAM of its own. It borrows the 4 KB message store for the sweep state and 64
@@ -172,7 +181,7 @@ s 146.520   S  ======
 | # | next band set: ALL (2 m, 1.25 m outputs, 70 cm 440-445), 2M, 70CM (440-450), 1.25M |
 | 1 | automatic Listen for ID off or on (on at power-on) |
 | 7 | the list and the saved table on the serial report (`K6 CAND`, `K6 RT` lines) |
-| EXIT twice | VOICE MSG (the list is in RAM and goes when you leave or power off) |
+| EXIT twice | VOICE MSG (the list is in RAM and goes when you leave or power off); EXPLORE again after 2 quiet minutes |
 
 On the Listen screen: `ID? 440.850 1:23` (or `AUTO`), the tone detector's state, the last text
 decoded and the call so far. On a changed call: `NEW CALL`, the heard and saved calls, MENU
@@ -216,7 +225,8 @@ with repeaters in range, then count how many of the area's listed repeaters it g
 (recall) and how many of its R entries are real (precision).
 
 1. **Flash** `aura-explore.bin` (the hamlet session does it with `k6_update.py`, the module key
-   written by `python -m modem.k6 keyimage`). The K6 boots into EXPLORE.
+   written by `python -m modem.k6 keyimage`). The K6 boots into VOICE MSG and goes into EXPLORE
+   after 2 minutes (EXIT goes there at once).
 2. **Take it out.** A drive, a walk, or the house away from the bench PC (the bench floors are
    15-30 dB high from the PC's noise). Leave it on ALL, or press # for one band. The longer the
    better: a quiet repeater may key only every 10 minutes for its ID.
