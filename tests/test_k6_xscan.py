@@ -189,7 +189,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
         text, data, bss = (int(x) for x in size.split()[:3])
         assert data == 0 and bss == 0
         sizes[f] = text
-    assert sizes["xscan.c"] < 5376 and sizes["xlisten.c"] < 1700, sizes
+    assert sizes["xscan.c"] < 5632 and sizes["xlisten.c"] < 1700, sizes
 
 
 def test_finds_a_repeater_feeds_the_list_and_the_log_replays_the_same(lib):
@@ -441,6 +441,27 @@ def test_the_k6_s_own_clock_is_a_spur_at_once(lib):
     assert c is not None and c.flags & kx.F_SPUR and abs(c.hi + 72) <= 2 and c.overs == 0, kx.row_text(c)
     up = (U32 * 10)()
     assert list(up[:L.xs_up(buf, up, 10)]) == [144_150_000]    # the station is up, the birdie never
+
+
+def test_a_weak_one_off_makes_no_candidate(lib):
+    """bench 8 (2026-11-08): weak one-offs from floor dips and desense were listed as rows. A weak
+    over (under XS_PICK_DB, 15 dB, over the floor) that's the first, or shorter than XS_WEAK_MS,
+    is a W line and no candidate; a carrier near the threshold flaps up and down in 0 ms overs, so
+    it never makes one. A strong first over is a candidate at once."""
+    L, kxl = lib
+    weak, strong = 146_700_000, 146_800_000
+    radio = Radio(Receiver([(weak, -125, [(s_(2), s_(8)), (s_(20), s_(26))]),
+                            (strong, -90, [(s_(2), s_(8))])]))
+    buf, mem, ex = explorer(L, kxl, [(146_600_000, 10_000, 80, 5_000)], radio)
+    assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+    run_steps(L, buf, radio, 35)
+    info = XsInfo()
+    L.xs_info(buf, ctypes.byref(info))
+    assert 10 <= -125 - info.floor_dbm[0] < 15, list(info.floor_dbm)   # a hit, but a weak one
+    w = [l for l in radio.lines if " say W 146.700 " in l]
+    assert len(w) >= 2 and ex.find(weak) is None, [l for l in radio.lines if " 146.700 " in l][:6]
+    assert not [l for l in radio.lines if " say H 146.700 " in l]
+    assert ex.find(strong) is not None and ex.find(strong).overs == 1
 
 
 def test_an_over_carries_its_level_after_the_transmitter_comes_up(lib):

@@ -148,14 +148,33 @@ static void starts(xs_hot_t *h, uint32_t now, int lvl, int r) {
   h->lvl = st8(lvl), h->lo = h->hi = st8(r);
 }
 
+/* XS_PICK_DB over its segment's floor: what the automatic listener goes to (xs_up), and what a
+   first over needs to make a candidate (ends) */
+#define XS_PICK_DB 15
+#define XS_OFFGRID_DB 10
+#define XS_WEAK_MS 1000u
+static int floor_of(const xs_t *s, uint32_t hz) {
+  int g;
+  for (g = 0; g < s->nseg; g++)
+    if (hz >= s->seg[g].lo_hz && hz - s->seg[g].lo_hz < (uint32_t)s->seg[g].nbins * s->seg[g].step_hz)
+      return s->sfl[g];
+  return 0;
+}
+
+/* An over ended: the explorer hears of it (an H line). A weak over (under XS_PICK_DB over the
+   floor) doesn't count (a W line) if it's the first or shorter than XS_WEAK_MS: bench 8
+   (2026-11-08) listed weak one-offs from floor dips and desense as rows, and a carrier near the
+   threshold flaps up and down in 0 ms overs. A weak one that comes back and stays up a second is
+   counted from then on. */
 static void ends(xs_t *s, xs_hot_t *h) {
   char *p;
   uint32_t a = h->up, dur = h->last > a ? h->last - a : 0;
+  int weak = h->lvl < floor_of(s, h->hz) + XS_PICK_DB && (h->overs == 1 || dur < XS_WEAK_MS);
   h->on += dur, h->up = 0;
   if (h->overs == 1 || h->lvl < h->olo) h->olo = h->lvl;
   if (h->overs == 1 || h->lvl > h->ohi) h->ohi = h->lvl;
-  if (s->ex) ex_over(s->ex, h->hz, a, dur, dbm8(h->lvl));
-  p = num(fq(s->line, "H ", h->hz), " ", (int)dur, 0);
+  if (s->ex && !weak) ex_over(s->ex, h->hz, a, dur, dbm8(h->lvl));
+  p = num(fq(s->line, weak ? "W " : "H ", h->hz), " ", (int)dur, 0);
   p = num(p, " ", dbm8(h->lvl), 0);
   say(s, num(p, " a", (int)a, 0));
 }
@@ -190,7 +209,9 @@ static int new_hit(xs_t *s, int g, uint32_t b, uint32_t hz, int lvl, int r) {
     if (s->refine) {
       c = refine(s, hz, g);
       h = near(s, c, half, 0);
-      if (!h) lvl = full(s, c, 0);
+      /* refined onto a frequency that isn't up after all (bench 8: 441.025 at the floor, -115
+         fl-115, beside our -21 dBm ID): no hit */
+      if (!h && (lvl = full(s, c, 0)) < s->sf + s->hit_db) return 0;
     }
   }
   if (h) {
@@ -525,15 +546,6 @@ void xs_info(const xs_t *s, xs_info_t *o) {
    70 cm so far was junk (skirts, 440.7375, the band edge), but splinter channels exist */
 #define XS_SKIRT_HZ 100000u
 #define XS_SKIRT_DB 20
-#define XS_PICK_DB 15
-#define XS_OFFGRID_DB 10
-static int floor_of(const xs_t *s, uint32_t hz) {
-  int g;
-  for (g = 0; g < s->nseg; g++)
-    if (hz >= s->seg[g].lo_hz && hz - s->seg[g].lo_hz < (uint32_t)s->seg[g].nbins * s->seg[g].step_hz)
-      return s->sfl[g];
-  return 0;
-}
 
 unsigned xs_up(const xs_t *s, uint32_t *out, unsigned max) {
   const xs_hot_t *up[XS_HOT];
