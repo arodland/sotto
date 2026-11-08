@@ -318,6 +318,14 @@ it). If the SRAM ends lower the first access past the end faults and the radio r
 when a reset is acceptable. If it holds, `memory.x` can grow by 2720 bytes: the hiss band image
 (docs/k6-hiss-port.md) would get its fourth PWM segment and its 4 KB message store back.
 
+## Band surfing (surf)
+
+`c/k6/mod/surf.c` (2026-11-08, level 6): a bargraph of signal strength across 64 bins, the
+listening frequency a blinking bar with a caret, the side keys jumping from peak to peak, UP/DOWN
+stepping, BAND/zoom/monitor keys. It listens first (sweeps only while the bar's channel is
+quiet) and scans the keypad matrix itself, since the API has no key identity. `surfauto.c` is
+the unattended bench build. See [k6-surf.md](k6-surf.md).
+
 ## Insights (a living list)
 
 Ideas from the K6 work that might change the plan. None has been tested unless it says so.
