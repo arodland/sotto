@@ -105,15 +105,17 @@ encoders as differing from them until those are re-rendered.
 
 ## Creak at phrase ends (2026-11-08)
 
-Jeff heard the K6 play LibriSpeech 198 (*Sense and Sensibility*, the hiss bench's female clip)
-at sotto 400 and reported pitch trouble on "go by all means, my dear", which ends the clip
-(11.9-13.9 s). On the K6, the same clip was "much better" at 1200, and 600 "isn't bad". His
-read was that the coarse pitch coding gets stuck on vocal fry.
+Jeff heard the K6 play LibriSpeech 198 (the hiss bench's female clip) at sotto 400 and
+reported pitch trouble on "go by all means, my dear". On the K6, the same clip was "much
+better" at 1200, and 600 "isn't bad". His read was that the coarse pitch coding gets stuck on
+vocal fry.
 
-The tracker and every rate get "by" (12.20-12.46 s) right. It's a 9-semitone fall, 287 to
-169 Hz, and sotto 400's two straight lines follow it to within about 90 cents. The slip is on
-"my" (13.20-13.42 s). The voice goes creaky at the end of the vowel, and then into fry on
-"dear" (pYIN 60-67 Hz). The tracker reads the creak as 89-96 Hz, half the voice's 165 Hz. One
+This first fix went to the clip's last phrase, "Miss Tilney always wears white" (11.9-13.9 s),
+taken at first for Jeff's phrase. Jeff confirmed that it sounds better there. His phrase is
+earlier, at 9.0-10.3 s. The next section covers it.
+
+The slip at 13.3 s is on "white". The voice goes creaky at the end of the vowel, and then into
+fry (pYIN 60-67 Hz). The tracker reads the creak as 89-96 Hz, half the voice's 165 Hz. One
 120 ms superframe held the last modal frame (165 Hz, full level) and four creak frames. The
 line fit went with the majority, and the outlier rule then dropped the modal frame. So 400
 played 91 Hz on the vowel and a steady 94-105 Hz buzz, rising, for 120 ms. 1200 plays 165 Hz to
@@ -165,6 +167,38 @@ The C encoder matches the Python.
 
 `docs/sotto.wasm` was rebuilt, since the page's 600 / 400 encoders are this C code. LibriSpeech
 198's 400 stream changes in one superframe, the one holding "my".
+
+## "All" two semitones flat: the centre search (2026-11-08)
+
+A speech recogniser (pocketsphinx) puts Jeff's phrase "go by all means, my dear" at
+9.03-10.29 s. "Go" and "by" are within about 90 cents at 400. "All" (9.48-9.58 s) was 150-190
+cents flat: 225 falling to 206 Hz, where the voice is at 242 falling to 229 Hz.
+
+"All" starts with a creaky glottal onset. The tracker reads its first frame (9.48 s) at
+117 Hz, against 242 Hz for the rest. That frame sat 19.5 index steps under the least-squares
+line, just inside `OUTLIER` (20), so it stayed in the fit and pulled the line's centre down.
+The search then tried only the fit's centre ±1. The line the capped error actually wants
+(centre about 85, running through the other five frames) was 5 steps away and never tried.
+
+Fix (`SottoVLR.FULL_SEARCH`; `c/sotto_vlr.c`, always on). The search tries all 128 centres
+with all 8 slopes, about 6,000 small sums a superframe. Equal errors go to the centre nearest
+the fit. This keeps one-frame superframes flat instead of on the steepest slope that happens
+to hit the frame. "All" now plays 251, 247, 242, 238, 233 and 229 Hz against the voice's 242
+to 229 Hz.
+
+On the 16 voices, creak fix included (`tools/pitch_errors.py`):
+
+| | 600 off20 | 600 gross | 400 off20 | 400 gross |
+|---|---:|---:|---:|---:|
+| main before PR #134 | 285 | 157 | 296 | 141 |
+| creak fix (#134) | 270 | 151 | 281 | 137 |
+| plus the full search | 236 | 136 | 246 | 120 |
+
+PESQ-NB over the creak fix: 600 2.1323 → 2.1462, 400 1.8669 → 1.8803. ESTOI: 0.6922 → 0.6925
+and 0.6407 → 0.6433. Per voice, PESQ moves by up to ±0.1, more of it up than down: at 400,
+11 voices gain and 5 lose (worst EARS p020 −0.058, best 3536 +0.063); at 600, 10 gain and 6
+lose (worst 777 −0.081, best EARS p100 +0.114). PESQ isn't a pitch measure, and the pitch
+counts improve on most voices.
 
 ## Still open
 

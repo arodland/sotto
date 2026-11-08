@@ -72,6 +72,7 @@ class SottoVLR(lr.Sotto1200):
     CREAK_HOLD = 20               # ... and the run stays creak while this far under that frame
     CREAK_STEADY = 6              # ... which was this close to the voiced frame before it
     CREAK_W = 1                   # a creak frame's weight in the line, against 4 for the others
+    FULL_SEARCH = True            # q_pitch tries every centre, not only +-1 around the fit (2026-11-08)
 
     def __init__(self, mode="600", tables=None, cfg=None, **kw):
         self.mode = mode
@@ -169,14 +170,30 @@ class SottoVLR(lr.Sotto1200):
         c0 = int(np.clip(np.round((line[0] - ((1 << (7 - b)) >> 1)) / (1 << (7 - b))), 0, (1 << b) - 1))
         best = None
         v = np.where(voiced)[0]
-        span = range(1 << b) if mixed else range(max(0, c0 - 1), min((1 << b), c0 + 2))
-        for wc in span:
+        if self.FULL_SEARCH or mixed:
+            # every centre and slope: a frame just inside OUTLIER (a creaky onset, LibriSpeech 198
+            # "all" at 9.48 s) skews the fit, and +-1 around it can't reach the line the capped
+            # error wants. Equal errors go to the centre nearest the fit, then the loop's order
+            # (wc-major, ws-minor), as c/sotto_vlr.c.
+            d = np.abs(self._lines()[:, :, v] - wi[v])
+            e = (wt[v] * (np.minimum(d, cap) ** 2 if cap else d ** 2)).sum(-1)
+            near = np.abs(np.arange(e.shape[0]) - c0)[:, None] + np.zeros_like(e)
+            k = int(np.lexsort((near.ravel(), e.ravel()))[0])         # stable: ties keep loop order
+            return k // e.shape[1], k % e.shape[1]
+        for wc in range(max(0, c0 - 1), min((1 << b), c0 + 2)):
             for ws in range(len(self.slopes)):
                 d = np.abs(self.pitch_frames(wc, ws)[v] - wi[v])
                 e = (wt[v] * (np.minimum(d, cap) ** 2 if cap else d ** 2)).sum()
                 if best is None or e < best[0]:
                     best = (e, wc, ws)
         return best[1], best[2]
+
+    def _lines(self):
+        """pitch_frames for every (centre, slope): (2^bw, 2^bs, N)"""
+        if getattr(self, "_lines_cache", None) is None:
+            self._lines_cache = np.array([[self.pitch_frames(wc, ws) for ws in range(len(self.slopes))]
+                                          for wc in range(1 << self.cfg["bw"])])
+        return self._lines_cache
 
     def creak_mask(self, code, wi):
         """Frames in creak: voiced, at least CREAK_DROP index steps under the voiced frame just
