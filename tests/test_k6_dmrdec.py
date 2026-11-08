@@ -61,3 +61,50 @@ def test_voice_headers_through_the_k6():
     got = [d for d in headers(y) if d.get("lc", {}).get("rs_ok")]
     assert len(got) >= 2
     assert all(d["cc"] == 1 and (d["lc"]["dst"], d["lc"]["src"]) == (91, 2345678) for d in got)
+
+
+def test_embedded_codes_round_trip():
+    assert min(bin(int(a) ^ int(b)).count("1") for i, a in enumerate(dd.QR1676)
+               for b in dd.QR1676[i + 1:]) == 6
+    rng = np.random.default_rng(3)
+    for cc in range(16):
+        for lcss in range(4):
+            e = dd.emb_encode(cc, lcss)
+            e[rng.integers(16, size=2)] ^= 1                 # two errors: corrected
+            mid = np.concatenate([e[:8], np.zeros(32, np.uint8), e[8:]])
+            assert dd.emb_decode(mid)[:3] == (cc, 0, lcss)
+    for _ in range(10):
+        by = list(rng.integers(0, 256, 9))
+        f = dd.emb_lc_encode(by)
+        assert dd.emb_lc_decode(f) == (by, True)
+        f[rng.integers(128)] ^= 1
+        assert dd.emb_lc_decode(f) == (by, True)
+        f = dd.emb_lc_encode(by)
+        f[[0, 1, 2]] ^= 1                                     # 3 in one column... of 3 rows
+        assert dd.emb_lc_decode(f)[0] == by
+    assert dd.crc_ccitt(b"123456789") == 0x31C3 and dd.crc_ccitt(b"123456789", 0xFFFF) == 0x29B1
+
+
+def call_of(y):
+    pol, ev = dd.decode_stream(y)
+    return pol, [c for c in dd.calls(ev) if c["slot"] == 1]
+
+
+def test_voice_call_from_inverted_audio():
+    """the IC-7100's audio is inverted: the decoder finds the polarity, the superframes' embedded
+    LC and the talker alias"""
+    sym = dd.voice_call_symbols(cc=1, tg=3027, src=3025107, superframes=8, alias="AG7EW TEST")
+    pol, c = call_of(dd.audio_symbols(-deviation(sym), 48000))
+    assert pol == -1 and len(c) == 1
+    assert c[0]["lc"] == (0, 0, 3027, 3025107) and c[0]["alias"] == "AG7EW TEST"
+    assert c[0]["copies"][(0, 0, 3027, 3025107)] == 8           # 3 headers, 4 embedded, 1 term
+
+
+def test_combining_at_the_k6_bench_level():
+    """~48 dB-Hz, the K6's frozen-gain level on 440.925: single copies mostly fail, the
+    combined headers and terminator come out right"""
+    sym = dd.voice_call_symbols(cc=1, tg=3027, src=3027436, superframes=4)
+    s, _ = dmr.dmr_baseband(sym)
+    _, c = call_of(dd.counts_symbols(dmr.to_counts(s, 48.0, seed=4)))
+    cb = c[0]["combined"]
+    assert cb["rs_ok"] and (cb["dst"], cb["src"]) == (3027, 3027436) and c[0]["n_comb"] >= 3
