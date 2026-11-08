@@ -22,6 +22,10 @@ The detector, as the MCU would run it (c/k6/mod/dmrdet.c):
 
   python3 -m sim.k6if.dmr pd        detection vs C/N0 and false hits on FM voice, noise, pager
   python3 -m sim.k6if.dmr hist      |rho| percentiles for each signal
+  python3 -m sim.k6if.dmr audio CLIP.wav...   the detector on a receiver's FM audio (e.g. the
+                                    IC-7100's FM-D USB audio, flat to ~2.5 kHz): the audio stands
+                                    in for the discriminator, so no spread gate (its scale is
+                                    unknown) and either polarity
 
 MIT licence."""
 import argparse
@@ -310,9 +314,57 @@ def cmd_pd(a):
         print("\n  ".join(line))
 
 
+def audio_y(x, fs):
+    """receiver audio (any scale, any polarity) -> y at the detector's grid (2 a symbol)"""
+    from fractions import Fraction
+    x = np.asarray(x, float)
+    x = x - np.mean(x)
+    r = Fraction(BAUD * 2 / fs).limit_denominator(1000)
+    return signal.resample_poly(x, r.numerator, r.denominator)
+
+
+def audio_report(x, fs, thr=0.8, sps=2):
+    """-> a dict: syncs per family and sign, confirmations, the first one's time, |rho| peaks,
+    and the gaps between successive hits of the main family in 30 ms slots"""
+    y = audio_y(x, fs)
+    r = rho(y, sps, gate=False)
+    ev = hits(r, thr, sps)
+    conf = confirm(ev, sps)
+    m = np.max(np.abs(np.array(list(r.values()))), axis=0)
+    fam = {}
+    for _, f, c in ev:
+        k = f + ("+" if c > 0 else "-")
+        fam[k] = fam.get(k, 0) + 1
+    main = max(FAMS, key=lambda f: sum(1 for e in ev if e[1] == f)) if ev else None
+    js = [j for j, f, _ in ev if f == main]
+    gaps = [int(round((b - a) / (SLOT_S * BAUD * sps))) for a, b in zip(js, js[1:])]
+    gh = {}
+    for g in gaps:
+        gh[g] = gh.get(g, 0) + 1
+    return {"dur": len(x) / fs, "hits": len(ev), "conf": len(conf), "fam": fam,
+            "first_conf_s": conf[0][0] / (BAUD * sps) if conf else None,
+            "rho_p99": float(np.percentile(m, 99)), "rho_max": float(m.max()),
+            "rho_hits_med": float(np.median([abs(c) for _, _, c in ev])) if ev else None,
+            "gaps": dict(sorted(gh.items()))}
+
+
+def cmd_audio(a):
+    import soundfile as sf
+    for p in a.files:
+        x, fs = sf.read(p)
+        x = x if x.ndim == 1 else x[:, 0]
+        r = audio_report(x, fs, a.thr)
+        fc = r["first_conf_s"]
+        print(f"{os.path.basename(p)}: {r['dur']:.1f} s  syncs={r['hits']} {r['fam']}  conf={r['conf']}"
+              + (f" first={fc:.2f}s" if fc is not None else "")
+              + f"  |rho| hits~{r['rho_hits_med'] or 0:.2f} max={r['rho_max']:.2f} p99={r['rho_p99']:.2f}"
+              + f"  gaps(slots)={r['gaps']}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("cmd", choices=["pd", "hist"])
+    ap.add_argument("cmd", choices=["pd", "hist", "audio"])
+    ap.add_argument("files", nargs="*")
     ap.add_argument("--sps", type=int, default=2)
     ap.add_argument("--win", type=int, default=1)
     ap.add_argument("--thr", type=float, default=0.8)
@@ -322,7 +374,7 @@ def main():
     ap.add_argument("--off", type=float, default=0.0)
     ap.add_argument("--rate-err", type=float, default=0.0)
     a = ap.parse_args()
-    {"pd": cmd_pd, "hist": cmd_hist}[a.cmd](a)
+    {"pd": cmd_pd, "hist": cmd_hist, "audio": cmd_audio}[a.cmd](a)
 
 
 if __name__ == "__main__":

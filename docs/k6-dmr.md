@@ -169,6 +169,34 @@ On the emulated Cortex-M0 (`tests/k6_live_emu.py`'s CPU and DMA model, calibrate
   could be a fifth family at no extra cost per sample. YSF's sync uses inner symbols too: the
   same correlator works, with the gate widened.
 
+## Real DMR from 440.925 (IC-7100 audio, 2026-11-08)
+
+Five carriers recorded on the IC-7100 (FM-D, 12 kHz, 48 kHz USB audio, flat to a sharp edge near
+2.5 kHz) between 04:24 and 04:37 UTC, run through `python3 -m sim.k6if.dmr audio` (the audio
+stands in for the discriminator):
+
+| Clip (UTC) | Length | Syncs (BS family) | Confirmed | First confirm | median rho at hits |
+|---|---:|---:|---:|---:|---:|
+| 04:24:56 | 8.9 s | 232 + 1 other | 231 | 1.04 s | 0.99 |
+| 04:32:15 | 12.0 s | 304 | 303 | 1.05 s | 0.95 |
+| 04:34:34 | 11.9 s | 284 | 283 | 1.05 s | 0.99 |
+| 04:35:03 | 10.7 s | 261 | 260 | 1.05 s | 0.97 |
+| 04:36:54 | 9.0 s | 232 + 1 other | 231 | 1.05 s | 0.97 |
+
+- Every clip starts with about 1 s of margin, so DMR was confirmed within ~50 ms of the
+  carrier, on its second burst.
+- Syncs came every 30 ms (one slot apart) with a few two-slot gaps: both slots carried
+  data, idle or header bursts most of the time. The rarer opposite-sign syncs are the voice
+  bursts. The IC-7100's audio is inverted relative to the model (its data syncs read as
+  voice), which the correlator doesn't mind.
+- The family is BS throughout (a repeater), as expected; the 2 other-family hits were
+  unconfirmed.
+- The rest of the time |rho| stayed at p99 0.62-0.65, well under the 0.8 threshold.
+
+So the sync shape, timing and framing hold on the real repeater, through a 2.5 kHz audio path
+that's worse than the K6's IF. What's still untested is the K6's own GP0 discriminator on a real
+DMR carrier: that's the bench run.
+
 ## Bench plan (receive only)
 
 1. Real DMR first: the explorer thread's hamlet recorder rotates through 440.925 and is cutting
