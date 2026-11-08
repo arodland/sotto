@@ -34,6 +34,10 @@
 #define K6_MODULE_OPT z
 #endif
 #include "../k6_mod.h"
+#ifdef DMR_DECODE
+#define DS_FRING 512u           /* 53 ms of matched-filtered grid: a burst and more */
+#include "../dmrburst.h"
+#endif
 #include "../dmrsync.h"
 
 #ifndef FREQ_HZ
@@ -76,8 +80,10 @@
 #define DMA_CNDTR1 (DMA + 0x0C)
 #define DMA_CMAR1 (DMA + 0x14)
 #define TIM17EN (1u << 18)
+#ifndef RSZ
 #define RSZ 512u                /* the DMA ring: 93 us at 5.5 MS/s, so housekeeping drains it
                                    between its calls (on the stack) */
+#endif
 #define AF_FM 0x6140u           /* Aura's AF_OUT_BASE | RX audio */
 #define AF_MUTE 0x6040u
 #define NOINLINE __attribute__((noinline))
@@ -125,19 +131,26 @@ static char *kv(char *p, const char *k, int v) {
 
 static int rssi(const k6_api_t *api) { return KM_RSSI_DBM(api->fd_read(0x67)); }
 
+#ifdef DMR_DECODE
+#include "dmrdec.inc"
+#endif
+
 typedef struct {
   ds_t d;
   /* clock: 96 MHz cycles, unwrapped from TIM17 and Aura's 100 us TIM14 */
   uint32_t t, c17, c14;
   /* the ring */
   uint8_t *ring;
-  uint32_t laps, lastw, consumed, p0, t0, cps8, lost, idle, tp;
+  uint32_t laps, lastw, consumed, p0, t0, cps8, lost, idle, tp, tpoll, rhalf;
   uint32_t thk, rem, ms, win, next_s; /* housekeeping's clock: ms since the start */
   /* the listener */
   int floor, db, cdb, car, af, dmr, pend, nd;
   int32_t fam, sign;
   uint32_t car_j, on_j, until, hits, chits, r2;
   uint32_t ahb, apb2, odr, r33, r34, r47, r7e, r13;
+#ifdef DMR_DECODE
+  dx_t x;
+#endif
 } st_t;
 
 static uint32_t now(st_t *s) {
@@ -151,6 +164,15 @@ static uint32_t now(st_t *s) {
 
 static uint32_t poll(st_t *s) {
   uint32_t w = RSZ - (rd(DMA_CNDTR1) & 0xFFFF);
+#ifdef DMR_DECODE
+  /* a burst's decoding can outlast the ring: the laps from the clock when it was long */
+  uint32_t t = now(s), dt = t - s->tpoll;
+  s->tpoll = t;
+  if (dt > s->rhalf && s->cps8) {
+    uint32_t est = ds_udiv(dt << 6, s->cps8 >> 2), frac = (w - s->lastw) & (RSZ - 1);
+    if (est < (1u << 24) && est + RSZ / 2 >= frac) s->laps += ds_udiv(est - frac + RSZ / 2, RSZ);
+  }
+#endif
   if (w < s->lastw) s->laps++;
   s->lastw = w;
   return s->laps * RSZ + w;
@@ -159,6 +181,20 @@ static uint32_t poll(st_t *s) {
 /* count again from where the DMA is now (after a pause or an overrun) */
 NOINLINE static void resync(st_t *s) {
   uint32_t w = RSZ - (rd(DMA_CNDTR1) & 0xFFFF);
+#ifdef DMR_DECODE
+  {
+    /* the decoder predicts bursts by grid index, so the grid must count the time it missed:
+       the transfers since the last poll from the clock and the DMA's rate, the whole rings
+       among them from the clock (good to far under a ring), the rest from the DMA */
+    uint32_t t = now(s), est = ds_udiv((t - s->tpoll) << 6, s->cps8 >> 2);
+    uint32_t frac = (w - s->lastw) & (RSZ - 1), laps = ds_udiv(est - frac + RSZ / 2, RSZ);
+    uint32_t P = s->laps * RSZ + s->lastw + laps * RSZ + frac;
+    s->tpoll = t;
+    if (s->cps8 && est < (1u << 24) && est + RSZ / 2 >= frac) {
+      ds_skip(&s->d, ((P & ~63u) - s->consumed) >> 6);
+    }
+  }
+#endif
   s->laps = 0, s->lastw = w;
   s->consumed = s->p0 = w & ~63u;
   s->t0 = s->tp = now(s);
@@ -190,6 +226,9 @@ NOINLINE static int g2ms(uint32_t g) { return (int)ds_udiv(g * 5u, 48u); }
 static void hit(st_t *s, int r) {
   ds_t *d = &s->d;
   s->hits++, s->chits++;
+#ifdef DMR_DECODE
+  dx_hit(&s->x, d);
+#endif
   if (s->dmr ? d->hfam != s->fam : r != DS_CONF) return;
   s->until = d->hj + CONF_G;
   if (!s->dmr)
@@ -200,6 +239,9 @@ static void hit(st_t *s, int r) {
    audio, and at most one line; 1 to stop */
 NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
   char line[64], *p = line;
+#ifdef DMR_DECODE
+  char *q8;
+#endif
   uint32_t j = s->d.j, t = s->t, P = s->laps * RSZ + s->lastw, dt = t - s->thk, q;
   int car, af;
   s->thk = t, s->win += dt;
@@ -211,6 +253,12 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
   if (t - s->t0 > (1u << 23)) {
     if (t - s->t0 < (1u << 24) && P != s->p0) {
       s->cps8 = (3 * s->cps8 + ds_udiv((t - s->t0) << 8, P - s->p0)) >> 2;
+#ifdef DMR_DECODE
+      s->rhalf = (RSZ * (s->cps8 >> 2)) >> 7;               /* half the ring, in cycles */
+#endif
+#ifdef DMR_DECODE
+      if (!dx_locked(&s->x, &s->d)) /* while DMR's own slots time the grid, they set its step */
+#endif
       ds_rate(&s->d, s->cps8);
     }
     s->t0 = t, s->p0 = P;
@@ -223,6 +271,9 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
       s->car_j = j, s->chits = 0, s->cdb = s->db;
     } else {
       if (s->dmr) s->until = j;
+#ifdef DMR_DECODE
+      dx_end(&s->x);
+#endif
       p = kv(kv(kv(line, "c ", s->cdb), " ", g2ms(j - s->car_j)), " h=", (int)s->chits);
     }
   } else if (s->pend) {
@@ -233,16 +284,27 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
   } else if (s->dmr && (int32_t)(j - s->until) > 0) {
     s->dmr = 0;
     p = kv(line, "D off ", g2ms(j - s->on_j));
+#ifdef DMR_DECODE
+    dx_end(&s->x);
+  } else if ((q8 = dx_house(&s->x, line)) != 0) {
+    p = q8;
+#endif
   } else if (s->ms >= s->next_s) {
     s->next_s += S_MS;
     p = kv(kv(line, "s ", (int)ds_udiv(s->ms, 1000u)), " h=", (int)s->hits);
     p = kv(kv(p, " lost=", (int)s->lost), " idle=",
            (int)ds_udiv((s->idle >> 8) * 100u, (s->win >> 8) + 1u));
     p = kv(p, " ks=", (int)ds_udiv(96000u * 256u, s->cps8));
+#ifdef DMR_DECODE
+    p = kv(kv(p, " L=", (int)s->x.nlc), " E=", (int)s->x.nemb);
+#endif
     s->idle = s->win = 0;
   }
   af = s->car && !s->dmr && j - s->car_j >= HOLD_MS * 96u / 10u;
   if (af != s->af) s->af = af, api->fd_write(0x47, af ? AF_FM : AF_MUTE);
+#ifdef DMR_DECODE
+  if (dx_lcd(api, &s->x) && p == line) resync(s);
+#endif
   if (p != line) {
     say(api, line, p);
     resync(s);
@@ -257,6 +319,9 @@ NOINLINE static void run(const k6_api_t *api, st_t *s) {
      ~90 ms (st_t came zeroed: ds_init's work but the rate and the empty candidate) */
   s->cps8 = 4476u;
   ds_rate(&s->d, s->cps8);
+#ifdef DMR_DECODE
+  s->rhalf = (RSZ * (s->cps8 >> 2)) >> 7;
+#endif
   s->d.cfam = -1;
   p = kv(line, "dmr start f=", (int)FREQ_HZ);
   p = kv(p, " floor=", s->floor);
@@ -283,6 +348,9 @@ NOINLINE static void run(const k6_api_t *api, st_t *s) {
         s->consumed += 64u;
         if (r) hit(s, r);
       }
+#ifdef DMR_DECODE
+      if (s->x.nq) dx_poll(&s->x, &s->d);
+#endif
       hk += i;
       if (hk < 4 * HK_COUNTS) continue; /* never idle: housekeeping anyway */
     }

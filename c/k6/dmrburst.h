@@ -72,14 +72,18 @@ DB_NOINLINE static uint32_t db_nearest(uint32_t w, int k, int *err, uint32_t (*c
   return best;
 }
 
-/* the slot type's 20 bits (burst bits 98-107 and 156-165) -> cc << 4 | data type */
+/* the slot type's 20 bits (burst bits 98-107 and 156-165) -> cc << 4 | data type; a clean
+   codeword (most bursts) without the search */
 static uint32_t db_slot(const uint8_t *b20, int *err) {
-  return db_nearest(db_word(b20, 20), 8, err, db_slot_cw);
+  uint32_t w = db_word(b20, 20);
+  if (db_slot_cw(w >> 12) == w) return *err = 0, w >> 12;
+  return db_nearest(w, 8, err, db_slot_cw);
 }
 
 /* the EMB's 16 bits (the burst's middle 8 + its last 8) -> cc << 3 | pi << 2 | lcss */
 static uint32_t db_emb(const uint8_t *mid48, int *err) {
   uint32_t w = (db_word(mid48, 8) << 8) | db_word(mid48 + 40, 8);
+  if (db_emb_cw(w >> 9) == w) return *err = 0, w >> 9;
   return db_nearest(w, 7, err, db_emb_cw);
 }
 
@@ -134,16 +138,17 @@ static void db_h15(uint16_t *m) {
    3 passes of column then row correction (0: clean) */
 DB_NOINLINE static int db_bptc196(const uint8_t *info, uint8_t *out12) {
   uint16_t row[13], h15[4];
-  uint32_t i, r, c, pass;
+  uint32_t i, r, c, pass, kr = 0, kc = 0;
   int bad_r = 0, bad_c = 0;
   db_h15(h15);
   for (r = 0; r < 13; r++) row[r] = 0;
-  /* matrix bit k (after the reserved bit 0) = info[(k + 1) * 181 % 196], walked by adding 181 */
+  /* matrix bit k (after the reserved bit 0) = info[(k + 1) * 181 % 196], walked by adding 181
+     (row kr, column kc) */
   for (i = 1, c = 181; i < 196; i++) {
-    uint32_t k = i - 1;
-    row[k / 15] |= (uint16_t)(info[c] << (14 - k % 15));
+    row[kr] |= (uint16_t)(info[c] << (14 - kc));
+    if (++kc == 15) kc = 0, kr++;
     c += 181;
-    while (c >= 196) c -= 196;
+    if (c >= 196) c -= 196;
   }
   for (pass = 0; pass < 3; pass++) {
     for (c = 0; c < 15; c++) {
@@ -231,7 +236,8 @@ DB_NOINLINE static int db_emb_lc(const uint8_t *f128, uint8_t *out9) {
       if (++n == 8) sum += out9[o++] = (uint8_t)acc, acc = 0, n = 0;
     }
   for (r = 2; r < 7; r++) crc = (crc << 1) | ((row[r] >> 5) & 1u);
-  while (sum >= 31) sum -= 31;
+  sum = (sum & 31) + (sum >> 5), sum = (sum & 31) + (sum >> 5); /* mod 31 (32 = 1) */
+  if (sum >= 31) sum -= 31;
   return ok && crc == sum;
 }
 

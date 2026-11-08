@@ -393,8 +393,8 @@ def talker_alias(parts):
     return fmt, txt
 
 
-# CRC-CCITT on 10-byte blocks (CSBK, data headers): candidates (init, final XOR) are checked
-# on real bursts; the per-type masks are ETSI's.
+# CRC-CCITT on 10-byte blocks (CSBK, data headers), then the per-type mask: of the candidate
+# (init, final XOR) pairs, 440.925's preambles and GPS data headers all fit "i0xF".
 CRC_MASK = {"csbk": 0xA5A5, "data_hdr": 0xCCCC, "mbc_hdr": 0xAAAA}
 CRC_VARIANTS = {"i0x0": (0, 0), "i0xF": (0, 0xFFFF), "iFx0": (0xFFFF, 0), "iFxF": (0xFFFF, 0xFFFF)}
 
@@ -416,7 +416,7 @@ def crc_match(by12, kind):
             if crc_ccitt(by12[:10], i, x) ^ CRC_MASK[kind] == got]
 
 
-CRC_USE = "i0xF"          # MMDVM-style: init 0, inverted (to confirm on 440.925)
+CRC_USE = "i0xF"          # init 0, inverted: every CSBK and data header on 440.925 (2026-11-08)
 
 CSBKO = {0x04: "UU voice req", 0x05: "UU ans rsp", 0x07: "ch timing", 0x19: "aloha",
          0x1C: "ahoy", 0x20: "ack", 0x28: "C_BCAST", 0x38: "BS act", 0x3D: "preamble"}

@@ -176,3 +176,71 @@ def test_c_codes_match_python():
     assert lib.h_tact(u8(cach)) == 0b1011
     cach[4] ^= 1
     assert lib.h_tact(u8(cach)) == -1
+
+
+# ---- the K6's decoder: c/k6/mod/dmrdec.inc on the host, and the dmrrx module emulated ----
+
+def k6_counts(sym, cn0, seed=1):
+    """the K6's GP0 counts (2 * ones - 64 per 64 DMA bytes) for a call, as the modules see them"""
+    import test_k6_dmr as T
+    s, _ = dmr.dmr_baseband(sym, pre_s=0.0, post_s=0.0)
+    ib, on, off = T.stream(s, cn0=cn0, seed=seed)
+    b = (ib >> 1) & 1
+    n = len(b) // 64
+    return (b[:n * 64].reshape(n, 64).sum(1) * 2 - 64).astype(np.int16), (ib, on, off)
+
+
+CALL = dict(cc=1, tg=3027, src=3025107, superframes=6, alias="AG7EW TEST", seed=1)
+
+
+def test_c_decoder_on_the_k6_model():
+    """dmrsync.h's grid, its matched filter and dmrdec.inc at 52 dB-Hz (about the K6's level on
+    440.925 with the gain frozen): the LC, every voice burst's EMB, the talker alias"""
+    import shutil
+    import subprocess
+    import tempfile
+    import pytest
+    if not shutil.which("cc"):
+        pytest.skip("no cc")
+    k6 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "c", "k6")
+    exe = os.path.join(tempfile.mkdtemp(), "dmrrx_host")
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", k6, "-o", exe,
+                    os.path.join(k6, "dmrrx_host.c")], check=True)
+    cnt, _ = k6_counts(dd.voice_call_symbols(**CALL), 52.0)
+    out = subprocess.run([exe, "4476"], input=cnt.tobytes(), capture_output=True, check=True).stdout.decode()
+    print(out)
+    lines = out.splitlines()
+    assert any(ln.startswith("L TS") and " CC1 TG 3027 src 3025107 F0" in ln for ln in lines), out
+    assert "A AG7EW TEST" in lines, out
+    n = dict(kv.split("=") for kv in lines[-1].split()[1:])
+    mids, ok = map(int, n["mids"].split("/"))
+    assert int(n["L"]) >= 3 and ok >= 22 and mids >= 20, lines[-1]
+
+
+def test_dmrrx_module_on_the_emulated_k6():
+    """the dmrrx module (dmrdet + the decoder) on the emulated M0 with the modelled DMA: the
+    call's talkgroup and source on the serial line and the screen, its alias, in the shared
+    module block, the receiver's registers put back"""
+    import shutil
+    import pytest
+    if not (shutil.which("clang") and shutil.which("ld.lld")):
+        pytest.skip("needs clang and ld.lld")
+    pytest.importorskip("unicorn")
+    import test_k6_dmr as T
+    import k6_live_emu as le
+    from sim.k6if import frontend as fe
+    src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "c", "k6", "mod", "dmrrx.c")
+    code, entry = T.build([("RUN_S", "3u"), ("S_MS", "1000u")], src)
+    assert len(code) + 24 <= 9736 - 512, len(code)             # the shared block, 512 B to spare
+    _, (ib, on, off) = k6_counts(dd.voice_call_symbols(**CALL), 56.0)
+    e = le.Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=len(ib) / fe.FDMA + 0.5, level=6, stack_win=7000)
+    e.rssi = lambda: -60 if on <= e.sample_now() < off else -125
+    ret, stack = e.run()
+    txt = "\n".join(e.said)
+    print(txt, e.lcd, stack)
+    assert ret >= 1, txt
+    assert any(ln.startswith("L TS") and "TG 3027 src 3025107" in ln for ln in e.said), txt
+    assert any(ln.startswith("A AG7EW T") for ln in e.said), txt
+    assert e.lcd.get(1) == "TG 3027" and e.lcd.get(2) == "ID 3025107", e.lcd
+    assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0               # put back (reads 0 here)
+    assert stack < 6200, stack
