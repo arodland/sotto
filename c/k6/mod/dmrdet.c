@@ -28,7 +28,8 @@
    Writes REG_33 bit 8, REG_34[3:0] (GP0 code 13), REG_47, REG_7E and REG_13, GPIOB bit 2, the
    MCU's TIM17 and DMA channel 1 (as gp0dma: Jeff OK'd them, 2026-11-06), all put back. No TX.
    Returns the DMR detections, or -3 (old image), -4 (PB1 not an input), -5 (REG_33 refused),
-   -6 (dmrrx: under 512 B of scratch for the decoder's filter ring).
+   -6 (dmrrx: under 512 B of scratch for the decoder's filter ring; with 2,720 B the DMA ring and
+   the decoder's state go there too, else on the stack).
    SPDX-License-Identifier: MIT */
 #ifndef K6_MODULE_LEVEL
 #define K6_MODULE_LEVEL 2
@@ -150,7 +151,7 @@ typedef struct {
   uint32_t car_j, on_j, until, hits, chits, r2;
   uint32_t ahb, apb2, odr, r33, r34, r47, r7e, r13;
 #ifdef DMR_DECODE
-  dx_t x;
+  dx_t *x; /* in scratch when the block has room (11,776 B images), else on the stack */
 #endif
 } st_t;
 
@@ -228,7 +229,7 @@ static void hit(st_t *s, int r) {
   ds_t *d = &s->d;
   s->hits++, s->chits++;
 #ifdef DMR_DECODE
-  dx_hit(&s->x, d);
+  dx_hit(s->x, d);
 #endif
   if (s->dmr ? d->hfam != s->fam : r != DS_CONF) return;
   s->until = d->hj + CONF_G;
@@ -258,7 +259,7 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
       s->rhalf = (RSZ * (s->cps8 >> 2)) >> 7;               /* half the ring, in cycles */
 #endif
 #ifdef DMR_DECODE
-      if (!dx_locked(&s->x, &s->d)) /* while DMR's own slots time the grid, they set its step */
+      if (!dx_locked(s->x, &s->d)) /* while DMR's own slots time the grid, they set its step */
 #endif
       ds_rate(&s->d, s->cps8);
     }
@@ -273,7 +274,7 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
     } else {
       if (s->dmr) s->until = j;
 #ifdef DMR_DECODE
-      dx_end(&s->x);
+      dx_end(s->x);
 #endif
       p = kv(kv(kv(line, "c ", s->cdb), " ", g2ms(j - s->car_j)), " h=", (int)s->chits);
     }
@@ -286,8 +287,8 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
     s->dmr = 0;
     p = kv(line, "D off ", g2ms(j - s->on_j));
 #ifdef DMR_DECODE
-    dx_end(&s->x);
-  } else if ((q8 = dx_house(&s->x, line)) != 0) {
+    dx_end(s->x);
+  } else if ((q8 = dx_house(s->x, line)) != 0) {
     p = q8;
 #endif
   } else if (s->ms >= s->next_s) {
@@ -297,14 +298,14 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
            (int)ds_udiv((s->idle >> 8) * 100u, (s->win >> 8) + 1u));
     p = kv(p, " ks=", (int)ds_udiv(96000u * 256u, s->cps8));
 #ifdef DMR_DECODE
-    p = kv(kv(p, " L=", (int)s->x.nlc), " E=", (int)s->x.nemb);
+    p = kv(kv(p, " L=", (int)s->x->nlc), " E=", (int)s->x->nemb);
 #endif
     s->idle = s->win = 0;
   }
   af = s->car && !s->dmr && j - s->car_j >= HOLD_MS * 96u / 10u;
   if (af != s->af) s->af = af, api->fd_write(0x47, af ? AF_FM : AF_MUTE);
 #ifdef DMR_DECODE
-  if (dx_lcd(api, &s->x) && p == line) resync(s);
+  if (dx_lcd(api, s->x) && p == line) resync(s);
 #endif
   if (p != line) {
     say(api, line, p);
@@ -350,7 +351,7 @@ NOINLINE static void run(const k6_api_t *api, st_t *s) {
         if (r) hit(s, r);
       }
 #ifdef DMR_DECODE
-      if (s->x.nq) dx_poll(&s->x, &s->d);
+      if (s->x->nq) dx_poll(s->x, &s->d);
 #endif
       hk += i;
       if (hk < 4 * HK_COUNTS) continue; /* never idle: housekeeping anyway */
@@ -361,19 +362,50 @@ NOINLINE static void run(const k6_api_t *api, st_t *s) {
   }
 }
 
+static void zero(void *p, uint32_t n) {
+  while (n) ((volatile uint8_t *)p)[--n] = 0;
+}
+
+NOINLINE static int go(const k6_api_t *api, st_t *s);
+
+#ifdef DMR_DECODE
+/* a block too small for the rings and the decoder in scratch (9,760 B): they go on the stack */
+NOINLINE static int on_stack(const k6_api_t *api, st_t *s) {
+  uint32_t ring[RSZ / 4];
+  dx_t x;
+  zero(&x, sizeof x);
+  s->ring = (uint8_t *)ring;
+  s->x = &x;
+  return go(api, s);
+}
+#endif
+
 int k6_main(const k6_api_t *api) {
-  uint32_t ring[RSZ / 4], i;
   st_t st, *s = &st;
   if (api->level < 2) return -3;
-  for (i = 0; i < sizeof *s; i++) ((volatile uint8_t *)s)[i] = 0;
-  s->ring = (uint8_t *)ring;
+  zero(s, sizeof *s);
 #ifdef DMR_DECODE
   {
-    uint32_t n = 0;                                         /* the matched filter's ring: scratch */
-    s->d.f = (int8_t *)api->scratch(&n);
+    uint32_t n = 0;           /* scratch: the matched filter's ring, then the DMA ring and the decoder */
+    uint8_t *sc = (uint8_t *)api->scratch(&n);
     if (n < DS_FRING) return -6;
+    s->d.f = (int8_t *)sc;
+    if (n < DS_FRING + RSZ + sizeof(dx_t)) return on_stack(api, s);
+    s->ring = sc + DS_FRING;
+    s->x = (dx_t *)(sc + DS_FRING + RSZ);
+    zero(s->x, sizeof(dx_t));
+    return go(api, s);
+  }
+#else
+  {
+    uint32_t ring[RSZ / 4];
+    s->ring = (uint8_t *)ring;
+    return go(api, s);
   }
 #endif
+}
+
+NOINLINE static int go(const k6_api_t *api, st_t *s) {
   if (rd(GPIOB) & (3u << 2)) return -4;
   s->apb2 = rd(RCC_APB2ENR);
   s->ahb = rd(RCC_AHBENR);

@@ -6,6 +6,7 @@ import os
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sim.k6if import dmr, dmrdec as dd  # noqa: E402
@@ -217,12 +218,13 @@ def test_c_decoder_on_the_k6_model():
     assert int(n["L"]) >= 3 and ok >= 22 and mids >= 20, lines[-1]
 
 
-def test_dmrrx_module_on_the_emulated_k6():
+@pytest.mark.parametrize("block,max_stack", [(11776, 1800), (9760, 4200)])
+def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
     """the dmrrx module (dmrdet + the decoder) on the emulated M0 with the modelled DMA: the
     call's talkgroup and source on the serial line and the screen, its alias, in the shared
-    module block, the receiver's registers put back"""
+    module block, the receiver's registers put back. In the 11,776-byte block (PR #146) the DMA
+    ring and the decoder's state go in scratch too; in the 9,760-byte one, on the stack"""
     import shutil
-    import pytest
     if not (shutil.which("clang") and shutil.which("ld.lld")):
         pytest.skip("needs clang and ld.lld")
     pytest.importorskip("unicorn")
@@ -234,7 +236,8 @@ def test_dmrrx_module_on_the_emulated_k6():
     assert len(code) + 24 + 512 <= 9736 - 256, len(code)       # the shared block: code, the filter
                                                                # ring in scratch, 256 B to spare
     _, (ib, on, off) = k6_counts(dd.voice_call_symbols(**CALL), 56.0)
-    e = le.Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=len(ib) / fe.FDMA + 0.5, level=6, stack_win=7000)
+    e = le.Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=len(ib) / fe.FDMA + 0.5, level=6, stack_win=7000,
+               scratch=(block - 24 - len(code)) & ~3)
     e.rssi = lambda: -60 if on <= e.sample_now() < off else -125
     ret, stack = e.run()
     txt = "\n".join(e.said)
@@ -244,4 +247,4 @@ def test_dmrrx_module_on_the_emulated_k6():
     assert any(ln.startswith("A AG7EW T") for ln in e.said), txt
     assert e.lcd.get(1) == "TG 3027" and e.lcd.get(2) == "ID 3025107", e.lcd
     assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0               # put back (reads 0 here)
-    assert stack < 4200, stack
+    assert stack < max_stack, stack

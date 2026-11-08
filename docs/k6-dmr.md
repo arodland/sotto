@@ -214,9 +214,10 @@ not fit the M0 anyway.
 
 | | |
 |---|---|
-| Code | 8.6 KB, so only images with the 9,760-byte shared module block (the SPI voice images) |
-| Scratch | 512 B |
-| Stack | ~3.8 KB |
+| Code | 8.6 KB, so only images with the shared module block of the SPI voice images (9,760 B, or 11,776 B from PR #146); not EXPLORE or the lean images |
+| Scratch, 11,776 B block | 2,720 B: the filter's 512-byte ring, the 1 KB DMA ring and the decoder's 1,184-byte state (3,156 B free) |
+| Stack, 11,776 B block | ~1.6 KB (emulated 1,560 B) |
+| Scratch and stack, 9,760 B block | the filter ring in scratch (1,140 B free); the DMA ring and the decoder on the stack, ~3.8 KB |
 
 Serial lines, besides dmrdet's (the summary line gains `L=` and `E=` counts):
 

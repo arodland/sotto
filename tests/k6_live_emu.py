@@ -80,7 +80,7 @@ def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=
 
 class Emu:
     def __init__(self, code, entry, ib, on_at, fdma, cpi=1.5, max_s=None, key_us=60, stall=None,
-                 wobble=None, flash_cpi=None, level=4, stack_win=3504):
+                 wobble=None, flash_cpi=None, level=4, stack_win=3504, scratch=4096):
         import unicorn
         from unicorn import arm_const as A
         self.U, self.A = unicorn, A
@@ -106,6 +106,7 @@ class Emu:
         ram = self.ram = 0x20000000
         mu.mem_map(ram, 1 << 20)
         self.base, self.api, self.stubs = ram + 0x1000, ram + 0x8000, ram + 0x9000
+        self.scratch = scratch                       # the API's scratch size (the 4 KB store; more past the code in the arena images)
         self.stack_win = stack_win                   # the stack measured (3504: the oldest images)
         self.stop, self.sp0, self.stack_lo = ram + 0x9F00, ram + 0x7F00, ram + 0x7F00 - stack_win
         mu.mem_write(self.base, code)
@@ -246,7 +247,7 @@ class Emu:
             us = 50
         elif name == "scratch":
             if r0:
-                uc.mem_write(r0, (4096).to_bytes(4, "little"))
+                uc.mem_write(r0, self.scratch.to_bytes(4, "little"))
             ret = self.scr
         self.tick(us * 96)
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
