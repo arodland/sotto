@@ -226,3 +226,30 @@ def test_hiss_no_bits_frames_stay_level_in_background_hiss():
     400 about 10 dB too loud). The decoder now caps it at the last coded frame's level."""
     assert _hiss_burst_db("400", CAP_DB=1e9, RES_CAP=1e9) > 9    # the old decoder
     assert _hiss_burst_db("400") < 6
+
+
+def test_creak_tail_keeps_the_modal_frame():
+    """LibriSpeech 198 at 13.32 s ("my dear"): one modal frame then four creak frames at half
+    its pitch. The 400 line used to follow the creak and play the modal frame an octave low;
+    now it starts near the modal frame and falls (sotto_vlr.SottoVLR.creak_mask)."""
+    v = vr.SottoVLR("400")
+    code = np.array([1, 1, 1, 3, 1, 1, 1, 0])
+    wi = np.array([65, 66, 66, 32, 34, 36, 36, 58])
+    cr = v.creak_mask(code, wi)
+    assert cr.tolist() == [False, False, False, True, True, True, True, False]
+    voiced = np.array([True, True, True, True, True, False])
+    wc, ws = v.q_pitch(wi[2:], voiced, 64, cr[2:])
+    line = v.pitch_frames(wc, ws)
+    assert abs(line[0] - 66) <= 4 and line[4] < line[0] - 15
+    v.CREAK = False
+    wc, ws = v.q_pitch(wi[2:], voiced, 64, None)
+    assert v.pitch_frames(wc, ws)[0] < 45            # the old behaviour, an octave low
+
+
+def test_creak_needs_a_steady_voice_before_the_drop():
+    """An onset's junk pitch (LibriSpeech 251 at 6.38 s: 500 Hz on the edge frame) or mixed
+    onset frames don't make the real voice after them creak."""
+    v = vr.SottoVLR("400")
+    assert not v.creak_mask(np.array([0, 3, 3, 1, 1]), np.array([50, 127, 36, 36, 35])).any()
+    assert not v.creak_mask(np.array([0, 2, 3, 2, 1]), np.array([0, 89, 88, 21, 23])).any()
+    assert not v.creak_mask(np.array([1, 1, 0, 1, 1]), np.array([70, 70, 0, 30, 30])).any()

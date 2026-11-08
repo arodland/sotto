@@ -67,6 +67,11 @@ class SottoVLR(lr.Sotto1200):
 
     M_BEST = 16
     OUTLIER = 20                  # pitch index steps (~0.5 octave: octave slips); 0 = the plain least squares
+    CREAK = True                  # creak_mask frames weigh less in the pitch line (2026-11-08)
+    CREAK_DROP = 25               # index steps (~0.65 octave) down from the voiced frame before
+    CREAK_HOLD = 20               # ... and the run stays creak while this far under that frame
+    CREAK_STEADY = 6              # ... which was this close to the voiced frame before it
+    CREAK_W = 1                   # a creak frame's weight in the line, against 4 for the others
 
     def __init__(self, mode="600", tables=None, cfg=None, **kw):
         self.mode = mode
@@ -107,8 +112,9 @@ class SottoVLR(lr.Sotto1200):
         b = self.cfg["bw"]
         return (i << (7 - b)) + ((1 << (7 - b)) >> 1)
 
-    def pitch_line(self, wi, voiced):
-        """Least-squares line through the voiced frames: (centre, slope) in index units."""
+    def pitch_line(self, wi, voiced, wt=None):
+        """Least-squares line through the voiced frames: (centre, slope) in index units, each
+        frame weighted by wt (integers; default 1)."""
         N = self.N
         t = np.arange(N) - (N - 1) / 2
         v = np.where(voiced)[0]
@@ -118,8 +124,9 @@ class SottoVLR(lr.Sotto1200):
             return float(wi[v[0]]), 0.0
         # the normal equations in closed form (as c/sotto_vlr.c): the sums are exact, so a
         # centre that lands on .5 rounds the same way in both
-        tv, y = t[v], wi[v].astype(float)
-        sn, st, stt, sy, sty = float(len(v)), tv.sum(), (tv * tv).sum(), y.sum(), (tv * y).sum()
+        a = np.ones(N) if wt is None else np.asarray(wt, float)
+        tv, y, a = t[v], wi[v].astype(float), a[v]
+        sn, st, stt, sy, sty = a.sum(), (a * tv).sum(), (a * tv * tv).sum(), (a * y).sum(), (a * tv * y).sum()
         s = (sn * sty - st * sy) / (sn * stt - st * st)
         return (sy - s * st) / sn, s
 
@@ -133,17 +140,27 @@ class SottoVLR(lr.Sotto1200):
         reads some slope fields as hiss)."""
         return self.pitch_frames(f["wc"], f["ws"])
 
-    def q_pitch(self, wi, voiced, prev_wc):
+    def q_pitch(self, wi, voiced, prev_wc, creak=None):
         """(centre index, slope index) minimising the voiced frames' squared index error,
         each frame's error capped at OUTLIER index steps. With OUTLIER set (2026-11-07), a
         voiced frame more than OUTLIER steps off the least-squares line is left out and the
         line refitted, so one wrong frame (an octave slip, a junk onset pitch) doesn't bend
-        the whole superframe's pitch."""
+        the whole superframe's pitch.
+
+        creak (2026-11-08): frames that dropped about an octave below the voiced frame before
+        them (creak_mask) count CREAK_W of a modal frame's 4, and the search then tries every
+        centre. A creaky phrase end ("my dear" in LibriSpeech 198 at 13.3 s) had the majority
+        and pulled the modal frame before it down an octave with it; now the line follows the
+        modal frame and falls toward the creak as far as the slope table goes."""
         line = self.pitch_line(wi, voiced)
         if line is None:
             return prev_wc, int(np.argmin(np.abs(self.slopes)))
         cap = self.OUTLIER
-        if cap and voiced.sum() >= 3:
+        mixed = creak is not None and (voiced & creak).any() and (voiced & ~creak).any()
+        wt = np.where(creak, self.CREAK_W, 4) if mixed else np.full(self.N, 4)
+        if mixed:
+            line = self.pitch_line(wi, voiced, wt)
+        if cap and voiced.sum() >= 3 and not mixed:
             t = np.arange(self.N) - (self.N - 1) / 2
             keep = voiced & (np.abs(wi - (line[0] + line[1] * t)) <= cap)
             if 2 <= keep.sum() < voiced.sum():
@@ -152,13 +169,38 @@ class SottoVLR(lr.Sotto1200):
         c0 = int(np.clip(np.round((line[0] - ((1 << (7 - b)) >> 1)) / (1 << (7 - b))), 0, (1 << b) - 1))
         best = None
         v = np.where(voiced)[0]
-        for wc in range(max(0, c0 - 1), min((1 << b), c0 + 2)):
+        span = range(1 << b) if mixed else range(max(0, c0 - 1), min((1 << b), c0 + 2))
+        for wc in span:
             for ws in range(len(self.slopes)):
                 d = np.abs(self.pitch_frames(wc, ws)[v] - wi[v])
-                e = (np.minimum(d, cap) ** 2 if cap else d ** 2).sum()
+                e = (wt[v] * (np.minimum(d, cap) ** 2 if cap else d ** 2)).sum()
                 if best is None or e < best[0]:
                     best = (e, wc, ws)
         return best[1], best[2]
+
+    def creak_mask(self, code, wi):
+        """Frames in creak: voiced, at least CREAK_DROP index steps under the voiced frame just
+        before them, which sat within CREAK_STEADY of the voiced frame before it, both fully
+        voiced (code 1: a steady voice, not an onset's junk pitch or an octave slip up), and
+        the voiced frames after that while they stay CREAK_HOLD under it. A 20 ms fall that
+        far out of a steady voice is creak (or the tracker halving a breathy voice), not
+        intonation. Causal, frame by frame, as c/sotto_vlr.c runs it."""
+        cr = np.zeros(len(code), bool)
+        prev = prev2 = ref = None
+        for k in range(len(code)):
+            if code[k] == 0:
+                prev = prev2 = ref = None
+                continue
+            if ref is not None and ref - wi[k] >= self.CREAK_HOLD:
+                cr[k] = True
+            else:
+                ref = None
+                if prev is not None and prev2 is not None and prev - wi[k] >= self.CREAK_DROP \
+                        and abs(prev - prev2) <= self.CREAK_STEADY:
+                    ref, cr[k] = prev, True
+            # only fully voiced frames can set up a drop
+            prev, prev2 = (int(wi[k]), prev) if code[k] == 1 else (None, None)
+        return cr
 
     def energy_frames(self, em, er):
         lv = (1 << self.cfg["be"]) - 1
@@ -246,6 +288,7 @@ class SottoVLR(lr.Sotto1200):
         w = frame_weight(ei)
         cc = (sh @ vl.DCT.T)[:, 1:]
         sel = self.q_shapes(cc, w)
+        creak = self.creak_mask(code, wi) if self.CREAK else np.zeros(len(code), bool)
         out, prev_wc, a = [], 64 >> (7 - self.cfg["bw"]), 0
         for s in range(ns):
             fr = slice(s * N, (s + 1) * N)
@@ -255,7 +298,7 @@ class SottoVLR(lr.Sotto1200):
             if not voiced.any():
                 voiced = code[fr] != 0
             v["wc"], v["ws"] = self.q_pitch(wi[fr], voiced & (dv != 0) if (voiced & (dv != 0)).any() else voiced,
-                                            prev_wc)
+                                            prev_wc, creak[fr])
             prev_wc = v["wc"]
             v["em"], v["er"] = self.q_energy(ei[fr])
             for j in range(len(self.cfg["anchors"])):
