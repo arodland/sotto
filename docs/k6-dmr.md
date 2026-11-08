@@ -94,8 +94,10 @@ and AGC, the 1-bit sigma-delta, the DMA at 5.49 MS/s), with DMR from a TS 102 36
 
 - **Sensitivity:** unchanged down to 54 dB-Hz. At 50 dB-Hz about a third of the syncs still
   come through, and they die out at 47, where the zero-crossing discriminator passes the FM
-  threshold. 54 dB-Hz is about -116 dBm with an 8 dB noise figure. 440.925 sits at -90 to
-  -100 dBm (65-75 dB-Hz), far above that. 600 Hz of carrier offset changes nothing.
+  threshold. 600 Hz of carrier offset changes nothing. (This section first said 54 dB-Hz was
+  about -116 dBm with an 8 dB noise figure. On the K6 it isn't: with the pager's AGC, the real
+  repeater at -85 to -90 dBm reached GP0 at what the model calls about 40 dB-Hz. See "Captures
+  of real DMR" below.)
 - **False hits:** over 30 s each at 55 dB-Hz, the largest |rho| was 0.63-0.75 on FM voice,
   0.76 on FFSK, 0.69 on the keyed tone and 0.53 on noise (the threshold is 0.8). Random 4FSK
   at 4800 baud (what YSF or P25 payload looks like) gave 4 single hits in 30 s and no
@@ -131,8 +133,8 @@ On the emulated Cortex-M0 (`tests/k6_live_emu.py`'s CPU and DMA model, calibrate
   carrier, inside the 150 ms hold, so the speaker never opened. No samples lost, CPU idle
   54-58% (busy 42-46%), the DMA rate tracked to 5490 kS/s.
 - **FM voice:** no DMR, the audio opened after 150 ms, one `c` line with `h=0`.
-- **Size:** 3028 bytes of code. With the 24-byte header and tag, the 512-byte ring and the
-  428-byte state, that's 3992 of the store's 4096 bytes. The ring is 512 bytes (93 us) rather
+- **Size:** 3104 bytes of code (CI's clang makes it ~90 bytes bigger). The 512-byte ring and
+  the state are on the stack (see "Captures of real DMR"). The ring is 512 bytes (93 us) rather
   than gp0dma's 1 KB because the module needs the room. That's why it checks keys with
   `key_poll` (5 us) rather than `key_down` (60 us), and makes only one FD6818 call at a time
   between drains. Getting it to fit cost the screen (the WSPR modules' level 6 calls) and
@@ -196,6 +198,98 @@ stands in for the discriminator):
 So the sync shape, timing and framing hold on the real repeater, through a 2.5 kHz audio path
 that's worse than the K6's IF. What's still untested is the K6's own GP0 discriminator on a real
 DMR carrier: that's the bench run.
+
+## On the K6 (2026-11-08)
+
+Two receive-only runs of CI's `mod-dmrdet.bin` (3116 B with header, from main f56f0a0) on
+440.925, the IC-7100 sending the upload on 440.850:
+
+- **Run 1 (05:08:55Z, no cable, speaker on):** Jeff heard a DMR transmission start as a short
+  buzz, then a prompt mute, at about 05:17:40, and the analog side otherwise behaved. The report
+  went out on 440.850 (Jeff saw the TX LED on time) but the IC-7100 was back on 440.850 about
+  5 s too late: the K6 starts a module as soon as it has the last new chunk, ~17 s before the
+  upload audio ends, so the hamlet side now returns 35 s earlier. No log from this run.
+- **Run 2 (05:39:12Z, cable in, serial log):** a miss. Floor -108 dBm, one 0.5 s carrier at
+  -91 dBm (05:47:15, `c -91 488 h=0`): not one sync hit, yet the IC-7100's recording of it holds
+  16 BS syncs one slot apart at rho 0.97 (`audio` mode, 15 confirmations from 1.24 s). One stray
+  hit early on never confirmed, `lost=0` every minute, `ks=5374` (the real DMA rate, 2% under
+  the model's 5490; a 2% grid error would cost the confirmations, not the hits, so it isn't the
+  rate). 17 dB over the floor is about 58 dB-Hz, where the model finds every sync. So the K6's
+  own IF path doesn't look like the model on real DMR, and the mute Jeff heard in run 1 is
+  unconfirmed (the IC-7100's copy of 05:17:40 is bare hiss).
+- **CPU idle:** the run printed `idle=286` and then 1-2%, which was a reporting bug: the idle
+  and window sums were in 96 MHz cycles and wrap a u32 every 44.7 s, so a 60 s window can't be
+  measured. Unwrapping the numbers gives about 73% idle in the first minute and 75% after that,
+  better than the emulator's 54-58% (its CPI 1.5 is pessimistic). The summary line now comes
+  every 40 s, inside the wrap (summing in coarser units cost 32 bytes the store doesn't have
+  with CI's compiler).
+- **Run time:** the firmware's `K6 MOD ret=0 in 3766 ms` is also wrong (600 s ran). Its
+  module clock only advances when the module calls into the firmware's tick (delays, TX
+  guard), and the 100 us counter wraps every 6.5 s between calls; dmrdet only polls keys and
+  RSSI. Cosmetic, firmware side.
+- **The short buzz:** the speaker opens 150 ms after the carrier (`HOLD_MS`), and a confirm
+  needs two syncs a whole number of slots apart. On a repeater that is keying up from idle the
+  second sync can come later than 150 ms. If that buzz is common, raise `HOLD_MS` (FM pays it
+  as opening delay) or open on a single strong sync's absence for 2 slots.
+
+### Captures of real DMR (2026-11-08 06:06Z)
+
+`c/k6/mod/dmrcap.c` (level 2, receive only) listens on 440.925 and, each time the RSSI rises
+8 dB over the floor, records 38 ms stretches of the raw IF counts (on the stack, the first
+within ~5 ms of the carrier) and dumps them over the cable in gp0cap's format, plus one
+no-carrier reference. A repeater with both slots going has a sync every 30 ms, so each capture
+holds a whole one. `python3 -m sim.k6if.dmr cap LOG` runs the detector on every capture (IF
+offset, best sync with and without the spread gate, measured +-3 deviation), and `--diag`
+compares four discriminators and measures how far the IF band stands above the 1-bit path's
+noise.
+
+The first run (pager's AGC only) caught two real transmissions, three captures each, which the
+IC-7100's audio decodes at rho 0.98-1.00:
+
+| | counts rms | IF band over the noise above | best \|rho\|: MCU crossings / band-pass / complex | IF mean, spread (MCU crossings) |
+|---|---|---|---|---|
+| no carrier (-108 dBm) | 12.8 | -16 dB | 0.77 / 0.67 / 0.68 | noise |
+| DMR, -85 to -90 dBm | 4.1-4.4 | +3.4 to +5.3 dB | 0.64-0.76 / 0.59-0.89 / 0.67-0.86 | +2.5 to +3.5 kHz, ~5 kHz |
+| model at 60 dB-Hz | 21 | +20 dB | 0.99 / 0.98 / 0.98 | +0.1 kHz, 1.4 kHz |
+| model at 42 dB-Hz | 5.7 | +7 dB | 0.66 / 0.72 / 0.60 | +1.8 kHz, 4.8 kHz |
+
+The real DMR looks like the model at about 40 dB-Hz. The detector isn't wrong: the IF reaches
+GP0 too weak. With no carrier the counts swing at rms 12.8 (the receiver's noise at full
+gain). With the -85 dBm carrier they drop to 4.2, about a fifth of the model's working level,
+so the AGC turns the IF down to where the sigma-delta's own noise is only 4-5 dB below it in
+band. Even a band-pass ahead of the crossings, or a complex discriminator, only reaches
+0.8-0.9 on half the captures. (The pager's 1200-baud modes have far more margin per symbol,
+which is why they never showed this.)
+
+The second run (06:31Z) cycled each carrier's captures through four gain steps: the pager's
+AGC, then the AGC frozen (REG_7E bit 15, index 3) with REG_13 = 0x03FF, 0x03BE, 0x037E. Two
+7 s DMR transmissions, eight captures each:
+
+| gain | RSSI reads | counts rms | IF band over the noise | best \|rho\|: bare crossings / band-pass / complex |
+|---|---|---|---|---|
+| pager's AGC | -86 | 4.3 | +4 to +5 dB | 0.60-0.69 / 0.65-0.94 / 0.67-0.95 |
+| REG_13 0x03FF | -79 | 6.8 | +10 dB | 0.71-0.82 / **0.95-0.99** / 0.90-0.97 |
+| REG_13 0x03BE | -86 | 4.3 | +4 to +5 dB | 0.59-0.70 / 0.75-0.88 / 0.68-0.90 |
+| REG_13 0x037E | -94 | 3.5 | +1 dB | 0.60-0.71 / 0.60-0.76 / 0.65-0.72 |
+
+At full gain the real DMR matches the model at about 48 dB-Hz (+10 dB, bare crossings 0.80,
+band-passed 0.95). Bare crossings still miss most syncs there; band-passed ones find them.
+So dmrdet now does both:
+
+- **Gain:** it freezes REG_13 at `GAIN13` (0x03FF) for the run and puts the AGC back after.
+  The RSSI reads ~7 dB higher at that gain, and the floor is measured after the freeze.
+- **Band-pass:** `dmrsync.h` runs each count through a 2nd-order Butterworth biquad around the
+  IF (10.4-23.4 kHz at 85.8 kHz, Q14 coefficients, Q8 out) before the crossings. That's 3
+  multiplies a count. On the model it moves the threshold ~3 dB: at 48 dB-Hz, 30 of 39 syncs
+  and 29 confirmations instead of 3 and 1. At 46 dB-Hz it's 11/10 instead of 0. A 4th-order
+  filter adds ~1 dB more. False hits are still nil (10 s each at 46 and 55 dB-Hz of FM voice,
+  FFSK, a keyed tone, a bare carrier and noise; the largest non-DMR |rho| is 0.77, on FFSK).
+- **Room:** the 512-byte ring and the 452-byte state moved to the module call's stack (the
+  emulator measures under 2 KB in all, against 3.5-6 KB), so the store only has to hold the
+  code: 3104 bytes.
+
+To rerun a capture: cable in, `tools/k6_upload.py mod-dmrcap.bin --api-level 2 --run-s 620`
+while 440.925 is busy, with the IC-7100 recording alongside for ground truth.
 
 ## Bench plan (receive only)
 

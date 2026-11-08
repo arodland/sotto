@@ -16,15 +16,18 @@
      D off 2340                             (DMR gone after ms)
      c -95 2400 h=41                        (a carrier came and went: its dBm, ms, and the
                                              syncs heard during it)
-     s 60 h=58 lost=0 idle=64 ks=5490       (every minute: s, syncs, ring overruns, CPU idle %,
+     s 40 h=58 lost=0 idle=64 ks=5490       (every 40 s: s, syncs, ring overruns, CPU idle %,
                                              kS/s)
    and the firmware's `K6 MOD ret=` gives the DMR detections.
-   Any key stops it. (No screen yet: the module store's 4 KB holds the code, the DMA ring and
-   the state, with little to spare.)
-   Writes REG_33 bit 8, REG_34[3:0] (GP0 code 13) and REG_47, GPIOB bit 2, the MCU's TIM17
-   and DMA channel 1 (as gp0dma: Jeff OK'd them, 2026-11-06), all put back. No TX.
-   Returns the DMR detections, or -3 (old image), -4 (PB1 not an input), -5 (REG_33 refused),
-   -8 (scratch short).
+   Any key stops it. (No screen yet.) The DMA ring and the state sit on the module call's
+   stack (~1 KB of its 3.5-6 KB), so the 4 KB store holds only the code.
+   The receiver's gain is frozen at GAIN13 (REG_7E bit 15, index 3; REG_13 in BK4819 layout)
+   while it listens: the pager's AGC turns a -85 dBm DMR carrier's IF down until it is only
+   4-5 dB over GP0's own noise in band, and REG_13 0x03FF gives ~10 dB (dmrcap, 2026-11-08).
+   GAIN13 0 leaves the AGC alone.
+   Writes REG_33 bit 8, REG_34[3:0] (GP0 code 13), REG_47, REG_7E and REG_13, GPIOB bit 2, the
+   MCU's TIM17 and DMA channel 1 (as gp0dma: Jeff OK'd them, 2026-11-06), all put back. No TX.
+   Returns the DMR detections, or -3 (old image), -4 (PB1 not an input), -5 (REG_33 refused).
    SPDX-License-Identifier: MIT */
 #ifndef K6_MODULE_LEVEL
 #define K6_MODULE_LEVEL 2
@@ -49,7 +52,11 @@
 #define SQ_DB 10                /* a carrier: RSSI this far over the floor */
 #endif
 #ifndef S_MS
-#define S_MS 60000u             /* the summary line's period */
+#define S_MS 40000u             /* the summary line's period: under 44.7 s, where the idle and
+                                   window sums (96 MHz cycles) would wrap a u32 */
+#endif
+#ifndef GAIN13
+#define GAIN13 0x03FFu          /* REG_13 while listening: LNA short, LNA, mixer, PGA all max */
 #endif
 #define CONF_G 6912u            /* 720 ms of grid points */
 #define HK_COUNTS 4096u         /* housekeeping every ~48 ms */
@@ -70,7 +77,7 @@
 #define DMA_CMAR1 (DMA + 0x14)
 #define TIM17EN (1u << 18)
 #define RSZ 512u                /* the DMA ring: 93 us at 5.5 MS/s, so housekeeping drains it
-                                   between its calls */
+                                   between its calls (on the stack) */
 #define AF_FM 0x6140u           /* Aura's AF_OUT_BASE | RX audio */
 #define AF_MUTE 0x6040u
 #define NOINLINE __attribute__((noinline))
@@ -130,7 +137,7 @@ typedef struct {
   int floor, db, cdb, car, af, dmr, pend, nd;
   int32_t fam, sign;
   uint32_t car_j, on_j, until, hits, chits, r2;
-  uint32_t ahb, apb2, odr, r33, r34, r47;
+  uint32_t ahb, apb2, odr, r33, r34, r47, r7e, r13;
 } st_t;
 
 static uint32_t now(st_t *s) {
@@ -286,16 +293,11 @@ NOINLINE static void run(const k6_api_t *api, st_t *s) {
 }
 
 int k6_main(const k6_api_t *api) {
-  uint32_t bytes = 0;
-  uint8_t *scr;
-  st_t *s;
-  uint32_t i;
+  uint32_t ring[RSZ / 4], i;
+  st_t st, *s = &st;
   if (api->level < 2) return -3;
-  scr = (uint8_t *)api->scratch(&bytes);
-  if (bytes < RSZ + sizeof(st_t)) return -8;
-  s = (st_t *)(void *)(scr + RSZ);
-  for (i = 0; i < sizeof *s; i++) ((uint8_t *)s)[i] = 0;
-  s->ring = scr;
+  for (i = 0; i < sizeof *s; i++) ((volatile uint8_t *)s)[i] = 0;
+  s->ring = (uint8_t *)ring;
   if (rd(GPIOB) & (3u << 2)) return -4;
   s->apb2 = rd(RCC_APB2ENR);
   s->ahb = rd(RCC_AHBENR);
@@ -303,6 +305,8 @@ int k6_main(const k6_api_t *api) {
   s->r33 = api->fd_read(0x33);
   s->r34 = api->fd_read(0x34);
   s->r47 = api->fd_read(0x47);
+  s->r7e = api->fd_read(0x7E);
+  s->r13 = api->fd_read(0x13);
   if ((s->r33 & 0x0100) && api->fd_write(0x33, (uint16_t)(s->r33 & ~0x0100)) != 0) {
     wr(RCC_AHBENR, s->ahb);
     return -5;
@@ -310,6 +314,10 @@ int k6_main(const k6_api_t *api) {
   api->fd_write(0x47, AF_MUTE);
   api->tune(FREQ_HZ, WIDE); /* away from the upload's frequency: no need to wait for it */
   api->fd_write(0x34, (uint16_t)((s->r34 & 0xFFF0) | 13));
+  if (GAIN13) {
+    api->fd_write(0x7E, (uint16_t)((s->r7e & 0x0FFF) | 0xB000)); /* AGC fixed at index 3 */
+    api->fd_write(0x13, GAIN13);
+  }
   api->delay_us(100000);
   s->floor = rssi(api); /* the floor: start on a clear channel */
   s->odr = rd(GPIOB_ODR) & SPK;
@@ -325,6 +333,8 @@ int k6_main(const k6_api_t *api) {
   wr(RCC_AHBENR, s->ahb);
   wr(s->odr ? GPIOB_BSRR : GPIOB_BRR, SPK);
   api->fd_write(0x47, (uint16_t)s->r47);
+  api->fd_write(0x13, (uint16_t)s->r13);
+  api->fd_write(0x7E, (uint16_t)s->r7e);
   api->fd_write(0x34, (uint16_t)s->r34);
   api->fd_write(0x33, (uint16_t)s->r33);
   return s->nd;
