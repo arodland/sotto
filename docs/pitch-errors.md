@@ -103,6 +103,69 @@ The browser page's `docs/sotto.wasm` was rebuilt with the new encoder. Its store
 (`docs/samples/v38/`) are still from the old encoder, so `make -C c/wasm check` reports the hiss
 encoders as differing from them until those are re-rendered.
 
+## Creak at phrase ends (2026-11-08)
+
+Jeff heard the K6 play LibriSpeech 198 (*Sense and Sensibility*, the hiss bench's female clip)
+at sotto 400 and reported pitch trouble on "go by all means, my dear", which ends the clip
+(11.9-13.9 s). On the K6, the same clip was "much better" at 1200, and 600 "isn't bad". His
+read was that the coarse pitch coding gets stuck on vocal fry.
+
+The tracker and every rate get "by" (12.20-12.46 s) right. It's a 9-semitone fall, 287 to
+169 Hz, and sotto 400's two straight lines follow it to within about 90 cents. The slip is on
+"my" (13.20-13.42 s). The voice goes creaky at the end of the vowel, and then into fry on
+"dear" (pYIN 60-67 Hz). The tracker reads the creak as 89-96 Hz, half the voice's 165 Hz. One
+120 ms superframe held the last modal frame (165 Hz, full level) and four creak frames. The
+line fit went with the majority, and the outlier rule then dropped the modal frame. So 400
+played 91 Hz on the vowel and a steady 94-105 Hz buzz, rising, for 120 ms. 1200 plays 165 Hz to
+the end of the vowel and then 80 ms of the creak.
+
+| 13.32-13.42 s | modal | creak | creak | creak | creak | (unvoiced) |
+|---|---:|---:|---:|---:|---:|---:|
+| tracker | 165 | 89 | 93 | 96 | 96 | |
+| sotto 400 before | 91 | 94 | 96 | 100 | 101 | 105 |
+| sotto 400 after | 157 | 138 | 119 | 103 | 89 | 79 |
+
+Fix (`SottoVLR.creak_mask`, `CREAK_*`; `c/sotto_vlr.c` `creak_step`). Encoder only, so the
+bitstream and every decoder, the K6's included, are unchanged.
+
+- A voiced frame is a **creak frame** when it sits at least 25 index steps (about 0.65 of an
+  octave) below the voiced frame just before it. That frame and the one before it must both be
+  fully voiced and within 6 steps of each other. The following voiced frames stay creak while
+  they're 20 or more steps below that steady pitch.
+- In a superframe holding both creak and modal frames, a creak frame weighs 1 in the line fit
+  and the search, against 4 for a modal frame. The outlier rule is skipped there, and the
+  search tries every centre.
+- So the line keeps the modal frame and falls into the creak as far as the slope table
+  reaches, as a voice falls at a phrase end.
+- A superframe that is all creak is coded as before.
+
+The steadiness checks matter. Without them, an onset's junk pitch (LibriSpeech 251 at 6.38 s:
+500 Hz on an onset edge, then 96 Hz) made the real voice after it look like creak, and 400
+played 349 Hz there. Likewise, the mixed-voicing onset frames before true 62 Hz fry
+(LibriSpeech 3081 at 10.68 s) turned the fry into a glide from 247 Hz.
+
+On the 16 voices (`tools/pitch_errors.py --modes 600,400`; no voice got worse):
+
+| | 600 off20 | 600 gross | 400 off20 | 400 gross |
+|---|---:|---:|---:|---:|
+| before | 285 | 157 | 296 | 141 |
+| after | 270 | 151 | 281 | 137 |
+
+The gains come from EARS p020 and p070, whose voices go creaky or get halved by the tracker mid-run.
+PESQ-NB is flat (600 2.1328 → 2.1323, 400 1.8609 → 1.8669; ESTOI 0.692 / 0.641 both). Only
+three voices change at all, so this is a rare event that is loud when it happens.
+
+The C encoder matches the Python.
+
+- `tools/check_vlr_hiss.py`, on the 16 voices plus LibriSpeech 198: every superframe matches,
+  2,422 of 2,422 at 600 and 1,616 of 1,616 at 400.
+- `tools/check_vlr.py`: 99.92% and 99.94%. The only misses are the same EARS p051 frames as
+  before the change, which come from the fixed-lag tracker.
+- C encoder into C decoder, PESQ-NB: 600 2.114 → 2.118, 400 1.842 → 1.857.
+
+`docs/sotto.wasm` was rebuilt, since the page's 600 / 400 encoders are this C code. LibriSpeech
+198's 400 stream changes in one superframe, the one holding "my".
+
 ## Still open
 
 **The tracker halves some female voices in breathy or rough stretches.** About 140 tracker

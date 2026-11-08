@@ -48,6 +48,7 @@ struct sotto_vlr_enc {
   int ncost;
   long ns_out;                /* superframes coded */
   int prev_wc, done;
+  int cr_prev, cr_prev2, cr_ref;   /* creak_mask state: the last two voiced frames' pitch, the pitch before the drop (-1: none) */
   unsigned char out[QO][SOTTO_BYTES_PER_FRAME];
   long nout, npop;
 };
@@ -85,6 +86,7 @@ static struct sotto_vlr_enc *create(int rate, int core) {
       for (int x = 0; x < (NC << m->sbits[j][i]); x++) e->cb[j][i][x] = m->cb[j][i][x] * st;
     }
   e->prev_wc = 64;
+  e->cr_prev = e->cr_prev2 = e->cr_ref = -1;
   return e;
 }
 
@@ -235,17 +237,42 @@ static int pitch_at(const vlr_mode_t *m, int wc, int ws, int k) {
 }
 
 /* the least-squares line through the voiced frames' pitch indices (sotto_vlr.pitch_line):
-   its value at the superframe's centre and its slope, in index steps per frame */
+   its value at the superframe's centre and its slope, in index steps per frame; each frame
+   weighted by wt (NULL: 1) */
 #define VLR_OUTLIER 20      /* index steps (~0.5 octave): a frame further off is an octave slip */
-static void line_fit(int n, const int *voiced, const int *wi, double *c, double *slope) {
+#define VLR_CREAK_DROP 25   /* sotto_vlr.SottoVLR.CREAK_*: a fall this far in 20 ms is creak */
+#define VLR_CREAK_HOLD 20
+#define VLR_CREAK_STEADY 6
+#define VLR_CREAK_W 1       /* a creak frame's weight in the pitch line, against 4 */
+static void line_fit(int n, const int *voiced, const int *wi, const int *wt, double *c, double *slope) {
   double sn = 0, st = 0, stt = 0, sy = 0, sty = 0;
   for (int k = 0; k < n; k++)
     if (voiced[k]) {
-      double t = k - (n - 1) / 2.0;
-      sn += 1, st += t, stt += t * t, sy += wi[k], sty += t * wi[k];
+      double t = k - (n - 1) / 2.0, a = wt ? wt[k] : 1;
+      sn += a, st += a * t, stt += a * t * t, sy += a * wi[k], sty += a * t * wi[k];
     }
   double sl = (sn * sty - st * sy) / (sn * stt - st * st);
   *c = (sy - sl * st) / sn, *slope = sl;
+}
+
+/* sotto_vlr.SottoVLR.creak_mask, one frame at a time in order */
+static int creak_step(struct sotto_vlr_enc *e, int code, int wi) {
+  int cr = 0;
+  if (!code) {
+    e->cr_prev = e->cr_prev2 = e->cr_ref = -1;
+    return 0;
+  }
+  if (e->cr_ref >= 0 && e->cr_ref - wi >= VLR_CREAK_HOLD)
+    cr = 1;
+  else {
+    e->cr_ref = -1;
+    if (e->cr_prev >= 0 && e->cr_prev2 >= 0 && e->cr_prev - wi >= VLR_CREAK_DROP &&
+        abs(e->cr_prev - e->cr_prev2) <= VLR_CREAK_STEADY)
+      e->cr_ref = e->cr_prev, cr = 1;
+  }
+  if (code == 1) e->cr_prev2 = e->cr_prev, e->cr_prev = wi;   /* only fully voiced frames set up a drop */
+  else e->cr_prev2 = e->cr_prev = -1;
+  return cr;
 }
 
 static int energy_at(const vlr_mode_t *m, int em, int er, int k) {
@@ -256,10 +283,12 @@ static int energy_at(const vlr_mode_t *m, int em, int er, int k) {
 static void code_superframe(struct sotto_vlr_enc *e, long s) {
   const vlr_mode_t *m = e->m;
   int n = m->n, code[VLR_MAX_N], wi[VLR_MAX_N], ei[VLR_MAX_N], voiced[VLR_MAX_N], nv = 0;
+  int creak[VLR_MAX_N], wt[VLR_MAX_N];
   double w[VLR_MAX_N];
   for (int k = 0; k < n; k++) {
     const sotto_fparams_t *p = FR(e, s * n + k);
     code[k] = p->code, wi[k] = p->wi, ei[k] = p->ei, w[k] = wgt(p->ei);
+    creak[k] = creak_step(e, p->code, p->wi);
   }
   /* voicing pattern */
   int v = 0;
@@ -278,6 +307,11 @@ static void code_superframe(struct sotto_vlr_enc *e, long s) {
     for (int q = 1; q < (1 << m->bs); q++)
       if (abs(m->slope16[q]) < abs(m->slope16[ws])) ws = q;
   } else {
+    /* creak frames among modal ones weigh VLR_CREAK_W of 4, and every centre is tried */
+    int ncr = 0, mixed;
+    for (int k = 0; k < n; k++) ncr += voiced[k] && creak[k];
+    mixed = ncr > 0 && ncr < nv;
+    for (int k = 0; k < n; k++) wt[k] = mixed && creak[k] ? VLR_CREAK_W : 4;
     double c;
     if (nv == 1) {
       int k = 0;
@@ -285,9 +319,9 @@ static void code_superframe(struct sotto_vlr_enc *e, long s) {
       c = wi[k];
     } else {
       double sl;
-      line_fit(n, voiced, wi, &c, &sl);
+      line_fit(n, voiced, wi, mixed ? wt : NULL, &c, &sl);
       /* octave slips (sotto_vlr.SottoVLR.OUTLIER): leave out frames far off the line, refit */
-      if (nv >= 3) {
+      if (nv >= 3 && !mixed) {
         int keep[VLR_MAX_N], nk = 0;
         for (int k = 0; k < n; k++) {
           double t = k - (n - 1) / 2.0;
@@ -295,21 +329,22 @@ static void code_superframe(struct sotto_vlr_enc *e, long s) {
         }
         if (nk >= 2 && nk < nv) {
           memcpy(voiced, keep, sizeof keep);
-          line_fit(n, voiced, wi, &c, &sl);
+          line_fit(n, voiced, wi, NULL, &c, &sl);
         }
       }
     }
     int c0 = (int)rint(c);
     c0 = c0 < 0 ? 0 : c0 > 127 ? 127 : c0;
+    int lo = mixed ? 0 : c0 > 0 ? c0 - 1 : 0, hi = mixed ? 127 : c0 < 127 ? c0 + 1 : 127;
     long best = -1;
-    for (int x = c0 > 0 ? c0 - 1 : 0; x <= (c0 < 127 ? c0 + 1 : 127); x++)
+    for (int x = lo; x <= hi; x++)
       for (int q = 0; q < (1 << m->bs); q++) {
         long err = 0;
         for (int k = 0; k < n; k++)
           if (voiced[k]) {
             long d = labs((long)(pitch_at(m, x, q, k) - wi[k]));
             if (d > VLR_OUTLIER) d = VLR_OUTLIER;
-            err += d * d;
+            err += wt[k] * d * d;
           }
         if (best < 0 || err < best) best = err, wc = x, ws = q;
       }
