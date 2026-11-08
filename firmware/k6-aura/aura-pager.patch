@@ -4225,10 +4225,10 @@ index 0000000..8936b0a
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..0a6169c
+index 0000000..b89412d
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1461 @@
+@@ -0,0 +1,1487 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4308,6 +4308,7 @@ index 0000000..0a6169c
 +        pub known: *mut u32,
 +        pub known_n: u16,
 +        pub known_cap: u16,
++        pub now: u32,
 +    }
 +    /// c/k6/rt.h rt_rec_t (64 bytes)
 +    #[repr(C)]
@@ -4430,6 +4431,7 @@ index 0000000..0a6169c
 +        pub fn ex_view(e: *mut Ex, i: u32) -> *mut Cand;
 +        pub fn ex_view_n(e: *const Ex) -> u32;
 +        pub fn ex_cw(e: *mut Ex, hz: u32, call: *const u8);
++        pub fn ex_grade(c: *mut Cand);
 +        pub fn ex_listen_cap(c: *const Cand, max_s: u32, min_s: u32) -> u32;
 +        pub fn ex_heard(e: *mut Ex, hz: u32, s: u32);
 +        pub fn ex_to_rt(c: *const Cand, r: *mut RtRec);
@@ -4478,6 +4480,8 @@ index 0000000..0a6169c
 +const EX_F_SIMPLEX: u8 = 0x08;
 +const EX_F_SPUR: u8 = 0x10;
 +const EX_F_KNOWN: u8 = 0x20;
++/// known_calls has looked this one up in the table (a bit c/k6/explore.h leaves free)
++const EX_F_LOOKED: u8 = 0x40;
 +/// the saved table's frequencies, for the new / known rule on the list (more stay unmarked)
 +const KNOWN_N: usize = 64;
 +static mut KNOWN: [u32; KNOWN_N] = [0; KNOWN_N];
@@ -4576,7 +4580,7 @@ index 0000000..0a6169c
 +    xl: null_mut(),
 +    ring: null_mut(),
 +    ring_bytes: 0,
-+    ex: Ex { c: null_mut(), n: 0, cap: 0, tol_hz: 0, known: null_mut(), known_n: 0, known_cap: 0 },
++    ex: Ex { c: null_mut(), n: 0, cap: 0, tol_hz: 0, known: null_mut(), known_n: 0, known_cap: 0, now: 0 },
 +    rt: Rt { fl: core::ptr::null(), base: 0, live: 0, dead: 0, free: 0, max_id: 0, wseq: 0, spare: 0, gcs: 0, repairs: 0 },
 +    rt_res: 0,
 +    hz: 0,
@@ -4664,6 +4668,27 @@ index 0000000..0a6169c
 +fn cstr(b: &[u8]) -> &str {
 +    let n = b.iter().position(|&c| c == 0).unwrap_or(b.len());
 +    core::str::from_utf8(&b[..n]).unwrap_or("?")
++}
++
++/// A saved repeater's candidate gets the table's call (bench 6/7: 440.850 listed under the rule
++/// with no call, so no check mark, and the listener went to it again). Once each, inside ctx_on.
++fn known_calls() {
++    let t = st();
++    if t.rt_res < 0 {
++        return;
++    }
++    for i in 0..t.ex.n as usize {
++        let c = unsafe { &mut *t.ex.c.add(i) };
++        if c.flags & EX_F_KNOWN == 0 || c.flags & EX_F_LOOKED != 0 || c.call[0] != 0 {
++            continue;
++        }
++        c.flags |= EX_F_LOOKED;
++        let mut r: RtRec = unsafe { core::mem::zeroed() };
++        if unsafe { ffi::rt_find(&mut t.rt, 0, c.hz, RT_TOL_HZ, &mut r) } >= 0 && r.call[0] != 0 {
++            c.call = r.call;
++            unsafe { ffi::ex_grade(c) };
++        }
++    }
 +}
 +
 +fn cand(i: u32) -> Option<&'static mut Cand> {
@@ -4821,6 +4846,7 @@ index 0000000..0a6169c
 +                unsafe { ffi::xs_resume(t.xs) };
 +            }
 +            let key = unsafe { ffi::xs_step(t.xs) } == XS_KEY;
++            known_calls();
 +            ctx_off();
 +            // a row can fold away (it turned out a skirt): keep the selection on the list
 +            let n = unsafe { ffi::ex_view_n(&t.ex) };

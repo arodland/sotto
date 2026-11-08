@@ -44,7 +44,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
     assert und == [], und
     size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
     text, data, bss = (int(x) for x in size.split()[:3])
-    assert text < 2688 and data == 0 and bss == 0   # 2602 with ex_unknow (2026-11-07)
+    assert text < 2816 and data == 0 and bss == 0   # 2690 with the stale rule (2026-11-08)
 
 
 def test_a_repeater_output_grades_up_with_its_cw_id(lib):
@@ -228,6 +228,31 @@ def test_a_strong_carrier_s_skirts_are_marked(lib):
     while (p := lib.ex_view(ctypes.byref(x.e), len(view))):
         view.append(p.contents.hz)
     assert view == [440_850_000, 440_900_000] and lib.ex_view_n(ctypes.byref(x.e)) == 2, view
+
+
+def test_a_stale_one_over_leaves_the_screen_list(lib):
+    """bench 7 (2026-11-08 01:29): a low floor read made 35 one-over '?' rows of noise that never
+    came back. After EX_STALE_MS (10 min) of other overs and nothing from them, the screen list
+    leaves them out; the ranking (and the serial dump) keeps them, and another over brings one back"""
+    x = kx.Explorer(lib)
+    x.over(443_100_000, 0, 3000, -104)                      # noise, once
+    x.over(443_525_000, 0, 5000, -93)                       # a repeater, twice
+    x.over(443_525_000, 60_000, 5000, -93)
+
+    def view():
+        out = []
+        while (p := lib.ex_view(ctypes.byref(x.e), len(out))):
+            out.append(p.contents.hz)
+        assert lib.ex_view_n(ctypes.byref(x.e)) == len(out)
+        return out
+
+    x.over(440_850_000, 9 * MIN, 8000, -20)                 # 9 min on: still listed
+    assert 443_100_000 in view()
+    x.over(440_850_000, 11 * MIN, 8000, -20)                # past 10 min: off the screen
+    assert 443_100_000 not in view() and 443_525_000 in view()
+    assert 443_100_000 in [c.hz for c in x.ranked()]
+    x.over(443_100_000, 12 * MIN, 3000, -104)               # heard again: back
+    assert 443_100_000 in view()
 
 
 def test_the_70cm_raster(lib):
