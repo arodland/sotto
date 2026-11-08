@@ -501,7 +501,14 @@ with the ring full sends the oldest byte itself; `flush()` before a reset), the 
 excess over that, 8 ms at the worst seen, against a 107 ms preamble), and the yield looks at the
 chip every 6 ms (the FIFO's almost-full comes 36 ms before it overflows). About 45 ms a packet
 back against a deficit of about 40. Hiss image: flash 121588 (1292 free), static RAM 13556, boot
-stack 476 B to spare. The retest on 717f40d is below when it is in.
+stack 476 B to spare.
+
+**Streams clean (717f40d, 00:30 UTC, cable in).** Lynden 1200, 600 and 400 with stream mode on at
+depth 8: `under=0` on all three (39 / 24 / 0 on a65f7e6), bit-exact, `late=0`, every packet
+received (18/18 at 1200, so the shorter hold lost none), `dec_mean` 17.5-17.7 ms (0.9 ms a frame
+back from the yield cadence), worst 33.8. The serial log came through whole, 61 lines, none split.
+`ram_free` while playing 332-500 B (860-1124 on a65f7e6: the 512 B ring). Jeff's listening pass
+with the cable out follows.
 
 **On the bench.** Encode a 16 kHz clip with `c/sotto_enc -16 -600 in.raw out.sot` (also `-1200`,
 `-400`; `make -C c sotto_enc`, VARIANT v3.8), send it with `python -m modem.k6 send ... --codec 600`,
