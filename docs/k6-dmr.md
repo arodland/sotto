@@ -131,8 +131,8 @@ On the emulated Cortex-M0 (`tests/k6_live_emu.py`'s CPU and DMA model, calibrate
   carrier, inside the 150 ms hold, so the speaker never opened. No samples lost, CPU idle
   54-58% (busy 42-46%), the DMA rate tracked to 5490 kS/s.
 - **FM voice:** no DMR, the audio opened after 150 ms, one `c` line with `h=0`.
-- **Size:** 3028 bytes of code. With the 24-byte header and tag, the 512-byte ring and the
-  428-byte state, that's 3992 of the store's 4096 bytes. The ring is 512 bytes (93 us) rather
+- **Size:** 3044 bytes of code. With the 24-byte header and tag, the 512-byte ring and the
+  432-byte state, that's 4012 of the store's 4096 bytes. The ring is 512 bytes (93 us) rather
   than gp0dma's 1 KB because the module needs the room. That's why it checks keys with
   `key_poll` (5 us) rather than `key_down` (60 us), and makes only one FD6818 call at a time
   between drains. Getting it to fit cost the screen (the WSPR modules' level 6 calls) and
@@ -196,6 +196,54 @@ stands in for the discriminator):
 So the sync shape, timing and framing hold on the real repeater, through a 2.5 kHz audio path
 that's worse than the K6's IF. What's still untested is the K6's own GP0 discriminator on a real
 DMR carrier: that's the bench run.
+
+## On the K6 (2026-11-08)
+
+Two receive-only runs of CI's `mod-dmrdet.bin` (3116 B with header, from main f56f0a0) on
+440.925, the IC-7100 sending the upload on 440.850:
+
+- **Run 1 (05:08:55Z, no cable, speaker on):** Jeff heard a DMR transmission start as a short
+  buzz, then a prompt mute, at about 05:17:40, and the analog side otherwise behaved. The report
+  went out on 440.850 (Jeff saw the TX LED on time) but the IC-7100 was back on 440.850 about
+  5 s too late: the K6 starts a module as soon as it has the last new chunk, ~17 s before the
+  upload audio ends, so the hamlet side now returns 35 s earlier. No log from this run.
+- **Run 2 (05:39:12Z, cable in, serial log):** a miss. Floor -108 dBm, one 0.5 s carrier at
+  -91 dBm (05:47:15, `c -91 488 h=0`): not one sync hit, yet the IC-7100's recording of it holds
+  16 BS syncs one slot apart at rho 0.97 (`audio` mode, 15 confirmations from 1.24 s). One stray
+  hit early on never confirmed, `lost=0` every minute, `ks=5374` (the real DMA rate, 2% under
+  the model's 5490; a 2% grid error would cost the confirmations, not the hits, so it isn't the
+  rate). 17 dB over the floor is about 58 dB-Hz, where the model finds every sync. So the K6's
+  own IF path doesn't look like the model on real DMR, and the mute Jeff heard in run 1 is
+  unconfirmed (the IC-7100's copy of 05:17:40 is bare hiss).
+- **CPU idle:** the run printed `idle=286` and then 1-2%, which was a reporting bug: the idle
+  and window sums were in 96 MHz cycles and wrap a u32 every 44.7 s, so a 60 s window can't be
+  measured. Unwrapping the numbers gives about 73% idle in the first minute and 75% after that,
+  better than the emulator's 54-58% (its CPI 1.5 is pessimistic). The module now sums both in
+  256-cycle units.
+- **Run time:** the firmware's `K6 MOD ret=0 in 3766 ms` is also wrong (600 s ran). Its
+  module clock only advances when the module calls into the firmware's tick (delays, TX
+  guard), and the 100 us counter wraps every 6.5 s between calls; dmrdet only polls keys and
+  RSSI. Cosmetic, firmware side.
+- **The short buzz:** the speaker opens 150 ms after the carrier (`HOLD_MS`), and a confirm
+  needs two syncs a whole number of slots apart. On a repeater that is keying up from idle the
+  second sync can come later than 150 ms. If that buzz is common, raise `HOLD_MS` (FM pays it
+  as opening delay) or open on a single strong sync's absence for 2 slots.
+
+### Next: capture what the K6 hears
+
+`c/k6/mod/dmrcap.c` (level 2, receive only, 2196 bytes) listens on 440.925 and, each time the
+RSSI rises 8 dB over the floor, records up to three 38 ms stretches of the raw IF counts (on
+the stack, the first within ~5 ms of the carrier) and dumps them over the cable in gp0cap's
+format, plus one no-carrier reference. A repeater with both slots going has a sync every
+30 ms, so each capture holds a whole one. `python3 -m sim.k6if.dmr cap LOG` runs the detector
+on every capture and prints the IF offset, the best sync of each family with and without the
+spread gate, and the measured +-3 deviation, which is what tells the candidates apart: the
+spread gate (deviation scale through the FD6818's wide filter), the IF filter's ISI at 4800
+baud, the AFC or AGC moving at a burst's start, or something in the GP0 path. On the emulator
+with modelled idle bursts it reads rho -0.95, sync spread 1783 Hz, +-1692 Hz.
+
+Run it with the cable in (`tools/k6_upload.py mod-dmrcap.bin --api-level 2 --run-s 620`) while
+440.925 is busy, and record the IC-7100 alongside for ground truth.
 
 ## Bench plan (receive only)
 

@@ -98,12 +98,12 @@ def test_detect_weak_and_off(sigs):
 
 # ---- the module on the emulated M0 ----
 
-def build(defs):
+def build(defs, src=MOD):
     with tempfile.TemporaryDirectory() as d:
         w = os.path.join(d, "w.c")
         with open(w, "w") as f:
             f.writelines(f"#define {k} {v}\n" for k, v in defs)
-            f.write(f'#include "{MOD}"\n')
+            f.write(f'#include "{src}"\n')
         return k6mod.build(w)
 
 
@@ -117,9 +117,9 @@ def stream(s, cn0=60.0, pre_s=0.5, post_s=0.4, seed=1):
     return ib, a, a + len(bits)
 
 
-def emulate(s, run_s=2, **kw):
+def emulate(s, run_s=2, src=MOD, **kw):
     import k6_live_emu as le
-    code, entry = build([("RUN_S", f"{run_s}u"), ("S_MS", "1000u")])
+    code, entry = build([("RUN_S", f"{run_s}u"), ("S_MS", "1000u")], src)
     ib, on, off = stream(s, **kw)
     e = le.Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=len(ib) / fe.FDMA + 0.5)
     # the RSSI follows the carrier: up from `on` to `off` only
@@ -165,6 +165,7 @@ def test_module_mutes_repeater_dmr():
     assert 0x6140 not in writes.get(0x47, []), writes.get(0x47)
     s_lines = [ln for ln in said if ln.startswith("s ")]
     assert s_lines and all(" lost=0 " in ln for ln in s_lines), txt
+    assert all(0 < int(ln.split("idle=")[1].split()[0]) <= 100 for ln in s_lines), txt
     ks = int(s_lines[-1].split("ks=")[1])
     assert abs(ks - fe.FDMA / 1000) < 30, s_lines[-1]
     assert stack < 700, stack
@@ -180,3 +181,26 @@ def test_module_opens_for_fm_voice():
     assert not any(ln.startswith("D on") for ln in said), txt
     assert 0x6140 in writes.get(0x47, []), writes.get(0x47)
     assert any(re.match(r"c -60 \d+ h=0$", ln) for ln in said), txt
+
+
+@need_clang
+def test_capture_module_sees_dmr():
+    """dmrcap (c/k6/mod/dmrcap.c) records the IF when the carrier comes up, and the host's
+    cap_report finds the repeater's sync in every carrier capture (both slots idle, as the
+    real 0.5 s burst at 05:47:15 was: a sync every 30 ms, so every 38 ms capture holds one), through the spread gate,
+    at about +-1944 Hz"""
+    pytest.importorskip("unicorn")
+    sy, _ = dmr.bs_symbols(1.0, ("idle", "idle"), seed=7)
+    s, _ = dmr.dmr_baseband(sy, pre_s=0.0, post_s=0.0)
+    ret, said, _, stack = emulate(s, run_s=3, src=os.path.join(K6, "mod", "dmrcap.c"), post_s=1.0)
+    txt = "\n".join(ln for ln in said if not ln.startswith("y "))
+    caps = dmr.parse_caps(said)
+    car = [c for c in caps if c["pass_"]]
+    assert ret == len(car) >= 2, txt
+    assert caps[0]["pass_"] == 0, txt
+    for c in car:
+        assert len(c["x"]) == 3240 and c["lost"] == 0, txt
+        r = dmr.cap_report(c["x"], c["ks"])
+        assert r["fam"] == "bs" and abs(r["rho"]) >= 0.8 and r["gate_ok"], r
+        assert 1500 < r["plus"] < 2400 and -2400 < r["minus"] < -1500, r
+    assert stack < 3504 + 512, stack

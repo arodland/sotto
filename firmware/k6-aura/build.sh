@@ -236,7 +236,7 @@ fi
 [ -f "$OUT/sotto-vlr.bin" ] && (cd "$OUT" && sha256sum sotto-vlr.bin | tee sotto-vlr.bin.sha256)
 
 # The RAM modules' code (docs/k6-modules.md: hello; settle, cwprobe, cwlisten and i2sprobe, level 2; cwkey and
-# ft8tx, level 3; ifcal, level 4; rxmap, level 2, its parameter block patched by tools/k6_rxmap.py; scan, level 2, by tools/k6_scan.py; hfprobe and bandreg, level 2, by tools/k6_hf.py; dmrdet, level 2, docs/k6-dmr.md), built as
+# ft8tx, level 3; ifcal, level 4; rxmap, level 2, its parameter block patched by tools/k6_rxmap.py; scan, level 2, by tools/k6_scan.py; hfprobe and bandreg, level 2, by tools/k6_hf.py; dmrdet and dmrcap, level 2, docs/k6-dmr.md), built as
 # modem/k6mod.py builds them, for `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...`
 # (`--api-level 2` for the level 2 ones) on a machine without clang. A module
 # that says #define K6_MODULE_OPT z gets -Oz instead of -Os. Linked at two addresses: the
@@ -244,7 +244,7 @@ fi
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -Werror -I$ROOT/c/k6"
 for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep afsweep gp0cap \
-         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t iflive_h1200 iflive_h1350 iflive_h1440 iflive_h1500 iflive_h1600 xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls wsprtx wsprbcn wspriq bandreg ramprobe dmrdet; do
+         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t iflive_h1200 iflive_h1350 iflive_h1440 iflive_h1500 iflive_h1600 xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls wsprtx wsprbcn wspriq bandreg ramprobe dmrdet dmrcap; do
   opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
   clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do

@@ -22,6 +22,10 @@ The detector, as the MCU would run it (c/k6/mod/dmrdet.c):
 
   python3 -m sim.k6if.dmr pd        detection vs C/N0 and false hits on FM voice, noise, pager
   python3 -m sim.k6if.dmr hist      |rho| percentiles for each signal
+  python3 -m sim.k6if.dmr cap LOG...  the detector on the K6's own IF captures (c/k6/mod/dmrcap.c's
+                                    serial lines): per capture the IF offset, the best sync of
+                                    each family with and without the spread gate, and the
+                                    sync's measured +-3 deviation
   python3 -m sim.k6if.dmr audio CLIP.wav...   the detector on a receiver's FM audio (e.g. the
                                     IC-7100's FM-D USB audio, flat to ~2.5 kHz): the audio stands
                                     in for the discriminator, so no spread gate (its scale is
@@ -361,9 +365,70 @@ def cmd_audio(a):
               + f"  gaps(slots)={r['gaps']}")
 
 
+def parse_caps(lines):
+    """dmrcap's (and gp0cap's) serial lines -> [dict(pass_, k, ks, rssi, lost, x)]"""
+    import base64
+    import re
+    caps = {}
+    for ln in lines:
+        m = re.search(r"(?:^|say )c (\d+) (\d+) (\d+) ks=(\d+) r=(-?\d+) t=(\d+) lost=(\d+)", ln)
+        if m:
+            p, _, k, ks, r, _, lost = map(int, m.groups())
+            caps[k] = dict(pass_=p, k=k, ks=ks, rssi=r, lost=lost, data=bytearray())
+            continue
+        m = re.search(r"(?:^|say )y (\d+) ([0-9a-f]{4}) ([A-Za-z0-9+/]+)\s*$", ln)
+        if m:
+            c = caps.get(int(m.group(1)))
+            if c is not None and int(m.group(2), 16) == len(c["data"]):
+                c["data"] += base64.b64decode(m.group(3))
+    out = []
+    for k in sorted(caps):
+        c = caps[k]
+        c["x"] = np.frombuffer(bytes(c.pop("data")), np.int8).astype(float)
+        out.append(c)
+    return out
+
+
+def cap_report(x, ks, sps=2):
+    """one IF capture (counts at ks kS/s / 64) -> a dict: the IF's offset and spread (Hz), and
+    for the family with the best ungated |rho|: rho, the 24 taps' spread there, the mean of
+    the + and - sync positions (Hz from the window's mean: +-1944 nominal) and whether the
+    gate would pass it; the gated hits"""
+    fc = ks * 1000.0 / fe.L
+    ph, _ = phase_grid(x, sps, fc=fc)
+    y = np.nan_to_num(freq(ph, sps))
+    ru, rg = rho(y, sps, gate=False), rho(y, sps, gate=True)
+    span = 23 * sps
+    f = max(FAMS, key=lambda f: np.abs(ru[f][span:]).max())
+    j = span + int(np.argmax(np.abs(ru[f][span:])))
+    w = y[j - span:j + 1:sps]
+    pat = np.array(PAT[f]) * np.sign(ru[f][j])
+    sd = float(np.std(w))
+    return {"if_off": float(np.mean(y[1:])), "y_sd": float(np.std(y[1:])), "fam": f,
+            "rho": float(ru[f][j]), "t_ms": j / (BAUD * sps) * 1e3, "sync_sd": sd,
+            "plus": float(np.mean(w[pat > 0] - w.mean())), "minus": float(np.mean(w[pat < 0] - w.mean())),
+            "gate_ok": SD_LO <= sd <= SD_HI, "hits": hits(rg, 0.8, sps)}
+
+
+def cmd_cap(a):
+    for p in a.files:
+        with open(p, errors="replace") as fh:
+            caps = parse_caps(fh)
+        print(f"{os.path.basename(p)}: {len(caps)} captures")
+        for c in caps:
+            if len(c["x"]) < 500:
+                print(f"  {c['k']:3d}: short ({len(c['x'])} counts)")
+                continue
+            r = cap_report(c["x"], c["ks"], a.sps)
+            print(f"  {c['k']:3d} {'car' if c['pass_'] else 'ref'} r={c['rssi']} ks={c['ks']} lost={c['lost']}"
+                  f"  IF {r['if_off']:+.0f} Hz sd {r['y_sd']:.0f}  best {r['fam']} rho={r['rho']:+.2f}"
+                  f" @{r['t_ms']:.1f} ms  sync sd {r['sync_sd']:.0f} (+{r['plus']:.0f}/{r['minus']:.0f})"
+                  f" gate {'ok' if r['gate_ok'] else 'NO'}  hits={len(r['hits'])}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawTextHelpFormatter)
-    ap.add_argument("cmd", choices=["pd", "hist", "audio"])
+    ap.add_argument("cmd", choices=["pd", "hist", "audio", "cap"])
     ap.add_argument("files", nargs="*")
     ap.add_argument("--sps", type=int, default=2)
     ap.add_argument("--win", type=int, default=1)
@@ -374,7 +439,7 @@ def main():
     ap.add_argument("--off", type=float, default=0.0)
     ap.add_argument("--rate-err", type=float, default=0.0)
     a = ap.parse_args()
-    {"pd": cmd_pd, "hist": cmd_hist, "audio": cmd_audio}[a.cmd](a)
+    {"pd": cmd_pd, "hist": cmd_hist, "audio": cmd_audio, "cap": cmd_cap}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -125,7 +125,8 @@ typedef struct {
   /* the ring */
   uint8_t *ring;
   uint32_t laps, lastw, consumed, p0, t0, cps8, lost, idle, tp;
-  uint32_t thk, rem, ms, win, next_s; /* housekeeping's clock: ms since the start */
+  uint32_t thk, rem, ms, win, iwin, next_s; /* housekeeping's clock: ms since the start; the
+     minute's window and idle time in 256-cycle units (in cycles they wrap at 44.7 s) */
   /* the listener */
   int floor, db, cdb, car, af, dmr, pend, nd;
   int32_t fam, sign;
@@ -195,7 +196,7 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
   char line[64], *p = line;
   uint32_t j = s->d.j, t = s->t, P = s->laps * RSZ + s->lastw, dt = t - s->thk, q;
   int car, af;
-  s->thk = t, s->win += dt;
+  s->thk = t, s->win += dt >> 8, s->iwin += s->idle >> 8, s->idle = 0;
   q = ds_udiv(dt + s->rem, 96000u);
   s->rem = dt + s->rem - q * 96000u;
   s->ms += q;
@@ -230,9 +231,9 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
     s->next_s += S_MS;
     p = kv(kv(line, "s ", (int)ds_udiv(s->ms, 1000u)), " h=", (int)s->hits);
     p = kv(kv(p, " lost=", (int)s->lost), " idle=",
-           (int)ds_udiv((s->idle >> 8) * 100u, (s->win >> 8) + 1u));
+           (int)ds_udiv(s->iwin * 100u, s->win + 1u));
     p = kv(p, " ks=", (int)ds_udiv(96000u * 256u, s->cps8));
-    s->idle = s->win = 0;
+    s->iwin = s->win = 0;
   }
   af = s->car && !s->dmr && j - s->car_j >= HOLD_MS * 96u / 10u;
   if (af != s->af) s->af = af, api->fd_write(0x47, af ? AF_FM : AF_MUTE);
