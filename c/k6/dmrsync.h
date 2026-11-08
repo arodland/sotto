@@ -3,6 +3,10 @@
    check (c/k6/dmrsync_host.c): header-only, no statics, no division but ds_udiv, no 64-bit.
 
      counts (2 * ones - 64 at the DMA's rate / 64, ~85.8 kHz)
+       -> a band-pass around the IF (a 2nd-order Butterworth biquad, 10.4-23.4 kHz at
+          85.8 kHz, Q14 coefficients, out in Q8 counts): the sigma-delta's own noise above the
+          band otherwise makes extra crossings (on the bench, real DMR at -86 dBm: |rho| 0.7-0.8
+          from bare crossings, 0.95-0.99 band-passed; on the model it buys ~3 dB)
        -> rising zero crossings, interpolated (Q16 counts)
        -> the IF's phase (Q12 cycles) at a grid of 9600 points a second (2 a DMR symbol), the
           grid's step in counts set from the DMA's measured rate (ds_rate)
@@ -33,6 +37,11 @@
 /* the spread gate, Q11 units (4.6875 Hz): D = 576 var. 1300 Hz -> 277.3, 2600 -> 554.7 */
 #define DS_D_LO 44300000u
 #define DS_D_HI 177200000u
+/* the band-pass: y = (B0 (x - x2) 256 - A1 y1 - A2 y2) >> 14, scipy's butter(1, [FIF -+ 6500],
+   'bandpass', fs=85.8 kHz) = b0 0.3402, a1 -0.4824, a2 0.3196 */
+#define DS_BP_B0 5574
+#define DS_BP_A1 (-7904)
+#define DS_BP_A2 5235
 #ifndef DS_THR_K16
 #define DS_THR_K16 41943u       /* thr^2 in Q16: thr 0.80 */
 #endif
@@ -47,8 +56,10 @@ static const uint32_t DS_PAT[DS_NFAM] = {
 enum { DS_NONE = 0, DS_HIT = 1, DS_CONF = 2 };
 
 typedef struct {
+  /* the band-pass's last two counts in and out (out in Q8) */
+  int32_t x1, x2, y1, y2;
   /* crossings */
-  int32_t prev;                 /* the last count */
+  int32_t prev;                 /* the last band-passed count, Q8 */
   uint32_t n;                   /* counts so far (Q16 times are n << 16, wrapping) */
   uint32_t tl;                  /* the last crossing, Q16 counts */
   uint32_t k;                   /* crossings so far (whole cycles, Q12 below) */
@@ -171,6 +182,10 @@ __attribute__((noinline)) static int ds_grid(ds_t *d, int32_t y) {
    DS_NONE) */
 __attribute__((noinline)) static int ds_count(ds_t *d, int32_t x) {
   int ret = DS_NONE;
+  {
+    int32_t v = (DS_BP_B0 * ((x - d->x2) << 8) - DS_BP_A1 * d->y1 - DS_BP_A2 * d->y2) >> 14;
+    d->x2 = d->x1, d->x1 = x, d->y2 = d->y1, d->y1 = v, x = v;
+  }
   if (d->prev < 0 && x >= 0) {
     uint32_t t = ((d->n - 1u) << 16) + ds_udiv((uint32_t)(-d->prev) << 16, (uint32_t)(x - d->prev));
     uint32_t dt = t - d->tl;
