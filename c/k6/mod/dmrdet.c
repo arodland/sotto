@@ -28,8 +28,9 @@
    Writes REG_33 bit 8, REG_34[3:0] (GP0 code 13), REG_47, REG_7E and REG_13, GPIOB bit 2, the
    MCU's TIM17 and DMA channel 1 (as gp0dma: Jeff OK'd them, 2026-11-06), all put back. No TX.
    Returns the DMR detections, or -3 (old image), -4 (PB1 not an input), -5 (REG_33 refused),
-   -6 (dmrrx: under 512 B of scratch for the decoder's filter ring; with 2,720 B the DMA ring and
-   the decoder's state go there too, else on the stack).
+   -6 (dmrrx: under 512 B of scratch for the decoder's filter ring; the decoder's state and the
+   DMA ring go there too as far as the scratch goes, else on the stack). dmrrx's lines end in
+   " @" and the time since it started in tenths of a second.
    SPDX-License-Identifier: MIT */
 #ifndef K6_MODULE_LEVEL
 #define K6_MODULE_LEVEL 2
@@ -313,6 +314,7 @@ COLD static int housekeeping(const k6_api_t *api, st_t *s) {
   if (af != s->af) s->af = af, api->fd_write(0x47, af ? AF_FM : AF_MUTE);
 #ifdef DMR_DECODE
   if (dx_lcd(api, s->x) && p == line) resync(s);
+  if (p != line && p - line < 52) p = kv(p, " @", (int)ds_udiv(s->ms, 100u));  /* 0.1 s since start */
 #endif
   if (p != line) {
     say(api, line, p);

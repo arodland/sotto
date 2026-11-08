@@ -267,3 +267,42 @@ def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
     assert stack < max_stack, stack
     lost = [int(ln.split("lost=")[1].split()[0]) for ln in e.said if ln.startswith("s ")]
     assert lost and lost[-1] <= 8, txt           # the DMA ring outran: only by housekeeping's lines
+
+
+def test_dmrscore_against_a_key(tmp_path):
+    """tools/k6_dmrscore.py: the K6's lines lined up with the answer key by themselves, a
+    right call, a missed one, a wrong line, a stray one, a data header, the alias"""
+    import json
+    import subprocess
+    t0 = 1794189600.0                                       # 2026-11-09T05:20:00Z
+    iso = lambda t: __import__("datetime").datetime.fromtimestamp(t, __import__("datetime").timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    key = [dict(file="a.wav", kind="call", at=iso(t0 + 10), dur=4.0, slot=1, alias="AG7EW TEST",
+                lc=dict(flco=0, fid=16, dst=3027, src=3025107), combined=None),
+           dict(file="a.wav", kind="call", at=iso(t0 + 30), dur=3.0, slot=1, alias=None,
+                lc=dict(flco=0, fid=16, dst=3027, src=3027436), combined=None),
+           dict(file="b.wav", kind="call", at=iso(t0 + 60), dur=5.0, slot=2, alias=None,
+                lc=dict(flco=0, fid=16, dst=91, src=1234567), combined=None),
+           dict(file="b.wav", kind="data", at=iso(t0 + 80), slot=1, crc=True, payload="",
+                hdr=dict(dst=311999, src=3027436))]
+    (tmp_path / "key.jsonl").write_text("".join(json.dumps(e) + "\n" for e in key))
+    start = t0 + 3.2                                        # the module started 3.2 s in
+    at = lambda t: f" @{round((t - start) * 10)}"
+    hdr = "02" + "30" + "04c2bf" + "2e31ec" + "08" + "00"   # DPF 2, SAP 3, 311999 <- 3027436
+    log = [f"05:20:03 dmr start f=440925000 floor=-121",
+           f"05:20:10 L TS1 CC1 TG 3027 src 3025107 F0{at(t0 + 10.3)}",
+           f"05:20:12 A AG7EW TEST{at(t0 + 12.0)}",
+           f"05:20:13 E TS1 TG 3027 src 3025107{at(t0 + 13.1)}",
+           f"05:20:31 L TS1 CC1 TG 3027 src 3025107 F0{at(t0 + 31.0)}",   # wrong: src 3027436
+           f"05:20:31 L TS1 CC1 TG 3027 src 3027436 F0{at(t0 + 31.2)}",
+           f"05:20:45 L TS2 CC1 TG 9 src 7 F0{at(t0 + 45.0)}",             # stray
+           f"05:21:20 H TS1 {hdr}{at(t0 + 80.4)}"]
+    (tmp_path / "k6.log").write_text("\n".join(log) + "\n")
+    tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools", "k6_dmrscore.py")
+    out = subprocess.run([sys.executable, tool, "--key", str(tmp_path / "key.jsonl"), "--log",
+                          str(tmp_path / "k6.log"), "--json"], capture_output=True, text=True, check=True).stdout
+    r = json.loads(out)
+    assert abs(__import__("datetime").datetime.fromisoformat(r["start"].replace("Z", "+00:00")).timestamp() - start) < 0.6, r
+    assert (r["calls"], r["named"], r["right"], r["wrong"], r["stray"]) == (3, 2, 2, 1, 1), r
+    assert (r["data"], r["data_hit"], r["alias"], r["alias_hit"]) == (1, 1, 1, 1), r
+    assert len(r["miss"]) == 1 and "TG 91" in r["miss"][0], r
+

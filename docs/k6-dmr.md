@@ -200,38 +200,72 @@ not fit the M0 anyway.
 - dmrsync.h's 2-point-a-symbol grid feeds a 13-tap RRC whose output is kept in an 8-bit ring of
   512 in the module's scratch.
 - At each sync hit, the burst is read back:
-  - The timing is found again to a quarter grid point on the filtered sync, with Catmull-Rom
-    between points. At 2 points a symbol, the nearest point alone left 1-2 bit errors a burst
-    at any level.
+  - The timing is found again to a quarter grid point on the filtered sync: the correlation at
+    the 5 whole grid points around the hit, then a parabola through the peak, rounded to a
+    quarter by comparisons. Reading between grid points uses Catmull-Rom. At 2 points a
+    symbol, the nearest point alone left 1-2 bit errors a burst at any level.
   - The burst is scaled by its own sync.
-  - The slot type is read first. The whole burst is sliced only for headers, terminators,
-    CSBKs and data headers.
-- Voice bursts B-E are read at A + 576 k grid points.
+  - The slot type and the CACH's TACT are read first. The rest of a header, terminator, CSBK
+    or data header is sliced on the next poll, so the DMA ring drains between the two.
+- Slot: every burst's TACT counts, voice included. Hamming (7,4) fixes one bit, and a fixed
+  TACT is kept only if it agrees with the slots' alternation (every 288 grid points). A burst
+  whose own TACT failed takes its slot from the last good one.
+- Voice bursts B-E are read at A + 576 k grid points. A flywheel reads the next superframe
+  360 ms on when its sync is missed (two in a row at most). Once a chain has passed an EMB
+  check, voice hits off its beat are dropped: false hits had started chains of their own.
+- Embedded LC: the four fragments are kept as soft bits, and taken when at least 2 of the 4
+  EMBs check out. One row with two errors is fixed from the columns whose parity fails. A
+  fragment set that fails alone is added to the last superframe's, then the one before (talker
+  alias LCs come between the call's LC), then both: a call's LC is the same each superframe.
 - The grid's step locks to DMR's 30 ms slots. The DMA's measured rate is only good to ~2%,
   which over a superframe is 10 symbols.
 - The grid index counts across pauses (`ds_skip`, laps from the clock), so bursts can still be
   predicted by it.
-- On the K6 model (`tests/test_k6_dmrdec.py`), the host build decodes a call's LC, all 24 EMBs
-  and the alias at 52 dB-Hz, and the LC down to 48 dB-Hz. The emulated module shows them on the
-  serial line and the screen.
+- Every line ends in ` @` and the module's time in tenths of a second, for
+  `tools/k6_dmrscore.py`.
+
+On the K6 model (`tests/test_k6_dmrdec.py`), 10 calls of 6 superframes for each level. The
+"before" column is the decoder as first pushed:
+
+| | before | now |
+|---|---|---|
+| 52 dB-Hz, embedded LC / full alias | 49 of 60 / 5 of 10 | 56 / 9 |
+| 50 dB-Hz, embedded LC / full alias | 22 / 0 | 44 / 4 |
+| 48 dB-Hz, voice mid bursts read / embedded LC | 146 of 240 / 1 | 188 / 11 |
+| 48 dB-Hz, no alias (as on 440.925), embedded LC | 1 | 31 |
+
+No run gave a wrong talkgroup, source or alias. The LC header itself (soft-combined) decodes in
+every call down to 48 dB-Hz.
+
+- **The DMA ring:** the emulated call lost the ring 34 times in 2 s. A gap trace (the DMA
+  counter's reads, and what ran between them) put 45 of the 62 long gaps in the old quarter-step
+  sync search. With the parabola, one alignment a poll, Hamming fixes found from the masks'
+  columns, and BPTC stopping after a clean pass, it loses 3, all in housekeeping (the status
+  line and an LC decode). dmrdet alone loses none.
 
 | | |
 |---|---|
-| Code | 8.6 KB, so only images with the shared module block of the SPI voice images (9,760 B, or 11,776 B from PR #146); not EXPLORE or the lean images |
-| Scratch, 11,776 B block | 2,720 B: the filter's 512-byte ring, the 1 KB DMA ring and the decoder's 1,184-byte state (3,156 B free) |
-| Stack, 11,776 B block | ~1.6 KB (emulated 1,560 B) |
-| Scratch and stack, 9,760 B block | the filter ring in scratch (1,140 B free); the DMA ring and the decoder on the stack, ~3.8 KB |
+| Code | 9.4 KB, so only the SPI voice images' 11,776-byte shared module block (PR #146); not EXPLORE or the lean images |
+| Scratch | the filter's 512-byte ring and the decoder's 1,296-byte state; the 1 KB DMA ring too where there is room |
+| Stack | ~2.6 KB with the DMA ring on it (emulated 2,580 B), ~1.6 KB without |
 
-Serial lines, besides dmrdet's (the summary line gains `L=` and `E=` counts):
+Serial lines, besides dmrdet's (the summary line gains `L=` and `E=` counts, and every line ends
+in ` @` and tenths of a second since the start):
 
-    L TS1 CC1 TG 3027 src 3025107 F0     voice LC header or terminator (comb N: only the soft sum decoded)
-    E TS1 TG 3027 src 3025107            embedded LC, when it says something new (late entry)
-    A AG7EW TEST                         talker alias so far
-    K TS1 bd00800104c2bf301cd5           a CSBK that passed its CRC (here a preamble)
-    H TS1 ...                            a data header
+    L TS1 CC1 TG 3027 src 3025107 F0 @52     voice LC header or terminator (comb N: only the soft sum decoded)
+    E TS1 TG 3027 src 3025107 @131           embedded LC, when it says something new (late entry)
+    A AG7EW TEST @120                        talker alias so far
+    K TS1 bd00800104c2bf301cd5 @803          a CSBK that passed its CRC (here a preamble)
+    H TS1 ... @804                           a data header
 
 The screen (level 6) shows "DMR CC1 TS1", "TG 3027", "ID 3025107" and the alias. Not yet on the
 radio.
+
+**Scoring a bench run.** On hamlet, `tools/k6_dmrwatch.py` turns the IC-7100's 440.925
+recordings into the answer key. `tools/k6_dmrscore.py --key KEY.jsonl --log K6.log` then lines
+the K6's serial lines up with it: it finds the module's start from the talkgroup lines
+themselves, or takes `--start`. It counts calls named and named right, wrong and stray lines,
+data headers, and full aliases. It prints no payloads, which may hold people's positions.
 
 ## Real DMR from 440.925 (IC-7100 audio, 2026-11-08)
 
