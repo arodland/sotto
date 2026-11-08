@@ -217,6 +217,19 @@ no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated 
 - **The module is trusted code once it runs.** The M0 has no MPU and Aura has no watchdog
   yet, so a bad module can hang the radio until a power cycle. Recovery is the usual one:
   power off and on, or reflash.
+- **A stack overrun can leave the transmitter keyed** (2026-11-08 16:53-17:09Z). dmrrx returned
+  with `stack_free=0` on the vlrh image (3,112 B of stack): the overrun had written over RAM
+  below the stack, the core's ARQ report then printed a garbage status (`xfer=243
+  have=109/110`), keyed up on 440.850 at Low power and hung before its first packet. A bare
+  carrier stayed up for about 16 minutes, with no K6 ID, until Jeff switched the radio off. A
+  HardFault on this MCU lands in the bootloader's `b .` (its vector table at 0x08000000 is the
+  one in use: no VTOR, no SRAM remap), so no handler of Aura's runs. Since then the core reboots
+  instead when a module returns with under 64 B of stack never touched (`K6 RAM stack ran out`),
+  checks the same before an ARQ key-up, and won't key up on a status with `have > count`. A
+  module must show real headroom in the emulator (about 512 B or more at its deepest) with the
+  stack the target image gives it before it goes on air. A backstop for faults and hangs during a
+  key-up (an SRAM-remapped vector table with a HardFault handler that resets, and a SysTick
+  deadline on key-ups) is the next step.
 - **Part 97.** The code goes out in the clear and this format is published; the tag only
   proves who sent it.
 

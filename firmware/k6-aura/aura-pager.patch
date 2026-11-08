@@ -255,10 +255,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..5716e7e
+index 0000000..e468e36
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,4098 @@
+@@ -0,0 +1,4124 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -1887,6 +1887,25 @@ index 0000000..5716e7e
 +    });
 +}
 +
++/// The stack reached (or passed) the bottom of free RAM: whatever lies below it, the App's statics
++/// and the arena, may be overwritten, so nothing that trusts them may run, above all a key-up.
++/// 2026-11-08 16:53Z: dmrrx returned with stack_free=0, the ARQ report that followed printed
++/// garbage and the K6 hung with its transmitter keyed on 440.850 until Jeff switched it off. A
++/// reset puts the radio right: boot soft-resets the FD6818 (transmitter off) before anything else.
++const RAM_MIN_FREE: u32 = 64;
++
++fn ram_check(sfree: u32) {
++    if sfree >= RAM_MIN_FREE {
++        return;
++    }
++    report_line(format_args!("K6 RAM stack ran out (free={} B): rebooting, no report, no key-up", sfree));
++    crate::hal::uart::flush();
++    for _ in 0..200_000 {
++        cortex_m::asm::nop();
++    }
++    cortex_m::peripheral::SCB::sys_reset();
++}
++
 +fn free_ram() -> u32 {
 +    let start = (addr_of!(__sheap) as usize + 3) & !3;
 +    let sp = cortex_m::register::msp::read() as usize;
@@ -3053,6 +3072,7 @@ index 0000000..5716e7e
 +        // free_ram: the stack never reached since VOICE MSG was entered (painted then)
 +        let sfree = free_ram();
 +        report_line(format_args!("K6 MOD ret={} ({:#x}) in {} ms stack_free={} B", ret, ret, ms, sfree));
++        ram_check(sfree);
 +        #[cfg(not(feature = "lean"))]
 +        if st.reply != 0 {
 +            arq_owe(KM_ST_RAN, ret, ms, sfree.min(0xFFFF) as u16);
@@ -4011,8 +4031,14 @@ index 0000000..5716e7e
 +        report_line(format_args!("K6 ARQ no report: on {} Hz; reports go on 440.850 MHz only", hz));
 +        return;
 +    }
-+    arq().sent += 1;
++    // never key up on RAM a stack overrun may have trashed, nor on a status that can't be true
++    ram_check(free_ram());
 +    let st = unsafe { &*ffi::km_status() };
++    if st.have > st.count {
++        report_line(format_args!("K6 ARQ no report: status corrupt (have={}/{})", st.have, st.count));
++        return;
++    }
++    arq().sent += 1;
 +    let state = if kind == 1 { KM_ST_PARTWAY } else { arq().state };
 +    let cap = (st.tlm as usize * KM_TLM_PART).min(arena::TLM_BYTES - TLM_HDR);
 +    let tlen = if kind == 2 && state == KM_ST_RAN && cap > 0 { tlm_len() } else { 0 };
