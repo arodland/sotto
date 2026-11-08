@@ -3,6 +3,7 @@
    372-405 bins/s (docs/k6-scan.md); the comments there explain each rule.
    SPDX-License-Identifier: MIT */
 #include "xscan.h"
+#include "tonedet.h"
 
 #define FLMAX 1024
 #define CLEAR_DBM (-100)
@@ -274,6 +275,52 @@ static void revisit(xs_t *s) {
   s->rev = api->ms();
 }
 
+/* The peek (xs_tone): one up carrier with no call, in turn, gets peek_ms of the tone detector,
+   polled every 2 ms. Keyed = a tone in 3 polls and none in 3 (a steady tone, like a long
+   courtesy beep, isn't an ID). */
+#define XS_PEEK_EVERY_MS 400u
+#define XS_PEEK_POLLS 3
+static void peek(xs_t *s) {
+  const k6_api_t *api = s->api;
+  xs_hot_t *h = 0;
+  uint32_t t0;
+  int i, on = 0, off = 0;
+  char *p;
+  if (!s->peek_ms || s->tone_hz || api->ms() - s->peek_t < XS_PEEK_EVERY_MS) return;
+  s->peek_t = api->ms();
+  for (i = 0; i < XS_HOT && !h; i++) {
+    xs_hot_t *c;
+    if (++s->peek_i >= XS_HOT) s->peek_i = 0;
+    c = &s->hot[s->peek_i];
+    if (c->hz && c->up && !c->spur) {
+      const ex_cand_t *e = s->ex ? ex_find(s->ex, c->hz) : 0;
+      if (!e || (!e->call[0] && !(e->flags & (EX_F_IGNORED | EX_F_SPUR)))) h = c;
+    }
+  }
+  if (!h) return;
+  api->tune(h->hz, s->wide);
+  td_on(api);
+  api->delay_us(s->quick_us);
+  t0 = api->ms();
+  while (api->ms() - t0 < s->peek_ms) {
+    if (td_read(api) & TD_ON) on++;
+    else off++;
+    api->delay_us(2000);
+  }
+  td_off(api);
+  if (on >= XS_PEEK_POLLS && off >= XS_PEEK_POLLS) {
+    s->tone_hz = h->hz;
+    p = num(fq(s->line, "K ", h->hz), " ", on, 0);
+    say(s, num(p, "/", on + off, 0));
+  }
+}
+
+uint32_t xs_tone(xs_t *s, unsigned peek_ms) {
+  uint32_t hz = s->tone_hz;
+  s->peek_ms = (uint16_t)peek_ms, s->tone_hz = 0;
+  return hz;
+}
+
 /* segment g's floors: full and quick reads on 8 of its bins, off the round frequencies (one
    segment a step: about 130 ms). Each quick read is one bin over a full read's settled tune, as in
    the sweep: straight after the 1/8-segment hop it read 40 dB low on air (q-134, bench 3). */
@@ -439,7 +486,7 @@ int xs_step(xs_t *s) {
   G = &s->seg[s->g];
   fl = s->fl + s->base;
   n = G->nbins, step = G->step_hz;
-  if (api->ms() - s->rev >= s->hot_ms) revisit(s);
+  if (api->ms() - s->rev >= s->hot_ms) revisit(s), peek(s);
   end = s->b + XS_BLOCK;
   if (end > n) end = n;
   for (; s->b < end; s->b++, s->hz += step) {

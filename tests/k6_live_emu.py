@@ -80,7 +80,7 @@ def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=
 
 class Emu:
     def __init__(self, code, entry, ib, on_at, fdma, cpi=1.5, max_s=None, key_us=60, stall=None,
-                 wobble=None, flash_cpi=None):
+                 wobble=None, flash_cpi=None, level=4):
         import unicorn
         from unicorn import arm_const as A
         self.U, self.A = unicorn, A
@@ -98,6 +98,7 @@ class Emu:
         self.cyc = 0.0
         self.spos, self.nread, self.bp = 0.0, 0, [(0.0, 0.0)]
         self.said, self.writes, self.reg = [], {}, {}
+        self.led = []                                # level 7: (ms, on) for each api->led call
         self.dma_on, self.dma_t0, self.dma_s0, self.made = False, 0.0, 0, 0
         mu = self.mu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_THUMB | unicorn.UC_MODE_MCLASS)
         mu.ctl_set_cpu_model(A.UC_CPU_ARM_CORTEX_M0)
@@ -110,11 +111,12 @@ class Emu:
         mu.mem_write(self.stack_lo - 512, b"\xa5" * (3504 + 512))
         self.names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms",
                       "key_down", "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read",
-                      "cal_write"]
+                      "cal_write", "fl_read", "fl_prog", "fl_erase", "lcd_text", "lcd_bar", "lcd_wf",
+                      "lcd_flush", "led"]
         for i in range(len(self.names)):
             mu.mem_write(self.stubs + 16 * i, b"\x70\x47")
         mu.mem_write(self.stop, b"\x00\xbf" * 8)
-        mu.mem_write(self.api, (1).to_bytes(2, "little") + (4).to_bytes(2, "little")
+        mu.mem_write(self.api, (1).to_bytes(2, "little") + int(level).to_bytes(2, "little")
                      + b"".join((self.stubs + 16 * i | 1).to_bytes(4, "little")
                                 for i in range(len(self.names))))
         mu.hook_add(unicorn.UC_HOOK_CODE, self.on_stub, begin=self.stubs,
@@ -231,8 +233,11 @@ class Emu:
             self.keys += 1
             if self.stall and self.keys % self.stall[0] == 0:
                 us = self.stall[1]
-        elif name in ("tx_on", "tx_pa", "cal_read", "cal_write"):
+        elif name in ("tx_on", "tx_pa", "cal_read", "cal_write", "fl_read", "fl_prog", "fl_erase",
+                      "lcd_flush"):
             ret = -1                                 # refused: receive-only tests
+        elif name == "led":
+            self.led.append((self.cyc / 96000, r0))  # a GPIO write on the radio
         elif name == "scratch":
             if r0:
                 uc.mem_write(r0, (4096).to_bytes(4, "little"))
@@ -287,11 +292,12 @@ IFPAGER = os.path.join(ROOT, "c", "k6", "mod", "ifpager_emu.c")
 
 
 def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma=None, stall=None,
-                pre_s=0.3, after_s=0.5, flash_cpi=None, flags=0):
+                pre_s=0.3, after_s=0.5, flash_cpi=None, flags=0, api_level=4, leds=None):
     """the pager's coded 4FSK session (c/k6/ifpager.c, in the test module ifpager_emu.c) against
     a modelled burst of these XL payloads (modem/k6g.py), the carrier already up when it starts
     (as after the control packet): -> (return value, its lines, stack bytes used, the packets
-    it handed to sp_packet)"""
+    it handed to sp_packet). api_level: the API level the table says (7 has the LED); leds: a list
+    that gets the session's LED calls, (ms, on)"""
     from modem import k6g
     from sim.k6if import mcu, study as st
     code, entry = k6mod.build(IFPAGER)
@@ -302,11 +308,13 @@ def run_ifpager(payloads, cn0=50.0, f_off=0.0, level=0.12, cpi=1.5, seed=1, fdma
     bits = st.fe.receive(s, st.FZ, cn0, seed=seed, L=0, fdma=fdma)
     ib = bits.astype(np.uint8) * 2
     e = Emu(code, entry, ib, 0, fdma, cpi, stall=stall, max_s=len(ib) / fdma + 8.0,
-            flash_cpi=flash_cpi)
+            flash_cpi=flash_cpi, level=api_level)
     # the flags (1 rate 2/3, 2 no decoding, 4 rate 3/4) for ifpager_emu.c, then its sp_packet yield's slots
     e.mu.mem_write(e.scr + 1216 + 4 + 128 * 64, int(flags).to_bytes(4, "little") + bytes(8))
     r = e.run()
     ret, used = r if r else (None, None)
+    if leds is not None:
+        leds.extend(e.led)
     raw = bytes(e.mu.mem_read(e.scr + 1216, 4 + 128 * 64))   # after the DMA ring (IFP_RING)
     n = int.from_bytes(raw[:4], "little")
     pk = [raw[4 + 128 * i:4 + 128 * (i + 1)] for i in range(min(n, 64))]

@@ -253,3 +253,15 @@ def test_creak_needs_a_steady_voice_before_the_drop():
     assert not v.creak_mask(np.array([0, 3, 3, 1, 1]), np.array([50, 127, 36, 36, 35])).any()
     assert not v.creak_mask(np.array([0, 2, 3, 2, 1]), np.array([0, 89, 88, 21, 23])).any()
     assert not v.creak_mask(np.array([1, 1, 0, 1, 1]), np.array([70, 70, 0, 30, 30])).any()
+
+
+def test_line_search_reaches_past_a_skewed_fit():
+    """LibriSpeech 198 "all" at 9.48 s: a creaky onset frame (117 Hz) just inside OUTLIER pulls
+    the least-squares centre down; searching only +-1 around it played the vowel 2 semitones
+    flat. Every centre is tried now (SottoVLR.FULL_SEARCH)."""
+    v = vr.SottoVLR("400")
+    wi = np.array([47, 87, 87, 85, 85, 84])
+    wc, ws = v.q_pitch(wi, np.ones(6, bool), 64)
+    assert np.all(np.abs(v.pitch_frames(wc, ws)[1:] - wi[1:]) <= 2)
+    wc, ws = v.q_pitch(np.array([0, 0, 70, 0, 0, 0]), np.array([0, 0, 1, 0, 0, 0], bool), 64)
+    assert np.ptp(v.pitch_frames(wc, ws)) <= 1         # one pitched frame: a flat line

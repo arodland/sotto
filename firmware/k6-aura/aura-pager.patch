@@ -246,10 +246,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..8064b18
+index 0000000..36795ba
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3991 @@
+@@ -0,0 +1,4057 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -502,6 +502,8 @@ index 0000000..8064b18
 +        pub lcd_bar: unsafe extern "C" fn(i32, u32, u32),
 +        pub lcd_wf: unsafe extern "C" fn(*const u8, i32, i32),
 +        pub lcd_flush: unsafe extern "C" fn() -> i32,
++        // level 7: the green RX LED (PA3)
++        pub led: unsafe extern "C" fn(i32),
 +    }
 +    #[repr(C)]
 +    pub struct KmStatus {
@@ -528,7 +530,7 @@ index 0000000..8064b18
 +/// through MOD_CTX, set only while a module runs.
 +static MOD_API: ffi::K6Api = ffi::K6Api {
 +    abi: 1,
-+    level: 6,
++    level: 7,
 +    say: mod_say,
 +    ticks: mod_ticks,
 +    fd_read: mod_fd_read,
@@ -552,7 +554,64 @@ index 0000000..8064b18
 +    lcd_bar: mod_lcd_bar,
 +    lcd_wf: mod_lcd_wf,
 +    lcd_flush: mod_lcd_flush,
++    led: mod_led,
 +};
++
++/// Level 7: the green RX LED, for a module's own receive activity (and the coded 4FSK session's
++/// one blink a packet). Off again when the module returns.
++unsafe extern "C" fn mod_led(on: i32) {
++    rx_led(on != 0);
++}
++
++// ---- the green RX LED by the volume knob (PA3, Aura's G_LED; Jeff asked 2026-11-08) ----
++//
++// One blink a packet while the modem receives: lit at each packet's sync (or its first
++// FIFO-full), dark RX_LED_TICKS later, so a burst of packets (391 ms apart at PHY F) blinks
++// about 2.5 times a second and the coded 4FSK session's (0.92 s apart) about once. Normal-RX
++// Aura lights it while the squelch is open; the pager has no squelch, and main skips that
++// housekeeping in pager mode, so the pin is the pager's here.
++
++#[cfg(not(feature = "lean"))]
++const RX_LED_TICKS: u16 = 1200; // 120 ms
++
++/// When the LED was lit (uptime ticks), None while dark.
++#[cfg(not(feature = "lean"))]
++static mut RX_LED_T: Option<u16> = None;
++
++#[cfg(not(feature = "lean"))]
++fn rx_led(on: bool) {
++    let gpioa = unsafe { &*kd32f328_pac::Gpioa::ptr() };
++    crate::board::set_rx_led(gpioa, on);
++    if !on {
++        unsafe { *addr_of_mut!(RX_LED_T) = None };
++    }
++}
++
++/// A packet's sync: the LED on for RX_LED_TICKS.
++#[cfg(not(feature = "lean"))]
++fn rx_blink(now: u16) {
++    rx_led(true);
++    unsafe { *addr_of_mut!(RX_LED_T) = Some(now) };
++}
++
++/// The LED off once its time is up (cheap: called from the receive loops' waits).
++#[cfg(not(feature = "lean"))]
++fn rx_led_poll(now: u16) {
++    if let Some(t) = unsafe { *addr_of!(RX_LED_T) } {
++        if now.wrapping_sub(t) >= RX_LED_TICKS {
++            rx_led(false);
++        }
++    }
++}
++
++// The lean images (codebook install, MCU-flash table) leave the LED dark: aura-pager-cbi had
++// 96 B of flash to spare, and the LED took 184 (CI, 07bb380). Their led() is a no-op.
++#[cfg(feature = "lean")]
++fn rx_led(_on: bool) {}
++#[cfg(feature = "lean")]
++fn rx_blink(_now: u16) {}
++#[cfg(feature = "lean")]
++fn rx_led_poll(_now: u16) {}
 +
 +struct ModCtx {
 +    app: *mut App,
@@ -1934,6 +1993,7 @@ index 0000000..8064b18
 +
 +fn exit(app: &mut App, syst: &mut SYST) {
 +    disarm(app, syst);
++    rx_led(false);
 +    app.mode = Mode::Standby;
 +    app.reset_key_idle();
 +    app.sync_watching_to_master(syst);
@@ -2406,6 +2466,7 @@ index 0000000..8064b18
 +        return;
 +    }
 +    let now = uptime::now();
++    rx_led_poll(now);
 +    let dt = now.wrapping_sub(app.pager.last_tick) as u32;
 +    app.pager.idle_ticks = app.pager.idle_ticks.saturating_add(dt);
 +    app.pager.cfg_ticks = app.pager.cfg_ticks.saturating_add(dt);
@@ -2452,6 +2513,7 @@ index 0000000..8064b18
 +        // packet slipped (5e60d8f: 7-10/16). The screen catches up after the burst.
 +        flags = 0;
 +        while uptime::now().wrapping_sub(app.pager.t_rearm) < NEXT_SYNC_WAIT_TICKS {
++            rx_led_poll(uptime::now());
 +            flags = take_irq(app, syst);
 +            if flags != 0 {
 +                break;
@@ -2524,6 +2586,7 @@ index 0000000..8064b18
 +        return;
 +    }
 +    let t_first = uptime::now();
++    rx_blink(t_first);
 +    app.pager.gap_ms = t_first.wrapping_sub(app.pager.t_rearm) / 10;
 +    if app.pager.t_timed_done.is_some() {
 +        app.pager.stray_ms = -1;
@@ -2631,6 +2694,7 @@ index 0000000..8064b18
 +                delay::us(syst, 500);
 +            }
 +            let now = uptime::now();
++            rx_led_poll(now);
 +            waited += now.wrapping_sub(last) as u32;
 +            last = now;
 +            if filled {
@@ -2717,6 +2781,7 @@ index 0000000..8064b18
 +                    app.pager.stray_ms = (uptime::now().wrapping_sub(t_done) / 10) as i16;
 +                }
 +                let since = uptime::now().wrapping_sub(t_sync);
++                rx_led_poll(uptime::now());
 +                if (done && since >= rearm_min) || since >= rearm_max {
 +                    break;
 +                }
@@ -2927,6 +2992,7 @@ index 0000000..8064b18
 +        mod_screen_clear();
 +        let ret = unsafe { ffi::km_run(addr_of_mut!(STORE) as *mut u8, &MOD_API) };
 +        unsafe { mod_tx_off() }; // a module that left the transmitter on
++        rx_led(false); // or the LED lit
 +        mod_screen_clear(); // its waterfall rows were in its own memory
 +        let ms = unsafe { mod_ms() };
 +        unsafe {
@@ -4243,10 +4309,10 @@ index 0000000..8064b18
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..116b34f
+index 0000000..8d5fe3c
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1516 @@
+@@ -0,0 +1,1600 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4430,6 +4496,7 @@ index 0000000..116b34f
 +        pub fn xs_init(s: *mut u8, api: *const K6Api, ex: *mut Ex, mem: *mut u8, bytes: u32) -> i32;
 +        pub fn xs_step(s: *mut u8) -> i32;
 +        pub fn xs_close(s: *mut u8);
++        pub fn xs_tone(s: *mut u8, peek_ms: u32) -> u32;
 +        pub fn xs_resume(s: *mut u8);
 +        pub fn xs_summary(s: *mut u8);
 +        pub fn xs_info(s: *const u8, out: *mut XsInfo);
@@ -4513,6 +4580,14 @@ index 0000000..116b34f
 +const XL_TIME: i32 = 2;
 +/// redraw at most this often while sweeping (100 us ticks): a draw takes 30-50 ms
 +const DRAW_TICKS: u16 = 4000;
++/// the sweep's peek at an up carrier with no call (xs_tone), ms: the tone detector keyed there
++/// means an ID is going out now (WA7DMR on 440.925, 2026-11-08 04:59: 4 s, mid-carrier)
++const PEEK_MS: u32 = 40;
++/// a listen begun on a peek hears the end of that ID only, so the station goes on the watch list:
++/// each time it keys up after that, the listener goes there at once and stays the whole carrier
++/// (WA7DMR sent its one ID in 52 minutes 13 s into a key-up: no 10 minute timer). Not again
++/// within WATCH_GAP_MS of the last listen there.
++const WATCH_GAP_MS: u32 = 20_000;
 +const ROWS: usize = 7;
 +
 +/// The band sets, # cycles them: (name, segments (lo, step, bins, snap)). Each set's floors and
@@ -4578,6 +4653,10 @@ index 0000000..116b34f
 +    auto_pass: u32,
 +    once: [(u32, [u8; 11]); 6],
 +    once_i: u8,
++    /// the watch list (frequency, ms its last listen ended; 0 free), and whether the listen going
++    /// on began on a peek (its first transmission is the tail of an ID, not kept)
++    watch: [(u32, u32); 4],
++    mid: bool,
 +    /// the sweep was left for Try or Listen: its segment reads its floor again on the way back
 +    resume: bool,
 +}
@@ -4623,6 +4702,8 @@ index 0000000..116b34f
 +    auto_pass: 0,
 +    once: [(0, [0; 11]); 6],
 +    once_i: 0,
++    watch: [(0, 0); 4],
++    mid: false,
 +    resume: false,
 +};
 +
@@ -4866,12 +4947,16 @@ index 0000000..116b34f
 +            let key = unsafe { ffi::xs_step(t.xs) } == XS_KEY;
 +            known_calls();
 +            ctx_off();
++            let tone = unsafe { ffi::xs_tone(t.xs, if t.auto { PEEK_MS } else { 0 }) };
 +            // a row can fold away (it turned out a skirt): keep the selection on the list
 +            let n = unsafe { ffi::ex_view_n(&t.ex) };
 +            if n > 0 && t.sel as u32 >= n {
 +                t.sel = (n - 1) as _;
 +            }
-+            if !key && t.auto {
++            if !key && t.auto && tone != 0 {
++                tone_heard(app, syst, tone);
++            } else if !key && t.auto && watch_up(app, syst) {
++            } else if !key && t.auto {
 +                let n = passes();
 +                if n != t.auto_pass {
 +                    t.auto_pass = n;
@@ -5091,6 +5176,14 @@ index 0000000..116b34f
 +            return;
 +        }
 +    }
++    let max_s = unsafe { ffi::ex_listen_cap(c, AUTO_MAX_S, AUTO_MIN_S) };
++    auto_listen(app, syst, c, max_s);
++}
++
++/// the automatic listen on c for up to max_s
++fn auto_listen(app: &mut App, syst: &mut SYST, c: &mut Cand, max_s: u32) {
++    let t = st();
++    t.mid = false;
 +    t.hz = c.hz;
 +    t.off = c.off_hz;
 +    t.auto_now = true;
@@ -5100,7 +5193,7 @@ index 0000000..116b34f
 +    t.auto_lvl = if c.overs == 0 { -127 } else { c.hi - AUTO_DROP_DB };
 +    t.auto_seen_ms = now_ms();
 +    t.auto_start_ms = t.auto_seen_ms;
-+    t.auto_max_s = unsafe { ffi::ex_listen_cap(c, AUTO_MAX_S, AUTO_MIN_S) };
++    t.auto_max_s = max_s;
 +    t.resume = true;
 +    if t.auto_spk {
 +        monitor_on(app, syst, t.hz);
@@ -5113,6 +5206,54 @@ index 0000000..116b34f
 +    say(format_args!("K6 EX auto {} listens={} heard={} max={}", t.hz, c.listens, c.heard_s, t.auto_max_s));
 +    t.view = View::Listen;
 +    t.dirty = true;
++}
++
++/// The peek heard keying on an up carrier: if it has no call, listen now (that ID's tail: logged,
++/// not kept) and watch the station from now on.
++fn tone_heard(app: &mut App, syst: &mut SYST, hz: u32) {
++    let t = st();
++    let p = unsafe { ffi::ex_find(&mut t.ex, hz) };
++    if p.is_null() {
++        return;
++    }
++    let c = unsafe { &mut *p };
++    if c.call[0] != 0 || c.flags & (EX_F_IGNORED | EX_F_SPUR) != 0 {
++        return;
++    }
++    let i = t.watch.iter().position(|w| w.0 == hz).or_else(|| t.watch.iter().position(|w| w.0 == 0));
++    // a full list: the one listened to longest ago makes room
++    let i = i.unwrap_or_else(|| (0..t.watch.len()).min_by_key(|&k| t.watch[k].1).unwrap_or(0));
++    t.watch[i] = (hz, now_ms());
++    say(format_args!("K6 EX tone {} watch", hz));
++    auto_listen(app, syst, c, AUTO_MAX_S);
++    t.mid = true;
++}
++
++/// A watched station with no call keyed up: listen to the whole carrier (true)
++fn watch_up(app: &mut App, syst: &mut SYST) -> bool {
++    let t = st();
++    if t.watch.iter().all(|w| w.0 == 0) {
++        return false;
++    }
++    let mut up = [0u32; 10];
++    let n = unsafe { ffi::xs_up(t.xs, up.as_mut_ptr(), up.len() as u32) } as usize;
++    let now = now_ms();
++    for i in 0..t.watch.len() {
++        let (hz, last) = t.watch[i];
++        if hz == 0 || now.wrapping_sub(last) < WATCH_GAP_MS || !up[..n].contains(&hz) {
++            continue;
++        }
++        let p = unsafe { ffi::ex_find(&mut t.ex, hz) };
++        if p.is_null() || unsafe { (*p).call[0] } != 0 {
++            t.watch[i] = (0, 0);
++            continue;
++        }
++        t.watch[i].1 = now;
++        say(format_args!("K6 EX watch {}", hz));
++        auto_listen(app, syst, unsafe { &mut *p }, AUTO_MAX_S);
++        return true;
++    }
++    false
 +}
 +
 +/// An automatic listen, between steps: a call decoded once is kept, a second time alike (on this
@@ -5130,7 +5271,10 @@ index 0000000..116b34f
 +        t.dirty = true;
 +        let mut info: XlInfo = unsafe { core::mem::zeroed() };
 +        unsafe { ffi::xl_info(t.xl, &mut info) };
-+        if info.call[0] != 0 {
++        if t.mid && info.msgs == 1 {
++            // begun mid-ID: this is its tail (WA7DMR heard from the A would be "A7DMR")
++            say(format_args!("K6 EX tail {} {}", t.hz, cstr(&info.text)));
++        } else if info.call[0] != 0 {
 +            let same = t.once.iter().any(|(hz, call)| *hz == t.hz && cstr(call) == cstr(&info.call));
 +            if same {
 +                listen_end(app, syst, XL_OK);
@@ -5150,6 +5294,12 @@ index 0000000..116b34f
 +/// against the station's next cap (ex_listen_cap).
 +fn auto_done() {
 +    let t = st();
++    let now = now_ms();
++    for w in t.watch.iter_mut() {
++        if w.0 == t.hz {
++            w.1 = now;
++        }
++    }
 +    t.auto_mark = passes();
 +    let s = now_ms().wrapping_sub(t.auto_start_ms) / 1000;
 +    unsafe { ffi::ex_heard(&mut t.ex, t.hz, s) };
