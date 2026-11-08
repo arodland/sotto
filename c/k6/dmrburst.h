@@ -23,6 +23,11 @@
 #include <stdint.h>
 
 #define DB_NOINLINE __attribute__((noinline))
+#ifdef __clang__
+#define DB_COLD __attribute__((noinline, minsize)) /* once a burst: size over speed */
+#else
+#define DB_COLD DB_NOINLINE
+#endif
 
 static int db_par(uint32_t v) {
   v ^= v >> 16, v ^= v >> 8, v ^= v >> 4, v ^= v >> 2, v ^= v >> 1;
@@ -87,12 +92,19 @@ static uint32_t db_emb(const uint8_t *mid48, int *err) {
   return db_nearest(w, 7, err, db_emb_cw);
 }
 
-/* TACT from the 24 CACH bits: at << 3 | tc << 2 | lcss, or -1 if its Hamming check fails */
+/* TACT from the 24 CACH bits: at << 3 | tc << 2 | lcss, with 0x10 set if Hamming (7,4)
+   corrected a bit (two errors come out wrong, so a caller checks those against what it knows) */
 static int db_tact(const uint8_t *cach) {
+  /* the syndrome (h2 h1 h0 failing) -> the bit to flip, as an index in d0 d1 d2 d3 h2 h1 h0 */
+  static const uint8_t FIX[8] = {7, 6, 5, 3, 4, 0, 2, 1};
   int d0 = cach[0], d1 = cach[4], d2 = cach[8], d3 = cach[12];
-  if ((d0 ^ d1 ^ d2) != cach[14] || (d1 ^ d2 ^ d3) != cach[18] || (d0 ^ d1 ^ d3) != cach[22])
-    return -1;
-  return (d0 << 3) | (d1 << 2) | (d2 << 1) | d3;
+  int s = (((d0 ^ d1 ^ d2) ^ cach[14]) << 2) | (((d1 ^ d2 ^ d3) ^ cach[18]) << 1) | ((d0 ^ d1 ^ d3) ^ cach[22]);
+  int t = (d0 << 3) | (d1 << 2) | (d2 << 1) | d3;
+  if (s) {
+    if (FIX[s] < 4) t ^= 8 >> FIX[s];
+    t |= 0x10;
+  }
+  return t;
 }
 
 /* Hamming codes as parity masks on a word whose bit (n - 1 - i) is code bit i; the last
@@ -136,7 +148,7 @@ static void db_h15(uint16_t *m) {
 
 /* BPTC (196,96): 196 info bits -> 12 bytes; returns rows bad << 4 | columns bad after up to
    3 passes of column then row correction (0: clean) */
-DB_NOINLINE static int db_bptc196(const uint8_t *info, uint8_t *out12) {
+DB_COLD static int db_bptc196(const uint8_t *info, uint8_t *out12) {
   uint16_t row[13], h15[4];
   uint32_t i, r, c, pass, kr = 0, kc = 0;
   int bad_r = 0, bad_c = 0;
@@ -216,20 +228,22 @@ static uint32_t db_crc16(const uint8_t *b, int n, uint32_t init, uint32_t xorout
 
 /* embedded LC: the 4 fragments joined (128 bits, as sent) -> 9 bytes; 1 if every row's
    Hamming (after one-bit fixes), the column parity (one miss allowed: row 7 itself) and the
-   checksum agree */
-DB_NOINLINE static int db_emb_lc(const uint8_t *f128, uint8_t *out9) {
+   checksum agree. One row Hamming can't fix (two errors) is fixed by the columns whose parity
+   fails, if that makes it a codeword */
+DB_COLD static int db_emb_lc(const uint8_t *f128, uint8_t *out9) {
   uint16_t row[8];
   uint32_t a, r, c, colp = 0, sum = 0, crc = 0, acc = 0, n = 0, o = 0;
-  int ok = 1;
+  int ok = 1, bad = -1, nbad = 0;
   for (r = 0; r < 8; r++) row[r] = 0;
   for (a = 0; a < 128; a++) row[a & 7] |= (uint16_t)(f128[a] << (15 - (a >> 3)));
   for (r = 0; r < 7; r++) {
     uint32_t w = row[r];
-    if (db_fix(&w, 16, DB_H16, 5) < 0) ok = 0;
+    if (db_fix(&w, 16, DB_H16, 5) < 0) bad = (int)r, nbad++;
     row[r] = (uint16_t)w;
   }
   for (r = 0; r < 8; r++) colp ^= row[r];
-  if (db_pop(colp) > 1) ok = 0;
+  if (nbad == 1 && !db_syn(row[bad] ^ colp, DB_H16, 5)) row[bad] ^= (uint16_t)colp, colp = 0, nbad = 0;
+  if (nbad || db_pop(colp) > 1) ok = 0;
   for (r = 0; r < 7; r++)
     for (c = 0; c < (r < 2 ? 11u : 10u); c++) {
       acc = (acc << 1) | ((row[r] >> (15 - c)) & 1u);

@@ -18,9 +18,15 @@
 #define DX_POL 1               /* the GP0 discriminator's sign: data syncs read negative */
 #endif
 #ifndef DX_TRACK
+#ifdef __clang__
+#define DX_COLD __attribute__((noinline, minsize)) /* housekeeping's share: size over speed */
+#else
+#define DX_COLD NOINLINE
+#endif
+#define DX_FLY 2                /* voice superframes read on in a row without their sync */
 #define DX_TRACK 1             /* the grid's step from DMR's slots (dx_time) */
 #endif
-#define DX_NQ 8                /* pending captures */
+#define DX_NQ 10               /* pending captures */
 
 
 /* sim/k6if/dmrdec.py TERM_DELTA: BPTC of the 0x96 ^ 0x99 parity mask difference, 196 bits */
@@ -30,7 +36,7 @@ static const uint8_t DX_TDELTA[25] = {0x00, 0x6F, 0x00, 0xD4, 0x00, 0xB0, 0x00, 
 
 typedef struct {
   uint32_t due, sj;            /* grid index it can be read at; the sync's last symbol */
-  int16_t k;                   /* 0 a data burst, 1-4 voice burst B-E's middle, 5 A's sync */
+  int16_t k;                   /* 0 a data burst, 1-4 voice burst B-E's middle, 5 A's sync, 6 the flywheel's next A */
   int16_t pat;                 /* the sync's family, its sign in bit 3 (8: data) */
 } dx_q_t;
 
@@ -40,11 +46,12 @@ typedef struct {
   uint32_t lastj, lastP;       /* the last hit; the last sync placed (quarter grid points) */
   /* voice: burst A's scale, the fragments of B-E */
   int32_t vc, vinv, voff;
-  uint8_t frag[128];
+  int8_t frag[128];            /* soft (positive = 1) */
+  int8_t fold[2][128];         /* the last two superframes' fragments, to add to a weak one */
+  int nold;
   uint32_t fmask;
   /* a data burst waiting for housekeeping */
   int pend, dtype, cc, slot;
-  uint8_t info[196];
   int8_t soft[196];
   /* the soft sum of this transmission's headers and terminators */
   int16_t comb[196];
@@ -56,7 +63,15 @@ typedef struct {
   uint8_t ta[4][7];
   uint32_t tamask;
   char alias[32];
-  uint32_t nlc, nemb, ncsbk, nrd, ngol, nmid, nmok, tsj;
+  uint32_t nlc, nemb, ncsbk, nrd, ngol, nmid, nmok;
+  /* the last good TACT: its burst (grid point of the sync) and slot; the pending burst's sync,
+     the voice's slot */
+  uint32_t tsj, psj;
+  int tslot, vslot;
+  /* the voice chain: its last superframe's sync (hit or flywheel), superframes read on without
+     a hit, whether an EMB has checked out since it started */
+  uint32_t vj;
+  int nfly, vok;
 } dx_t;
 
 /* the matched filter's output (dmrsync.h's f[]) at P quarter grid points, Catmull-Rom between
@@ -143,17 +158,56 @@ static void dx_time(dx_t *x, ds_t *d, uint32_t P) {
   x->lastP = P;
 }
 
-static void dx_hit(dx_t *x, const ds_t *d) {
+/* a voice superframe from its sync (burst A's) at sj: A's scale, once its filter has run, then
+   B-E's middles */
+static void dx_voice(dx_t *x, uint32_t sj, int pat) {
   int i;
+  dx_push(x, sj + 12u, sj, 5, pat);
+  x->fmask = 0;
+  x->voff = 0;
+  for (i = 1; i <= 4; i++) dx_push(x, sj + 576u * i + 12u, sj + 576u * i, i, 0);
+}
+
+/* sj one or two superframes (3456 grid points) after vj, give or take 24 */
+static int dx_cadence(uint32_t vj, uint32_t sj) {
+  uint32_t e = sj - vj;
+  return e - 3456u + 24u <= 48u || e - 6912u + 24u <= 48u;
+}
+
+static void dx_hit(dx_t *x, const ds_t *d) {
   x->lastj = d->hj;
   if (d->hsign * DX_POL < 0) {
     dx_push(x, d->hj + 108u + 12u, d->hj, 0, (int)d->hfam | 8);
     return;
   }
-  dx_push(x, d->hj + 12u, d->hj, 5, (int)d->hfam);          /* A's scale, once its filter has run */
-  x->fmask = 0;
-  x->voff = 0;
-  for (i = 1; i <= 4; i++) dx_push(x, d->hj + 576u * i + 12u, d->hj + 576u * i, i, 0);
+  {
+    uint32_t e = d->hj - x->vj;
+    int on = dx_cadence(x->vj, d->hj);
+    if (e + 24u <= 48u) return;                             /* the superframe the flywheel started */
+    if (x->vok && e < 6912u + 48u && !on) return;           /* off a checked chain's beat: false */
+    if (!on) x->vok = 0;
+    x->vj = d->hj, x->nfly = 0;
+    dx_voice(x, d->hj, (int)d->hfam);
+  }
+}
+
+/* the slot of the burst whose sync is at sj, from the last good TACT (a repeater's slots
+   alternate every 288 grid points); 0 if none yet */
+static int dx_slotof(dx_t *x, uint32_t sj) {
+  int32_t e = (int32_t)(sj - x->tsj);
+  if (!x->tslot) return 0;
+  return (ds_udiv((uint32_t)(e < 0 ? -e : e) + 144u, 288u) & 1) ? 3 - x->tslot : x->tslot;
+}
+
+/* the CACH's TACT before the sync at P: the slot it names, kept with its burst */
+static void dx_cach(dx_t *x, ds_t *d, uint32_t P, int32_t c, int32_t inv, uint32_t sj) {
+  uint8_t b[24];
+  int t, s;
+  dx_slice(d, P - 712u, 12, c, inv, b, 0);
+  t = db_tact(b);
+  s = ((t >> 2) & 1) + 1;
+  if ((t & 0x10) && x->tslot && s != dx_slotof(x, sj)) return;  /* corrected, and it disagrees */
+  x->tslot = s, x->tsj = sj;
 }
 
 /* the counts went on: read what is due (cheap: the slicing and the short codes) */
@@ -171,30 +225,40 @@ NOINLINE static void dx_poll(dx_t *x, ds_t *d) {
     }
     x->q[i] = x->q[--x->nq];
     if ((int32_t)(d->j - q.due) > 200) continue;            /* overwritten meanwhile */
+    if (q.k == 6) {                                         /* the next superframe's A, due: */
+      if (x->nfly >= DX_FLY || (q.sj - x->vj) - 3456u + 24u > 48u) continue;  /* its hit came, */
+      x->nfly++, x->vj = q.sj;                              /* or a newer chain, or enough */
+      dx_voice(x, q.sj, q.pat);
+      continue;
+    }
     if (q.k == 5) {                                         /* voice burst A: its sync's scale */
+      dx_push(x, q.sj + 3456u + 24u, q.sj + 3456u, 6, q.pat);  /* the flywheel: 360 ms on */
       P = dx_align(d, q.sj, q.pat);
       dx_time(x, d, P);
       x->voff = (int32_t)(P - 4u * q.sj);
       dx_scale(d, P, &x->vc, &x->vinv);
+      dx_cach(x, d, P, x->vc, x->vinv, q.sj);
+      x->vslot = dx_slotof(x, q.sj);
       continue;
     }
     if (q.k) {                                              /* a voice burst's middle */
       uint32_t e;
       P = 4u * q.sj + (uint32_t)x->voff;
-      dx_slice(d, P - 184u, 24, x->vc, x->vinv, b, 0);
+      int8_t sb[48];
+      dx_slice(d, P - 184u, 24, x->vc, x->vinv, b, sb);
       e = db_emb(b, &err);
       x->nmid++;
-      if (err <= 2 && (e & 3) == LCSS[q.k]) {
-        x->nmok++;
-        for (j = 0; j < 32; j++) x->frag[32 * (q.k - 1) + j] = b[8 + j];
-        x->fmask |= 1u << q.k;
-        if (x->fmask == 0x1E) x->emb_ready = 1, x->lcc = (int)(e >> 3);
-      }
+      dx_cach(x, d, P, x->vc, x->vinv, q.sj);
+      x->vslot = dx_slotof(x, q.sj);
+      if (x->tg_ok && !x->lslot && x->vslot) x->lslot = x->vslot, x->lcd_dirty = 1;
+      for (j = 0; j < 32; j++) x->frag[32 * (q.k - 1) + j] = sb[8 + j];
+      if (err <= 2 && (e & 3) == LCSS[q.k]) x->nmok++, x->vok = 1, x->fmask |= 1u << q.k, x->lcc = (int)(e >> 3);
+      /* E's in: the LC's checks will judge it, if at least two EMBs say these are B-E */
+      if (q.k == 4 && db_pop(x->fmask) >= 2) x->emb_ready = 1;
       continue;
     }
-    if (x->pend) continue;                                  /* one at a time */
     {
-      int32_t c, inv, t;
+      int32_t c, inv;
       uint32_t st;
       int8_t sb[288];
       uint8_t s20[20];
@@ -207,19 +271,13 @@ NOINLINE static void dx_poll(dx_t *x, ds_t *d) {
       x->nrd++;
       if (err > 3) continue;
       x->ngol++;
+      dx_cach(x, d, P, c, inv, q.sj);
+      if (x->pend) continue;                                /* one waiting: only its slot and timing */
       x->dtype = (int)(st & 15), x->cc = (int)(st >> 4);
-      dx_slice(d, P - 712u, 12, c, inv, b, 0);              /* the CACH */
-      t = db_tact(b);
-      if (t >= 0) {
-        x->slot = ((t >> 2) & 1) + 1, x->tsj = q.sj;
-      } else if (x->tsj) {                                  /* slots alternate every 288 */
-        uint32_t m = ds_udiv(q.sj - x->tsj + 144u, 288u);
-        x->slot = (m & 1) ? 3 - x->slot : x->slot, x->tsj = q.sj - (q.sj - x->tsj - 288u * m);
-      }
+      x->slot = dx_slotof(x, q.sj), x->psj = q.sj;
       if (x->dtype != 1 && x->dtype != 2 && x->dtype != 3 && x->dtype != 6) continue;
       dx_slice(d, P - 712u, 144, c, inv, b, sb);
       for (j = 0; j < 98; j++) {
-        x->info[j] = b[24 + j], x->info[98 + j] = b[24 + 166 + j];
         x->soft[j] = sb[24 + j], x->soft[98 + j] = sb[24 + 166 + j];
       }
       x->pend = 1;
@@ -234,7 +292,7 @@ static char *dx_hex(char *p, const uint8_t *b, int n) {
 }
 
 /* the LC's talkgroup / source as known; 1 if it changed */
-static int dx_lc(dx_t *x, const uint8_t *by) {
+DX_COLD static int dx_lc(dx_t *x, const uint8_t *by) {
   uint32_t tg = ((uint32_t)by[3] << 16) | ((uint32_t)by[4] << 8) | by[5];
   uint32_t src = ((uint32_t)by[6] << 16) | ((uint32_t)by[7] << 8) | by[8];
   int f = by[0] & 0x3F;
@@ -251,7 +309,7 @@ static int dx_lc(dx_t *x, const uint8_t *by) {
 }
 
 /* talker alias text so far (7-bit or 8-bit formats) */
-NOINLINE static void dx_alias(dx_t *x) {
+DX_COLD static void dx_alias(dx_t *x) {
   uint32_t fmt, n, bit = 0, nb, i, k = 0;
   if (!(x->tamask & 1)) return;
   fmt = x->ta[0][0] >> 6, n = (x->ta[0][0] >> 1) & 31;
@@ -277,14 +335,30 @@ NOINLINE static void dx_alias(dx_t *x) {
 }
 
 /* housekeeping's share: decode what is waiting, at most one line; returns its end or 0 */
-NOINLINE static char *dx_house(dx_t *x, char *line) {
+DX_COLD static char *dx_house(dx_t *x, char *line) {
   char *p = line;
-  uint8_t by[12];
+  uint8_t by[12], hb[196];
+  int j;
   if (x->emb_ready) {
+    /* the embedded LC alone, then added to the last superframe's, the one before (talker alias
+       LCs between the call's LC), both: a call's LC is the same in each superframe */
+    int k, ok = 0;
     x->emb_ready = 0;
-    if (db_emb_lc(x->frag, by)) {
+    for (k = 0; k < 4 && !ok; k++) {
+      if (k > x->nold + (k == 3)) continue;
+      for (j = 0; j < 128; j++) {
+        int v = x->frag[j];
+        if (k & 1) v += x->fold[0][j];
+        if (k >= 2) v += x->fold[1][j];
+        hb[j] = v >= 0;
+      }
+      ok = db_emb_lc(hb, by);
+    }
+    for (j = 0; j < 128; j++) x->fold[1][j] = x->fold[0][j], x->fold[0][j] = x->frag[j];
+    if (x->nold < 2) x->nold++;
+    if (ok) {
       x->nemb++;
-      if (dx_lc(x, by)) p = put(kv(kv(kv(put(line, "E TS"), "", x->lslot), " TG ", (int)x->tg), " src ", (int)x->src), "");
+      if (dx_lc(x, by)) p = put(kv(kv(kv(put(line, "E TS"), "", x->vslot), " TG ", (int)x->tg), " src ", (int)x->src), "");
       if ((by[0] & 0x3F) >= 4 && (by[0] & 0x3F) <= 7) {
         dx_alias(x);
         if (p == line && x->alias[0]) p = put(put(line, "A "), x->alias);
@@ -294,9 +368,11 @@ NOINLINE static char *dx_house(dx_t *x, char *line) {
   }
   if (!x->pend) return 0;
   x->pend = 0;
-  db_bptc196(x->info, by);
+  if (!x->slot) x->slot = dx_slotof(x, x->psj);             /* a later burst's TACT, if its own missed */
+  for (j = 0; j < 196; j++) hb[j] = x->soft[j] >= 0;          /* the hard bits: db_soft's signs */
+  db_bptc196(hb, by);
   if (x->dtype == 1 || x->dtype == 2) {
-    int ok = db_rs_ok(by, x->dtype == 1 ? 0x96 : 0x99), j;
+    int ok = db_rs_ok(by, x->dtype == 1 ? 0x96 : 0x99);
     for (j = 0; j < 196; j++) {
       int s = x->soft[j];
       if (x->dtype == 2 && ((DX_TDELTA[j >> 3] >> (7 - (j & 7))) & 1)) s = -s;
@@ -305,7 +381,6 @@ NOINLINE static char *dx_house(dx_t *x, char *line) {
     }
     x->ncomb++;
     if (!ok && x->ncomb >= 2) {
-      uint8_t hb[196];
       for (j = 0; j < 196; j++) hb[j] = x->comb[j] > 0;
       db_bptc196(hb, by);
       ok = db_rs_ok(by, 0x96) ? 2 : 0;
@@ -332,7 +407,7 @@ NOINLINE static char *dx_house(dx_t *x, char *line) {
 }
 
 /* the screen (level 6): colour code and slot, talkgroup, source, alias */
-__attribute__((unused)) NOINLINE static int dx_lcd(const k6_api_t *api, dx_t *x) {
+__attribute__((unused)) DX_COLD static int dx_lcd(const k6_api_t *api, dx_t *x) {
   char t[24], *p;
   if (api->level < 6 || !x->lcd_dirty) return 0;
   x->lcd_dirty = 0;
@@ -351,5 +426,5 @@ __attribute__((unused)) NOINLINE static int dx_lcd(const k6_api_t *api, dx_t *x)
 __attribute__((unused)) static void dx_end(dx_t *x) {
   int j;
   for (j = 0; j < 196; j++) x->comb[j] = 0;
-  x->ncomb = 0, x->nq = 0;
+  x->ncomb = 0, x->nq = 0, x->nold = 0;
 }

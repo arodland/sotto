@@ -89,6 +89,13 @@
 #define AF_FM 0x6140u           /* Aura's AF_OUT_BASE | RX audio */
 #define AF_MUTE 0x6040u
 #define NOINLINE __attribute__((noinline))
+#if defined(DMR_DECODE) && defined(__clang__)
+#define COLD __attribute__((noinline, minsize)) /* dmrrx: set-up and housekeeping, size over speed */
+#define MAIN_COLD __attribute__((minsize))
+#else
+#define COLD NOINLINE
+#define MAIN_COLD
+#endif
 
 static uint32_t rd(uint32_t a) { return *(volatile uint32_t *)a; }
 static void wr(uint32_t a, uint32_t v) { *(volatile uint32_t *)a = v; }
@@ -239,7 +246,7 @@ static void hit(st_t *s, int r) {
 
 /* ~every 48 ms, when the CPU has a moment: the clock, keys, the DMA's rate, the carrier, the
    audio, and at most one line; 1 to stop */
-NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
+COLD static int housekeeping(const k6_api_t *api, st_t *s) {
   char line[64], *p = line;
 #ifdef DMR_DECODE
   char *q8;
@@ -366,34 +373,40 @@ static void zero(void *p, uint32_t n) {
   while (n) ((volatile uint8_t *)p)[--n] = 0;
 }
 
-NOINLINE static int go(const k6_api_t *api, st_t *s);
+COLD static int go(const k6_api_t *api, st_t *s);
 
 #ifdef DMR_DECODE
-/* a block too small for the rings and the decoder in scratch (9,760 B): they go on the stack */
-NOINLINE static int on_stack(const k6_api_t *api, st_t *s) {
+/* what the scratch can't hold goes on the stack: the DMA ring (1 KB), then the decoder */
+COLD static int ring_on_stack(const k6_api_t *api, st_t *s) {
   uint32_t ring[RSZ / 4];
+  s->ring = (uint8_t *)ring;
+  return go(api, s);
+}
+
+COLD static int on_stack(const k6_api_t *api, st_t *s) {
   dx_t x;
   zero(&x, sizeof x);
-  s->ring = (uint8_t *)ring;
   s->x = &x;
-  return go(api, s);
+  return ring_on_stack(api, s);
 }
 #endif
 
-int k6_main(const k6_api_t *api) {
+MAIN_COLD int k6_main(const k6_api_t *api) {
   st_t st, *s = &st;
   if (api->level < 2) return -3;
   zero(s, sizeof *s);
 #ifdef DMR_DECODE
   {
-    uint32_t n = 0;           /* scratch: the matched filter's ring, then the DMA ring and the decoder */
+    /* scratch: the matched filter's ring, the decoder, the DMA ring, as far as it goes */
+    uint32_t n = 0;
     uint8_t *sc = (uint8_t *)api->scratch(&n);
     if (n < DS_FRING) return -6;
     s->d.f = (int8_t *)sc;
-    if (n < DS_FRING + RSZ + sizeof(dx_t)) return on_stack(api, s);
-    s->ring = sc + DS_FRING;
-    s->x = (dx_t *)(sc + DS_FRING + RSZ);
+    if (n < DS_FRING + sizeof(dx_t)) return on_stack(api, s);
+    s->x = (dx_t *)(sc + DS_FRING);
     zero(s->x, sizeof(dx_t));
+    if (n < DS_FRING + sizeof(dx_t) + RSZ) return ring_on_stack(api, s);
+    s->ring = sc + DS_FRING + sizeof(dx_t);
     return go(api, s);
   }
 #else
@@ -405,7 +418,7 @@ int k6_main(const k6_api_t *api) {
 #endif
 }
 
-NOINLINE static int go(const k6_api_t *api, st_t *s) {
+COLD static int go(const k6_api_t *api, st_t *s) {
   if (rd(GPIOB) & (3u << 2)) return -4;
   s->apb2 = rd(RCC_APB2ENR);
   s->ahb = rd(RCC_AHBENR);

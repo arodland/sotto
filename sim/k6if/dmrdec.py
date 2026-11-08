@@ -344,8 +344,15 @@ def emb_lc_decode(frag128):
     m = np.zeros(128, np.uint8)
     m[EMB_ORDER] = frag128
     m = m.reshape(8, 16)
+    bad = []
     for r in range(7):
         m[r], _ = _fix(m[r].copy(), ham16_syn, 16)
+        if any(ham16_syn(m[r])):
+            bad.append(r)
+    if len(bad) == 1:                                       # two errors in one row: the columns
+        w = m[bad[0]] ^ (m.sum(axis=0) & 1).astype(np.uint8)  # whose parity fails, if that fits
+        if not any(ham16_syn(w)):
+            m[bad[0]] = w
     flat = m.reshape(-1)
     by = [to_int(flat[EMB_DATA][i * 8:(i + 1) * 8]) for i in range(9)]
     ok = ((m.sum(axis=0) & 1).sum() <= 1                    # one error in row 7 is harmless

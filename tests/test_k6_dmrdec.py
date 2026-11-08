@@ -167,6 +167,14 @@ def test_c_codes_match_python():
         assert lib.h_emb_lc(u8(f), o9) == 1 and list(o9) == by
         f[rng.integers(128, size=4)] ^= 1
         assert lib.h_emb_lc(u8(f), o9) == int(dd.emb_lc_decode(f)[1])
+    by = [int(v) for v in rng.integers(0, 256, 9)]
+    f = dd.emb_lc_encode(by)
+    where = {int(m): a for a, m in enumerate(dd.EMB_ORDER)}   # matrix bit -> place sent
+    for r in range(7):                                      # two errors in one row: the columns
+        g = f.copy()
+        g[[where[16 * r + 3], where[16 * r + 12]]] ^= 1
+        assert lib.h_emb_lc(u8(g), o9) == 1 and list(o9) == by, r
+        assert dd.emb_lc_decode(g) == (by, True), r
     for _ in range(10):
         by = [int(v) for v in rng.integers(0, 256, 10)]
         for i, x in ((0, 0), (0, 0xFFFF), (0xFFFF, 0)):
@@ -175,8 +183,10 @@ def test_c_codes_match_python():
     t = np.array([1, 0, 1, 1], np.uint8)
     cach[dd.TACT_POS] = list(t) + [t[0] ^ t[1] ^ t[2], t[1] ^ t[2] ^ t[3], t[0] ^ t[1] ^ t[3]]
     assert lib.h_tact(u8(cach)) == 0b1011
-    cach[4] ^= 1
-    assert lib.h_tact(u8(cach)) == -1
+    for k in dd.TACT_POS:                                   # one error: corrected, flagged
+        cach[k] ^= 1
+        assert lib.h_tact(u8(cach)) == 0b1011 | 0x10, k
+        cach[k] ^= 1
 
 
 # ---- the K6's decoder: c/k6/mod/dmrdec.inc on the host, and the dmrrx module emulated ----
@@ -207,23 +217,29 @@ def test_c_decoder_on_the_k6_model():
     exe = os.path.join(tempfile.mkdtemp(), "dmrrx_host")
     subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-I", k6, "-o", exe,
                     os.path.join(k6, "dmrrx_host.c")], check=True)
-    cnt, _ = k6_counts(dd.voice_call_symbols(**CALL), 52.0)
-    out = subprocess.run([exe, "4476"], input=cnt.tobytes(), capture_output=True, check=True).stdout.decode()
-    print(out)
-    lines = out.splitlines()
-    assert any(ln.startswith("L TS") and " CC1 TG 3027 src 3025107 F0" in ln for ln in lines), out
-    assert "A AG7EW TEST" in lines, out
-    n = dict(kv.split("=") for kv in lines[-1].split()[1:])
-    mids, ok = map(int, n["mids"].split("/"))
-    assert int(n["L"]) >= 3 and ok >= 22 and mids >= 20, lines[-1]
+    alias = mids = ok = 0
+    for seed in range(1, 5):                # the alias's blocks go once each: a few calls
+        cnt, _ = k6_counts(dd.voice_call_symbols(**dict(CALL, seed=seed)), 52.0)
+        out = subprocess.run([exe, "4476"], input=cnt.tobytes(), capture_output=True, check=True).stdout.decode()
+        print(out)
+        lines = out.splitlines()
+        assert any(ln.startswith("L TS1 CC1 TG 3027 src 3025107 F0") for ln in lines), out
+        assert not any(ln[:2] in ("L ", "E ") and "TG 3027 src 3025107" not in ln for ln in lines), out
+        n = dict(kv.split("=") for kv in lines[-1].split()[1:])
+        assert int(n["L"]) >= 3, lines[-1]
+        alias += "A AG7EW TEST" in lines
+        m, k = map(int, n["mids"].split("/"))
+        mids, ok = mids + m, ok + k
+    assert alias >= 2 and ok >= 88, (alias, mids, ok)
 
 
-@pytest.mark.parametrize("block,max_stack", [(11776, 1800), (9760, 4200)])
+@pytest.mark.parametrize("block,max_stack", [(11776, 2900), (13312, 1900)])
 def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
     """the dmrrx module (dmrdet + the decoder) on the emulated M0 with the modelled DMA: the
     call's talkgroup and source on the serial line and the screen, its alias, in the shared
-    module block, the receiver's registers put back. In the 11,776-byte block (PR #146) the DMA
-    ring and the decoder's state go in scratch too; in the 9,760-byte one, on the stack"""
+    module block, the receiver's registers put back. The scratch past the code takes the filter's
+    ring, the decoder's state and the DMA ring as far as it goes: in the SPI voice images'
+    11,776-byte block all but the DMA ring; in a bigger one (a slimmer image) all three"""
     import shutil
     if not (shutil.which("clang") and shutil.which("ld.lld")):
         pytest.skip("needs clang and ld.lld")
@@ -233,8 +249,8 @@ def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
     from sim.k6if import frontend as fe
     src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "c", "k6", "mod", "dmrrx.c")
     code, entry = T.build([("RUN_S", "3u"), ("S_MS", "1000u")], src)
-    assert len(code) + 24 + 512 <= 9736 - 256, len(code)       # the shared block: code, the filter
-                                                               # ring in scratch, 256 B to spare
+    assert len(code) + 24 + 512 + 1296 <= 11776 - 256, len(code)  # the shared block: code, the
+                                                               # filter ring and the decoder in scratch, 256 B to spare
     _, (ib, on, off) = k6_counts(dd.voice_call_symbols(**CALL), 56.0)
     e = le.Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=len(ib) / fe.FDMA + 0.5, level=6, stack_win=7000,
                scratch=(block - 24 - len(code)) & ~3)
@@ -243,6 +259,7 @@ def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
     txt = "\n".join(e.said)
     print(txt, e.lcd, stack)
     assert ret >= 1, txt
+    assert all(f"TS{n}" not in ln for ln in e.said for n in (0, 3)), txt       # the slot named
     assert any(ln.startswith("L TS") and "TG 3027 src 3025107" in ln for ln in e.said), txt
     assert any(ln.startswith("A AG7EW T") for ln in e.said), txt
     assert e.lcd.get(1) == "TG 3027" and e.lcd.get(2) == "ID 3025107", e.lcd
