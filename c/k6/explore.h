@@ -48,6 +48,8 @@ extern "C" {
 #define EX_F_SIMPLEX 0x08        /* in a simplex range */
 #define EX_F_SPUR 0x10
 #define EX_F_KNOWN 0x20          /* in the saved repeater table (ex_know): listed after the new ones */
+/* 0x40 is the app's (explore.rs EX_F_LOOKED) */
+#define EX_F_DMR 0x80            /* a listen heard DMR syncs there (xdmr.c) */
 /* 0x40 is the app's (EXPLORE: the table's call has been looked up) */
 #define EX_SKIRT_HZ 100000       /* a carrier this close and EX_SKIRT_DB louder, ending with it: a skirt */
 #define EX_SKIRT_DB 25
