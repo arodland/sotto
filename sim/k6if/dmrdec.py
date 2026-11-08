@@ -40,13 +40,20 @@ def audio_symbols(x, fs, sps=SPS):
     return np.convolve(y, h, "same")
 
 
+def counts_symbols(x, fc=dmr.FC, sps=SPS):
+    """the K6's GP0 counts -> matched-filtered frequency at sps a symbol: the MCU's band-pass,
+    the IF's phase at sps points a symbol, its steps, an RRC"""
+    ph, _ = dmr.phase_grid(dmr.bandpass(x), sps, fc=fc)
+    y = np.nan_to_num(dmr.freq(ph, sps))
+    return np.convolve(y, dmr.rrc(sps, 0.2, 6), "same")
+
+
 def find_syncs(y, sps=SPS, thr=0.85):
     """[(sample of the sync's first symbol, family, sign, rho)]: the normalised correlation at
     every sample offset, symbols sps apart, local peaks over thr within half a symbol"""
     n = len(y) - 24 * sps
     if n <= 0:
         return []
-    idx = np.arange(24) * sps
     win = np.lib.stride_tricks.sliding_window_view(y, 23 * sps + 1)[:, ::sps][:n]
     w = win - win.mean(axis=1, keepdims=True)
     nrm = np.sqrt((w * w).sum(axis=1)) * np.sqrt(24) + 1e-12
@@ -59,7 +66,6 @@ def find_syncs(y, sps=SPS, thr=0.85):
             lo, hi = max(0, i - sps // 2), min(n, i + sps // 2 + 1)
             if a[i] == a[lo:hi].max():
                 out.append((int(i), f, int(np.sign(r[i])), float(r[i])))
-    del idx
     return sorted(out)
 
 
@@ -267,6 +273,94 @@ def decode_burst(sym144, layout="dpp"):
     return out
 
 
+# ---- the other way: valid bursts for tests (the same layouts as the decoder) ----
+
+def _parity_fill(word, syn_fn, n, k):
+    """set the n - k parity bits so the syndrome is zero (in these checks each parity bit
+    enters its own syndrome bit alone)"""
+    w = np.array(word, np.uint8)
+    w[k:] = 0
+    w[k:] = syn_fn(w)
+    assert not any(syn_fn(w))
+    return w
+
+
+def rs_encode(data9, kind):
+    """9 data bytes -> 12 (the parity masked for kind)"""
+    gen = [1]
+    for j in (1, 2, 3):                                  # (x - alpha^j)
+        nxt = [0] * (len(gen) + 1)
+        for i, g in enumerate(gen):
+            nxt[i] ^= g
+            nxt[i + 1] ^= gmul(g, int(EXP[j]))
+        gen = nxt
+    msg = list(data9) + [0, 0, 0]
+    for i in range(9):
+        c = msg[i]
+        if c:
+            for k in range(1, 4):
+                msg[i + k] ^= gmul(gen[k], c)
+    par = msg[9:]
+    return list(data9) + [b ^ MASK[kind] for b in par]
+
+
+def bptc196_encode(data96):
+    m = np.zeros((13, 15), np.uint8)
+    flat = np.concatenate([np.zeros(3, np.uint8), np.asarray(data96, np.uint8)])
+    for r in range(9):
+        m[r, :11] = flat[r * 11:(r + 1) * 11]
+        m[r] = _parity_fill(m[r], ham15_syn, 15, 11)
+    for c in range(15):
+        m[:, c] = _parity_fill(m[:, c], ham13_syn, 13, 9)
+    mm = np.concatenate([[0], m.reshape(-1)]).astype(np.uint8)
+    out = np.zeros(196, np.uint8)
+    for i in range(196):
+        out[(i * 181) % 196] = mm[i]
+    return out
+
+
+def lc_encode(flco, dst, src, fid=0, opts=0, kind="voice_hdr"):
+    by = [flco & 0x3F, fid, opts, dst >> 16 & 255, dst >> 8 & 255, dst & 255,
+          src >> 16 & 255, src >> 8 & 255, src & 255]
+    cw = rs_encode(by, kind)
+    return np.array([(b >> (7 - i)) & 1 for b in cw for i in range(8)], np.uint8)
+
+
+def burst_bits(cc, dtype, info196, mid48, at=1, tc=0, lcss=0, layout="dpp", rng=None):
+    """-> 288 bits: CACH (TACT with its Hamming bits, the rest random) + the burst"""
+    rng = rng or np.random.default_rng(0)
+    cach = rng.integers(0, 2, 24).astype(np.uint8)
+    t = np.array([at, tc, lcss >> 1, lcss & 1, 0, 0, 0], np.uint8)
+    d0, d1, d2, d3 = t[:4]
+    t[4:] = [d0 ^ d1 ^ d2, d1 ^ d2 ^ d3, d0 ^ d1 ^ d3]
+    cach[TACT_POS] = t
+    w = int(GOLAY[layout][(cc << 4) | dtype])
+    slot = np.array([(w >> (19 - i)) & 1 for i in range(20)], np.uint8)
+    info = np.asarray(info196, np.uint8)
+    return np.concatenate([cach, info[:98], slot[:10], mid48, slot[10:], info[98:]])
+
+
+def bits_to_symbols(b):
+    inv = {v: k for k, v in DIBIT.items()}
+    return np.array([inv[(int(b[i]), int(b[i + 1]))] for i in range(0, len(b), 2)])
+
+
+def voice_header_symbols(cc=1, tg=91, src=3112345, n=3, seed=0):
+    """n voice LC header bursts (BS data sync), alternating slots' worth of idle between, as
+    4800/s symbols: what a repeater sends at a call's start"""
+    rng = np.random.default_rng(seed)
+    data_sync = bits(-np.array(dmr.PAT["bs"]))
+    hdr = bptc196_encode(lc_encode(0, tg, src))
+    out = []
+    for i in range(2 * n):
+        if i % 2 == 0:
+            b = burst_bits(cc, 1, hdr, data_sync, tc=0, rng=rng)
+        else:
+            b = burst_bits(cc, 9, rng.integers(0, 2, 196), data_sync, tc=1, rng=rng)
+        out.append(bits_to_symbols(b))
+    return np.concatenate(out)
+
+
 # ---- commands ----
 
 def _load(p):
@@ -276,7 +370,12 @@ def _load(p):
 
 
 def bursts_from_audio(x, fs, thr=0.85):
-    y = audio_symbols(x, fs)
+    return bursts_from_audio_y(audio_symbols(x, fs), thr)
+
+
+def bursts_from_audio_y(y, thr=0.85):
+    """matched-filtered samples (audio_symbols or counts_symbols) -> [(s, family, sign, rho,
+    polarity, symbols, soft values)] for each sync, both polarities"""
     out = []
     for s0, fam, sign, r in find_syncs(y, thr=thr):
         for pol in (1, -1):
