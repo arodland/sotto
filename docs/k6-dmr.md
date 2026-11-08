@@ -94,8 +94,10 @@ and AGC, the 1-bit sigma-delta, the DMA at 5.49 MS/s), with DMR from a TS 102 36
 
 - **Sensitivity:** unchanged down to 54 dB-Hz. At 50 dB-Hz about a third of the syncs still
   come through, and they die out at 47, where the zero-crossing discriminator passes the FM
-  threshold. 54 dB-Hz is about -116 dBm with an 8 dB noise figure. 440.925 sits at -90 to
-  -100 dBm (65-75 dB-Hz), far above that. 600 Hz of carrier offset changes nothing.
+  threshold. 600 Hz of carrier offset changes nothing. (This section first said 54 dB-Hz was
+  about -116 dBm with an 8 dB noise figure. On the K6 it isn't: with the pager's AGC, the real
+  repeater at -85 to -90 dBm reached GP0 at what the model calls about 40 dB-Hz. See "Captures
+  of real DMR" below.)
 - **False hits:** over 30 s each at 55 dB-Hz, the largest |rho| was 0.63-0.75 on FM voice,
   0.76 on FFSK, 0.69 on the keyed tone and 0.53 on noise (the threshold is 0.8). Random 4FSK
   at 4800 baud (what YSF or P25 payload looks like) gave 4 single hits in 30 s and no
@@ -231,18 +233,41 @@ Two receive-only runs of CI's `mod-dmrdet.bin` (3116 B with header, from main f5
   second sync can come later than 150 ms. If that buzz is common, raise `HOLD_MS` (FM pays it
   as opening delay) or open on a single strong sync's absence for 2 slots.
 
-### Next: capture what the K6 hears
+### Captures of real DMR (2026-11-08 06:06Z)
 
-`c/k6/mod/dmrcap.c` (level 2, receive only, 2196 bytes) listens on 440.925 and, each time the
-RSSI rises 8 dB over the floor, records up to three 38 ms stretches of the raw IF counts (on
-the stack, the first within ~5 ms of the carrier) and dumps them over the cable in gp0cap's
-format, plus one no-carrier reference. A repeater with both slots going has a sync every
-30 ms, so each capture holds a whole one. `python3 -m sim.k6if.dmr cap LOG` runs the detector
-on every capture and prints the IF offset, the best sync of each family with and without the
-spread gate, and the measured +-3 deviation, which is what tells the candidates apart: the
-spread gate (deviation scale through the FD6818's wide filter), the IF filter's ISI at 4800
-baud, the AFC or AGC moving at a burst's start, or something in the GP0 path. On the emulator
-with modelled idle bursts it reads rho -0.95, sync spread 1783 Hz, +-1692 Hz.
+`c/k6/mod/dmrcap.c` (level 2, receive only) listens on 440.925 and, each time the RSSI rises
+8 dB over the floor, records 38 ms stretches of the raw IF counts (on the stack, the first
+within ~5 ms of the carrier) and dumps them over the cable in gp0cap's format, plus one
+no-carrier reference. A repeater with both slots going has a sync every 30 ms, so each capture
+holds a whole one. `python3 -m sim.k6if.dmr cap LOG` runs the detector on every capture (IF
+offset, best sync with and without the spread gate, measured +-3 deviation), and `--diag`
+compares four discriminators and measures how far the IF band stands above the 1-bit path's
+noise.
+
+The first run (pager's AGC only) caught two real transmissions, three captures each, which the
+IC-7100's audio decodes at rho 0.98-1.00:
+
+| | counts rms | IF band over the noise above | best \|rho\|: MCU crossings / band-pass / complex | IF mean, spread (MCU crossings) |
+|---|---|---|---|---|
+| no carrier (-108 dBm) | 12.8 | -16 dB | 0.77 / 0.67 / 0.68 | noise |
+| DMR, -85 to -90 dBm | 4.1-4.4 | +3.4 to +5.3 dB | 0.64-0.76 / 0.59-0.89 / 0.67-0.86 | +2.5 to +3.5 kHz, ~5 kHz |
+| model at 60 dB-Hz | 21 | +20 dB | 0.99 / 0.98 / 0.98 | +0.1 kHz, 1.4 kHz |
+| model at 42 dB-Hz | 5.7 | +7 dB | 0.66 / 0.72 / 0.60 | +1.8 kHz, 4.8 kHz |
+
+The real DMR looks like the model at about 40 dB-Hz. The detector isn't wrong: the IF reaches
+GP0 too weak. With no carrier the counts swing at rms 12.8 (the receiver's noise at full
+gain). With the -85 dBm carrier they drop to 4.2, about a fifth of the model's working level,
+so the AGC turns the IF down to where the sigma-delta's own noise is only 4-5 dB below it in
+band. Even a band-pass ahead of the crossings, or a complex discriminator, only reaches
+0.8-0.9 on half the captures. (The pager's 1200-baud modes have far more margin per symbol,
+which is why they never showed this.)
+
+Next: dmrcap now cycles each carrier's captures through four gain steps (the pager's AGC, then
+the AGC frozen with REG_7E bit 15 and REG_13 = 0x03FF, 0x03BE, 0x037E, gp0cap's layout) to
+find a gain that keeps the IF up in GP0. If one does, dmrdet freezes it while it listens (a
+few register writes, put back at the end). If none does, the fallbacks are a band-pass ahead of
+the crossings (about +0.1-0.2 in rho on the model at 45-48 dB-Hz) and summing the correlation
+over several slots of a repeater's stream.
 
 Run it with the cable in (`tools/k6_upload.py mod-dmrcap.bin --api-level 2 --run-s 620`) while
 440.925 is busy, and record the IC-7100 alongside for ground truth.

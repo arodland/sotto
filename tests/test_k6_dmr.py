@@ -192,7 +192,7 @@ def test_capture_module_sees_dmr():
     pytest.importorskip("unicorn")
     sy, _ = dmr.bs_symbols(1.0, ("idle", "idle"), seed=7)
     s, _ = dmr.dmr_baseband(sy, pre_s=0.0, post_s=0.0)
-    ret, said, _, stack = emulate(s, run_s=3, src=os.path.join(K6, "mod", "dmrcap.c"), post_s=1.0)
+    ret, said, writes, stack = emulate(s, run_s=3, src=os.path.join(K6, "mod", "dmrcap.c"), post_s=1.0)
     txt = "\n".join(ln for ln in said if not ln.startswith("y "))
     caps = dmr.parse_caps(said)
     car = [c for c in caps if c["pass_"]]
@@ -203,4 +203,6 @@ def test_capture_module_sees_dmr():
         r = dmr.cap_report(c["x"], c["ks"])
         assert r["fam"] == "bs" and abs(r["rho"]) >= 0.8 and r["gate_ok"], r
         assert 1500 < r["plus"] < 2400 and -2400 < r["minus"] < -1500, r
+    assert [c["gain"] for c in car] == [0, 1, 2, 3][:len(car)], txt   # the gain steps in turn
+    assert writes[0x7E][-1] == 0 and writes[0x13][-1] == 0, writes    # the pager's AGC put back
     assert stack < 3504 + 512, stack

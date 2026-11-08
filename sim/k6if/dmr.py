@@ -366,15 +366,15 @@ def cmd_audio(a):
 
 
 def parse_caps(lines):
-    """dmrcap's (and gp0cap's) serial lines -> [dict(pass_, k, ks, rssi, lost, x)]"""
+    """dmrcap's (and gp0cap's) serial lines -> [dict(pass_, gain, k, ks, rssi, lost, x)]"""
     import base64
     import re
     caps = {}
     for ln in lines:
         m = re.search(r"(?:^|say )c (\d+) (\d+) (\d+) ks=(\d+) r=(-?\d+) t=(\d+) lost=(\d+)", ln)
         if m:
-            p, _, k, ks, r, _, lost = map(int, m.groups())
-            caps[k] = dict(pass_=p, k=k, ks=ks, rssi=r, lost=lost, data=bytearray())
+            p, g, k, ks, r, _, lost = map(int, m.groups())
+            caps[k] = dict(pass_=p, gain=g, k=k, ks=ks, rssi=r, lost=lost, data=bytearray())
             continue
         m = re.search(r"(?:^|say )y (\d+) ([0-9a-f]{4}) ([A-Za-z0-9+/]+)\s*$", ln)
         if m:
@@ -458,7 +458,7 @@ def cmd_cap(a):
                 if len(c["x"]) < 500:
                     continue
                 d = cap_diag(c["x"], c["ks"], a.sps)
-                print(f"  {c['k']:3d} {'car' if c['pass_'] else 'ref'} r={c['rssi']}  dc {d['dc']:+.1f} rms {d['rms']:.1f}"
+                print(f"  {c['k']:3d} {'car' if c['pass_'] else 'ref'} g{c['gain']} r={c['rssi']}  dc {d['dc']:+.1f} rms {d['rms']:.1f}"
                       f"  IF peak {d['peak']:.0f} Hz, band {d['snr_db']:+.1f} dB over the noise above"
                       f"  |rho| zc {d['zc']:.2f} dc {d['zc_dc']:.2f} bp {d['zc_bp']:.2f} cplx {d['cplx']:.2f}"
                       f"  bp off {d['bp_off']:+.0f} sd {d['bp_sd']:.0f}, cplx sd {d['cplx_sd']:.0f}")
@@ -472,7 +472,7 @@ def cmd_cap(a):
                 print(f"  {c['k']:3d}: short ({len(c['x'])} counts)")
                 continue
             r = cap_report(c["x"], c["ks"], a.sps)
-            print(f"  {c['k']:3d} {'car' if c['pass_'] else 'ref'} r={c['rssi']} ks={c['ks']} lost={c['lost']}"
+            print(f"  {c['k']:3d} {'car' if c['pass_'] else 'ref'} g{c['gain']} r={c['rssi']} ks={c['ks']} lost={c['lost']}"
                   f"  IF {r['if_off']:+.0f} Hz sd {r['y_sd']:.0f}  best {r['fam']} rho={r['rho']:+.2f}"
                   f" @{r['t_ms']:.1f} ms  sync sd {r['sync_sd']:.0f} (+{r['plus']:.0f}/{r['minus']:.0f})"
                   f" gate {'ok' if r['gate_ok'] else 'NO'}  hits={len(r['hits'])}")

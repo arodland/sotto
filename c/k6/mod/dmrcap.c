@@ -5,15 +5,20 @@
 
    Lines, in gp0cap's format so tools/k6_ifcap.py's parser reads them:
      dcap start f=440925000 floor=-108 r43=3028 r73=.. r7e=.. r13=.. ncap=3240
-     c 1 0 7 ks=5374 r=-91 t=1234 lost=0       carrier (pass 1; 0 = the no-carrier reference),
-                                               gain step 0, capture 7, kS/s, RSSI dBm at its
-                                               start, 100 us ticks, ring overruns
+     c 1 2 7 ks=5374 r=-91 t=1234 lost=0       carrier (pass 1; 0 = the no-carrier reference),
+                                               gain step 2, capture 7, kS/s, RSSI dBm at its
+                                               start (under that gain), 100 us ticks, overruns
      y 7 0000 <48 base64 chars>                capture 7's counts (2 * ones - 64, int8, ~84 kHz)
    A capture is NCAP counts (3240: ~38 ms, so a repeater's stream, a sync every 30 ms, has a
    whole sync in each), on the stack. The first starts within ~5 ms of the RSSI crossing
    floor + SQ_DB; up to PER_CAR follow while the carrier stays (each dump takes ~0.3 s on the
-   cable). The cable is needed: the dumps are too long for telemetry.
-   Writes REG_34[3:0], REG_33 bit 8, the MCU's TIM17, DMA channel 1 and their clock enables, all
+   cable), cycling through NG gain steps: 0 = the pager's AGC, then the AGC frozen (REG_7E bit
+   15, index 3) with REG_13 from gains[] (gp0cap's layout). The first bench run (AGC only) had
+   the DMR carriers at -85..-90 dBm only 4-5 dB over the 1-bit path's noise in the IF band,
+   with the counts' rms down to 4 from 13 with no carrier: the AGC turns the IF down below
+   what GP0 needs, so this finds the gain that does better. The cable is needed: the dumps are
+   too long for telemetry.
+   Writes REG_34[3:0], REG_33 bit 8, REG_7E, REG_13, the MCU's TIM17, DMA channel 1 and their clock enables, all
    put back; the firmware retunes after. No TX. Returns the carrier captures, or -2 (a key held
    at the start), -3 (old image), -4 (PB1 not an input), -5 (REG_33 refused), -7 (TIM17 or DMA
    busy), -8 (scratch under 1028 bytes).
@@ -37,8 +42,10 @@
 #define NCAP 3240u
 #endif
 #ifndef PER_CAR
-#define PER_CAR 3
+#define PER_CAR 8
 #endif
+#define NG 4
+static const uint16_t gains[NG] = {0, 0x03FF, 0x03BE, 0x037E};
 
 #define GPIOB 0x48000400u
 #define RCC_AHBENR 0x40021014u
@@ -194,7 +201,7 @@ NOINLINE static void dump(const k6_api_t *api, const int8_t *buf, uint32_t k) {
 }
 
 /* one capture and its lines: pass 1 with a carrier, 0 without */
-NOINLINE static void one(const k6_api_t *api, uint8_t *ring, int pass, uint32_t k) {
+NOINLINE static void one(const k6_api_t *api, uint8_t *ring, int pass, int g, uint32_t k) {
   int8_t buf[NCAP];
   cap_t c;
   char line[64], *p;
@@ -203,7 +210,9 @@ NOINLINE static void one(const k6_api_t *api, uint8_t *ring, int pass, uint32_t 
   capture(ring, buf, &c);
   p = put(line, "c ");
   p = dec(p, (uint32_t)pass);
-  p = put(p, " 0 ");
+  *p++ = ' ';
+  p = dec(p, (uint32_t)g);
+  *p++ = ' ';
   p = dec(p, k);
   p = put(p, " ks=");
   p = dec(p, c.ks);
@@ -218,10 +227,22 @@ NOINLINE static void one(const k6_api_t *api, uint8_t *ring, int pass, uint32_t 
   dump(api, buf, k);
 }
 
+/* gain step g: 0 the pager's AGC as it was, else frozen at gains[g]; then 30 ms to settle */
+NOINLINE static void gain(const k6_api_t *api, uint16_t r7e, uint16_t r13, int g) {
+  if (!g) {
+    api->fd_write(0x13, r13);
+    api->fd_write(0x7E, r7e);
+  } else {
+    api->fd_write(0x7E, (uint16_t)((r7e & 0x0FFF) | 0x8000 | (3u << 12)));
+    api->fd_write(0x13, gains[g]);
+  }
+  api->delay_us(30000);
+}
+
 int k6_main(const k6_api_t *api) {
   uint8_t *ring;
   uint32_t room, ahb, apb2, k = 0, i;
-  uint16_t r33, r34;
+  uint16_t r33, r34, r7e, r13;
   int floor, ncar = 0, nc = 0;
   char line[64], *p;
   if (api->abi != 1 || api->level < 2) return -3;
@@ -238,6 +259,8 @@ int k6_main(const k6_api_t *api) {
   }
   r33 = api->fd_read(0x33);
   r34 = api->fd_read(0x34);
+  r7e = api->fd_read(0x7E);
+  r13 = api->fd_read(0x13);
   if ((r33 & 0x0100) && api->fd_write(0x33, (uint16_t)(r33 & ~0x0100)) != 0) {
     wr(RCC_AHBENR, ahb);
     return -5;
@@ -265,13 +288,18 @@ int k6_main(const k6_api_t *api) {
   p = dec(p, NCAP);
   *p = 0;
   api->say(line);
-  if (rssi(api) < floor + SQ_DB) one(api, ring, 0, k++); /* the no-carrier reference */
+  if (rssi(api) < floor + SQ_DB) one(api, ring, 0, 0, k++); /* the no-carrier reference */
   while (api->ms() < RUN_S * 1000u && !api->key_down()) {
     if (rssi(api) < floor + SQ_DB) {
       api->delay_us(5000);
       continue;
     }
-    for (i = 0; i < PER_CAR && rssi(api) >= floor + SQ_DB; i++) one(api, ring, 1, k++), nc++;
+    /* the carrier checked under the pager's AGC each time: a frozen gain moves the RSSI */
+    for (i = 0; i < PER_CAR && rssi(api) >= floor + SQ_DB; i++) {
+      gain(api, r7e, r13, (int)(i % NG));
+      one(api, ring, 1, (int)(i % NG), k++), nc++;
+      gain(api, r7e, r13, 0);
+    }
     ncar++;
     p = put(line, "dcap car ");
     p = dec(p, (uint32_t)ncar);
@@ -289,6 +317,7 @@ int k6_main(const k6_api_t *api) {
   wr(DMA_CMAR1, 0);
   wr(RCC_APB2ENR, apb2);
   wr(RCC_AHBENR, ahb);
+  gain(api, r7e, r13, 0);
   api->fd_write(0x34, r34);
   api->fd_write(0x33, r33);
   api->say("dcap done");
