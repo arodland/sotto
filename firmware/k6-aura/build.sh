@@ -117,8 +117,21 @@ variant() {
   (cd "$OUT" && sha256sum "$name.bin" | tee "$name.bin.sha256")
   # stack frames, largest first (the K6's stack ran out at playback)
   if command -v llvm-objdump >/dev/null 2>&1; then
-    llvm-objdump -d -C --no-show-raw-insn "$ELF" | python3 "$ROOT/tools/k6_frames.py" 40 > "$OUT/frames-$name.txt" &&
+    llvm-objdump -d -C --no-show-raw-insn "$ELF" > "$OUT/dis.tmp"
+    python3 "$ROOT/tools/k6_frames.py" 40 < "$OUT/dis.tmp" > "$OUT/frames-$name.txt" &&
       { echo "== stack frames, $title"; cat "$OUT/frames-$name.txt"; python3 "$ROOT/tools/k6_frames.py" --sizes "$ELF" | tee -a "$OUT/frames-$name.txt"; }
+    # the running stack: the deepest chain of direct calls under main (the coded 4FSK session's
+    # receiver, or a playback's decoder), against the stack the statics leave. The hiss image
+    # kept 244 B to spare when the shared block grew to 11,776 B (2026-11-08); modules and
+    # interrupts add to it through pointers this doesn't follow
+    python3 "$ROOT/tools/k6_frames.py" --deep < "$OUT/dis.tmp" > "$OUT/deep-$name.txt"
+    rm -f "$OUT/dis.tmp"
+    "$SIZE" -A "$ELF" | awk -v f="$OUT/deep-$name.txt" '
+      $1 == ".data" || $1 == ".bss" || $1 == ".uninit" { ram += $2 }
+      END { getline l < f; split(l, w, " "); deep = w[2] + 0
+            printf "running stack: deepest direct calls %d of %d B free (%d to spare)\n", deep, 20440 - ram, 20440 - ram - deep
+            if (20440 - ram - deep < 200) print "warning: under 200 B of stack to spare under the deepest call (modules and interrupts need more)" }' \
+      | tee -a "$OUT/size-$name.txt"
     # Aura's boot runs main and place_app (the App built on the stack, then moved to its
     # static) at once: their frames must fit the free stack with room for the calls under them
     # and an interrupt, or the boot writes over the top of .bss (aura-pager-vlri at 148 B to
@@ -236,7 +249,7 @@ fi
 [ -f "$OUT/sotto-vlr.bin" ] && (cd "$OUT" && sha256sum sotto-vlr.bin | tee sotto-vlr.bin.sha256)
 
 # The RAM modules' code (docs/k6-modules.md: hello; settle, cwprobe, cwlisten and i2sprobe, level 2; cwkey and
-# ft8tx, level 3; ifcal, level 4; rxmap, level 2, its parameter block patched by tools/k6_rxmap.py; scan, level 2, by tools/k6_scan.py; hfprobe and bandreg, level 2, by tools/k6_hf.py; dmrdet, dmrcap and dmrrx (level 2, its screen at 6), docs/k6-dmr.md; ctcssprobe, level 2, docs/k6-explore-app.md; surf and surfauto, level 6, docs/k6-surf.md), built as
+# ft8tx, level 3; ifcal, level 4; rxmap, level 2, its parameter block patched by tools/k6_rxmap.py; scan, level 2, by tools/k6_scan.py; hfprobe and bandreg, level 2, by tools/k6_hf.py; dmrdet, dmrcap and dmrrx (level 2, its screen at 6), docs/k6-dmr.md; ctcssprobe, level 2, docs/k6-explore-app.md; cwlisten_lo, level 2, cwlisten with a 400-1300 Hz bank; surf and surfauto, level 6, docs/k6-surf.md), built as
 # modem/k6mod.py builds them, for `python -m modem.k6 mod hello.wav out/mod-hello.bin --key-file ...`
 # (`--api-level 2` for the level 2 ones) on a machine without clang. A module
 # that says #define K6_MODULE_OPT z gets -Oz instead of -Os. Linked at two addresses: the
@@ -244,7 +257,7 @@ fi
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -Werror -I$ROOT/c/k6"
 for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep afsweep gp0cap \
-         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t iflive_h1200 iflive_h1350 iflive_h1440 iflive_h1500 iflive_h1600 xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls wsprtx wsprbcn wspriq bandreg ramprobe dmrdet dmrcap dmrrx surf surfauto ctcssprobe; do
+         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t iflive_h1200 iflive_h1350 iflive_h1440 iflive_h1500 iflive_h1600 xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls wsprtx wsprbcn wspriq bandreg ramprobe dmrdet dmrcap dmrrx surf surfauto ctcssprobe cwlisten_lo; do
   opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
   clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do
@@ -255,7 +268,7 @@ for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0d
   cmp "$HERE/build/$m-0.bin" "$HERE/build/$m-4096.bin"
   cp "$HERE/build/$m-0.bin" "$OUT/mod-$m.bin"
   ls -l "$OUT/mod-$m.bin"
-  # the shared RAM block (hal::arena in the Aura patch, 9,760 bytes in every SPI voice image) holds a
+  # the shared RAM block (hal::arena in the Aura patch, 11,776 bytes in every SPI voice image) holds a
   # 16-byte header, the code and an 8-byte tag; the scratch a module asks for comes after them
-  [ "$(wc -c < "$OUT/mod-$m.bin")" -le 9736 ] || { echo "mod-$m.bin: over the 9,760-byte module block"; exit 1; }
+  [ "$(wc -c < "$OUT/mod-$m.bin")" -le 11752 ] || { echo "mod-$m.bin: over the 11,776-byte module block"; exit 1; }
 done

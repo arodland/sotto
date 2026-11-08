@@ -179,6 +179,17 @@ def test_ends_and_long_marks(lib):
     assert whys == [2]
 
 
+def test_squelch_tails_dropped(lib):
+    """A long mark well apart from the ID at either end (the IC-7100's squelch tail, bench
+    2026-11-08 08:21Z: +596 ms a second after an 800 Hz ID gave '#T' at 5 wpm) isn't Morse;
+    a real last dash after a word gap stays."""
+    ev = keying("AG7EW TEST", 20)
+    assert feed(lib, ev[:-1] + [(0, 1020), (1, 596)]) == [("AG7EW TEST", 20)]
+    assert feed(lib, [(1, 600), (0, 900)] + ev) == [("AG7EW TEST", 20)]
+    assert feed(lib, keying("AG7EW T", 20)) == [("AG7EW T", 20)]
+    assert [t for t, _ in feed(lib, ev[:-1] + [(0, 1020), (1, 300)])] != ["AG7EW TEST"]
+
+
 def test_callsigns(lib):
     cases = {"AG7EW SOTTO TEST": ("AG7EW", 0), "DE WA7ABC/R": ("WA7ABC/R", 4),
              "VE9QRP/RPT": ("VE9QRP/RPT", 4), "KH6/AG7EW/P": ("AG7EW", 1), "N7XYZ R": ("N7XYZ", 4),

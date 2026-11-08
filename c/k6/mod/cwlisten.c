@@ -56,8 +56,10 @@
                                 is no ID: only counted. On air a module upload's FFSK gave bursts
                                 of 1-7 marks on tone 15; the shortest call (K1E) is 9 marks */
 #endif
-#define TONE_LO 600
-#define TONE_STEP 50
+#ifndef TONE_LO
+#define TONE_LO 600          /* the bank: 16 tones from TONE_LO, TONE_STEP apart (cwlisten_lo.c: */
+#define TONE_STEP 50         /* 400 Hz up in 60 Hz steps, for low-pitched IDs) */
+#endif
 
 #define NOINLINE __attribute__((noinline))   /* keeps their line buffers off run's frame */
 
@@ -70,7 +72,13 @@ static char *sdec(char *p, int32_t v) {
 /* f = TONE_LO + TONE_STEP i Hz, coefficient 128 cos(2 pi f / 8463 Hz): the probe's table, which
    found a 600 Hz ID as tone 0 */
 static const uint8_t tone_coef[16] = {
+#if TONE_LO == 600 && TONE_STEP == 50
     116, 113, 111, 109, 106, 103, 100, 97, 94, 91, 88, 84, 80, 77, 73, 69};
+#elif TONE_LO == 400 && TONE_STEP == 60
+    122, 121, 119, 116, 114, 111, 108, 105, 102, 98, 94, 90, 86, 82, 77, 73};
+#else
+#error "no coefficient table for this TONE_LO/TONE_STEP"
+#endif
 
 typedef struct {
   cw_t cw;

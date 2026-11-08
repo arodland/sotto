@@ -20,10 +20,30 @@ AUTO = os.path.join(ROOT, "c", "k6", "mod", "surfauto.c")
 FOREVER = 10**12
 
 
-def go(signals, keys, rx_hz=440_600_000, level=7, regs=None, src=SRC):
+class Bumpy(Receiver):
+    """bumps: [(hz, dBm)] that show only in reads under 5 ms after a tune (the noise bumps bench
+    run 1 jumped to on 2026-11-08), not in a settled read"""
+
+    def __init__(self, signals, bumps):
+        super().__init__(signals)
+        self.bumps, self.now = bumps, 0
+
+    def rssi(self, us):
+        self.now = us
+        return super().rssi(us)
+
+    def level(self, us):
+        import math
+        p = 10 ** (super().level(us) / 10)
+        if us - self.t < 5000:
+            p += sum(10 ** (d / 10) for hz, d in self.bumps if abs(hz - self.f) <= 12_000)
+        return 10 * math.log10(p)
+
+
+def go(signals, keys, rx_hz=440_600_000, level=7, regs=None, src=SRC, bumps=()):
     from modem import k6mod
     code, entry = k6mod.build(src)
-    m = Receiver([(f, d, a, b) for f, d, a, b in signals])
+    m = Bumpy([(f, d, a, b) for f, d, a, b in signals], list(bumps))
     lcd = {}
     r = {**START, 0x67: m.rssi, 0x47: 0x6040, **(regs or {})}
     ret, said, regs, writes = run(r, code=(code, entry), tune=m.tune, level=level, lcd=lcd, keypad=keys,
@@ -105,6 +125,20 @@ def test_bargraph_peaks_side_keys_and_audio():
     # the listening bar blinks: its column flips between frames
     a, b = on, fr[fr.index(on) + 1]
     assert {height(a, 42), height(b, 42)} == {24, 0}
+
+
+@need_clang
+def test_side_keys_skip_bumps_a_settled_read_doesnt_confirm():
+    # bumps at 440.700 and 441.000 in the quick reads only; the station at 441.200 is real
+    sig = [(441_200_000, -95, 0, FOREVER)]
+    keys = taps("AM", 2_000_000) + taps("BM", 4_000_000) + [(6_000_000, 6_300_000, "X")]
+    ret, said, regs, writes, lcd = go(sig, keys, bumps=[(440_700_000, -90), (441_000_000, -90)])
+    fr = lcd["frames"]
+    hs = {i: height(at(fr, 1_900_000), i) for i in range(64)}
+    assert hs[36] > 8 and hs[48] > 8                         # the bumps do show as bars
+    got = sels(said)
+    assert got[0] == "441.2000"                              # SIDE1 skips them
+    assert got[1] not in ("441.0000", "440.7000")            # SIDE2 too (it hunts on down the band)
 
 
 @need_clang

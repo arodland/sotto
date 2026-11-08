@@ -27,7 +27,8 @@
      24 name          16 characters, ASCII, NUL padded
      40 call          10 characters, A-Z 0-9 /, as heard, NUL padded
      50 call_flags    u8    RT_C_*
-     51 cw            u8    the last CW ID decode: tone index (tone 600 + 50 i Hz) in bits 3:0,
+     51 cw            u8    the last CW ID decode: tone index (tone 400 + 60 i Hz; 600 + 50 i
+                            in records written before 2026-11-08) in bits 3:0,
                             wpm / 3 in bits 7:4 (0 = never decoded)
      52 group         u8    bits 3:0 scan group: 0 Always Scan, 1-15 groups A-O
      53 spare         u8    0

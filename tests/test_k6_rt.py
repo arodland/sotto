@@ -276,7 +276,7 @@ def test_cw_id_policy(lib):
     # blank call: filled by itself, with the tone and speed
     assert L.rt_cw_apply(T, 146_941_000, 5000, b"WA7ABC/R", 4, 800, 20, 0, ctypes.byref(r)) == 2
     s, e = t.find(rx=146_940_000, tol=5000)
-    assert e.call == b"WA7ABC/R" and e.call_flags == 4 | 8 and e.cw == (4 | 6 << 4) and e.name == b"Lynden"
+    assert e.call == b"WA7ABC/R" and e.call_flags == 4 | 8 and e.cw == (6 | 6 << 4) and e.name == b"Lynden"
     w1 = lib.rth_writes()
     assert w1 > w0
     # the same call again: no write
@@ -288,12 +288,12 @@ def test_cw_id_policy(lib):
     assert lib.rth_writes() == w1 and t.find(rx=147_160_000)[1].call == b"W7ABC"
     assert L.rt_cw_apply(T, 147_160_000, 5000, b"W7XYZ", 0, 600, 13, 1, ctypes.byref(r)) == 4
     e = t.find(rx=147_160_000)[1]
-    assert e.call == b"W7XYZ" and not (e.flags & 0x10) and e.cw == (0 | 4 << 4)
+    assert e.call == b"W7XYZ" and not (e.flags & 0x10) and e.cw == (3 | 4 << 4)
     # a 10-character call fits; byte 51's packing
     assert L.rt_cw_apply(T, 146_940_000, 5000, b"VE9QRP/RPT", 4, 1200, 25, 1, ctypes.byref(r)) == 4
     assert t.find(rx=146_940_000)[1].call == b"VE9QRP/RPT"
     assert [L.rt_cw_byte(f, w) for f, w in ((600, 13), (1350, 35), (800, 1), (2000, 99))] == \
-        [0x40, 0xBF, 0x14, 0xFF]
+        [0x43, 0xBF, 0x16, 0xFF]
 
 
 def test_heard_tone_and_dmr_policy(lib):

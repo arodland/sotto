@@ -94,6 +94,8 @@ def listen(s, run_s=3, cn0=60.0, pre_s=0.0, post_s=0.5, level=-85, tone=0):
     e.mu.mem_write(lo, b"\xa5" * 8192)
     r = e.run()
     assert r is not None, "\n".join(e.said)
+    # the module API's say keeps 60 characters; a longer line also overran xd_stop's buffer once
+    assert all(len(ln) < 60 for ln in e.said), [ln for ln in e.said if len(ln) >= 60]
     stk = bytes(e.mu.mem_read(lo, 8192))
     used = 8192 - next(i for i, b in enumerate(stk) if b != 0xA5)
     return r[0], list(zip(at, e.said)), w47, used
@@ -122,8 +124,9 @@ def test_listen_mutes_a_repeaters_dmr():
     assert w47[0][1] == SHUT and all(v == SHUT or t >= t_off for t, v in w47), (w47, t_off)
     _, end = line(said, "DMR end")
     assert int(re.search(r"lost=(\d+)", end)[1]) <= 3, end
-    ks = int(re.search(r"ks=(\d+)", end)[1])
-    assert abs(ks - fe.FDMA / 1000) < 60, end
+    _, rate = line(said, "DMR rate")
+    ks = int(re.search(r"ks=(\d+)", rate)[1])
+    assert abs(ks - fe.FDMA / 1000) < 60, rate
     assert stack < 4096, stack
 
 
@@ -134,7 +137,7 @@ def test_listen_opens_for_fm_voice():
     txt = "\n".join(ln for _, ln in said)
     assert n == 0, txt
     assert line(said, "CTCSS 1000")[1] is not None, txt     # two readings in a row: the tone
-    assert "ctcss=1000/" in line(said, "DMR end")[1], txt
+    assert "ctcss=1000/" in line(said, "DMR rate")[1], txt
     assert line(said, "DMR on")[1] is None, txt
     # shut for the hold, then open about 150 ms in and staying so
     assert w47[0][1] == SHUT and w47[1][1] == OPEN, w47

@@ -157,13 +157,19 @@ static void xd_hit(xd_run_t *r, int k) {
 static void xd_wait(void *c, uint32_t us) {
   xd_run_t *r = (xd_run_t *)c;
   xd_t *s = r->s;
-  uint32_t t = xd_now(s), end = t + us * 96u, i;
+  uint32_t t = xd_now(s), end = t + us * 96u, i, k = 0;
+  uint32_t ms0 = s->api->ms(), lim = (us >> 10) + 3u;  /* ~us / 1000, no division */
   /* longer than a lap since the last look (a report line): the ring has gone round */
   if (t - r->tp > r->lap) s->lost++, xd_resync(r, t);
   for (;;) {
     uint32_t P = xd_poll(r), t0;
     t = xd_now(s);
     if ((int32_t)(t - end) >= 0) break;
+    /* a second clock: if TIM17 or TIM14 stopped, the wait still ends (and says so once) */
+    if (!(++k & 255u) && s->api->ms() - ms0 > lim) {
+      if (!s->stuck++) s->api->say("DMR stuck");
+      break;
+    }
     if (P - r->consumed > XD_RSZ - 64u) {
       s->lost++;
       xd_resync(r, t);
@@ -295,7 +301,8 @@ void xd_start(xd_t *s, const k6_api_t *api, int spk, uint32_t cps8) {
 
 int xd_stop(xd_t *s) {
   const k6_api_t *api = s->api;
-  char line[64], *p;
+  char line[80], *p;   /* two lines, each under say's 60 characters (one 64-byte line overran
+                          the buffer on the K6 once h, steps and the reads grew: 2026-11-08) */
   if (s->r51 != 0xFFFF) api->fd_write(0x51, s->r51), s->r51 = 0xFFFF;
   if (!s->ok) return 0;
   s->ok = 0;
@@ -309,9 +316,11 @@ int xd_stop(xd_t *s) {
   api->fd_write(0x33, s->r33);
   p = xd_kv(xd_kv(line, "DMR end n=", s->ndmr), " h=", (int)s->hits);
   p = xd_kv(xd_kv(p, " lost=", (int)s->lost), " steps=", (int)s->steps);
-  p = xd_kv(p, " busy=", (int)ds_udiv(s->busy * 100u, s->win + 1u));
+  xd_say(s, line, p);
+  p = xd_kv(line, "DMR rate busy=", (int)ds_udiv(s->busy * 100u, s->win + 1u));
   p = xd_kv(p, " ks=", (int)ds_udiv(96000u * 256u, s->cps8));
   p = xd_kv(xd_kv(p, " ctcss=", s->tone), "/", s->treads);
+  if (s->stuck) p = xd_kv(p, " stuck=", (int)s->stuck);
   xd_say(s, line, p);
   return s->ndmr;
 }

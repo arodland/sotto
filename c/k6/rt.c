@@ -302,9 +302,10 @@ int rt_delete(rt_t *t, uint16_t id) {
 
 /* ---- the CW ID listener's results ---- */
 
-/* tone index (tone - 600) / 50 and wpm / 3 by multiplies (exact over 600-1350 Hz, 0-99 wpm) */
+/* tone index (tone - 400) / 60 (tonedet.h's bank) and wpm / 3 by multiplies (exact over
+   400-1360 Hz, 0-99 wpm) */
 uint8_t rt_cw_byte(int tone_hz, int wpm) {
-  int i = tone_hz < 600 ? 0 : ((tone_hz - 600) * 1311) >> 16;
+  int i = tone_hz < 400 ? 0 : ((tone_hz - 400) * 1093) >> 16;
   int w = wpm < 0 ? 0 : wpm > 99 ? 33 : (wpm * 21846) >> 16;
   if (i > 15) i = 15;
   if (w > 15) w = 15;
