@@ -286,6 +286,19 @@ void ex_heard(ex_t *e, uint32_t hz, unsigned s) {
   if (c) c->heard_s = (uint16_t)(c->heard_s + s > 0xffffu ? 0xffffu : c->heard_s + s);
 }
 
+int ex_dmr_heard(ex_t *e, uint32_t hz, int dmr, unsigned s) {
+  ex_cand_t *c = ex_find(e, hz);
+  if (!c) return 0;
+  if (dmr) {
+    c->flags |= EX_F_DMR, c->clean = 0;
+    return 0;
+  }
+  if (!(c->flags & EX_F_DMR) || s < EX_CLEAN_S) return 0;
+  if (++c->clean < EX_CLEAN_N) return 0;
+  c->flags &= (uint8_t)~EX_F_DMR, c->clean = 0;
+  return 1;
+}
+
 void ex_to_rt(const ex_cand_t *c, rt_rec_t *r) {
   int i, lvl = c->hi;
   zero(r, sizeof *r);

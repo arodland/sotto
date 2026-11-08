@@ -72,6 +72,8 @@ typedef struct {
   char call[10];                 /* from ex_cw, NUL padded */
   uint8_t listens;               /* times Listen for ID went to it on its own (ex_pick_id) */
   uint16_t heard_s;              /* seconds those listens lasted (ex_heard) */
+  uint8_t clean;                 /* long automatic listens with no DMR since it was marked
+                                    EX_F_DMR (ex_dmr_heard); in the struct's tail padding */
 } ex_cand_t;
 
 typedef struct {
@@ -135,6 +137,16 @@ ex_cand_t *ex_pick_id(ex_t *e, const uint32_t *up_hz, unsigned n);
 #define EX_HEARD_STEP_S 60
 unsigned ex_listen_cap(const ex_cand_t *c, unsigned max_s, unsigned min_s);
 void ex_heard(ex_t *e, uint32_t hz, unsigned s);
+/* DMR by default (Jeff 2026-11-08: "mute by default until listening to it for a longer duration
+   reveals that it's not actually a dmr repeater"): a listen that heard DMR marks the row
+   EX_F_DMR, and the next listens there start with the speaker shut (xd_known). An automatic
+   listen of at least EX_CLEAN_S with no DMR counts towards clearing the mark; EX_CLEAN_N of
+   them in a row clear it, and any DMR starts the count again. s: the listen's seconds (0 for a
+   listen by hand, which never counts: it may sit on a dead carrier). Returns 1 when this
+   listen cleared the mark (the caller clears the saved entry's RT_F_DMR too), else 0. */
+#define EX_CLEAN_S 10
+#define EX_CLEAN_N 3
+int ex_dmr_heard(ex_t *e, uint32_t hz, int dmr, unsigned s);
 /* a repeater table record from a candidate, for Save (id 0: rt_put makes it a new entry) */
 void ex_to_rt(const ex_cand_t *c, rt_rec_t *r);
 

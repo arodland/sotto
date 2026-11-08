@@ -141,10 +141,10 @@ static int xd_ones64(const uint8_t *q) {
 static void xd_hit(xd_run_t *r, int k) {
   xd_t *s = r->s;
   ds_t *d = &s->d;
-  uint32_t ms;
+  uint32_t ms = s->api->ms();
   s->hits++;
+  s->last = ms;                               /* any sync keeps a known row shut */
   if (s->dmr ? d->hfam != s->fam : k != DS_CONF) return;
-  ms = s->api->ms();
   s->until = ms + XD_KEEP_MS;
   if (s->dmr) return;
   s->dmr = s->ever = s->pend = 1, s->ndmr++;
@@ -252,7 +252,7 @@ int xd_step(xd_t *s, xl_t *x) {
     s->dmr = 0;
     p = xd_kv(line, "DMR off ", (int)(ms - s->on_ms));
   }
-  xd_af(s, !s->dmr && ms - s->start >= XD_HOLD_MS);
+  xd_af(s, !s->dmr && (s->known ? ms - s->last >= XD_CLEAR_MS : ms - s->start >= XD_HOLD_MS));
   if (p != line) xd_say(s, line, p);
   xd_ctcss(s);
   return res;
@@ -263,7 +263,7 @@ void xd_start(xd_t *s, const k6_api_t *api, int spk, uint32_t cps8) {
   uint32_t i;
   for (i = 0; i < sizeof *s; i++) ((uint8_t *)s)[i] = 0;
   s->api = api, s->spk = spk ? 1 : 0, s->af = 1, s->cps8 = cps8 > 4000u && cps8 < 5200u ? cps8 : CPS8_0;
-  s->start = api->ms();
+  s->start = s->last = api->ms();
   s->r51 = api->fd_read(0x51);
   api->fd_write(0x51, 0x0300);                /* the sub-audio scan: wide filter, TX tone off */
   if (rd(GPIOB) & (3u << 2)) {               /* PB1 not an input: no IF to read */
@@ -323,6 +323,11 @@ int xd_stop(xd_t *s) {
   if (s->stuck) p = xd_kv(p, " stuck=", (int)s->stuck);
   xd_say(s, line, p);
   return s->ndmr;
+}
+
+void xd_known(xd_t *s) {
+  s->known = 1;
+  if (s->ok) s->api->say("DMR known: shut till clear");
 }
 
 uint32_t xd_flags(const xd_t *s) { return (s->ok && s->dmr ? XD_NOW : 0) | (s->ever ? XD_EVER : 0); }

@@ -37,6 +37,9 @@ int k6_main(const k6_api_t *api) {
   int r;
   xl_start(&x, api, 440925000u, RUN_S);
   xd_start(&d, api, 1, 0);
+#ifdef KNOWN
+  xd_known(&d);
+#endif
   while ((r = xd_step(&d, &x)) != XL_TIME && r != XL_OK) {}
   r = xd_stop(&d);
   xl_stop(&x, 2);
@@ -45,11 +48,13 @@ int k6_main(const k6_api_t *api) {
 """
 
 
-def build(run_s):
+def build(run_s, known=False):
     with tempfile.TemporaryDirectory() as d:
         w = os.path.join(d, "w.c")
         with open(w, "w") as f:
             f.write(f"#define RUN_S {run_s}u\n#include <stdint.h>\n")
+            if known:
+                f.write("#define KNOWN 1\n")
             f.write(HARNESS.replace('#include "', f'#include "{K6}/'))
         return k6mod.build(w)
 
@@ -62,7 +67,7 @@ def stream(s, cn0, pre_s, post_s, seed=1):
     return ib, a, a + len(bits)
 
 
-def listen(s, run_s=3, cn0=60.0, pre_s=0.0, post_s=0.5, level=-85, tone=0):
+def listen(s, run_s=3, cn0=60.0, pre_s=0.0, post_s=0.5, level=-85, tone=0, known=False):
     """-> (DMR transmissions, say lines (ms, text), REG_47 writes (ms, value), stack bytes)"""
     import k6_live_emu as le
 
@@ -85,7 +90,7 @@ def listen(s, run_s=3, cn0=60.0, pre_s=0.0, post_s=0.5, level=-85, tone=0):
 
     w47, at = [], []
 
-    code, entry = build(run_s)
+    code, entry = build(run_s, known)
     ib, on, off = stream(s, cn0, pre_s, post_s)
     e = Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=run_s + 1.0)
     e.rssi = lambda: level if on <= e.sample_now() < off else -120
@@ -158,3 +163,32 @@ def test_a_late_dmr_key_up_mutes_an_open_speaker():
     t_open = next(t for t, v in w47 if v == OPEN)
     t_shut = next(t for t, v in w47 if v == SHUT and t > t_open)
     assert t_open < 400 and 1000 <= t_shut <= 1250, w47
+
+
+def test_a_known_dmr_row_stays_shut_through_a_late_key_up():
+    """Jeff 2026-11-08: a row a listen heard DMR on before starts muted. The speaker stays shut
+    across the dead air before the key-up (the hold alone would have opened it at 150 ms), the
+    DMR, and until XD_CLEAR_MS after the last sync"""
+    pytest.importorskip("unicorn")
+    sy, _ = dmr.bs_symbols(1.0, ("idle", "idle"), seed=3)
+    s, _ = dmr.dmr_baseband(sy, pre_s=0.0, post_s=0.0)
+    n, said, w47, _ = listen(s, run_s=6, pre_s=1.0, post_s=0.5, known=True)
+    txt = "\n".join(ln for _, ln in said)
+    assert n == 1 and line(said, "DMR known")[1] is not None, txt
+    t_off, _ = line(said, "DMR off")
+    t_open = next((t for t, v in w47 if v == OPEN), None)
+    # the last sync ~2.0 s in: open no sooner than 3 s after it, and never before
+    assert w47[0][1] == SHUT and t_open is not None and t_open >= 4900, (w47, t_off)
+    assert all(v == SHUT for t, v in w47 if t < t_open), w47
+
+
+def test_a_known_dmr_row_opens_for_fm_voice_after_the_clear_time():
+    """an FM user on a mixed-mode repeater marked DMR: heard, but only after XD_CLEAR_MS"""
+    pytest.importorskip("unicorn")
+    a = dmr.speech("female_libri198_14s__original", 4.0)
+    n, said, w47, _ = listen(dmr.fm_voice(a, ctcss=100.0), run_s=4, tone=1000, known=True)
+    txt = "\n".join(ln for _, ln in said)
+    assert n == 0 and line(said, "DMR on")[1] is None, txt
+    t_open = next((t for t, v in w47 if v == OPEN), None)
+    assert w47[0][1] == SHUT and t_open is not None and 3000 <= t_open <= 3300, w47
+

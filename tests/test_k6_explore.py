@@ -313,6 +313,29 @@ def test_listen_cap_shrinks_with_time_listened(lib):
     assert x.find(147_000_000) is None
 
 
+def test_dmr_mark_clears_only_after_long_clean_listens(lib):
+    # Jeff 2026-11-08: "mute by default until listening to it for a longer duration reveals that
+    # it's not actually a dmr repeater": 3 automatic listens of 10 s or more with no DMR, in a row
+    x = List(lib)
+    x.over(440_925_000, 0, 20_000, -90)
+    hz, E = 440_925_000, ctypes.byref(x.e)
+
+    def dmr():
+        return bool(x.find(hz).flags & 0x80)
+
+    assert lib.ex_dmr_heard(E, hz, 0, 60) == 0 and not dmr()     # never marked: nothing to clear
+    assert lib.ex_dmr_heard(E, hz, 1, 8) == 0 and dmr()
+    assert lib.ex_dmr_heard(E, hz, 0, 9) == 0 and x.find(hz).clean == 0   # too short to count
+    assert lib.ex_dmr_heard(E, hz, 0, 0) == 0 and x.find(hz).clean == 0   # by hand: never counts
+    assert lib.ex_dmr_heard(E, hz, 0, 10) == 0 and lib.ex_dmr_heard(E, hz, 0, 120) == 0
+    assert x.find(hz).clean == 2 and dmr()
+    assert lib.ex_dmr_heard(E, hz, 1, 30) == 0 and x.find(hz).clean == 0  # DMR again: start over
+    assert [lib.ex_dmr_heard(E, hz, 0, 20) for _ in range(3)] == [0, 0, 1]
+    assert not dmr() and x.find(hz).clean == 0
+    assert lib.ex_dmr_heard(E, 147_000_000, 1, 10) == 0          # no candidate there: nothing
+    assert ctypes.sizeof(kx.Cand) == 52                          # clean sits in the tail padding
+
+
 def test_listen_for_id_picks_a_first_key_up_and_only_repeater_outputs(lib):
     # the EXPLORE bench run (2026-11-07 17:56): the listener went to 144.000, the K6's own 24 MHz
     # harmonic, and a carrier keyed for the first time had no candidate yet, so it couldn't be

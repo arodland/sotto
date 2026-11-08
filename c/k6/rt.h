@@ -147,8 +147,9 @@ int rt_cw_apply(rt_t *t, uint32_t rx_hz, uint32_t tol, const char *call, uint8_t
 uint8_t rt_cw_byte(int tone_hz, int wpm);   /* byte 51 */
 
 /* What a listen heard on the entry at rx_hz besides the call: its output's CTCSS tone (0.1 Hz;
-   0 = none heard) and whether it carried DMR. A blank tone is filled (rx_tone and, if it is
-   blank too, tx_tone: most repeaters send the access tone back), the DMR flag is set; a
+   0 = none heard) and whether it carried DMR (dmr > 0 sets RT_F_DMR; dmr < 0 clears it: long
+   listens heard none, ex_dmr_heard). A blank tone is filled (rx_tone and, if it is
+   blank too, tx_tone: most repeaters send the access tone back); a
    different stored tone is left as it is (typed or heard before: the caller shows both). One
    new version at most, none if nothing changes. Returns RT_TONE_*, or < 0 (flash). */
 enum { RT_TONE_NO_ENTRY = 0, RT_TONE_SAME = 1, RT_TONE_FILL = 2, RT_TONE_DIFFERS = 3 };
