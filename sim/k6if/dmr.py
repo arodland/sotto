@@ -410,7 +410,59 @@ def cap_report(x, ks, sps=2):
             "gate_ok": SD_LO <= sd <= SD_HI, "hits": hits(rg, 0.8, sps)}
 
 
+def cap_diag(x, ks, sps=2):
+    """why a capture's syncs don't show: the counts' DC and the IF band's share of their power
+    (in-band vs the 1-bit path's noise above it), then the best |rho| (any family, ungated)
+    from four discriminators: zero crossings as the MCU does them, after taking out the
+    counts' running mean, after a band-pass around the IF (+-6.5 kHz), and a complex one
+    (band-pass, analytic signal, phase steps) that has no crossing jitter at all"""
+    fc = ks * 1000.0 / fe.L
+    x = np.asarray(x, float)
+    f, P = signal.welch(x - x.mean(), fs=fc, nperseg=512)
+    band = (f > fe.FIF - 6500) & (f < fe.FIF + 6500)
+    hi = f > fe.FIF + 9000
+    peak = float(f[band][np.argmax(P[band])])
+    snr = 10 * np.log10(P[band].sum() / max(P[hi].sum() * band.sum() / max(hi.sum(), 1), 1e-12))
+
+    def best(y):
+        r = rho(np.nan_to_num(y), sps, gate=False)
+        span = 23 * sps
+        return max(float(np.abs(r[k][span:]).max()) for k in FAMS)
+
+    def zc(xx):
+        ph, _ = phase_grid(xx, sps, fc=fc)
+        return freq(ph, sps)
+
+    sos = signal.butter(4, [fe.FIF - 6500, fe.FIF + 6500], btype="bandpass", fs=fc, output="sos")
+    xb = signal.sosfiltfilt(sos, x)
+    dcr = x - signal.lfilter(np.ones(16) / 16, 1, x)
+    z = signal.hilbert(xb)
+    g = np.arange(0, len(x) - 1, fc / (BAUD * sps))
+    ph = np.interp(g, np.arange(len(x)), np.unwrap(np.angle(z))) / (2 * np.pi)
+    yc = np.concatenate([[np.nan], np.diff(ph) * BAUD * sps - fe.FIF])
+    yb = zc(xb)
+    return {"dc": float(x.mean()), "rms": float(x.std()), "peak": peak, "snr_db": float(snr),
+            "zc": best(zc(x)), "zc_dc": best(zc(dcr)), "zc_bp": best(yb), "cplx": best(yc),
+            "bp_off": float(np.nanmean(yb[50:])), "bp_sd": float(np.nanstd(yb[50:])),
+            "cplx_sd": float(np.nanstd(yc[50:]))}
+
+
 def cmd_cap(a):
+    if a.diag:
+        for p in a.files:
+            with open(p, errors="replace") as fh:
+                caps = parse_caps(fh)
+            print(f"{os.path.basename(p)}: {len(caps)} captures (best |rho|: zc as the MCU, zc minus"
+                  " running mean, zc after band-pass, complex discriminator)")
+            for c in caps:
+                if len(c["x"]) < 500:
+                    continue
+                d = cap_diag(c["x"], c["ks"], a.sps)
+                print(f"  {c['k']:3d} {'car' if c['pass_'] else 'ref'} r={c['rssi']}  dc {d['dc']:+.1f} rms {d['rms']:.1f}"
+                      f"  IF peak {d['peak']:.0f} Hz, band {d['snr_db']:+.1f} dB over the noise above"
+                      f"  |rho| zc {d['zc']:.2f} dc {d['zc_dc']:.2f} bp {d['zc_bp']:.2f} cplx {d['cplx']:.2f}"
+                      f"  bp off {d['bp_off']:+.0f} sd {d['bp_sd']:.0f}, cplx sd {d['cplx_sd']:.0f}")
+        return
     for p in a.files:
         with open(p, errors="replace") as fh:
             caps = parse_caps(fh)
@@ -438,6 +490,7 @@ def main():
     ap.add_argument("--cn0s", type=float, nargs="+", default=[60, 50, 45, 42, 40])
     ap.add_argument("--off", type=float, default=0.0)
     ap.add_argument("--rate-err", type=float, default=0.0)
+    ap.add_argument("--diag", action="store_true", help="cap: compare discriminators per capture")
     a = ap.parse_args()
     {"pd": cmd_pd, "hist": cmd_hist, "audio": cmd_audio, "cap": cmd_cap}[a.cmd](a)
 
