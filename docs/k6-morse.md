@@ -44,7 +44,7 @@ in the pauses.
 ## Receive
 
 The FD6818's tone detector, set up as `cwlisten` and EXPLORE's Listen for ID set it up
-(`c/k6/tonedet.h`: 16 tones from 600 to 1350 Hz, REG_0B bit 12), polled every millisecond,
+(`c/k6/tonedet.h`: 16 tones from 400 to 1300 Hz in 60 Hz steps, REG_0B bit 12), polled every millisecond,
 debounced 8 ms with the edges back-dated, and the detector's ~10 ms lag taken off each mark.
 It hears MCW: a tone keyed on an FM carrier, as `wsprtx`'s ID and this module's own sending.
 Carrier-keyed CW (`cwkey`) doesn't trigger the tone detector.

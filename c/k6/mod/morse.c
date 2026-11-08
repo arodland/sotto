@@ -17,7 +17,7 @@
      DE AG7EW                  the text sent
 
    Receive: the FD6818's tone detector (c/k6/tonedet.h, as cwlisten and EXPLORE's Listen for ID:
-   16 tones 600-1350 Hz, REG_0B bit 12) polled every millisecond, debounced 8 ms, the detector's
+   16 tones 400-1300 Hz, REG_0B bit 12) polled every millisecond, debounced 8 ms, the detector's
    ~10 ms lag taken off each mark. The decoder is a real-time one: a mark under twice the dot
    length is a dit, and the dot length follows the dits and dahs heard (8 to 50 wpm), so the
    letter shows as soon as its gap does. (cwid.c, the CW ID decoder, decodes a whole
