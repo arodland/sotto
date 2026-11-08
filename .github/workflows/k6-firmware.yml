@@ -53,45 +53,43 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install numpy scipy soundfile pytest unicorn capstone
+      - run: pip install numpy scipy soundfile pytest pytest-xdist unicorn capstone
       - name: clang and lld (the modules' builds and their emulated runs)
         run: sudo apt-get update -qq && sudo apt-get install -y -qq clang lld llvm
-      - name: pager reassembly and playback vs the M0 decoder path
+      - name: host libraries the tests call
         run: |
           make -C c VARIANT=v3.7 fixed PYTHON=false
           make -C c/k6
-          python -m pytest -q --durations=8 \
+      # One pytest run over every test, spread over the runner's cores (-n auto, work stealing), so the long
+      # emulated-M0 sessions (ifpager, ifrx, ft8wf, dmr, ifcal: 30-60 s each) run side by side.
+      # Add a new test file as one line, in alphabetical order.
+      # WSPR (tests/test_k6_wsprtx.py, tests/test_k6_wspriq.py) is left out of CI because it is slow.
+      # Run it by hand after touching the WSPR modules: python -m pytest -q tests/test_k6_wspr*.py
+      - name: pager, IF modem, FT8 and modules on an emulated M0 (transmit rules, Morse RTX, IF tap, calibration, upload ARQ)
+        run: |
+          python -m pytest -q -n auto --dist worksteal --durations=8 \
             tests/test_k6_air.py \
-            tests/test_k6_cb.py \
-            tests/test_k6_cwid.py \
-            tests/test_k6_harness.py \
-            tests/test_k6_hiss.py \
-            tests/test_k6_ifcap.py \
-            tests/test_k6_ifpager.py \
-            tests/test_k6_ifrx.py \
-            tests/test_k6_mod.py \
-            tests/test_k6_pager.py \
-            tests/test_k6_vlr.py
-      # WSPR (tests/test_k6_wsprtx.py, tests/test_k6_wspriq.py) is left out of CI: it was the slowest
-      # step. Run it by hand after touching the WSPR modules: python -m pytest -q tests/test_k6_wspr*.py
-      - name: FT8 (host core, GP0 path sim, ft8wf and ft8tx on an emulated M0)
-        run: |
-          python -m pytest -q --durations=8 \
-            tests/test_k6_ft8.py \
-            tests/test_k6_ft8tx.py
-      - name: modules on an emulated M0 (the transmit rules for every module that keys up, Morse RTX with a modelled operator, the IF tap, calibration) and upload ARQ
-        run: |
-          python -m pytest -q --durations=8 \
             tests/test_k6_arq.py \
             tests/test_k6_bench.py \
+            tests/test_k6_cb.py \
+            tests/test_k6_cwid.py \
             tests/test_k6_cwkey.py \
             tests/test_k6_dmr.py \
             tests/test_k6_dmrdec.py \
             tests/test_k6_explore.py \
+            tests/test_k6_ft8.py \
+            tests/test_k6_ft8tx.py \
+            tests/test_k6_harness.py \
             tests/test_k6_hf.py \
+            tests/test_k6_hiss.py \
             tests/test_k6_i2s.py \
             tests/test_k6_ifcal.py \
+            tests/test_k6_ifcap.py \
+            tests/test_k6_ifpager.py \
+            tests/test_k6_ifrx.py \
+            tests/test_k6_mod.py \
             tests/test_k6_morse.py \
+            tests/test_k6_pager.py \
             tests/test_k6_rt.py \
             tests/test_k6_rxmap.py \
             tests/test_k6_scan.py \
@@ -99,6 +97,7 @@ jobs:
             tests/test_k6_sweep.py \
             tests/test_k6_txrules.py \
             tests/test_k6_update.py \
+            tests/test_k6_vlr.py \
             tests/test_k6_xscan.py \
             tests/test_psk31.py
 
