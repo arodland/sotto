@@ -25,10 +25,10 @@ index 785c441..6af31c1 100644
  opt-level = "z"
  lto = true
 diff --git a/build.rs b/build.rs
-index 34078b1..8a73bcc 100644
+index 34078b1..86605f2 100644
 --- a/build.rs
 +++ b/build.rs
-@@ -50,6 +50,13 @@ fn main() {
+@@ -50,6 +50,22 @@ fn main() {
      println!("cargo:rerun-if-changed=memory.x");
      println!("cargo:rerun-if-changed=build.rs");
  
@@ -38,6 +38,15 @@ index 34078b1..8a73bcc 100644
 +    println!("cargo:rustc-link-search=native={}", lib.display());
 +    println!("cargo:rustc-link-lib=static=sotto_k6");
 +    println!("cargo:rerun-if-changed=lib/libsotto_k6.a");
++
++    // `shared_lcd`: the screen's page buffer in the idle PWM ring (hal::arena, device::display)
++    // in the images that play voice from SPI codebooks: pager-only, not lean (the install and
++    // MCU-flash table images), not EXPLORE (its sweep keeps the ring while it draws)
++    println!("cargo:rustc-check-cfg=cfg(shared_lcd)");
++    let feat = |f: &str| env::var_os(format!("CARGO_FEATURE_{f}")).is_some();
++    if feat("PAGER_ONLY") && !feat("LEAN") && !feat("EXPLORE") {
++        println!("cargo:rustc-cfg=shared_lcd");
++    }
 +
      println!("cargo:rustc-env=GIT_VERSION={}", git_version());
      watch_git_dir();
@@ -6085,6 +6094,71 @@ index 8e35e53..c8a473f 100644
  
  /// Selectable scan step sizes, Hz
  const SCAN_STEPS_HZ: [u32; 15] = [
+diff --git a/src/device/display.rs b/src/device/display.rs
+index 6fd14b9..9725741 100644
+--- a/src/device/display.rs
++++ b/src/device/display.rs
+@@ -45,9 +45,60 @@ impl<'a, DI: WriteOnlyDataCommand> Display<'a, DI> {
+     }
+ 
+     /// Give the UI layer a `&mut` reference to the raw ST7565 for drawing.
++    #[cfg(not(shared_lcd))]
+     pub fn as_draw_target(&mut self) -> &mut Lcd<'a, DI> {
+         self.lcd.as_mut().unwrap()
+     }
++
++    /// Give the UI layer a `&mut` reference to the raw ST7565 for drawing: a blank frame, in a
++    /// page buffer made afresh in the idle PWM ring (`shared_page_buffer`). The driver is
++    /// rebuilt around it, so the buffer it held before (which a playback may have written over
++    /// since) is never read again. Every caller draws a whole screen and then flushes it, all
++    /// of it: the controller gets the 1 KB, about 1.5 ms of SPI.
++    #[cfg(shared_lcd)]
++    pub fn as_draw_target(&mut self) -> &mut Lcd<'a, DI> {
++        let (old, interface) = self.lcd.take().unwrap().release_display_interface();
++        drop(old);
++        let lcd = st7565::ST7565::new(interface, display_spec::Sc5260Spec)
++            .into_graphics_mode(shared_page_buffer());
++        self.lcd.insert(lcd)
++    }
++
++    /// Draws the screen a controller page (8 pixel rows, 128 bytes, bit 0 the top row) at a
++    /// time: `draw` fills each page's bytes, cleared first, and each goes out as soon as it is
++    /// drawn. For a RAM module's screen, while the module has the shared block (the ring, the
++    /// page buffer's home, included) to itself.
++    #[cfg(all(shared_lcd, not(feature = "lean")))]
++    pub fn draw_pages(&mut self, mut draw: impl FnMut(u8, &mut [u8; 128])) {
++        let (detached, mut interface) = self.lcd.take().unwrap().release_display_interface();
++        let col = <display_spec::Sc5260Spec as st7565::DisplaySpecs<128, 64, 8>>::COLUMN_OFFSET;
++        let mut buf = [0u8; 128];
++        for page in 0..8u8 {
++            buf.iter_mut().for_each(|b| *b = 0);
++            draw(page, &mut buf);
++            interface
++                .send_commands(DataFormat::U8(&[0xB0 | page, 0x10 | (col >> 4), col & 0x0F]))
++                .ok();
++            interface.send_data(DataFormat::U8(&buf)).ok();
++        }
++        self.lcd = Some(detached.attach_display_interface(interface));
++    }
++}
++
++/// The ST7565 page buffer (1,120 bytes with its dirty marks) of the images that play voice from
++/// SPI codebooks: in the PWM ring (hal::arena), which nothing uses while the screen is drawn
++/// (no redraw while a message plays or streams), instead of main's stack frame for good. Zeroed
++/// here, before a reference to it exists; the driver marks it all dirty when it takes it.
++#[cfg(shared_lcd)]
++pub fn shared_page_buffer() -> &'static mut st7565::GraphicsPageBuffer<128, 8> {
++    type Buf = st7565::GraphicsPageBuffer<128, 8>;
++    const _: () = assert!(core::mem::size_of::<Buf>() <= crate::hal::arena::RING_BYTES);
++    let p = crate::hal::arena::lcd() as *mut u32;
++    // word stores, no memset: compiler_builtins' mem functions cost flash
++    for i in 0..core::mem::size_of::<Buf>() / 4 {
++        unsafe { core::ptr::write_volatile(p.add(i), 0) };
++    }
++    unsafe { &mut *(p as *mut Buf) }
+ }
+ 
+ pub struct Backlight {
 diff --git a/src/drivers/fd6818.rs b/src/drivers/fd6818.rs
 index a4f1729..1b8d400 100644
 --- a/src/drivers/fd6818.rs
@@ -6125,10 +6199,10 @@ index 73a6de2..65c81cc 100644
  /// prompt has run
 diff --git a/src/hal/arena.rs b/src/hal/arena.rs
 new file mode 100644
-index 0000000..a4ef326
+index 0000000..680cd58
 --- /dev/null
 +++ b/src/hal/arena.rs
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,98 @@
 +//! One block of RAM shared by the things that never run at the same time.
 +//!
 +//! A voice message needs the message store, the PWM audio ring and the decoder's working
@@ -6148,24 +6222,31 @@ index 0000000..a4ef326
 +//! starts. The telemetry text of a module (the last TLM_BYTES) stays there after the module
 +//! returns, for the upload report, until a playback's decoder overwrites it.
 +//!
-+//! Size: the same 9,760 bytes in every image that reads its codebooks from SPI flash and plays
++//! The screen's 1 KB page buffer borrows the ring's first bytes too (`lcd`, in the images built
++//! with `shared_lcd`: device::display), only while the screen is drawn, which never happens
++//! while a message plays or streams. A running module has the ring, so its screen goes out a
++//! page (128 bytes of stack) at a time. Before, the buffer sat in main's stack frame for good.
++//!
++//! Size: the same 11,776 bytes in every image that reads its codebooks from SPI flash and plays
 +//! voice, so a module that fits one fits all. In the hiss band image that is store 4,096 + ring
 +//! 2,560 + decoder 2,240 (sotto_pager.c SP_DEC_MAX 2,232) + the 864 bytes the pager-only build
 +//! takes out of Aura's `App` (MAX_SATELLITES 1, the spectrum's MAX_BINS 1: screens it never
-+//! shows); the 8 kHz images (ring 1,280, decoder at most 1,504) give the rest of the block to
-+//! modules, out of stack they had to spare. The running stack is what limits it: the decoder's
-+//! deepest call (main 2,952 + synth 2,240 + the pager's frames) leaves the hiss image about 400
-+//! bytes never touched, as before. The EXPLORE image has no decoder, so its block is the store
-+//! and the ring (5,376 bytes). So is the lean images' (codebook install, codebooks in MCU
-+//! flash): they have no flash for the pool's code, and their library keeps the decoder's memory
-+//! in its own static.
++//! shows) + the 2,016 bytes main's frame gave up with the page buffer (2,952 -> 928); the 8 kHz
++//! images (ring 1,280, decoder at most 1,504) give the rest of the block to modules, out of stack
++//! they had to spare. The running stack is what limits it. Its deepest call, from main's frame
++//! through the coded 4FSK session (main 928 + if_session 496 + the receiver's `run` 2,736 and
++//! the frames around them: 4,588 bytes; a playback's decoder, with synth's 2,240, is 4.2 KB),
++//! keeps the 244 bytes to spare it had before (`build.sh` prints both). The EXPLORE image has
++//! no decoder, so its block is the store and the ring (5,376 bytes). So is the lean images'
++//! (codebook install, codebooks in MCU flash): they have no flash for the pool's code, and their
++//! library keeps the decoder's memory in its own static. Both keep the page buffer in main.
 +
 +/// the message store: sp_init's buffer
 +pub const STORE_BYTES: usize = 4096;
 +/// the PWM audio ring (hal::pwm_audio)
 +pub const RING_BYTES: usize = super::pwm_audio::RING_BYTES;
 +#[cfg(not(any(feature = "explore", feature = "lean")))]
-+pub const ARENA_BYTES: usize = 9760;
++pub const ARENA_BYTES: usize = 11776;
 +#[cfg(any(feature = "explore", feature = "lean"))]
 +pub const ARENA_BYTES: usize = STORE_BYTES + RING_BYTES;
 +/// the decoder's pool: what is left after the store and the ring
@@ -6201,6 +6282,14 @@ index 0000000..a4ef326
 +    unsafe { base().add(STORE_BYTES) as *mut u16 }
 +}
 +
++/// The screen's page buffer while it is drawn (device::display, `shared_lcd` images): the
++/// ring's first bytes, as nothing plays then
++#[cfg(shared_lcd)]
++#[inline(always)]
++pub fn lcd() -> *mut u8 {
++    ring() as *mut u8
++}
++
 +/// The decoder's pool
 +#[inline(always)]
 +pub fn dec() -> *mut u8 {
@@ -6230,10 +6319,10 @@ index 57e9999..8ebf569 100644
  pub mod timer;
 diff --git a/src/hal/pwm_audio.rs b/src/hal/pwm_audio.rs
 new file mode 100644
-index 0000000..e95345d
+index 0000000..37404d9
 --- /dev/null
 +++ b/src/hal/pwm_audio.rs
-@@ -0,0 +1,168 @@
+@@ -0,0 +1,169 @@
 +//! 8 kHz PCM (16 kHz in the hiss band image) out of the MCU's PWM pin, the path the stock firmware uses for
 +//! its voice prompts: PA11 = TIM1_CH4 (AF2) -> two RC poles (4.7k/3.9n,
 +//! 4.7k/22n) -> 22k -> the speaker amplifier's input, summed with the RF
@@ -6310,8 +6399,9 @@ index 0000000..e95345d
 +/// The ring's size in bytes
 +pub const RING_BYTES: usize = RING * 2;
 +
-+/// The ring as bytes, for other uses while nothing plays (the pager keeps a module's report
-+/// text here). A playback fills it before it starts, which overwrites whatever was there.
++/// The ring as bytes, for other uses while nothing plays (the coded 4FSK session's receiver;
++/// the screen's page buffer while it is drawn, hal::arena::lcd). A playback fills it before it
++/// starts, which overwrites whatever was there.
 +pub fn idle_bytes() -> *mut u8 {
 +    super::arena::ring() as *mut u8
 +}
@@ -6549,7 +6639,7 @@ index 131f932..99ae011 100644
  
  /// Pull one byte received on USART1 since the last call, if any.
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..1842385 100644
+index 9d2b0c0..7719250 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -14,7 +14,7 @@ mod ui;
@@ -6613,7 +6703,25 @@ index 9d2b0c0..1842385 100644
  
      let mut cp = cortex_m::Peripherals::take().unwrap();
      unsafe { cp.NVIC.set_priority(kd32f328_pac::Interrupt::USART1, 0) };
-@@ -109,6 +147,7 @@ fn main() -> ! {
+@@ -98,9 +136,16 @@ fn main() -> ! {
+         .unwrap_or_else(|_| unreachable!());
+     let interface = display_interface_spi::SPIInterface::new(spi_device, dc_pin);
+ 
++    // the 1 KB page buffer: in main's frame for good, or (images that play voice from SPI
++    // codebooks) in the PWM ring only while the screen is drawn, device::display
++    #[cfg(not(shared_lcd))]
+     let mut page_buffer: st7565::GraphicsPageBuffer<128, 8> = st7565::GraphicsPageBuffer::new();
++    #[cfg(not(shared_lcd))]
++    let page_buffer = &mut page_buffer;
++    #[cfg(shared_lcd)]
++    let page_buffer = device::display::shared_page_buffer();
+     let mut lcd = st7565::ST7565::new(interface, display_spec::Sc5260Spec)
+-        .into_graphics_mode(&mut page_buffer);
++        .into_graphics_mode(page_buffer);
+ 
+     {
+         let mut syst_delay = SystDelay(&mut cp.SYST);
+@@ -109,6 +154,7 @@ fn main() -> ! {
      lcd.flush().ok();
      lcd.set_display_on(true).ok();
      let mut display = Display::new(lcd);
@@ -6621,7 +6729,7 @@ index 9d2b0c0..1842385 100644
      writeln!(dbg, "lcd init done").ok();
  
      // rfic
-@@ -149,12 +188,17 @@ fn main() -> ! {
+@@ -149,12 +195,17 @@ fn main() -> ! {
      }
  
      let cal_buf = storage.read_calibration();
@@ -6639,7 +6747,7 @@ index 9d2b0c0..1842385 100644
          writeln!(
              dbg,
              "squelch cal @0xf0c0: th_in={:?} th_out={:?}",
-@@ -234,7 +278,11 @@ fn main() -> ! {
+@@ -234,7 +285,11 @@ fn main() -> ! {
      }
  
      // app class
@@ -6652,7 +6760,7 @@ index 9d2b0c0..1842385 100644
          radio,
          chip_id,
          keypad,
-@@ -265,8 +313,7 @@ fn main() -> ! {
+@@ -265,8 +320,7 @@ fn main() -> ! {
              display.flush();
          }
          3 => {
@@ -6662,7 +6770,7 @@ index 9d2b0c0..1842385 100644
              display.flush();
          }
          _ => {}
-@@ -301,6 +348,63 @@ fn main() -> ! {
+@@ -301,6 +355,63 @@ fn main() -> ! {
      )
      .ok();
  
@@ -6726,7 +6834,7 @@ index 9d2b0c0..1842385 100644
      // scheduler + main loop
      let mut scheduler = scheduler::Scheduler::new();
      let mut applied_contrast: u8 = u8::MAX;
-@@ -329,6 +433,19 @@ fn main() -> ! {
+@@ -329,6 +440,19 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -6746,7 +6854,7 @@ index 9d2b0c0..1842385 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +518,8 @@ fn main() -> ! {
+@@ -401,6 +525,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -6755,7 +6863,7 @@ index 9d2b0c0..1842385 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +584,13 @@ fn main() -> ! {
+@@ -465,9 +591,13 @@ fn main() -> ! {
              }
          }
  
@@ -6773,7 +6881,7 @@ index 9d2b0c0..1842385 100644
                  app.poll_squelch(&mut cp.SYST, 3);
                  app.poll_dual_standby(&mut cp.SYST, app.rssi_open());
 diff --git a/src/ui/mod.rs b/src/ui/mod.rs
-index cdfa0f7..91caa2f 100644
+index cdfa0f7..e9a1165 100644
 --- a/src/ui/mod.rs
 +++ b/src/ui/mod.rs
 @@ -6,6 +6,7 @@ mod fm;
@@ -6792,7 +6900,7 @@ index cdfa0f7..91caa2f 100644
  use satellite::draw_satellite;
  use sstv::draw_sstv;
  use scan::draw_scan;
-@@ -62,6 +64,42 @@ impl<const N: usize> core::fmt::Write for TextBuf<N> {
+@@ -62,6 +64,54 @@ impl<const N: usize> core::fmt::Write for TextBuf<N> {
      }
  }
  
@@ -6807,8 +6915,15 @@ index cdfa0f7..91caa2f 100644
 +#[cfg(not(feature = "lean"))]
 +unsafe fn mod_flush<DI: WriteOnlyDataCommand + 'static>() -> i32 {
 +    let d = unsafe { &mut *(*core::ptr::addr_of!(MOD_DISPLAY) as *mut Display<'static, DI>) };
-+    pager::draw_mod_screen(d.as_draw_target(), unsafe { &*core::ptr::addr_of!(app::pager::MOD_SCREEN) });
-+    d.flush();
++    let s = unsafe { &*core::ptr::addr_of!(app::pager::MOD_SCREEN) };
++    // the module has the ring (the page buffer's home): a page at a time, 128 bytes of stack
++    #[cfg(shared_lcd)]
++    d.draw_pages(|page, buf| pager::draw_mod_page(buf, page, s));
++    #[cfg(not(shared_lcd))]
++    {
++        pager::draw_mod_screen(d.as_draw_target(), s);
++        d.flush();
++    }
 +    0
 +}
 +
@@ -6824,6 +6939,11 @@ index cdfa0f7..91caa2f 100644
 +/// Pager-only image: just the VOICE MSG screen, so the other screens aren't linked.
 +#[cfg(feature = "pager-only")]
 +pub fn draw_pager_only<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &app::App) {
++    // the page buffer is in the PWM ring (device::display): never while a message streams
++    #[cfg(shared_lcd)]
++    if app.pager_streaming() {
++        return;
++    }
 +    if app.exploring() {
 +        app::pager::explore_draw(display.as_draw_target(), app);
 +    } else {
@@ -6835,7 +6955,7 @@ index cdfa0f7..91caa2f 100644
  pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut app::App) {
      match app.mode() {
          app::Mode::AppMenu => draw_app_menu(display.as_draw_target(), &*app),
-@@ -77,6 +115,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
+@@ -77,6 +127,7 @@ pub fn draw<DI: WriteOnlyDataCommand>(display: &mut Display<'_, DI>, app: &mut a
              draw_satellite(display.as_draw_target(), app);
          }
          app::Mode::Sstv => draw_sstv(display.as_draw_target(), app),
@@ -6845,10 +6965,10 @@ index cdfa0f7..91caa2f 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..54b172e
+index 0000000..1482539
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,364 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
@@ -7063,7 +7183,7 @@ index 0000000..54b172e
 +/// a RAM module's screen (module API level 6, app/pager.rs ModScreen): line 0 as an inverted
 +/// title bar, lines 1-5 below at the explorer's baselines (y = 9, 19 ... 59), a bar after a
 +/// line's text, and the module's waterfall rows over lines 2-4 (not in the `lean` images)
-+#[cfg(not(feature = "lean"))]
++#[cfg(all(not(feature = "lean"), not(shared_lcd)))]
 +pub fn draw_mod_screen<D>(lcd: &mut D, s: &app::pager::ModScreen)
 +where
 +    D: DrawTarget<Color = BinaryColor>,
@@ -7129,5 +7249,87 @@ index 0000000..54b172e
 +            })
 +        });
 +        lcd.draw_iter(px).ok();
++    }
++}
++
++/// draw_mod_screen's picture, one controller page (pixel rows 8 * page .. 8 * page + 7, bit 0
++/// the top one) at a time, for device::display's draw_pages: the images whose page buffer is
++/// in the PWM ring, which a running module may hold. Pixel for pixel the same screen (the same
++/// font, baselines, bars and waterfall), drawn straight into the page's 128 bytes: a pass
++/// touches only the lines that reach its rows, and no embedded-graphics code is built for it.
++#[cfg(all(not(feature = "lean"), shared_lcd))]
++pub fn draw_mod_page(buf: &mut [u8; 128], page: u8, s: &app::pager::ModScreen) {
++    use app::pager::{MOD_COLS, MOD_LINES, WF_TOP};
++    use embedded_graphics::image::GetPixel;
++    let y0 = 8 * page as i32;
++    // rows top .. top + h of columns x .. x + w, lit or dark, clipped to the page
++    let rect = |buf: &mut [u8; 128], x: i32, top: i32, w: i32, h: i32, on: bool| {
++        let (a, b) = ((top - y0).max(0), (top + h - y0).min(8));
++        let (x0, x1) = (x.max(0), (x + w).min(128));
++        if a >= b || x0 >= x1 {
++            return;
++        }
++        let m = ((0xFFu16 << a) & (0xFFu16 >> (8 - b))) as u8;
++        for c in &mut buf[x0 as usize..x1 as usize] {
++            *c = if on { *c | m } else { *c & !m };
++        }
++    };
++    rect(buf, 0, 0, 128, 11, true); // the title bar
++    let wf = s.wf_rows > 0 && !s.wf.is_null();
++    let font = &FONT_6X10;
++    for i in 0..MOD_LINES {
++        let y = 9 + 10 * i as i32; // baseline: glyph rows y - 7 .. y + 2, a bar's y - 7 .. y
++        if (wf && (2..5).contains(&i)) || y + 3 <= y0 || y - 7 >= y0 + 8 {
++            continue;
++        }
++        let on = i != 0;
++        let t = &s.text[i];
++        let mut n = 0;
++        while n < MOD_COLS && t[n] != 0 {
++            // mod_lcd_text keeps only 0x20-0x7E: the font's glyphs in order, 16 to a row
++            let g = t[n].wrapping_sub(0x20) as i32;
++            let (gx, gy) = ((g % 16) * 6, (g / 16) * 10);
++            for r in 0..10 {
++                let dy = (y - 7 + r - y0) as u32;
++                if dy >= 8 {
++                    continue;
++                }
++                for c in 0..6 {
++                    let x = 1 + 6 * n as i32 + c;
++                    if x < 128 && font.image.pixel(Point::new(gx + c, gy + r)) == Some(BinaryColor::On) {
++                        buf[x as usize] = if on { buf[x as usize] | 1 << dy } else { buf[x as usize] & !(1 << dy) };
++                    }
++                }
++            }
++            n += 1;
++        }
++        let (mut num, mut den) = s.bar[i];
++        let x0 = 1 + 6 * n as i32 + if n > 0 { 3 } else { 0 };
++        if den > 0 && x0 < 118 {
++            while den > 0xFFFF {
++                den >>= 1;
++                num >>= 1;
++            }
++            let w = 126 - x0;
++            let fill = (w as u32 * num / den.max(1)) as i32;
++            // its outline (a 1-pixel stroke on the rectangle's edge), then the filled part
++            rect(buf, x0, y - 7, w + 1, 1, on);
++            rect(buf, x0, y, w + 1, 1, on);
++            rect(buf, x0, y - 7, 1, 8, on);
++            rect(buf, x0 + w, y - 7, 1, 8, on);
++            rect(buf, x0, y - 7, fill, 8, on);
++        }
++    }
++    if wf {
++        let (rows, head) = (s.wf_rows, s.wf_head);
++        for r in (y0 - WF_TOP).max(0)..(y0 + 8 - WF_TOP).min(rows) {
++            let row = unsafe { s.wf.add((((head + r) % rows) * 16) as usize) };
++            let bit = 1u8 << (WF_TOP + r - y0);
++            for x in 0..128usize {
++                if unsafe { *row.add(x >> 3) } & (0x80 >> (x & 7)) != 0 {
++                    buf[x] |= bit;
++                }
++            }
++        }
 +    }
 +}
