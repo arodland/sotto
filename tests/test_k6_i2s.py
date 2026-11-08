@@ -30,7 +30,7 @@ PERIOD = 400            # samples between modelled DFS edges
 
 def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024,
         mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None, tune=None, count=200_000_000, code=None, gpiob=None,
-        flash=None, lcd=None, pb_idr=None, led=None):
+        flash=None, lcd=None, pb_idr=None, led=None, keypad=None):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
@@ -56,6 +56,11 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     without it (or below level 6) a screen call fails the test.
     pb_idr(st): GPIOB's input bits other than PB1 (default only PB4 high, a keypad row; a module
     that reads the side keys wants PB14 high too, Side 2 up: tests/test_k6_morse.py). led: a list that gets level 7's led calls as (us, on).
+    keypad: (from_us, to_us, key) spans of keys held on the real matrix, for a module that scans
+    the keypad itself (Aura's KEY_TABLE: 'A'/'B' side 1/2, 'U'/'D' up/down, 'M' menu, 'X' exit,
+    'N' band, '0'-'9', '*', '#'): the module's GPIOB row writes (BSRR/BRR) are tracked, the columns
+    PC13/PC14/PF6/PB14 read low where a held key's row is driven low (side keys: always), and
+    GPIOB bit 2 (the speaker amp) lands in st["odr"]; its changes are logged to keypad_log.
     Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
@@ -97,7 +102,44 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     def gpio_write(uc, off, size, value, _):
         if gpiob:
             return gpiob(off, value, st)
+        if keypad is not None and off in (0x18, 0x28):
+            set_ = value & 0xFFFF if off == 0x18 else 0
+            clr = (value >> 16) & 0xFFFF if off == 0x18 else value & 0xFFFF
+            st["odr"] = (st["odr"] | set_) & ~clr & 0xFFFF
+            if (st["odr"] ^ st["spk"][-1][1]) & 4:
+                st["spk"].append((st["us"], st["odr"] & 4))
+            return
         raise AssertionError(f"module wrote GPIOB+{off:#x}")
+    if keypad is not None:
+        st["odr"] = 0xFFFF & ~(1 << 2)               # rows idle high, speaker off
+        st["spk"] = [(0, 0)]
+        st["keypad_log"] = st["spk"]
+
+        def col_low(col):
+            for a, b, k in keypad:
+                if a <= st["us"] < b:
+                    ph, c = KEYPOS[k]
+                    if c == col and (ph == 0 or not st["odr"] >> ROWPIN[ph] & 1):
+                        return True
+            return False
+        plain = gpio_read
+
+        def gpio_read(uc, off, size, page):        # noqa: F811
+            if off == 0x14:
+                return st["odr"]
+            v = plain(uc, off, size, page)
+            return v | (0 if col_low(3) else 1 << 14) if off == 0x10 else v
+
+        def gpioc_read(uc, off, size, _):
+            return (0 if col_low(0) else 1 << 13) | (0 if col_low(1) else 1 << 14) if off == 0x10 else 0
+
+        def gpiof_read(uc, off, size, _):
+            return (0 if col_low(2) else 1 << 6) if off == 0x10 else 0
+
+        def no_write(uc, off, size, value, _):
+            raise AssertionError(f"module wrote GPIOC/F+{off:#x}")
+        mu.mmio_map(0x48000800, 0x400, gpioc_read, None, no_write, None)
+        mu.mmio_map(0x48001400, 0x400, gpiof_read, None, no_write, None)
     mu.mmio_map(0x48000400, 0x400, gpio_read, None, gpio_write, None)
     st["regs"] = regs
     for b, n, r, w in mmio:
@@ -214,8 +256,15 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     mu.reg_write(A.UC_ARM_REG_LR, stop | 1)
     mu.emu_start(base + entry | 1, stop, count=count)
     r = mu.reg_read(A.UC_ARM_REG_R0)
+    if lcd is not None:
+        lcd["st"] = st                             # the run's state: us, odr, spk, ...
     return (r - (1 << 32) if r & 0x80000000 else r), st["said"], regs, st["writes"]
 
+
+# Aura's keypad (src/device/keypad.rs at edf3b98): key -> (scan phase, column); phase 0 drives no
+# row (the side keys), phases 1-5 drive PB0, PB4, PB10, PB11, PB9 low
+KEYPOS = {k: (i // 4, i % 4) for i, k in enumerate("_A_B78#9450612*3MUXDVW_N") if k != "_"}
+ROWPIN = [None, 0, 4, 10, 11, 9]
 
 START = {0x34: 0x0000, 0x35: 0x0000, 0x33: 0xd300, 0x31: 0x0000, 0x04: 0x0000,
          0x67: (174 - 120) << 1}

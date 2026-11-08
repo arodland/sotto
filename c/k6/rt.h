@@ -27,7 +27,8 @@
      24 name          16 characters, ASCII, NUL padded
      40 call          10 characters, A-Z 0-9 /, as heard, NUL padded
      50 call_flags    u8    RT_C_*
-     51 cw            u8    the last CW ID decode: tone index (tone 600 + 50 i Hz) in bits 3:0,
+     51 cw            u8    the last CW ID decode: tone index (tone 400 + 60 i Hz; 600 + 50 i
+                            in records written before 2026-11-08) in bits 3:0,
                             wpm / 3 in bits 7:4 (0 = never decoded)
      52 group         u8    bits 3:0 scan group: 0 Always Scan, 1-15 groups A-O
      53 spare         u8    0
@@ -65,6 +66,8 @@ enum { RT_ST_FREE = 0xFF, RT_ST_WRITING = 0xFE, RT_ST_VALID = 0xFC, RT_ST_REPLAC
 #define RT_F_TONE_SURE 0x0004    /* the TX tone opened the repeater */
 #define RT_F_NAME_USER 0x0008    /* the name was typed */
 #define RT_F_CALL_USER 0x0010    /* the call was typed */
+#define RT_F_DMR 0x0020          /* the explorer heard DMR syncs on the output (mixed-mode: its ID may be analog) */
+#define RT_F_TONE_USER 0x0040    /* the tone was typed */
 #define RT_TONE_DCS 0x8000
 
 /* call_flags */
@@ -142,6 +145,14 @@ int rt_cw_check(rt_t *t, uint32_t rx_hz, uint32_t tol, const char *call, rt_rec_
 int rt_cw_apply(rt_t *t, uint32_t rx_hz, uint32_t tol, const char *call, uint8_t call_flags, int tone_hz,
                 int wpm, int confirmed, rt_rec_t *out);
 uint8_t rt_cw_byte(int tone_hz, int wpm);   /* byte 51 */
+
+/* What a listen heard on the entry at rx_hz besides the call: its output's CTCSS tone (0.1 Hz;
+   0 = none heard) and whether it carried DMR. A blank tone is filled (rx_tone and, if it is
+   blank too, tx_tone: most repeaters send the access tone back), the DMR flag is set; a
+   different stored tone is left as it is (typed or heard before: the caller shows both). One
+   new version at most, none if nothing changes. Returns RT_TONE_*, or < 0 (flash). */
+enum { RT_TONE_NO_ENTRY = 0, RT_TONE_SAME = 1, RT_TONE_FILL = 2, RT_TONE_DIFFERS = 3 };
+int rt_heard_apply(rt_t *t, uint32_t rx_hz, uint32_t tol, uint16_t tone, int dmr, rt_rec_t *out);
 
 uint32_t rt_crc(const rt_rec_t *r);         /* of bytes 2-59 */
 

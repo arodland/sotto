@@ -4,19 +4,23 @@
 and perhaps decode it later. The local DMR repeater is on 440.925 MHz. Mixed-mode, it also sends
 an analog CW ID, which EXPLORE keeps finding at -90 to -100 dBm.
 
-**Answer: yes, with no hardware change, as a RAM module on today's image.** The K6 can't hear
+**Answer: yes, with no hardware change, as a RAM module on today's image. It works on the air
+(2026-11-08 07:02Z): the K6 muted a real DMR key-up on 440.925 20 ms after the carrier came up,
+then played the repeater's analog CW ID** (see "Run 3" below; the first design needed the gain
+frozen and a band-pass added before it saw real DMR). The K6 can't hear
 its own receive audio: the FD6818's AF output goes straight to the speaker amplifier. But it
 can see the receive IF on PB1 (GP0 code 13, the sigma-delta stream that `gp0dma` and the FT8
 and softmodem modules read by DMA). In that IF's FM-demodulated frequency, DMR's 48-bit sync
-words show up plainly. A correlator for them, about 3 KB of Thumb code using about 45% of the
-CPU while a DMR carrier is up, finds every kind of DMR transmission in the model within 0.1 to
+words show up plainly. A correlator for them, about 3 KB of Thumb code using about a quarter of
+the K6's CPU, finds every kind of DMR transmission in the model within 0.1 to
 0.7 s. It found nothing in 30 s each of FM voice, FFSK, CW tones and noise. The `dmrdet` module
 mutes the speaker (REG_47) while DMR lasts and plays FM between. A later decode can reach the
 metadata (colour code, talkgroup, source ID), but not the AMBE+2 voice.
 
 ```
-FD6818 low IF (16.93 kHz) -> GP0 code 13, 1-bit sigma-delta on PB1 -> DMA ch1, 5.5 MS/s, 512 B ring
-  -> ones per 64 samples (85.8 kHz counts) -> rising zero crossings, interpolated
+FD6818 low IF (16.93 kHz), gain frozen at REG_13 0x03FF -> GP0 code 13, 1-bit sigma-delta on PB1
+  -> DMA ch1, 5.5 MS/s, 512 B ring -> ones per 64 samples (85.8 kHz counts)
+  -> band-pass biquad around the IF -> rising zero crossings, interpolated
   -> the IF's phase at 9600 points a second (2 a DMR symbol), the grid set from the DMA's measured rate
   -> frequency per grid step -> spread gate -> 4 sync correlators (BS, MS, direct TS1, TS2)
   -> hit (rho >= 0.8) -> confirmed (2 hits a whole number of 30 ms slots apart) -> mute REG_47
@@ -143,7 +147,10 @@ On the emulated Cortex-M0 (`tests/k6_live_emu.py`'s CPU and DMA model, calibrate
 
 ## How it fits EXPLORE and the listener
 
-- **EXPLORE (firmware, after the bench run):** when it listens to a row, run the detector
+- **EXPLORE: built (2026-11-08, `c/k6/xdmr.c`, docs/k6-explore-app.md "DMR mute and the CTCSS
+  read").** Every listen runs the detector alongside the CW ID listener, mutes DMR on the
+  speaker, marks the row DMR and sets the saved entry's `RT_F_DMR`. The plan was:
+  when it listens to a row, run the detector
   alongside the CW ID listener. The CW ID decoder uses the FD6818's tone detector, not the
   audio, so muting doesn't affect it. A row that confirms DMR gets a DMR mark, and its
   table record a mode flag and later the colour code (byte 53 is spare,
@@ -232,6 +239,23 @@ Two receive-only runs of CI's `mod-dmrdet.bin` (3116 B with header, from main f5
   second sync can come later than 150 ms. If that buzz is common, raise `HOLD_MS` (FM pays it
   as opening delay) or open on a single strong sync's absence for 2 slots.
 
+- **Run 3 (06:54:46Z, cable in, PR #140's module: gain frozen, band-pass):** it works. The
+  only carrier in ten minutes was the repeater keying up at 07:02:35Z with ~0.5 s of DMR (the
+  IC-7100's audio: 17 BS syncs at rho 0.94), then dropping to analog for WA7DMR's CW ID
+  (975 Hz, 20 wpm, ~3.7 s). The K6, verbatim:
+
+  ```
+  07:02:35Z D on bs d r2=198 +20      DMR (BS, data sync, rho 0.88) 20 ms after the carrier
+  07:02:36Z c -80 483 h=14            the DMR carrier: 14 syncs in 483 ms
+  07:02:36Z D off 559
+  07:02:40Z c -80 3740 h=0            the analog ID: no syncs, speaker open
+  s 40..560 h=0..15 lost=0 idle=73-74 ks=5390-5393
+  ```
+
+  Muted inside the 150 ms hold, so the DMR was never heard. The analog ID played. No false
+  `D on` in the other 9.5 minutes, no counts lost, 74% idle (the band-pass costs ~1%). The
+  floor reads -97 dBm at the frozen gain (-108 under the AGC).
+
 ### Captures of real DMR (2026-11-08 06:06Z)
 
 `c/k6/mod/dmrcap.c` (level 2, receive only) listens on 440.925 and, each time the RSSI rises
@@ -291,7 +315,7 @@ So dmrdet now does both:
 To rerun a capture: cable in, `tools/k6_upload.py mod-dmrcap.bin --api-level 2 --run-s 620`
 while 440.925 is busy, with the IC-7100 recording alongside for ground truth.
 
-## Bench plan (receive only)
+## Bench plan (receive only; done, kept for reruns)
 
 1. Real DMR first: the explorer thread's hamlet recorder rotates through 440.925 and is cutting
    DMR and analog clips into `~/sotto-work/clips/dmr-real/`. The IC-7100's FM audio is

@@ -219,9 +219,36 @@ also fixed the synthetic detector model in `tests/test_k6_cwid.py`: it used to d
 by 10 ms, which leaves marks their sent length, while the real detector makes marks 6-12 ms
 longer and spaces as much shorter. `tone_reg` now turns on 10 ms and off 20 ms after the key.
 
-Unknowns for real repeaters: an ID tone outside 600-1350 Hz, an ID sent over voice (the
+Unknowns for real repeaters: an ID tone outside 600-1350 Hz (one at 400 Hz: below, the bank moved), an ID sent over voice (the
 detector may not lock), and whether 50 Hz steps are finer than the detector can tell apart
 (the 'tone' field and q will show it).
+
+## The bank moved to 400-1300 Hz (2026-11-08)
+
+The CW workbench recorded a real repeater ID on 443.525 at 07:37:06Z ("...7 RPT", about
+400 Hz, 20-25 wpm, sent under voice) below the 600-1350 Hz bank. In the replay bench's k6 model
+it locked onto voice at 1200 Hz and read noise. With the bank at 400-1300 Hz in 60 Hz steps
+(`--td-lo 400 --td-step 60`), WA7DMR (1000 Hz) and VE7RVA (800 Hz) still decode, and this ID
+locks at 400 Hz and reads 'EEZTRPT'. That's as far as the ideal decoder gets too ('E EEZERPT
+E'), because the call is lost under the voice.
+
+On the air (runs/20261108T0816Z-cwlo-explore/), `mod/cwlisten_lo.c` (cwlisten with that bank)
+heard the IC-7100 send 'AG7EW TEST' at 20 wpm:
+
+```
+CWID 20wpm lag=8 tone=400 q=99 n=39      text AG7EW TEST    (400 Hz, twice: ok after the second)
+CWID 20wpm lag=8 tone=1240 q=100 n=39    text AG7EW TEST    (1250 Hz, twice)
+CWID 5wpm lag=-120 tone=820 q=79 n=41    text #T            (800 Hz)
+```
+
+The 800 Hz miss wasn't the bank. Its marks matched the others up to the last dash, then
+`-1020 +596`: about a second after the ID, a 596 ms mark (the IC-7100's squelch tail) pulled
+the speed estimate to 5 wpm. The decoder now drops a mark at either end of a transmission that
+is over 2.5 times every other mark with a space as long beside it (`drop_tails` in cwid.c). A
+real last dash after a word gap stays. `tonedet.h` (the explorer's Listen for ID and the peek)
+takes the 400-1300 Hz bank, and the repeater table's byte 51 counts tones from 400 Hz in 60 Hz
+steps. Its 7-bit coefficients bunch up near 128 at the low end (400 and 460 Hz are 122 and
+121), so "which tone" is coarse there, but the keying bit is what decodes.
 
 ## Next
 

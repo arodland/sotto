@@ -1,6 +1,6 @@
 """CW ID workbench: run recorded repeater IDs through the K6's own Morse decoder.
 
-The K6 hears CW only through the FD6818's tone detector (16 tones, 600-1350 Hz, docs/k6-cwid.md),
+The K6 hears CW only through the FD6818's tone detector (16 tones, 400-1300 Hz since 2026-11-08, docs/k6-cwid.md),
 polled every 2 ms into cw_feed (c/k6/cwid.c, built here for this machine). This tool takes
 receive audio (WAV/FLAC, e.g. the IC-7100's FM audio of a local repeater) and decodes it two
 ways, so a miss can be put on the detector or on the decoder:
@@ -34,7 +34,7 @@ sys.path.insert(0, ROOT)
 
 NDUR, TEXT = 96, 40          # cwid.h defaults
 POLL_MS = 2
-TONES = 600 + 50 * np.arange(16)
+TONES = 400 + 60 * np.arange(16)
 
 
 class CW(ctypes.Structure):
@@ -176,6 +176,8 @@ def main():
     ap.add_argument("clips", nargs="*")
     ap.add_argument("--model", default="ideal,k6")
     ap.add_argument("--share", type=float, default=0.5, help="k6 model: tone share of the band")
+    ap.add_argument("--td-lo", type=int, default=400, help="k6 model: the tone bank's lowest tone, Hz")
+    ap.add_argument("--td-step", type=int, default=60, help="k6 model: the bank's spacing (16 tones), Hz")
     ap.add_argument("--csv")
     ap.add_argument("--synth", help="make a test clip of this text instead")
     ap.add_argument("--wpm", type=float, default=20)
@@ -186,6 +188,8 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("-o", default="cw-test.wav")
     a = ap.parse_args()
+    global TONES
+    TONES = a.td_lo + a.td_step * np.arange(16)
     if a.synth:
         return synth(a)
     rows = []

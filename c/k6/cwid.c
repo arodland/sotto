@@ -152,6 +152,25 @@ static int drop_short(uint8_t *d, int n, uint32_t min) {
   return o;
 }
 
+/* Drop a mark at either end that can't be this Morse: longer than 2.5 x every other mark, with
+   a space as long beside it (the IC-7100's squelch tail, bench 2026-11-08 08:21Z: a 596 ms
+   mark 1 s after an 800 Hz ID made it '#T' at 5 wpm). d[] as drop_short; returns the count. */
+static int drop_tails(uint8_t *d, int n) {
+  int i, end;
+  for (end = 0; end < 2 && n >= 3; end++) {
+    int t = end ? n - 1 : 0, g = end ? n - 2 : 1;
+    uint32_t mx = 0, lim;
+    for (i = 0; i < n; i += 2)
+      if (i != t && d[i] > mx) mx = d[i];
+    lim = (5 * mx) >> 1;
+    if (d[t] <= lim || d[g] <= lim) continue;
+    n -= 2;
+    if (!end)
+      for (i = 0; i < n; i++) d[i] = d[i + 2];
+  }
+  return n;
+}
+
 static void put_char(cw_t *c, char ch) {
   if (c->tlen < CW_TEXT - 1) c->text[c->tlen++] = ch;
   c->text[c->tlen] = 0;
@@ -167,6 +186,7 @@ static void decode(cw_t *c) {
   c->nd = (uint16_t)n;
   if (!(n & 1)) n--;                          /* a trailing space is the separator */
   n = drop_short(c->d, n, CW_MINMARK_MS / CW_Q);
+  n = drop_tails(c->d, n);
   c->nd = (uint16_t)n;
   if (n < 1) return;
   two_means(d, 0, n, 0, 0x10000, &dot, &dash);

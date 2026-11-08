@@ -1,7 +1,7 @@
 /* xlisten: "Listen for ID" for the core image: the CW ID listener (c/k6/mod/cwlisten.c,
    docs/k6-cwid.md) cut into steps for the main loop.
 
-   xl_start programs the FD6818's tone detector (16 tones, 600-1350 Hz) on the channel the
+   xl_start programs the FD6818's tone detector (16 tones, 400-1300 Hz) on the channel the
    caller tuned, xl_step polls REG_0B every 2 ms for about XL_STEP_MS and feeds cw_feed, and
    when two transmissions in a row give the same callsign it returns XL_OK with the call, its
    flags, the tone and the speed. Report lines go out as cwlisten's (CWID ..., CWID ok ...),
@@ -42,6 +42,10 @@ void xl_start(xl_t *x, const k6_api_t *api, uint32_t rx_hz, uint32_t max_s);
 /* Poll for about XL_STEP_MS. XL_OK: x->call is confirmed (twice alike); XL_MSG: a transmission
    ended (x->text); XL_TIME: max_s is up; else XL_RUN. */
 int xl_step(xl_t *x);
+/* xl_step with the waits between polls handed to wait(c, us) instead of delay_us: it must
+   return after about us (xdmr.c drains the GP0 DMA ring there) */
+typedef void (*xl_wait_fn)(void *c, uint32_t us);
+int xl_step_w(xl_t *x, xl_wait_fn wait, void *c);
 /* the end of a listen: the detector off (the caller puts its own receive set-up back) */
 void xl_stop(xl_t *x, int why);
 int xl_tone_hz(const xl_t *x);

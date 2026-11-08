@@ -292,7 +292,8 @@ void ex_to_rt(const ex_cand_t *c, rt_rec_t *r) {
   r->rx_hz = c->hz;
   r->tx_off = c->off_hz;
   r->rx_tone = r->tx_tone = c->tone;
-  r->flags = (uint16_t)(RT_F_WIDE | (c->flags & EX_F_OFF_HEARD ? RT_F_OFF_SURE : 0));
+  r->flags = (uint16_t)(RT_F_WIDE | (c->flags & EX_F_OFF_HEARD ? RT_F_OFF_SURE : 0) |
+                        (c->flags & EX_F_DMR ? RT_F_DMR : 0));
   r->best_rssi = (uint8_t)(lvl < -200 ? 0 : lvl > 55 ? 255 : lvl + 200);
   r->score = (uint8_t)c->grade;
   for (i = 0; i < 10; i++) r->call[i] = c->call[i];

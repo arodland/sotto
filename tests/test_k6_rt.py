@@ -55,6 +55,8 @@ def lib(tmp_path_factory):
                               ctypes.POINTER(Rec)]
     L.rt_cw_apply.argtypes = [ctypes.POINTER(RT), ctypes.c_uint32, ctypes.c_uint32, ctypes.c_char_p, ctypes.c_uint8,
                               ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.POINTER(Rec)]
+    L.rt_heard_apply.argtypes = [ctypes.POINTER(RT), ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint16,
+                                 ctypes.c_int, ctypes.POINTER(Rec)]
     L.rt_cw_byte.restype = ctypes.c_uint8
     L.rt_crc.restype = ctypes.c_uint32
     L.rt_crc.argtypes = [ctypes.POINTER(Rec)]
@@ -274,7 +276,7 @@ def test_cw_id_policy(lib):
     # blank call: filled by itself, with the tone and speed
     assert L.rt_cw_apply(T, 146_941_000, 5000, b"WA7ABC/R", 4, 800, 20, 0, ctypes.byref(r)) == 2
     s, e = t.find(rx=146_940_000, tol=5000)
-    assert e.call == b"WA7ABC/R" and e.call_flags == 4 | 8 and e.cw == (4 | 6 << 4) and e.name == b"Lynden"
+    assert e.call == b"WA7ABC/R" and e.call_flags == 4 | 8 and e.cw == (6 | 6 << 4) and e.name == b"Lynden"
     w1 = lib.rth_writes()
     assert w1 > w0
     # the same call again: no write
@@ -286,12 +288,35 @@ def test_cw_id_policy(lib):
     assert lib.rth_writes() == w1 and t.find(rx=147_160_000)[1].call == b"W7ABC"
     assert L.rt_cw_apply(T, 147_160_000, 5000, b"W7XYZ", 0, 600, 13, 1, ctypes.byref(r)) == 4
     e = t.find(rx=147_160_000)[1]
-    assert e.call == b"W7XYZ" and not (e.flags & 0x10) and e.cw == (0 | 4 << 4)
+    assert e.call == b"W7XYZ" and not (e.flags & 0x10) and e.cw == (3 | 4 << 4)
     # a 10-character call fits; byte 51's packing
     assert L.rt_cw_apply(T, 146_940_000, 5000, b"VE9QRP/RPT", 4, 1200, 25, 1, ctypes.byref(r)) == 4
     assert t.find(rx=146_940_000)[1].call == b"VE9QRP/RPT"
     assert [L.rt_cw_byte(f, w) for f, w in ((600, 13), (1350, 35), (800, 1), (2000, 99))] == \
-        [0x40, 0xBF, 0x14, 0xFF]
+        [0x43, 0xBF, 0x16, 0xFF]
+
+
+def test_heard_tone_and_dmr_policy(lib):
+    """a listen's CTCSS tone fills a blank one (and a blank TX tone), never overwrites a stored
+    one; DMR sets its flag; nothing new heard writes nothing"""
+    t = Table(lib)
+    t.mount()
+    t.put(440_925_000, b"DMR rptr")
+    L, T = lib, ctypes.byref(t.t)
+    r = Rec()
+    assert L.rt_heard_apply(T, 441_500_000, 5000, 1000, 1, ctypes.byref(r)) == 0     # no entry
+    w0 = lib.rth_writes()
+    assert L.rt_heard_apply(T, 440_925_000, 5000, 0, 0, ctypes.byref(r)) == 1        # nothing heard
+    assert lib.rth_writes() == w0
+    assert L.rt_heard_apply(T, 440_925_000, 5000, 1000, 1, ctypes.byref(r)) == 2
+    e = t.find(rx=440_925_000)[1]
+    assert e.rx_tone == e.tx_tone == 1000 and e.flags & 0x20 and e.name == b"DMR rptr"
+    w1 = lib.rth_writes()
+    assert w1 > w0
+    assert L.rt_heard_apply(T, 440_925_000, 5000, 1000, 1, ctypes.byref(r)) == 1     # same again
+    assert lib.rth_writes() == w1
+    assert L.rt_heard_apply(T, 440_925_000, 5000, 1413, 0, ctypes.byref(r)) == 3     # differs: kept
+    assert lib.rth_writes() == w1 and t.find(rx=440_925_000)[1].rx_tone == 1000
 
 
 # ---- rtls (c/k6/mod/rtls.c): the table read by a RAM module through API level 5 ----

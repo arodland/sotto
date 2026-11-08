@@ -71,12 +71,37 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
   watch list (4 places): from then on, each time it keys up (20 s or more after its last listen)
   the listener goes there at once and stays for the whole carrier, so the next ID is heard from
   its start. It leaves the list when it has a call.
+- **DMR mute and the CTCSS read** (`c/k6/xdmr.c`, 2026-11-08, Jeff's ideas): every listen, by
+  hand or automatic, also runs the DMR detector (`c/k6/dmrsync.h`, docs/k6-dmr.md) on the GP0
+  receive IF and the FD6818's sub-audio scan. xlisten polls the tone detector every 2 ms; in the
+  waits between polls the DMA ring (2 KB on the stack, so the DMA runs only during a step) goes
+  through the detector, whose state carries on across steps. A confirmed DMR sync mutes the
+  speaker until 720 ms after the last sync; the CW ID goes on being decoded (the tone detector
+  doesn't hear REG_47), so a mixed-mode repeater's analog ID still counts. The speaker stays
+  shut for the first 150 ms of a listen, so a DMR carrier never gets heard. A carrier at -60 dBm
+  or weaker gets the receiver's gain frozen at REG_13 0x03FF (the pager's AGC leaves real DMR
+  only 4-5 dB over GP0's noise, docs/k6-dmr.md); RSSI then reads louder, so the listener takes
+  the measured difference off every level read. A row that heard DMR shows `DMR` in the call
+  column until it has a call, and the listen's header says `DMR` while it's on. The CTCSS read
+  is Aura's SCAN QT (REG_51 = 0x0300, REG_68's word, tenths of Hz = raw x 100000 / 206489): a
+  standard tone read twice in a row is the carrier's tone. On Jeff's K6 (`mod/ctcssprobe.c`,
+  2026-11-08 07:32Z, the IC-7100 sending 100.0, 141.3 and 88.5 Hz in FM-D) every reading came
+  within 0.2 Hz (mostly 0.1 Hz low), 2-5 s after key-up, for the whole carrier, and nothing
+  without a tone; REG_68's bit 15 flickers now and then mid-tone, which the two-alike rule
+  rides over. It goes on the row (the footer shows
+  `tone 100.0`, and it scores as the tone cue) and into the saved entry by the rule for calls: a
+  blank tone fills (rx and, if blank, tx), a different saved tone is left as it is and the
+  screen says `TONE DIFFERS FROM SAVED` (`rt_heard_apply`). DMR sets the entry's `RT_F_DMR`.
+  A new entry saved from the row carries both. On the emulated M0 the detector found a
+  repeater's DMR in ~100 ms of a listen with no lost samples and ~24% of the CPU
+  (tests/test_k6_xdmr.py).
 - **The table** (`c/k6/rt.c`): Save writes one 64-byte record in SPI flash at 0x0F0000-0x0FFFFF,
   through the same checks as module API level 5. A confirmed CW ID follows Jeff's rule: a saved
   entry with no call takes it at once, and a different saved call waits for MENU. With no saved
   entry, the frequency is saved with its call as a new entry (Jeff 2026-11-07 22:46), so it
   goes under the rule. Key 3 twice on a saved row deletes its entry (`rt_delete`, `ex_unknow`)
-  and the row is new again. Nothing else writes flash. On entry,
+  and the row is new again. A listen's CTCSS tone and DMR update a saved entry as above. Nothing
+  else writes flash. On entry,
   the table mounts. If 0x0F0000-0x0FFFFF holds anything that isn't blank or a table, the screen
   says `TABLE AREA NOT BLANK`, and Save stays off.
 
@@ -156,6 +181,14 @@ K6 EX tail 440925000 A7DMR            the ID's tail, not kept
 K6 EX watch 440925000                 a watched station keyed up: the listener went there
 K6 MOD say CWID ok W7ABC/R fl=4 rx=146940000 tone=800 wpm=20
 K6 EX cw 146940000 call=W7ABC/R check=0 apply=0 id=0
+K6 MOD say DMR listen lvl=-86 frozen=1 adj=7   the side detectors on (level, gain frozen, RSSI adj)
+K6 MOD say DMR on bs d r2=243 +104    DMR: family, voice/data sync, rho^2 x 256, ms into the listen
+K6 EX dmr 440925000                   the row is marked DMR
+K6 MOD say DMR off 2630
+K6 MOD say CTCSS 1000                 the carrier's tone, 0.1 Hz
+K6 MOD say DMR end n=1 h=41 lost=0 steps=50
+K6 MOD say DMR rate busy=24 ks=5490 ctcss=1000/40
+K6 EX heard 440925000 tone=1000 dmr=1 rt=2 saved_tone=1000   the saved entry took the tone
 K6 EX save 146940000 id=1 slot=0 live=1 erases=0/32
 K6 CAND 0 R 146940000 off=-600000 tone=0 call=W7ABC/R score=8 overs=5 ...
 ```
@@ -355,7 +388,12 @@ with its level and the gull. The 26 MHz family is left alone: in our bands it on
 
 ## Not built yet
 
-- The input-hop cue (the strongest cue) and the tone dwell (k6-explorer-next.md).
+- The input-hop cue (the strongest cue) (k6-explorer-next.md). The tone is read during listens
+  now (above), but not on a carrier the listener never visits.
+- DCS: the sub-audio scan reports DCS words in REG_69/6A too; they're not matched to codes yet.
+  Careful: during a CTCSS tone REG_69 also clears bit 15 with an alternating word (69=4aaa
+  6a=0aaa on 100 Hz, 4555/0555 on 88.5; ctcssprobe, 2026-11-08), so Aura's DCS-first read would
+  never reach the CTCSS word. xdmr reads REG_68 only.
 - Being on frequency before a repeater's 10-minute ID timer is due (remember each one's last ID
   time).
 - The spectrum and waterfall screen. The rows are already computed (the sweep's `row`, the
