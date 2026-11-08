@@ -60,6 +60,15 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
   's' grades are never picked. Key 1 turns it off and on. It plays on the speaker (Jeff
   2026-11-07 22:10); key 9 turns the speaker off or back on for every automatic listen after
   that, until the radio is switched off.
+- **The peek and the appointment** (2026-11-08): a repeater can send its ID in the middle of a
+  long carrier. WA7DMR on 440.925 sent its 4 s ID 13 s into a carrier the listener had already
+  left, and the K6 missed it. So while automatic Listen for ID is on, every 400 ms the sweep
+  gives one up carrier with no call (in turn) 40 ms of the tone detector (`xs_tone`, a `K` line).
+  Keying there (a tone, and no tone, both seen; a steady courtesy beep isn't keying) starts a
+  listen at once. That listen began partway through the ID, so its first transmission is only
+  the tail (WA7DMR heard from the A on would be "A7DMR"). It is logged as `K6 EX tail` and not
+  kept. The station also gets an appointment: 9 minutes later the K6 listens there for 3
+  minutes, carrier or not, for the next ID in full (repeaters ID every 10 minutes while in use).
 - **The table** (`c/k6/rt.c`): Save writes one 64-byte record in SPI flash at 0x0F0000-0x0FFFFF,
   through the same checks as module API level 5. A confirmed CW ID follows Jeff's rule: a saved
   entry with no call takes it at once, and a different saved call waits for MENU. With no saved
@@ -139,6 +148,10 @@ K6 MOD say F0 -93 q-135: ...          floors, as the scan module's
 K6 MOD say N 146.940 -80 fl-93 b294   a new hit
 K6 MOD say H 146.940 9050 -80 a61250  an over: the candidate list's input
 K6 EX auto 146940000 listens=1        the automatic listener went there
+K6 MOD say K 440.925 9/20             the peek heard keying (polls with a tone / polls)
+K6 EX tone 440925000 appt=540s        listening now, and again in 9 minutes
+K6 EX tail 440925000 A7DMR            the ID's tail, not kept
+K6 EX appt 440925000 s=180            the appointment's listen
 K6 MOD say CWID ok W7ABC/R fl=4 rx=146940000 tone=800 wpm=20
 K6 EX cw 146940000 call=W7ABC/R check=0 apply=0 id=0
 K6 EX save 146940000 id=1 slot=0 live=1 erases=0/32

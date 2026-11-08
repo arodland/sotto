@@ -2,15 +2,9 @@
    lines are cwlisten's (c/k6/mod/cwlisten.c), which decoded 6 of 6 IDs on air.
    SPDX-License-Identifier: MIT */
 #include "xlisten.h"
+#include "tonedet.h"
 
-#define TONE_TH 24
-#define TONE_IDLE 1
-#define TONE_LO 600
-#define TONE_STEP 50
 #define LISTEN_MIN 21
-
-static const uint8_t tone_coef[16] = {
-    116, 113, 111, 109, 106, 103, 100, 97, 94, 91, 88, 84, 80, 77, 73, 69};
 
 static char *put(char *p, const char *s) {
   while (*s) *p++ = *s++;
@@ -22,7 +16,7 @@ static char *sdec(char *p, int32_t v) {
 }
 static char *head(char *p) { return put(p, "CWID "); }
 
-int xl_tone_hz(const xl_t *x) { return TONE_LO + TONE_STEP * x->tone; }
+int xl_tone_hz(const xl_t *x) { return TD_LO + TD_STEP * x->tone; }
 
 void xl_start(xl_t *x, const k6_api_t *api, uint32_t rx_hz, uint32_t max_s) {
   uint8_t *d = (uint8_t *)x;
@@ -31,13 +25,10 @@ void xl_start(xl_t *x, const k6_api_t *api, uint32_t rx_hz, uint32_t max_s) {
   for (i = 0; i < sizeof *x; i++) d[i] = 0;
   x->api = api, x->rx_hz = rx_hz, x->max_ms = max_s * 1000u;
   cw_init(&x->cw);
-  for (i = 0; i < 16; i++) api->fd_write(0x09, (uint16_t)((i << 12) | tone_coef[i]));
-  api->fd_write(0x24, (uint16_t)(0x8000 | (TONE_TH << 7) | (TONE_IDLE << 6) | 0x20 | 0x0F));
-  api->fd_write(0x3F, 0x0800);
-  api->fd_write(0x02, 0);
+  td_on(api);
   x->start = api->ms();
   p = put(head(line), "listen rx="); p = cw_utoa(p, rx_hz);
-  p = put(p, " th="); p = cw_utoa(p, TONE_TH); p = put(p, " s="); p = cw_utoa(p, max_s);
+  p = put(p, " th="); p = cw_utoa(p, TD_TH); p = put(p, " s="); p = cw_utoa(p, max_s);
   *p = 0;
   api->say(line);
 }
@@ -113,13 +104,9 @@ int xl_step(xl_t *x) {
       if (cw_flush(&x->cw, t) && x->cw.nd) report(x);
       return XL_TIME;
     }
-    b = api->fd_read(0x0B);
+    b = td_read(api);
     x->keyed = (uint8_t)((b >> 12) & 1);
     if (x->keyed && x->hist[(b >> 8) & 15] < 0xFFFF) x->hist[(b >> 8) & 15]++;
-    if (api->fd_read(0x0C) & 1) {
-      api->fd_write(0x02, 0);
-      (void)api->fd_read(0x02);
-    }
     if (cw_feed(&x->cw, t, x->keyed) && x->cw.nd) {
       r = report(x);
       if (r < 0) x->junk++;
@@ -138,7 +125,7 @@ int xl_step(xl_t *x) {
 void xl_stop(xl_t *x, int why) {
   const k6_api_t *api = x->api;
   char line[40], *p;
-  api->fd_write(0x24, 0);   /* the tone detector off */
+  td_off(api);
   p = put(head(line), "end ");
   p = put(p, why == XL_OK ? "ok" : why == XL_TIME ? "time" : "key");
   p = put(p, " msgs="); p = cw_utoa(p, x->msgs);

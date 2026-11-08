@@ -95,6 +95,8 @@ def lib():
     L.xs_init.argtypes = [ctypes.c_void_p, ctypes.POINTER(Api), ctypes.c_void_p, ctypes.c_void_p, U32]
     L.xs_step.argtypes = L.xs_close.argtypes = L.xs_summary.argtypes = L.xs_resume.argtypes = [ctypes.c_void_p]
     L.xs_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(XsInfo)]
+    L.xs_tone.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+    L.xs_tone.restype = U32
     L.xl_start.argtypes = [ctypes.c_void_p, ctypes.POINTER(Api), U32, U32]
     L.xl_step.argtypes = [ctypes.c_void_p]
     L.xl_stop.argtypes = [ctypes.c_void_p, ctypes.c_int]
@@ -184,12 +186,12 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
                         os.path.join(K6, f), "-o", o], check=True)
         und = set(subprocess.run(["llvm-nm", "-u", o], capture_output=True, text=True, check=True).stdout.split())
         und -= {"U"}
-        assert und <= {"ex_over", "ex_spur", "ex_own_clock", "ex_on_raster", "cw_call", "cw_div", "cw_feed", "cw_flush", "cw_init", "cw_utoa"}, und
+        assert und <= {"ex_over", "ex_spur", "ex_own_clock", "ex_on_raster", "ex_find", "cw_call", "cw_div", "cw_feed", "cw_flush", "cw_init", "cw_utoa"}, und
         size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
         text, data, bss = (int(x) for x in size.split()[:3])
         assert data == 0 and bss == 0
         sizes[f] = text
-    assert sizes["xscan.c"] < 5632 and sizes["xlisten.c"] < 1700, sizes
+    assert sizes["xscan.c"] < 6144 and sizes["xlisten.c"] < 1700, sizes
 
 
 def test_finds_a_repeater_feeds_the_list_and_the_log_replays_the_same(lib):
@@ -550,6 +552,57 @@ def id_spans(text, wpm, t0_us):
                 out.append((t, t + d))
                 t += d
     return out
+
+
+class Keyed(Receiver):
+    """carriers, and on some of them the tone detector keyed (REG_0B bit 12) by spans while
+    the receiver is tuned there: tones = {hz: [(from_us, to_us), ...]}"""
+
+    def __init__(self, signals, tones):
+        super().__init__(signals)
+        self.tones = tones
+
+    def reg(self, reg, us):
+        if reg == 0x0B:
+            on = any(a <= us < b for a, b in self.tones.get(self.f, ()))
+            return 0xC006 | (0x1400 if on else 0)
+        return 0
+
+
+def test_the_peek_hears_an_id_go_out_mid_carrier(lib):
+    """on air 2026-11-08 04:59: WA7DMR on 440.925 sent its 4 s CW ID 13 s into a carrier, and the
+    K6 wasn't listening. The peek gives an up carrier with no call 40 ms of the tone detector every
+    400 ms, in turn; keyed (on and off both seen) it comes out of xs_tone once. A steady tone (a
+    long courtesy beep) and a carrier with no tone don't."""
+    L, kxl = lib
+    idf, beep, quiet = 146_700_000, 146_800_000, 146_900_000
+    up = [(s_(2), s_(30))]
+    model = Keyed([(idf, -80, up), (beep, -80, up), (quiet, -80, up)],
+                  {idf: id_spans("WA7DMR", 20, s_(14)), beep: up})
+    radio = Radio(model)
+    buf, mem, ex = explorer(L, kxl, [(146_600_000, 10_000, 40, 5_000), (146_640_000, 10_000, 40, 5_000)], radio)
+    assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+    assert L.xs_tone(buf, 40) == 0
+    heard = []
+    while radio.us < s_(40):
+        t = radio.us
+        L.xs_step(buf)
+        radio.longest = max(radio.longest, radio.us - t)
+        hz = L.xs_tone(buf, 40)
+        if hz:
+            heard.append((radio.us, hz))
+    assert heard and heard[0][1] == idf and s_(14) < heard[0][0] < s_(15.5), heard
+    assert {hz for _, hz in heard} == {idf}, heard          # not the steady tone, not the quiet one
+    assert radio.longest < 200_000, radio.longest
+    k = [ln for ln in radio.lines if " say K " in ln]
+    assert k and " say K 146.700 " in k[0], k
+    assert (0x24, 0) in radio.writes                         # the detector off after a peek
+    # off by default: no register written
+    radio2 = Radio(Keyed([(idf, -80, up)], {idf: up}))
+    buf2, mem2, ex2 = explorer(L, kxl, [(146_600_000, 10_000, 40, 5_000), (146_640_000, 10_000, 40, 5_000)], radio2)
+    assert L.xs_init(buf2, ctypes.byref(radio2.api), ctypes.byref(ex2.e), mem2, len(mem2)) == 0
+    run_steps(L, buf2, radio2, 10)
+    assert not radio2.writes
 
 
 def test_listen_for_id_confirms_the_call_on_the_second_id(lib):
