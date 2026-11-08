@@ -370,3 +370,150 @@ decodes in 16.1 ms of each 20 ms half with RX running, which leaves about 3.9 ms
 All of this needs measuring on the radio. Both RAM and CPU point to the same next step: the layer
 in the 1200 / 600 / 400 decoders, which the fixed-point port doesn't have yet. The C here is the
 2400 v3.8 layer; its hiss parts are the same.
+
+## The layer in the 1200 / 600 / 400 decoders, and the K6 image (2026-11-07)
+
+The fixed-point sotto 1200, 600 and 400 decoders now carry the `k6` layer (`pair` and `hop2`), and
+a pager build plays all three at 16 kHz. Build flags `-DSP_LR -DSP_VLR -DSP_HISS -DSOTTO_V38
+-DFX_HISS_LIGHT -DFX_HISS_FB -DFX_HISS_NO_ENC`; `tools/k6_build.sh K6_HISS=1` makes the library,
+`HISS=1 sh firmware/k6-aura/build.sh` the image `out/aura-pager-vlrh.bin` (Aura feature `hiss`).
+
+**How the layer hangs off the three decoders.** `c/fixed/sotto_fx_hiss.c` keeps one hiss state
+(`struct sotto_dec16`) that reads the 2400 core's model bands and envelope through
+`sotto_dec_info()` and makes the hiss for each core block as it comes out. The 1200 decoder
+(`sotto_fx_lr.c`) and the 600 / 400 decoder (`sotto_fx_vlr.c`) call it through a hook each time
+they hand a half or a frame to the core (`fx_lr_hiss_hook_t`, `fx_vlr_hiss_hook_t` in
+`fx_internal.h`; the float decoders use the same `LR_HISS_*` / `VLR_HISS_HOOK_T` macros in the
+shared `.inc` files). The side channels are what the float v3.8 port had: 1200 adds its 6-bit
+code's hiss class, 600 / 400 carry `wc` and `ws` in superframes with fewer than two pitched
+frames (`fx_vlr_hiss_slope/off/h0/k2`, dB in Q8, from `tools/gen_fx_tables.py`). The encoder side
+of the file is out of the build (`FX_HISS_NO_ENC`), and the helpers only the full layer needs sit
+behind `FB_ONLY`.
+
+**Delays.** The 16 kHz output runs one 20 ms frame (1200) or two (600 / 400) and 20 samples behind
+the 8 kHz decoder (`SOTTO_LR_DEC16_DELAY_FRAMES`, `SOTTO_VLR_DEC16_DELAY_FRAMES`). The pager skips
+that lead-in so the first frame it plays is the first frame of speech, and `c/sotto_dec -16` does
+the same, so decoder and pager line up sample for sample.
+
+**Bit-exact.** `c/k6/pager_host_vlrh` (the pager's own code on the host) plays what
+`c/fixed/sotto_dec_fx_k6 -16 -{1200,600,400}` decodes for the same superframes and good flags, with
+and without lost packets, streaming through the radio's 2.5 KB store or stored first
+(`tests/test_k6_hiss.py`). The 2400 FB layer's output is unchanged through the refactor (same
+md5 on the reference clip).
+
+**Against the Python.** `sim/sotto_vlr_hiss.py` / `sim/sotto_lr_hiss.py` with the `k6` options on
+the EARS clips (LibriSpeech 3536, EARS p020 / p047), with and without one superframe lost in
+eight: the 4-8 kHz level per 10 ms differs by 0.9-1.1 dB mean, 2.3-2.7 dB at the 95th percentile,
+for all three rates (two noises; the light layer's C and Python differ by the same amount). The
+0-4 kHz band is the fixed-point core against the float one, 13-40 dB SNR as before. The outputs
+line up after the delay above (lag 10 samples at 8 kHz, the interpolator).
+
+**RAM** (the plain 600 / 400 image left 0.66 KB while playing; the layer needed about 2 KB):
+
+| Change | Saved |
+|---|---:|
+| Message store 4 KB -> 2.5 KB (1200 holds 17 s stored; a stream's ring holds two XL groups at depth 8, so 1200 messages over about 13 s needed depth 4, below). Undone the same night: the RAM above Aura's region (below) gave the 4 KB back | 1.5 KB |
+| Decoder pool sized to the three states (core 904, 600 / 400 wrapper 592, hiss 736 B on the M0) instead of a round figure | 0.4 KB |
+| Model rings for the two odd halves only (`LM 2`), one 32-sample resampler ring, level ring 13 deep, 5 superframes of side channel | 0.5 KB |
+| PN9 table in flash, `const`; core model bands for half 1 only | 0.1 KB |
+
+Pager static RAM 10852 of 17720 B (6868 left for the stack); boot stack with Aura's `main` and
+`place_app` 6400 B, so 468 B spare at the deepest point measured. The 16 kHz PWM ring is 3 x 320
+samples (1920 B, was 960). Insight 32 in `docs/k6-modules.md`: Aura's `App` lives on the boot
+stack, 3.4 KB of it; moving it to a static would give that back.
+
+**Flash.** 120824 of 122880 B (2056 free) with the layer at
+`-O2 -fno-unroll-loops` (6844 B against 11056 at plain `-O2` and 6388 at `-Os`); `-Os` would give about
+450 B back and runs at the same speed on the model, so it is the fallback when flash runs
+out.
+
+**CPU on the M0 model** (`c/k6/bench_k6.py --hiss`, EARS p047, flash 2 wait states, pager and PWM
+path included; MHz needed to keep up with 20 ms frames):
+
+| | Mean | 99th percentile | Worst frame |
+|---|---:|---:|---:|
+| 1200 plain (what the K6 played) | 52.6 | | 85.4 |
+| 600 plain | 52.8 | 76.7 | 84.1 |
+| 1200 hiss | 67.8 | 91.9 | 144.8 (frame 0) |
+| 600 hiss | 68.5 | 95.4 | 147.0 (frame 0) |
+| 400 hiss | 68.0 | 91.4 | 144.6 (frame 0) |
+
+The layer costs 15.5 MHz mean here against 12.3 MHz decoder-only: the rest is the 16 kHz output
+path (emphasis every other sample, `EMPH_STRIDE 2`, twice the PWM ring copy). Frame 0 is the
+first block through a cold state. On the radio (about 1.29 x the model) the mean is about 88 MHz,
+which the measurements in the sizing section put right at the 20 ms edge with RX running; the
+PWM ring absorbs the 99th-percentile frames. So the image is for listening and for measuring,
+with the pager's late counter telling whether frames ran over. If they do, the next step is the
+hot loops in RAM (9.5 MHz against 12.3 on the model), or the output fold in the PWM interrupt.
+
+**On the radio (2026-11-07 23:15 UTC, build 03b8917, IC-7100 -> K6 on 440.850, cable in).** All
+nine clips (LibriSpeech female 198 and male 3436, the first 15 s of Jeff's Lynden recording, each at
+600, 1200 and 400) arrived with every packet and `late=0`. 600 and 400: 3 of 3 `pcm=` MATCH. 1200:
+the female clip MATCH; the two longer ones (325 and 344 frames) each had `overruns=1` at interleave
+depth 8 and a short dropout near the end, and the same clip at depth 4 played MATCH with no overrun.
+The cause is the 2.5 KB store, not CPU: in stream mode the store is a ring of whole interleave
+groups, and at XL depth 8 it holds two groups of 160 sotto 1200 frames, so a message over about
+12.8 s has its next group land on frames not yet played. At depth 4 a group is 80 frames and five
+fit. So 1200 messages longer than 13 s went at `--depth 4` on that image (`modem.k6 send --depth 4`);
+600 and 400 messages are shorter per frame slot and were fine at depth 8 up to the 15 s tried. With
+the 4 KB store back (below) the limit is the plain images' 25.6 s again.
+Decode times: 14.7-18.3 ms mean per 20 ms frame across the rates (Lynden, continuous speech,
+18.2-18.3 at every rate; the female voice 14.7), worst single frame 39.4 ms. `ram_free` while
+playing: 332 (600), 388 (1200), 588 (400) B. Run dir on hamlet: `~/sotto-work/runs/2026-11-07-hiss1/`.
+
+**What Jeff heard (23:30 UTC, cable out).** The female and male clips were clean at all three rates.
+Every Lynden clip popped and snapped, at 600, 1200 and 400 alike, 1200 worst. Replayed from the
+store with MENU, the same Lynden 1200 was clean, and so was Lynden 1200 received with stream mode off
+(control action 9) and played after the last packet. So the decoded samples, the gain and the
+pre-emphasis are fine (the `pcm=` MATCH said as much), and the pops are streaming's: decoding to the
+speaker while packets still arrive. With a 3-segment ring the decoder has 20-40 ms for each 20 ms
+frame, Lynden's frames take 18.3 ms on average with runs over 20, and the receive code's own work
+between refills eats the rest; the DMA catches the segment being written and plays stale or
+half-new samples. `late=` never counted one: it only sees a long gap between fills, so PR #126 adds
+`under=` to the PLAY line, counted when the DMA's segment at the end of a fill has reached the
+one written (`stream_fill`). Stream mode off is the workaround on the 3-segment image.
+
+**The RAM above Aura's region (23:50 UTC).** Aura's `memory.x` ended RAM at 0x20005560 (0x20001028 +
+17720), but the KD32F328 has 24 KB of SRAM, to 0x20006000. `c/k6/mod/ramprobe.c`, a RAM module,
+wrote two patterns to every word of 0x20005560-0x20005FFF on the radio and read them back:
+`good=2a8` (all 680 words), no fault, no reset, and the K6 ran on. So `memory.x` grows to 20440 B,
+and the hiss image gets its fourth PWM segment (the decoder has 40-60 ms per frame again) and its
+4 KB store back; every image gains 2720 B of stack margin. The second pass (27c951d) held a pattern
+there for 50 ms and watched four words 2-16 KB below while the first word was written:
+`ram probe good=2a8 bad=none held=2a8 alias=none`, so it is RAM of its own, not a mirror of lower
+SRAM. RAM0 (0x20000000-0x20000FFF) keeps the live vector table and stays off limits.
+
+**Four segments were not enough (a65f7e6, 2026-11-08 00:05 UTC, cable in).** All three Lynden clips
+bit-exact at depth 8, `late=0`, `overruns=0`, but `under=39` at 1200 (344 frames, 18 packets),
+`under=24` at 600 (187 frames, 10 packets) and `under=0` at 400, whose 7 packets were all in before
+playback began (`STEP got=125` of 125): with nothing arriving, the decoder alone keeps up (18.55 ms
+mean, 34.7 worst). The underruns are about two a packet at both rates, so the cost is per packet,
+not per frame, and a longer ring only puts it off. The budget: a 64-byte packet with its 24-byte
+preamble takes 391 ms of air and carries 19 frames (380 ms); at 18.6 ms a frame the decoder needs
+354 of those 391 ms, leaving 37 for receiving. Receiving took about 65: the `K6 PKT` line
+(150-250 characters at 115200 baud, 13-22 ms, written with a wait on TXE for each byte, right
+between a packet's end and the next decode), 36 ms with no decode at the end of each packet (the
+last `irq_n` = 4 words, so the end and the re-arm are never late), and a bit-banged chip register
+read (about 0.1 ms) every 2 ms of decoding, 1 ms a frame, which the 400 clip's `dec_mean` shows too.
+717f40d cuts all three: report lines go through a 512 B ring and the USART TXE interrupt (a writer
+with the ring full sends the oldest byte itself; `flush()` before a reset), the hold is 2 words
+(18 ms; a decode starts with 27 ms of packet left, so the end is noticed late only by a decode's
+excess over that, 8 ms at the worst seen, against a 107 ms preamble), and the yield looks at the
+chip every 6 ms (the FIFO's almost-full comes 36 ms before it overflows). About 45 ms a packet
+back against a deficit of about 40. Hiss image: flash 121588 (1292 free), static RAM 13556, boot
+stack 476 B to spare.
+
+**Streams clean (717f40d, 00:30 UTC, cable in).** Lynden 1200, 600 and 400 with stream mode on at
+depth 8: `under=0` on all three (39 / 24 / 0 on a65f7e6), bit-exact, `late=0`, every packet
+received (18/18 at 1200, so the shorter hold lost none), `dec_mean` 17.5-17.7 ms (0.9 ms a frame
+back from the yield cadence), worst 33.8. The serial log came through whole, 61 lines, none split.
+`ram_free` while playing 332-500 B (860-1124 on a65f7e6: the 512 B ring). Jeff's listening pass
+with the cable out follows.
+
+**On the bench.** Encode a 16 kHz clip with `c/sotto_enc -16 -600 in.raw out.sot` (also `-1200`,
+`-400`; `make -C c sotto_enc`, VARIANT v3.8), send it with `python -m modem.k6 send ... --codec 600`,
+and check `K6 PLAY pcm=` against `tools/k6_pcmhash.py --hiss --check`, which runs
+`pager_host_vlrh`. The firmware refuses to start a stream whose frame size doesn't match its PWM
+segment (`K6 PWM frame 320 != segment ...`), so a plain image given a hiss stream, or the other
+way round, fails loudly rather than playing at the wrong rate. The serial cable mutes the K6
+speaker; key 4 toggles pre-emphasis as before.

@@ -58,6 +58,16 @@ def hiss_tables(f):
     arr(f, "int32_t", "fx_hs_fine_m0", rnd(fine["m0"] * 256), per_line=8, comment="mean speaker miss per band, dB Q8")
     arr(f, "int16_t", "fx_hs_fine_vt", rnd(fine["Vt"] * 16384), per_line=8, comment="speaker-shape PCA axes [3][16], Q14")
     taps = firwin(41, 0.5, window=("kaiser", 5.0))        # scipy.signal._design_resample_poly
+    lrb = np.load(os.path.join(root, "sim", "data", "lr_hiss_b.npz"))["rel2"]
+    assert lrb.shape == (4, 4)
+    arr(f, "int16_t", "fx_lr_hiss_bcb", rnd(lrb * 256), per_line=4,
+        comment="sotto 1200 hiss: an unvoiced B frame's 2-bit level offsets [4][4], dB Q8")
+    v = np.load(os.path.join(root, "sim", "data", "vlr_hiss.npz"))
+    for name, shape, what in (("slope", (8,), "level slopes per 20 ms frame"), ("off", (4, 4), "a kind-1 superframe's 2-bit offsets"),
+                              ("h0", (4,), "a frame without bits or coded neighbours"), ("k2", (4,), "a kind-2 frame over its neighbours")):
+        t = np.stack([v[f"m{m}_{name}"] for m in ("600", "400")])
+        assert t.shape == (2,) + shape
+        arr(f, "int16_t", f"fx_vlr_hiss_{name}", rnd(t * 256), per_line=4, comment=f"sotto 600 / 400 hiss [600, 400]: {what}, dB Q8")
     arr(f, "int32_t", "fx_hs_taps", rnd(taps * 2 ** 19), per_line=6,
         comment="half-band FIR of scipy.signal.resample_poly(x, 2, 1) and (x, 1, 2): 41 taps, Kaiser 5.0, Q19")
 

@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 785c441..0a1e4f7 100644
+index 785c441..6af31c1 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -21,6 +21,18 @@ st7565 = "0.6"
+@@ -21,6 +21,21 @@ st7565 = "0.6"
  embedded-graphics = "0.8"
  profont = "0.7"
  
@@ -17,6 +17,9 @@ index 785c441..0a1e4f7 100644
 +# screen. sotto's build links it with a library that has no voice decoder (K6_VOICE=0), the
 +# room the explorer needs: VOICE MSG keeps its packets, modules and control, but plays nothing
 +explore = ["pager-only"]
++# the hiss band image (docs/k6-hiss-port.md): sotto 1200, 600 and 400 played at 16 kHz through the
++# K6 hiss layer, with a library built K6_HISS=1 (320-sample frames; the PWM ring is 3 of them)
++hiss = []
 +
  [profile.release]
  opt-level = "z"
@@ -40,17 +43,21 @@ index 34078b1..8a73bcc 100644
      watch_git_dir();
  }
 diff --git a/memory.x b/memory.x
-index 4fe73cb..c6619b0 100644
+index 4fe73cb..ce33ebe 100644
 --- a/memory.x
 +++ b/memory.x
-@@ -7,7 +7,7 @@
+@@ -7,7 +7,10 @@
   */
  MEMORY
  {
 -  FLASH : ORIGIN = 0x08002000, LENGTH = 120K
+-  RAM   : ORIGIN = 0x20001028, LENGTH = 17720
 +  FLASH : ORIGIN = 0x08002000, LENGTH = 1024K
-   RAM   : ORIGIN = 0x20001028, LENGTH = 17720
++  RAM   : ORIGIN = 0x20001028, LENGTH = 20440
  }
++/* LENGTH was 17720 (end 0x20005560). The KD32F328's SRAM is 24 KB, to 0x20006000: sotto's
++ * ramprobe module wrote, read and held every word of 0x20005560-0x20005FFF on the radio
++ * (2026-11-07, docs/k6-modules.md), so the application has those 2720 bytes too. */
  
 diff --git a/src/app/keys.rs b/src/app/keys.rs
 index 28463f8..aebe92f 100644
@@ -239,10 +246,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..7f6e8e1
+index 0000000..8936b0a
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3934 @@
+@@ -0,0 +1,3973 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -332,6 +339,9 @@ index 0000000..7f6e8e1
 +{
 +}
 +
++/// 4 KB in every image since the RAM above Aura's old region was found (2026-11-07, memory.x);
++/// the hiss band image had 2.5 KB before that (413 slots: two XL groups at depth 8, so sotto
++/// 1200 messages over 13 s streamed only at depth 4)
 +const STORE_BYTES: usize = 4096;
 +// (The RAM below UserVectors, 0x2000_0000-0x2000_0FFF, is not free: images that put the store
 +// there, even from 0x2000_0100, hung at boot on the radio on 2026-11-04.)
@@ -398,6 +408,7 @@ index 0000000..7f6e8e1
 +        pub fn sp_rebuilt() -> i32;
 +        pub fn sp_play_start();
 +        pub fn sp_play_pwm(out: *mut u16, top: u32, gain_q8: i32, emphasis: i32) -> i32;
++        pub fn sp_frame_samples() -> i32;
 +        pub fn sp_play_pos() -> i32;
 +        pub fn sp_pcm_hash(samples: *mut u32) -> u32;
 +        pub fn sp_set_stream(on: i32);
@@ -1296,6 +1307,8 @@ index 0000000..7f6e8e1
 +const STRAY_IGNORE_MS: u16 = 300;
 +/// After a re-arm, how long poll waits in a tight loop for the next packet (100 us ticks)
 +const NEXT_SYNC_WAIT_TICKS: u16 = 2500;
++/// streaming: no frame is decoded in a packet's last HOLD_WORDS words (see receive_packet)
++const HOLD_WORDS: usize = 2;
 +/// poll's burst loop goes back to the main loop after this many packets regardless
 +const MAX_BURST_PACKETS: u16 = 160;
 +const REARM_SWEEP_STEPS: u8 = 13; // 0, 10, ... 120 ms
@@ -1491,6 +1504,8 @@ index 0000000..7f6e8e1
 +    /// the last stream's frames whose group wasn't in yet, and fills more than 70 ms apart
 +    waits: u16,
 +    late: u16,
++    /// fills the DMA caught up with: the speaker played stale or half-written samples
++    under: u16,
 +    overruns: u16,
 +}
 +
@@ -1610,6 +1625,7 @@ index 0000000..7f6e8e1
 +            ifrx_flags: 0,
 +            waits: 0,
 +            late: 0,
++            under: 0,
 +            overruns: 0,
 +        }
 +    }
@@ -2075,7 +2091,11 @@ index 0000000..7f6e8e1
 +static mut Y_SOFT_R: u8 = 0;
 +static mut Y_SOFT_N: u8 = 0;
 +static mut Y_SERVICED: u16 = 0;
-+const YIELD_TICKS: u16 = 20;
++// How often a decode's yields look at the chip: each look is a bit-banged register read
++// (about 0.1 ms), and the FIFO's almost-full comes 4 words (36 ms at 1800 baud) before it
++// overflows, so every 6 ms is early enough. Every 2 ms, as until 2026-11-08, cost the hiss
++// band image about 1 ms of each 20 ms frame.
++const YIELD_TICKS: u16 = 60;
 +
 +fn soft_clear() {
 +    unsafe {
@@ -2589,9 +2609,13 @@ index 0000000..7f6e8e1
 +        }
 +        // wait for the next interrupt (timed reads: taking each word as it falls due)
 +        loop {
-+            // streaming: decode a frame while the words come (not in the packet's last
-+            // interrupt's worth, so its end and the re-arm aren't late)
-+            let filled = !timed && words > got / 2 + irq_n && stream_fill(app, syst);
++            // streaming: decode a frame while the words come, but not in the packet's last
++            // HOLD_WORDS, so its end and the re-arm aren't late. With the last irq_n (4) words
++            // held, 36 ms a packet, the hiss band image's decoder (18.6 ms a 20 ms frame) ran
++            // short by about 2 frames a packet (2026-11-08); with 2, a decode starts with 3
++            // words (27 ms) to go, and the end is noticed late only by a decode's excess over
++            // that (8 ms at the worst seen), well inside the 107 ms preamble before the next sync
++            let filled = !timed && words > got / 2 + HOLD_WORDS && stream_fill(app, syst);
 +            if !filled {
 +                delay::us(syst, 500);
 +            }
@@ -3168,6 +3192,7 @@ index 0000000..7f6e8e1
 +    }
 +    if action == CTL_ACT_RESET {
 +        report_line(format_args!("K6 RESET seq={}", seq));
++        crate::hal::uart::flush();
 +        delay::ms(syst, 30);
 +        cortex_m::peripheral::SCB::sys_reset();
 +    }
@@ -3428,6 +3453,7 @@ index 0000000..7f6e8e1
 +    dn: u32,
 +    waits: u16,
 +    late: u16,
++    under: u16,
 +    last_fill: u16,
 +}
 +
@@ -3447,6 +3473,7 @@ index 0000000..7f6e8e1
 +    dn: 0,
 +    waits: 0,
 +    late: 0,
++    under: 0,
 +    last_fill: 0,
 +};
 +
@@ -3511,7 +3538,16 @@ index 0000000..7f6e8e1
 +    fill_seg(app, syst, wr);
 +    unsafe {
 +        let s = &mut *addr_of_mut!(STREAM);
-+        s.wr = (wr + 1) % pwm_audio::NSEG;
++        // the DMA got to the segment being written, or past it, before the fill ended: what
++        // played there was stale or half new. `late` above misses this (a long decode after
++        // a fill in time), which is how the hiss image's streaming popped on dense speech
++        // with no count on 2026-11-07
++        let n = pwm_audio::NSEG;
++        let cur2 = s.audio.play_segment();
++        if !s.done && (cur2 + n - cur) % n >= (wr + n - cur) % n {
++            s.under = s.under.saturating_add(1);
++        }
++        s.wr = (wr + 1) % n;
 +        s.last_fill = uptime::now();
 +    }
 +    true
@@ -3533,11 +3569,17 @@ index 0000000..7f6e8e1
 +        s.g = ((s.auto * VOL_Q8[app.pager.vol as usize]) >> 8).min(32767);
 +        s.emph = app.pager.emphasis as i32;
 +        (s.wr, s.tail, s.done, s.ended, s.aborted) = (0, 0, false, false, false);
-+        (s.dsum, s.dmax, s.dn, s.waits, s.late) = (0, 0, 0, 0, 0);
++        (s.dsum, s.dmax, s.dn, s.waits, s.late, s.under) = (0, 0, 0, 0, 0, 0);
 +        s.on = true;
 +        unsafe {
 +            Y_SERVICED = 0;
 +            ffi::sp_play_start();
++        }
++        // the library's frame must be the ring's segment (8 or 16 kHz): else nothing plays
++        let fs = unsafe { ffi::sp_frame_samples() } as usize;
++        if fs != pwm_audio::SEG {
++            report_line(format_args!("K6 PWM frame {} != segment {}", fs, pwm_audio::SEG));
++            s.done = true;
 +        }
 +    }
 +    paint_free_ram();
@@ -3575,6 +3617,7 @@ index 0000000..7f6e8e1
 +    p.dec_mean_x10 = if s.dn > 0 { (s.dsum * 10 / s.dn) as u16 } else { 0 };
 +    p.waits = s.waits;
 +    p.late = s.late;
++    p.under = s.under;
 +    p.overruns = ov.clamp(0, 65535) as u16;
 +    p.ram_free = free_ram();
 +    refresh_status(app);
@@ -3947,11 +3990,11 @@ index 0000000..7f6e8e1
 +struct Serial;
 +
 +impl core::fmt::Write for Serial {
++    // queued, sent by the USART interrupt (hal::uart): a report line no longer holds the
++    // caller for its 87 us a character
 +    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-+        let u = unsafe { &*kd32f328_pac::Usart1::ptr() };
 +        for &b in s.as_bytes() {
-+            while u.isr().read().txe().bit_is_clear() {}
-+            u.tdr().write(|w| unsafe { w.tdr().bits(b as u16) });
++            crate::hal::uart::send_byte(b);
 +        }
 +        Ok(())
 +    }
@@ -4088,7 +4131,7 @@ index 0000000..7f6e8e1
 +    let mut s = Serial;
 +    write!(
 +        s,
-+        "K6 PLAY id={:02x} total={} stored={} got={} packets={}/{} played={} dec_mean_us={} dec_max_us={} ram_free={} aborted={} stream={} waits={} late={} overruns={} yields={} pcm={:08x} samples={} rebuilt={} missing={}",
++        "K6 PLAY id={:02x} total={} stored={} got={} packets={}/{} played={} dec_mean_us={} dec_max_us={} ram_free={} aborted={} stream={} waits={} late={} under={} overruns={} yields={} pcm={:08x} samples={} rebuilt={} missing={}",
 +        st.msg_id,
 +        st.total,
 +        st.stored,
@@ -4103,6 +4146,7 @@ index 0000000..7f6e8e1
 +        (unsafe { ffi::sp_stream_info(core::ptr::null_mut()) } != 0 && p.stream_play) as u8,
 +        p.waits,
 +        p.late,
++        p.under,
 +        p.overruns,
 +        unsafe { Y_SERVICED },
 +        pcm,
@@ -4136,6 +4180,7 @@ index 0000000..7f6e8e1
 +        ef.r3(),
 +        ef.r12()
 +    ));
++    crate::hal::uart::flush();
 +    for _ in 0..2_000_000 {
 +        cortex_m::asm::nop();
 +    }
@@ -4158,6 +4203,7 @@ index 0000000..7f6e8e1
 +        )),
 +        None => report_line(format_args!("K6 PANIC {} build={}", info.message(), BUILD)),
 +    }
++    crate::hal::uart::flush();
 +    for _ in 0..2_000_000 {
 +        cortex_m::asm::nop();
 +    }
@@ -5679,11 +5725,11 @@ index 57e9999..3717bb7 100644
  pub mod timer;
 diff --git a/src/hal/pwm_audio.rs b/src/hal/pwm_audio.rs
 new file mode 100644
-index 0000000..25274cb
+index 0000000..5448a2d
 --- /dev/null
 +++ b/src/hal/pwm_audio.rs
-@@ -0,0 +1,155 @@
-+//! 8 kHz PCM out of the MCU's PWM pin, the path the stock firmware uses for
+@@ -0,0 +1,167 @@
++//! 8 kHz PCM (16 kHz in the hiss band image) out of the MCU's PWM pin, the path the stock firmware uses for
 +//! its voice prompts: PA11 = TIM1_CH4 (AF2) -> two RC poles (4.7k/3.9n,
 +//! 4.7k/22n) -> 22k -> the speaker amplifier's input, summed with the RF
 +//! chip's AF output. Aura itself never drives PA11.
@@ -5702,9 +5748,21 @@ index 0000000..25274cb
 +
 +pub const TOP: u16 = 2000;
 +pub const MID: u16 = TOP / 2;
-+pub const SEG: usize = 160; // one 20 ms sotto frame
++// one 20 ms sotto frame: 160 samples at 8 kHz, or 320 at 16 kHz in the hiss band image (the
++// decoder's sp_frame_samples() must agree); four of them in the ring: the decoder has the
++// time of two to three frames for each one (the hiss image's ring had 3 until the RAM above
++// Aura's old region was found, and streaming dense speech popped with no late count)
++#[cfg(not(feature = "hiss"))]
++pub const SEG: usize = 160;
++#[cfg(feature = "hiss")]
++pub const SEG: usize = 320;
 +pub const NSEG: usize = 4;
 +pub const RING: usize = SEG * NSEG;
++/// TIM1's repetition count: an update (one sample) every RCR + 1 periods of the 48 kHz PWM
++#[cfg(not(feature = "hiss"))]
++const RCR: u32 = 5; // 8 kHz
++#[cfg(feature = "hiss")]
++const RCR: u32 = 2; // 16 kHz
 +
 +const RCC_AHBENR: u32 = 0x4002_1014; // DMAEN bit 0
 +const RCC_APB2ENR: u32 = 0x4002_1018; // TIM1EN bit 11
@@ -5777,11 +5835,11 @@ index 0000000..25274cb
 +        modify(RCC_AHBENR, 0, 1 << 0);
 +        modify(RCC_APB2ENR, 0, 1 << 11);
 +
-+        // TIM1: 48 kHz PWM on CH4, update (and DMA request) every 6 periods.
++        // TIM1: 48 kHz PWM on CH4, update (and DMA request) every RCR + 1 periods.
 +        wr(TIM_CR1, 0);
 +        wr(TIM_PSC, 0);
 +        wr(TIM_ARR, TOP as u32);
-+        wr(TIM_RCR, 5);
++        wr(TIM_RCR, RCR);
 +        wr(TIM_CCR4, MID as u32);
 +        // OC4M = 110 (PWM mode 1), OC4PE preload; channel 3 untouched (unused).
 +        modify(TIM_CCMR2, 0xFF00, (0b110 << 12) | (1 << 11));
@@ -5838,6 +5896,152 @@ index 0000000..25274cb
 +        self.running = false;
 +    }
 +}
+diff --git a/src/hal/uart.rs b/src/hal/uart.rs
+index 131f932..99ae011 100644
+--- a/src/hal/uart.rs
++++ b/src/hal/uart.rs
+@@ -53,7 +53,62 @@ impl RxRing {
+ 
+ static RX_RING: Mutex<RefCell<RxRing>> = Mutex::new(RefCell::new(RxRing::new()));
+ 
+-/// USART1 IRQ handler: drains RDR into `RX_RING` on every received byte
++// Report lines leave through this ring and the TXE interrupt, not by waiting on TXE for each
++// byte: a `K6 PKT` line is 150-250 characters, 13-22 ms at 115200 baud, and while the pager
++// streamed speech it went out between a packet's end and the next decode, so the decoder lost
++// that time on every packet (2026-11-08, the hiss band image: 2 speaker underruns a packet,
++// docs/k6-hiss-port.md). A writer that finds the ring full sends its oldest byte itself.
++// 512: a PKT line fits; the hiss band image's boot stack has about 480 B to spare with it.
++// Not in the lean images (codebook install, codebook in MCU flash): they are at the flash
++// limit and don't stream; they keep the wait per byte.
++#[cfg(not(feature = "lean"))]
++const TX_RING_CAP: usize = 512;
++
++#[cfg(not(feature = "lean"))]
++struct TxRing {
++    buf: [u8; TX_RING_CAP],
++    head: usize,
++    tail: usize,
++    len: usize,
++}
++
++#[cfg(not(feature = "lean"))]
++impl TxRing {
++    const fn new() -> Self {
++        TxRing {
++            buf: [0; TX_RING_CAP],
++            head: 0,
++            tail: 0,
++            len: 0,
++        }
++    }
++
++    fn push(&mut self, byte: u8) -> bool {
++        if self.len == TX_RING_CAP {
++            return false;
++        }
++        self.buf[self.head] = byte;
++        self.head = (self.head + 1) % TX_RING_CAP;
++        self.len += 1;
++        true
++    }
++
++    fn pop(&mut self) -> Option<u8> {
++        if self.len == 0 {
++            return None;
++        }
++        let byte = self.buf[self.tail];
++        self.tail = (self.tail + 1) % TX_RING_CAP;
++        self.len -= 1;
++        Some(byte)
++    }
++}
++
++#[cfg(not(feature = "lean"))]
++static TX_RING: Mutex<RefCell<TxRing>> = Mutex::new(RefCell::new(TxRing::new()));
++
++/// USART1 IRQ handler: drains RDR into `RX_RING` on every received byte, and feeds TDR from
++/// `TX_RING` while the TXE interrupt is on (off again once the ring is empty)
+ #[no_mangle]
+ pub unsafe extern "C" fn USART1() {
+     let regs = &*kd32f328_pac::Usart1::ptr();
+@@ -65,6 +120,77 @@ pub unsafe extern "C" fn USART1() {
+         let byte = regs.rdr().read().rdr().bits() as u8;
+         cortex_m::interrupt::free(|cs| RX_RING.borrow(cs).borrow_mut().push(byte));
+     }
++    #[cfg(not(feature = "lean"))]
++    if isr.txe().bit_is_set() && regs.cr1().read().txeie().bit_is_set() {
++        let next = cortex_m::interrupt::free(|cs| TX_RING.borrow(cs).borrow_mut().pop());
++        match next {
++            Some(b) => regs.tdr().write(|w| unsafe { w.tdr().bits(b as u16) }),
++            None => regs.cr1().modify(|_, w| w.txeie().clear_bit()),
++        };
++    }
++}
++
++/// Queue one byte for USART1: the interrupt sends it. With the ring full (or the interrupt
++/// still masked, as before `NVIC::unmask` at boot) the caller sends the oldest byte itself.
++#[cfg(not(feature = "lean"))]
++pub fn send_byte(byte: u8) {
++    let regs = unsafe { &*kd32f328_pac::Usart1::ptr() };
++    loop {
++        let queued = cortex_m::interrupt::free(|cs| {
++            let ok = TX_RING.borrow(cs).borrow_mut().push(byte);
++            if ok {
++                regs.cr1().modify(|_, w| w.txeie().set_bit());
++            }
++            ok
++        });
++        if queued {
++            return;
++        }
++        while regs.isr().read().txe().bit_is_clear() {}
++        // TXE checked again inside: the interrupt may have taken this slot meanwhile
++        cortex_m::interrupt::free(|cs| {
++            if regs.isr().read().txe().bit_is_set() {
++                if let Some(b) = TX_RING.borrow(cs).borrow_mut().pop() {
++                    regs.tdr().write(|w| unsafe { w.tdr().bits(b as u16) });
++                }
++            }
++        });
++    }
++}
++
++/// Lean images: the byte goes out here, with a wait on TXE, as every image did before
++#[cfg(feature = "lean")]
++#[inline(always)]
++pub fn send_byte(byte: u8) {
++    let regs = unsafe { &*kd32f328_pac::Usart1::ptr() };
++    while regs.isr().read().txe().bit_is_clear() {}
++    regs.tdr().write(|w| unsafe { w.tdr().bits(byte as u16) });
++}
++
++/// Lean images: nothing is queued (the callers' own delays before a reset cover the last byte)
++#[cfg(feature = "lean")]
++#[inline(always)]
++pub fn flush() {}
++
++/// Wait until every queued byte has left (before a reset or a jump to the bootloader), at
++/// most about 100 ms; sends them itself if the interrupt is masked.
++#[cfg(not(feature = "lean"))]
++pub fn flush() {
++    let regs = unsafe { &*kd32f328_pac::Usart1::ptr() };
++    for _ in 0..200_000u32 {
++        let left = cortex_m::interrupt::free(|cs| {
++            let mut r = TX_RING.borrow(cs).borrow_mut();
++            if regs.isr().read().txe().bit_is_set() {
++                if let Some(b) = r.pop() {
++                    regs.tdr().write(|w| unsafe { w.tdr().bits(b as u16) });
++                }
++            }
++            r.len
++        });
++        if left == 0 && regs.isr().read().tc().bit_is_set() {
++            return;
++        }
++    }
+ }
+ 
+ /// Pull one byte received on USART1 since the last call, if any.
 diff --git a/src/main.rs b/src/main.rs
 index 9d2b0c0..1842385 100644
 --- a/src/main.rs

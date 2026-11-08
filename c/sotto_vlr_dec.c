@@ -18,6 +18,7 @@ typedef char vlr_nc_matches_core[VLR_NC == SOTTO_K - 1 ? 1 : -1];
 
 #ifdef SOTTO_V38
 #define VLR_HISS
+#define VLR_HISS_HOOK_T vlr_hiss_hook_t
 #endif
 #define vlr_params_t sotto_fparams_t
 #define VLR_C(q16) ((q16) / 65536.0)

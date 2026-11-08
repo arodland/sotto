@@ -280,6 +280,17 @@ in us of the cases that arrive on the carrier, -1 if no carrier came, -2 if a ke
 carriers on 2 m / 70 cm points. `tools/k6_rxmap.py` patches the segment into CI's
 `mod-rxmap.bin`, uploads it and decodes the over-air summary. See [k6-rxmap.md](k6-rxmap.md).
 
+## The RAM probe (ramprobe)
+
+`c/k6/mod/ramprobe.c` (2026-11-07, the hiss band thread): Aura's `memory.x` gives the application
+0x20001028 + 17720 bytes, ending at 0x20005560, but the KD32F328 is sold with 24 KB of SRAM, which
+would end at 0x20006000. Nobody has claimed those 2720 bytes. The module writes two patterns to
+every word of that range, holds a third for 50 ms, restores what it found, and says
+`ram probe good=2a8 bad=none held=2a8 alias=none` (0x2a8 = 680 words = all of it; alias = a lower address that moved with the probe, a mirror of a smaller SRAM; on 2026-11-07 the K6 said good=2a8 bad=none and ran on, so the RAM is there, all of
+it). If the SRAM ends lower the first access past the end faults and the radio resets, so run it
+when a reset is acceptable. If it holds, `memory.x` can grow by 2720 bytes: the hiss band image
+(docs/k6-hiss-port.md) would get its fourth PWM segment and its 4 KB message store back.
+
 ## Insights (a living list)
 
 Ideas from the K6 work that might change the plan. None has been tested unless it says so.
@@ -587,3 +598,15 @@ what would settle it.
       block of 78 bits (16 blocks of 78 = 1248). About 2000 bit/s net, 1.3x F/1800.
     - It would buy: the first K6 link clearly faster than the chip's modem, with soft decoding.
     - Settled by: the model at about 51 dB-Hz for every packet, and a bench run as for rate 3/4.
+34. **Build Aura's `App` in its static instead of on the boot stack.**
+    - From: the hiss band thread, 2026-11-07 ([k6-hiss-port.md](k6-hiss-port.md)). Not built.
+    - `place_app` (firmware/k6-aura, main.rs) builds `App::new`'s 3 KB result in its own stack
+      frame and copies it into `APP_SLOT`: 3448 B of stack at boot, on top of main's 2952, that
+      nothing else ever uses. Writing the result through the slot's raw pointer changed nothing
+      (LLVM kept the temporary), so it would take `App::new` writing its fields into a
+      `MaybeUninit<App>` one by one. The hiss band image first got its RAM by cutting its
+      message store to 2.5 KB; then the 2720 B above Aura's old region turned out to be real
+      SRAM (`ramprobe`, 2026-11-07) and `memory.x` grew, so this is less pressing.
+    - It would buy: about 3.4 KB of boot-time stack in every image, so the stores could grow
+      back and a 16 kHz ring of four segments would fit.
+    - Settled by: `tools/k6_frames.py` showing `place_app` under 500 B and the image booting.

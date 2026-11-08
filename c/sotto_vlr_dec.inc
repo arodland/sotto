@@ -4,9 +4,10 @@
  *   vlr_params_t     the decoder core's per-frame fields (code, wi, ei, c[VLR_NC])
  *   VLR_C(q16)       a shape coefficient from dB Q16 (the codebooks are int8 times a Q16 step)
  *   and the v3.7 core: sotto_dec_frame, sotto_dec_create/destroy/flush.
- * With VLR_HISS (the float v3.8 build) the decoder calls a hook after every frame the core
- * takes, for sotto 600 / 400 hiss (sotto_hiss.c); with a hook set it also reads a superframe
- * with one pitched frame as hiss does (flat pitch, sf_pitch).
+ * With VLR_HISS (the float v3.8 build, and the fixed-point one with FX_HISS_FB) the decoder
+ * calls a hook (of type VLR_HISS_HOOK_T) after every frame the core takes, for sotto 600 / 400
+ * hiss (sotto_hiss.c, fixed/sotto_fx_hiss.c); with a hook set it also reads a superframe with
+ * one pitched frame as hiss does (flat pitch, sf_pitch).
  *
  * SottoVLR.frame_params (sim/sotto_vlr.py) in a stream: each 48-bit superframe becomes N
  * per-20 ms field sets (voicing code, pitch index, energy code, 19 shape coefficients), which
@@ -40,7 +41,7 @@ struct sotto_vlr_dec {
   int32_t anc[VLR_MAX_ANCHORS][VLR_NC], nx[VLR_NC];
   int16_t lcode0, lwi0, lei0;
 #ifdef VLR_HISS
-  vlr_hiss_hook_t hook;             /* sotto 600 / 400 hiss (sotto_hiss.c): every frame the core takes */
+  VLR_HISS_HOOK_T hook;             /* sotto 600 / 400 hiss (sotto_hiss.c): every frame the core takes */
   void *hctx;
 #endif
 };

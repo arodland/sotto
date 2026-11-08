@@ -4106,6 +4106,46 @@ const int16_t fx_hs_fine_vt[48] = {
   -5904, -5662, -3679, -1847, 978, 3624, 4364, 4536,
 };
 
+/* sotto 1200 hiss: an unvoiced B frame's 2-bit level offsets [4][4], dB Q8 */
+const int16_t fx_lr_hiss_bcb[16] = {
+  -2821, -2824, -2698, -2744,
+  -448, -561, -573, -568,
+  730, 701, 717, 653,
+  3085, 3244, 3164, 2977,
+};
+
+/* sotto 600 / 400 hiss [600, 400]: level slopes per 20 ms frame, dB Q8 */
+const int16_t fx_vlr_hiss_slope[16] = {
+  -2831, -1487, -794, -294,
+  95, 512, 1132, 2163,
+  -2263, -1121, -591, -182,
+  125, 535, 1175, 2030,
+};
+
+/* sotto 600 / 400 hiss [600, 400]: a kind-1 superframe's 2-bit offsets, dB Q8 */
+const int16_t fx_vlr_hiss_off[32] = {
+  -3405, -4257, -4444, -4641,
+  -1375, -1516, -1439, -1347,
+  773, 929, 957, 899,
+  2793, 3912, 4219, 3909,
+  -2260, -3036, -3438, -3796,
+  -417, -512, -417, -315,
+  1638, 1708, 1833, 1884,
+  2903, 4255, 4869, 4969,
+};
+
+/* sotto 600 / 400 hiss [600, 400]: a frame without bits or coded neighbours, dB Q8 */
+const int16_t fx_vlr_hiss_h0[8] = {
+  745, 540, 492, 399,
+  499, 550, 602, 540,
+};
+
+/* sotto 600 / 400 hiss [600, 400]: a kind-2 frame over its neighbours, dB Q8 */
+const int16_t fx_vlr_hiss_k2[8] = {
+  113, -133, -202, -276,
+  95, 20, 56, 84,
+};
+
 /* half-band FIR of scipy.signal.resample_poly(x, 2, 1) and (x, 1, 2): 41 taps, Kaiser 5.0, Q19 */
 const int32_t fx_hs_taps[41] = {
   0, -551, 0, 1315, 0, -2566,

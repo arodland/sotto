@@ -43,9 +43,9 @@ fit() {
     $1 == ".data" { flash += $2; ram += $2 }
     $1 == ".bss" || $1 == ".uninit" { ram += $2 }
     $1 == ".ram0" { ram0 += $2 }
-    END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 17720 (%d left for the stack); RAM0 %d of 4096\n",
-            flash, 122880 - flash, ram, 17720 - ram, ram0
-          if (17720 - ram < 12288) print "warning: under 12 KB of stack left (on the radio Aura had used 8.3 KB of it when playback started; the decoder needs 3.5 KB more)"
+    END { printf "flash %d of 122880 bytes (%d free); static RAM %d of 20440 (%d left for the stack); RAM0 %d of 4096\n",
+            flash, 122880 - flash, ram, 20440 - ram, ram0
+          if (20440 - ram < 12288) print "warning: under 12 KB of stack left (on the radio Aura had used 8.3 KB of it when playback started; the decoder needs 3.5 KB more)"
           if (flash > 122880) { print "DOES NOT FIT in the 120 KB application flash"; exit 1 } }'
 }
 # where the flash goes: demangled symbols grouped by Rust module path (C symbols by name)
@@ -126,8 +126,8 @@ variant() {
     "$SIZE" -A "$ELF" | awk -v f="$OUT/frames-$name.txt" '
       $1 == ".data" || $1 == ".bss" || $1 == ".uninit" { ram += $2 }
       END { while ((getline l < f) > 0) { split(l, w, " "); if (w[2] == "aura::__cortex_m_rt_main" || w[2] == "aura::place_app") boot += w[1] }
-            printf "boot stack: main + place_app %d of %d B free (%d to spare)\n", boot, 17720 - ram, 17720 - ram - boot
-            if (17720 - ram - boot < 384) print "warning: under 384 B of stack to spare at boot: the boot may overwrite the top of .bss" }' \
+            printf "boot stack: main + place_app %d of %d B free (%d to spare)\n", boot, 20440 - ram, 20440 - ram - boot
+            if (20440 - ram - boot < 384) print "warning: under 384 B of stack to spare at boot: the boot may overwrite the top of .bss" }' \
       | tee -a "$OUT/size-$name.txt"
   fi
 }
@@ -204,6 +204,14 @@ if [ "${VLR:-1}" = 1 ]; then
   variant aura-pager-vlr-rom "pager-only image, sotto 1200 + 600 + 400, sotto 600 / 400's codebooks in MCU flash (no SPI writes)" \
     --features pager-only,lean
 fi
+# the hiss band image (docs/k6-hiss-port.md): sotto 1200, 600 and 400 at 16 kHz through the K6
+# hiss layer, codebooks in SPI flash (HISS=0 skips it)
+if [ "${HISS:-1}" = 1 ]; then
+  K6_CODEC=vlr K6_CB=spi K6_HISS=1 sh "$ROOT/tools/k6_build.sh"
+  lib build-vlrh-cbs
+  variant aura-pager-vlrh "pager-only image, sotto 1200 + 600 + 400 with the hiss band (16 kHz), codebooks in SPI flash" \
+    --features pager-only,hiss
+fi
 if [ "${INSTALL:-1}" = 1 ]; then
   K6_CB=install sh "$ROOT/tools/k6_build.sh"
   lib build-cbi
@@ -236,7 +244,7 @@ fi
 MODF="--target=thumbv6m-none-eabi -mcpu=cortex-m0 -mthumb -mfloat-abi=soft -Os -fropi -ffreestanding
   -fno-builtin -nostdlib -ffunction-sections -fdata-sections -fomit-frame-pointer -Wall -Werror -I$ROOT/c/k6"
 for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0dma gp0sweep afsweep gp0cap \
-         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t iflive_h1200 iflive_h1350 iflive_h1440 iflive_h1500 iflive_h1600 xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls wsprtx wsprbcn wspriq bandreg; do
+         iflive iflive_ffsk iflive_tsweep iflive_fsweep iflive_g2 iflive_k6t iflive_h1200 iflive_h1350 iflive_h1440 iflive_h1500 iflive_h1600 xtalstep cwkey ft8wf ft8wf_inv gp0cap_afc ft8tx ifcal rxmap spksweep scan hfprobe rtls wsprtx wsprbcn wspriq bandreg ramprobe; do
   opt=$(sed -n 's/^[[:space:]]*#[[:space:]]*define[[:space:]]*K6_MODULE_OPT[[:space:]]*\([sz]\).*/\1/p' "$ROOT/c/k6/mod/$m.c")
   clang $(echo $MODF | sed "s/ -Os / -O${opt:-s} /") -c "$ROOT/c/k6/mod/$m.c" -o "$HERE/build/$m.o"
   for base in 0 4096; do

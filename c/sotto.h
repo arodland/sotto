@@ -174,7 +174,13 @@ SOTTO_API int sotto_lr_dec_flush_half(struct sotto_lr_dec *d, int half, short sp
  * superframes behind (the first calls return silence); call sotto_lr_dec16_flush until it
  * returns 0. */
 #define SOTTO_LR_SAMPLES_PER_FRAME_16K 640
+#ifdef FX_HISS_FB
+#define SOTTO_LR_DEC16_DELAY 2   /* superframes: sotto 1200's 2, then SOTTO_LR_DEC16_DELAY_FRAMES 20 ms */
+#define SOTTO_LR_DEC16_DELAY_FRAMES 1   /* frames more: the K6 layer's (and 20 samples) */
+#else
 #define SOTTO_LR_DEC16_DELAY 4   /* superframes: sotto 1200's 2 plus the 16 kHz layer's */
+#define SOTTO_LR_DEC16_DELAY_FRAMES 0
+#endif
 
 struct sotto_lr_enc16;
 struct sotto_lr_dec16;
@@ -188,6 +194,11 @@ SOTTO_API void sotto_lr_dec16_destroy(struct sotto_lr_dec16 *d);
 SOTTO_API void sotto_lr_decode16(struct sotto_lr_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME],
                                  int good, short speech[SOTTO_LR_SAMPLES_PER_FRAME_16K]);
 SOTTO_API int sotto_lr_dec16_flush(struct sotto_lr_dec16 *d, short speech[SOTTO_LR_SAMPLES_PER_FRAME_16K]);
+/* the K6 build (fixed point, FX_HISS_FB) also plays a superframe in two 320-sample halves, as
+   sotto_lr_decode_half / sotto_lr_dec_flush_half do at 8 kHz */
+SOTTO_API int sotto_lr_decode16_half(struct sotto_lr_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
+                                     int half, short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
+SOTTO_API int sotto_lr_dec16_flush_half(struct sotto_lr_dec16 *d, int half, short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
 
 #ifdef __cplusplus
 }

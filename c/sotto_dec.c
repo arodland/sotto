@@ -49,12 +49,12 @@ int main(int argc, char **argv) {
       fprintf(stderr, "sotto_dec: this build has no sotto %d hiss decoder (use the float build)\n", vlr);
       return 1;
     }
-    int ns = sotto_vlr_samples16(d);
+    int ns = sotto_vlr_samples16(d), skip = SOTTO_VLR_DEC16_DELAY_FRAMES * SOTTO_SAMPLES_PER_FRAME_16K;
     while (fread(b, 1, sizeof b, in) == sizeof b) {
       int good = 1, c;
       if (gf && (c = fgetc(gf)) != EOF) good = c != 0;
       sotto_vlr_decode16(d, b, good, y);
-      if (n++ >= SOTTO_VLR_DEC16_DELAY(vlr)) fwrite(y, sizeof(short), ns, out);
+      if (n++ >= SOTTO_VLR_DEC16_DELAY(vlr)) fwrite(y + skip, sizeof(short), ns - skip, out), skip = 0;
     }
     while (sotto_vlr_dec16_flush(d, y)) fwrite(y, sizeof(short), ns, out);
     sotto_vlr_dec16_destroy(d);
@@ -64,6 +64,7 @@ int main(int argc, char **argv) {
     struct sotto_lr_dec16 *d = sotto_lr_dec16_create();
     short y[SOTTO_LR_SAMPLES_PER_FRAME_16K];
     long n = 0;
+    int skip = SOTTO_LR_DEC16_DELAY_FRAMES * SOTTO_SAMPLES_PER_FRAME_16K;
     if (!d) {
       fprintf(stderr, "sotto_dec: this build has no sotto 1200 hiss decoder (use the float build)\n");
       return 1;
@@ -72,7 +73,7 @@ int main(int argc, char **argv) {
       int good = 1, c;
       if (gf && (c = fgetc(gf)) != EOF) good = c != 0;
       sotto_lr_decode16(d, b, good, y);
-      if (n++ >= SOTTO_LR_DEC16_DELAY) fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME_16K, out);
+      if (n++ >= SOTTO_LR_DEC16_DELAY) fwrite(y + skip, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME_16K - skip, out), skip = 0;
     }
     while (sotto_lr_dec16_flush(d, y)) fwrite(y, sizeof(short), SOTTO_LR_SAMPLES_PER_FRAME_16K, out);
     sotto_lr_dec16_destroy(d);

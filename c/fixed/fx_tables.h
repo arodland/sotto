@@ -68,4 +68,10 @@ extern const int32_t fx_hs_fine_w[16 * 16];
 extern const int32_t fx_hs_fine_m0[16];
 extern const int16_t fx_hs_fine_vt[3 * 16];
 extern const int32_t fx_hs_taps[41];
+/* sotto 1200 and sotto 600 / 400 hiss on the K6 (sotto_fx_hiss.c, FX_HISS_FB), dB Q8 */
+extern const int16_t fx_lr_hiss_bcb[4 * 4];
+extern const int16_t fx_vlr_hiss_slope[2 * 8];
+extern const int16_t fx_vlr_hiss_off[2 * 16];
+extern const int16_t fx_vlr_hiss_h0[2 * 4];
+extern const int16_t fx_vlr_hiss_k2[2 * 4];
 #endif

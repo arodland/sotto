@@ -7,6 +7,8 @@ Usage: python c/k6/bench_k6.py c/k6/build/bench.elf IN.raw|IN.wav|IN.flac [--ws 
        sotto 1200, magic 0xA9, played in 20 ms halves)
        python c/k6/bench_k6.py c/k6/build-vlr/bench.elf IN --codec 600   (K6_CODEC=vlr build:
        sotto 600 / 400, magic 0xAC / 0xAD, 4 / 6 calls of 20 ms per slot)
+       python c/k6/bench_k6.py c/k6/build-vlrh-cbs/bench.elf IN --codec 600 --hiss   (K6_HISS=1
+       build: the bits from the v3.8 hiss encoder on 16 kHz input, 320 PWM samples a frame)
 
 Encodes IN with c/fixed/sotto_enc_fx (v3.7; make -C c VARIANT=v3.7 fixed), packs the frames
 into packets with c/k6/k6fsk_ref.py (profile L), drops the --lose packets, then on the
@@ -35,21 +37,24 @@ _spec.loader.exec_module(cm0)
 cm4 = cm0.cm4
 
 
-def load_8k(path):
-    """8 kHz mono 16-bit samples: .raw as is, anything else through ffmpeg"""
+def load_8k(path, rate=8000):
+    """8 kHz (or rate) mono 16-bit samples: .raw as is, anything else through ffmpeg"""
     if path.endswith('.raw'):
         return open(path, 'rb').read()
-    return subprocess.run(['ffmpeg', '-v', 'error', '-i', path, '-ac', '1', '-ar', '8000', '-f', 's16le', '-'],
+    return subprocess.run(['ffmpeg', '-v', 'error', '-i', path, '-ac', '1', '-ar', str(rate), '-f', 's16le', '-'],
                           check=True, capture_output=True).stdout
 
 
-def encode(path, codec='2400'):
-    pcm = load_8k(path)
+def encode(path, codec='2400', hiss=False):
+    pcm = load_8k(path, 16000 if hiss else 8000)
     with tempfile.TemporaryDirectory() as d:
         open(f'{d}/in.raw', 'wb').write(pcm)
-        # sotto 1200 has no fixed-point encoder: the float one (make -C c VARIANT=v3.7 sotto_enc)
+        # sotto 1200 has no fixed-point encoder: the float one (make -C c VARIANT=v3.7 sotto_enc);
+        # the hiss band's bits come from the v3.8 float encoder's -16 mode (make -C c, 16 kHz in)
         enc = [os.path.join(ROOT, 'c', 'sotto_enc'), '-' + codec] if codec in ('1200', '600', '400') else \
             [os.path.join(ROOT, 'c', 'fixed', 'sotto_enc_fx')]
+        if hiss:
+            enc = [os.path.join(ROOT, 'c', 'sotto_enc'), '-16'] + (['-' + codec] if codec != '2400' else [])
         subprocess.run(enc + [f'{d}/in.raw', f'{d}/o.bit'], check=True)
         b = open(f'{d}/o.bit', 'rb').read()
     return [b[i:i + 6] for i in range(0, len(b) - 5, 6)]
@@ -66,6 +71,7 @@ def main():
     ap.add_argument('--pcm')
     ap.add_argument('--json')
     ap.add_argument('--codec', choices=('2400', '1200', '600', '400'), default='2400')
+    ap.add_argument('--hiss', action='store_true', help='a K6_HISS=1 build: hiss band bits, 320 samples a frame')
     ap.add_argument('--payload', choices=('L', 'XL'), default='L', help='packet profile (not for 2400)')
     ap.add_argument('--yield-gap', action='store_true',
                     help='with the decoder yield hook set to sp_yield_probe (builds with FX_YIELD_HOOK): '
@@ -79,7 +85,8 @@ def main():
     m = cm0.M0(a.elf)
     io = cm4.IO
     store, pkt, pwm = io + 0x10000, io + 0x100, io + 0x2000
-    frames = encode(a.input, a.codec)
+    frames = encode(a.input, a.codec, a.hiss)
+    seg = 640 if a.hiss else 320                  # bytes of PWM per 20 ms frame
     lose = {int(x) for x in a.lose.split(',') if x}
     if a.codec != '2400':
         sys.path.insert(0, ROOT)
@@ -141,13 +148,14 @@ def main():
         if not r:
             break
         fc.append(c)
-        out += bytes(m.mu.mem_read(pwm, 320))
+        out += bytes(m.mu.mem_read(pwm, seg))
     if a.pcm:
         open(a.pcm, 'wb').write(out)
     res = {
-        'input': os.path.basename(a.input), 'codec': a.codec, 'frames': len(frames), 'packets': len(packets),
+        'input': os.path.basename(a.input), 'codec': a.codec, 'hiss': a.hiss, 'frames': len(frames), 'packets': len(packets),
         'lost_packets': sorted(lose), 'store_frames': nmax, 'flash_ws': a.ws,
-        'play_MHz': {'mean': cm4.mhz(sum(fc) / len(fc)), 'worst': cm4.mhz(max(fc))},
+        'play_MHz': {'mean': cm4.mhz(sum(fc) / len(fc)), 'worst': cm4.mhz(max(fc)), 'worst_frame': fc.index(max(fc)),
+                     'p99': cm4.mhz(sorted(fc)[len(fc) * 99 // 100])},
         'packet_cycles': {'mean': round(sum(pc) / len(pc)), 'worst': max(pc)},
         'stack_bytes': m.stack_used(), 'flash_bytes': len(m.img),
         'static_ram_bytes': m.call('sp_static_bytes')[0],

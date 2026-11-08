@@ -74,7 +74,7 @@ FX_ENC_OBJS = fixed/sotto_fx_enc.o fixed/sotto_fx_lr_enc.o
 FX_DEC_OBJS = fixed/sotto_fx_dec.o fixed/sotto_fx_lr.o
 endif
 fixed: fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm \
-	fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0 fixed/sotto_vlr_dec_fx
+	fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0 fixed/sotto_vlr_dec_fx fixed/sotto_dec_fx_k6
 fixed/%.o: fixed/%.c fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h sotto_lr_tables.h sotto_lr_dec.inc \
 	sotto_vlr.h sotto_vlr_tables.h sotto_vlr_dec.inc
 	$(CC) $(CFLAGS) $(FXFLAGS) -c -o $@ $<
@@ -84,6 +84,15 @@ fixed/sotto_vlr_tables.o: sotto_vlr_tables.c sotto_vlr_tables.h
 	$(CC) $(CFLAGS) -c -o $@ $<
 fixed/sotto_vlr_dec_fx: fixed/vlr_dec.o fixed/sotto_fx_vlr.o fixed/sotto_vlr_tables.o fixed/sotto_fx_dec.o $(FX_OBJS)
 	$(CC) -o $@ $^
+# the K6 hiss build's decoder (docs/k6-hiss-port.md), whatever VARIANT: sotto 2400, 1200, 600 and
+# 400 at 16 kHz through the K6 hiss layer, as the radio plays them (sotto_dec_fx_k6 -16
+# [-1200 | -600 | -400] IN.bit OUT.raw [GOOD.u8]); the same bits as the v3.8 float tools make
+K6HISS = -DSOTTO_V36 -DSOTTO_PITCH_THIRD -DSOTTO_V38 -DFX_NARROW_MUL -DFX_HISS_LIGHT -DFX_HISS_FB
+K6HISS_SRC = sotto_dec.c fixed/sotto_fx_hiss.c fixed/sotto_fx_dec.c fixed/sotto_fx_enc.c fixed/sotto_fx_lr.c \
+	fixed/sotto_fx_lr_enc.c fixed/sotto_fx_vlr.c sotto_vlr_tables.c fixed/fx_math.c fixed/fx_tables.c
+fixed/sotto_dec_fx_k6: $(K6HISS_SRC) fixed/fx.h fixed/fx_tables.h fixed/fx_internal.h sotto.h sotto_vlr.h sotto_vlr_tables.h \
+	sotto_lr_dec.inc sotto_vlr_dec.inc
+	$(CC) -O2 -std=c99 -ffp-contract=off -I. $(FXFLAGS) $(K6HISS) -o $@ $(K6HISS_SRC)
 fixed/sotto_dec_fx: sotto_dec.o $(FX_DEC_OBJS) $(FX_OBJS)
 	$(CC) -o $@ $^
 fixed/sotto_enc_fx: sotto_enc.o $(FX_ENC_OBJS) $(FX_OBJS)
@@ -176,7 +185,7 @@ clean:
 	rm -f *.o libsotto.a libsotto.so* sotto_enc sotto_dec test_api sotto_codebook_gen.c sotto.pc
 	rm -rf tables.chk
 	rm -f fixed/*.o fixed/sotto_dec_fx fixed/sotto_enc_fx fixed/sotto_dec_fx_arm fixed/sotto_enc_fx_arm
-	rm -f fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0 fixed/sotto_vlr_dec_fx
+	rm -f fixed/sotto_dec_fx_m0 fixed/sotto_enc_fx_m0 fixed/sotto_vlr_dec_fx fixed/sotto_dec_fx_k6
 	rm -rf fixed/arm fixed/m0
 
 .PHONY: all fixed check install clean tables check-tables

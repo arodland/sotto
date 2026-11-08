@@ -8,7 +8,8 @@ be checked over the serial report without anyone listening.
 
 It packs the .sot exactly as `python -m modem.k6 tx` does (same trim, pause frames, profile, msg_id), leaves out the
 packets the K6 reported missing, and plays the rest through c/k6/pager_host (v3.7),
-c/k6/pager_host_lr (sotto 1200) or c/k6/pager_host_vlr (sotto 600 / 400): the same C as the
+c/k6/pager_host_lr (sotto 1200) or c/k6/pager_host_vlr (sotto 600 / 400), or with --hiss
+c/k6/pager_host_vlrh (the hiss band image, 16 kHz): the same C as the
 radio's decoder, bit-exact with it, built for the PC. The hash is FNV-1a over the int16 samples before the PWM conversion (sp_pcm_hash in
 c/k6/sotto_pager.h). With --check it reads the K6 PLAY line, takes its missing= list, and says
 MATCH or MISMATCH (exit 1). Build the hosts first: make -C c/k6.
@@ -34,10 +35,11 @@ K6 = os.path.join(ROOT, "c", "k6")
 
 
 def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store=200000, depth=8,
-              short_last=True, trim_keep_s=None, pause=False):
+              short_last=True, trim_keep_s=None, pause=False, hiss=False):
     """(hash as 8 hex digits, samples, the host's status dict) for frames with the packets in
     missing left out; trim_keep_s: the frames trimmed first as modem.k6 --trim does (None: as given);
-    pause: inner silences as pause frames, as modem.k6 --pause."""
+    pause: inner silences as pause frames, as modem.k6 --pause; hiss: the hiss band image
+    (aura-pager-vlrh, 16 kHz: c/k6/pager_host_vlrh)."""
     if trim_keep_s is not None:
         frames = pager.trim_silence(frames, codec, trim_keep_s)[0]
     if pause:
@@ -47,6 +49,10 @@ def reference(frames, codec="2400", payload="XL", missing=(), msg_id=None, store
     pk = [p for i, p in enumerate(prof.pack(frames, mid)) if i not in set(missing)]
     host = os.path.join(K6, {"1200": "pager_host_lr", "600": "pager_host_vlr", "400": "pager_host_vlr"}
                         .get(codec, "pager_host"))
+    if hiss:
+        if codec == "2400":
+            sys.exit("the hiss band image plays sotto 1200, 600 and 400")
+        host = os.path.join(K6, "pager_host_vlrh")
     if not os.path.exists(host):
         sys.exit(f"{host} not built: make -C c/k6")
     with tempfile.TemporaryDirectory() as d:
@@ -81,6 +87,7 @@ def main(argv=None):
     ap.add_argument("--trim-keep-ms", type=float, default=60.0, help="as given to modem.k6")
     ap.add_argument("--pause", action=argparse.BooleanOptionalAction, default=True, help="as given to modem.k6")
     ap.add_argument("--missing", default="", help="packet seqs the K6 reported missing, e.g. 3,17")
+    ap.add_argument("--hiss", action="store_true", help="the radio runs the hiss band image (aura-pager-vlrh, 16 kHz)")
     ap.add_argument("--check", metavar="LINE", help="the K6 PLAY line to compare with")
     a = ap.parse_args(argv)
     frames = open(a.sot, "rb").read()
@@ -94,7 +101,7 @@ def main(argv=None):
         if "pcm" not in kv:
             sys.exit("no pcm= in that PLAY line (firmware before the checksum)")
     h, n, st = reference(frames, a.codec, a.payload, missing, a.msg_id, depth=a.depth, short_last=a.short_last,
-                         trim_keep_s=a.trim_keep_ms / 1000 if a.trim else None, pause=a.pause)
+                         trim_keep_s=a.trim_keep_ms / 1000 if a.trim else None, pause=a.pause, hiss=a.hiss)
     print(f"pcm={h} samples={n} total={st['total']} got={st['got']} missing={','.join(map(str, missing)) or '-'}")
     if kv is not None:
         ok = kv["pcm"] == h and int(kv["samples"]) == n
