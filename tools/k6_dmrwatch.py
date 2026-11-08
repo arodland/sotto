@@ -64,8 +64,8 @@ def decode_file(p):
         out.append(dict(base, kind="data", t=round(pk["t"], 3), at=utc(t0 + pk["t"]), slot=pk["slot"],
                         hdr={k: v for k, v in pk["hdr"].items()}, crc=pk["crc"],
                         payload=pk["payload"].hex()))
-    if not out:
-        out.append(dict(base, kind="none", bursts=len(ev), polarity=pol))
+    if not out:                                 # nothing decoded: one line to say so (t 0, the start)
+        return [dict(base, kind="none", t=0.0, at=base["start"], bursts=len(ev), polarity=pol)]
     return sorted(out, key=lambda e: e["t"])
 
 

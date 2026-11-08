@@ -28,8 +28,8 @@
    Writes REG_33 bit 8, REG_34[3:0] (GP0 code 13), REG_47, REG_7E and REG_13, GPIOB bit 2, the
    MCU's TIM17 and DMA channel 1 (as gp0dma: Jeff OK'd them, 2026-11-06), all put back. No TX.
    Returns the DMR detections, or -3 (old image), -4 (PB1 not an input), -5 (REG_33 refused),
-   -6 (dmrrx: under 512 B of scratch for the decoder's filter ring; the decoder's state and the
-   DMA ring go there too as far as the scratch goes, else on the stack). dmrrx's lines end in
+   -6 (dmrrx: the scratch can't hold the decoder's filter ring, its state and the DMA ring, ~2.1
+   KB; it says how much it has and needs, and never puts them on the stack). dmrrx's lines end in
    " @" and the time since it started in tenths of a second.
    SPDX-License-Identifier: MIT */
 #ifndef K6_MODULE_LEVEL
@@ -151,7 +151,7 @@ typedef struct {
   uint32_t t, c17, c14;
   /* the ring */
   uint8_t *ring;
-  uint32_t laps, lastw, consumed, p0, t0, cps8, lost, idle, tp, tpoll, rhalf;
+  uint32_t laps, lastw, consumed, p0, t0, cps8, lost, hkd, nrate, idle, tp, tpoll, rhalf;
   uint32_t thk, rem, ms, win, next_s; /* housekeeping's clock: ms since the start */
   /* the listener */
   int floor, db, cdb, car, af, dmr, pend, nd;
@@ -159,7 +159,7 @@ typedef struct {
   uint32_t car_j, on_j, until, hits, chits, r2;
   uint32_t ahb, apb2, odr, r33, r34, r47, r7e, r13;
 #ifdef DMR_DECODE
-  dx_t *x; /* in scratch when the block has room (11,776 B images), else on the stack */
+  dx_t *x; /* in scratch */
 #endif
 } st_t;
 
@@ -259,10 +259,14 @@ COLD static int housekeeping(const k6_api_t *api, st_t *s) {
   s->rem = dt + s->rem - q * 96000u;
   s->ms += q;
   if ((api->level >= 4 ? api->key_poll() : api->key_down()) || s->ms >= RUN_S * 1000u) return 1;
-  /* the DMA's rate over this gap-free stretch, once it is ~90 ms long */
-  if (t - s->t0 > (1u << 23)) {
+  /* the DMA's rate over the gap-free stretch since the last housekeeping (~45 ms: the
+     resync after each one starts a new one) */
+  if (t - s->t0 > (1u << 21)) {
     if (t - s->t0 < (1u << 24) && P != s->p0) {
-      s->cps8 = (3 * s->cps8 + ds_udiv((t - s->t0) << 8, P - s->p0)) >> 2;
+      uint32_t m = ds_udiv((t - s->t0) << 8, P - s->p0);
+      s->cps8 = s->nrate++ ? (3 * s->cps8 + m) >> 2 : m; /* the first one whole: the grid is on
+                                                            time from ~50 ms (1% off cost most
+                                                            embedded LCs while it settled) */
 #ifdef DMR_DECODE
       s->rhalf = (RSZ * (s->cps8 >> 2)) >> 7;               /* half the ring, in cycles */
 #endif
@@ -344,14 +348,19 @@ NOINLINE static void run(const k6_api_t *api, st_t *s) {
     uint32_t t;
     P = poll(s), t = now(s);
     if (P - s->consumed > RSZ - 64u) {
-      s->lost++;
+      s->lost += !s->hkd; /* housekeeping's calls can outlast the ring (the radio's do): not lost */
+      s->hkd = 0;
       resync(s);
       continue;
     }
+    s->hkd = 0;
     if (P - s->consumed < 64u) {
       s->idle += t - s->tp;
       s->tp = t;
       if (hk < HK_COUNTS) continue;
+#ifdef DMR_DECODE
+      if (hk < 2 * HK_COUNTS && !dx_quiet(s->x, s->d.j)) continue; /* between the voice's bursts */
+#endif
     } else {
       s->tp = t;
       for (i = 0; i < 4 && P - s->consumed >= 64u; i++) {
@@ -367,6 +376,7 @@ NOINLINE static void run(const k6_api_t *api, st_t *s) {
     }
     hk = 0;
     if (housekeeping(api, s)) return;
+    s->hkd = 1;
     s->tp = now(s);
   }
 }
@@ -377,37 +387,25 @@ static void zero(void *p, uint32_t n) {
 
 COLD static int go(const k6_api_t *api, st_t *s);
 
-#ifdef DMR_DECODE
-/* what the scratch can't hold goes on the stack: the DMA ring (1 KB), then the decoder */
-COLD static int ring_on_stack(const k6_api_t *api, st_t *s) {
-  uint32_t ring[RSZ / 4];
-  s->ring = (uint8_t *)ring;
-  return go(api, s);
-}
-
-COLD static int on_stack(const k6_api_t *api, st_t *s) {
-  dx_t x;
-  zero(&x, sizeof x);
-  s->x = &x;
-  return ring_on_stack(api, s);
-}
-#endif
-
 MAIN_COLD int k6_main(const k6_api_t *api) {
   st_t st, *s = &st;
   if (api->level < 2) return -3;
   zero(s, sizeof *s);
 #ifdef DMR_DECODE
   {
-    /* scratch: the matched filter's ring, the decoder, the DMA ring, as far as it goes */
+    /* scratch: the matched filter's ring, the decoder, the DMA ring, all of them or nothing
+       runs. Never the stack: the module call gets ~3 KB of it, and an overrun there wrecks the
+       core's own RAM (2026-11-08: the report after it keyed the transmitter and hung) */
     uint32_t n = 0;
     uint8_t *sc = (uint8_t *)api->scratch(&n);
-    if (n < DS_FRING) return -6;
+    if (n < DS_FRING + sizeof(dx_t) + RSZ) {
+      char line[40];
+      say(api, line, kv(kv(line, "dmr scratch ", (int)n), " need ", (int)(DS_FRING + sizeof(dx_t) + RSZ)));
+      return -6;
+    }
     s->d.f = (int8_t *)sc;
-    if (n < DS_FRING + sizeof(dx_t)) return on_stack(api, s);
     s->x = (dx_t *)(sc + DS_FRING);
     zero(s->x, sizeof(dx_t));
-    if (n < DS_FRING + sizeof(dx_t) + RSZ) return ring_on_stack(api, s);
     s->ring = sc + DS_FRING + sizeof(dx_t);
     return go(api, s);
   }

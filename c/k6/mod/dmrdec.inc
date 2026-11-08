@@ -35,10 +35,11 @@ static const uint8_t DX_TDELTA[25] = {0x00, 0x6F, 0x00, 0xD4, 0x00, 0xB0, 0x00, 
                                       0xC4, 0x00, 0x80, 0x01, 0x90, 0x03, 0x30};
 
 typedef struct {
-  uint32_t due, sj;            /* grid index it can be read at; the sync's last symbol */
-  int16_t k;                   /* 0 a data burst, 1-4 voice burst B-E's middle, 5 A's sync, 6 the flywheel's
+  uint32_t sj;                 /* the sync's last symbol (grid index) */
+  int16_t dd;                  /* it can be read at sj + dd */
+  uint8_t k;                   /* 0 a data burst, 1-4 voice burst B-E's middle, 5 A's sync, 6 the flywheel's
                                   next A, 7 a data burst's info */
-  int16_t pat;                 /* the sync's family, its sign in bit 3 (8: data) */
+  uint8_t pat;                 /* the sync's family, its sign in bit 3 (8: data) */
 } dx_q_t;
 
 typedef struct {
@@ -49,20 +50,16 @@ typedef struct {
   int32_t vc, vinv, voff;
   int8_t frag[128];            /* soft (positive = 1) */
   int8_t fold[2][128];         /* the last two superframes' fragments, to add to a weak one */
-  int nold;
   uint32_t fmask;
   /* a data burst waiting for housekeeping */
-  int pend, dtype, cc, slot;
   int8_t soft[196];
   uint32_t dP;                 /* its sync and scale, for the second half of its reading */
   int32_t dc, dinv;
-  /* the soft sum of this transmission's headers and terminators */
-  int16_t comb[196];
+  /* the soft sum of this transmission's headers and terminators (a quarter of each, saturating) */
+  int8_t comb[196];
   int ncomb;
   /* what is known, for the lines and the screen */
-  int emb_ready, tg_ok;
   uint32_t tg, src, lcd_dirty;
-  int flco, lcc, lslot;
   uint8_t ta[4][7];
   uint32_t tamask;
   char alias[32];
@@ -70,11 +67,13 @@ typedef struct {
   /* the last good TACT: its burst (grid point of the sync) and slot; the pending burst's sync,
      the voice's slot */
   uint32_t tsj, psj;
-  int tslot, vslot;
-  /* the voice chain: its last superframe's sync (hit or flywheel), superframes read on without
-     a hit, whether an EMB has checked out since it started */
+  /* the voice chain: its last superframe's sync (hit or flywheel) */
   uint32_t vj;
-  int nfly, vok;
+  /* small ones, bytes: the voice's older fragments kept; the pending data burst (waiting for
+     housekeeping), its type, colour code and slot; an embedded LC to try; the LC known, its
+     FLCO, colour code and slot; the last good TACT's slot, the voice's; superframes read on
+     without a hit, whether an EMB has checked out since the chain started */
+  uint8_t nold, pend, dtype, cc, slot, emb_ready, tg_ok, flco, lcc, lslot, tslot, vslot, nfly, vok;
 } dx_t;
 
 /* the matched filter's output (dmrsync.h's f[]) at P quarter grid points, Catmull-Rom between
@@ -135,13 +134,13 @@ NOINLINE static void dx_scale(const ds_t *d, uint32_t P, int32_t *c, int32_t *in
   *c = s, *inv = (int32_t)ds_udiv(768u << 12, (uint32_t)m);
 }
 
-/* n symbols from P0 (quarter grid points), 8 apart, as bits (two a symbol) and, if soft, soft bits */
+/* n symbols from P0 (quarter grid points), 8 apart, as bits (two a symbol) if b, and soft bits if soft */
 NOINLINE static void dx_slice(const ds_t *d, uint32_t P0, int n, int32_t c, int32_t inv,
                               uint8_t *b, int8_t *soft) {
   int i;
   for (i = 0; i < n; i++) {
     int32_t u = ((dx_mf(d, P0 + 8u * i) - c) * inv) >> 12;
-    db_hard(u, b + 2 * i);
+    if (b) db_hard(u, b + 2 * i);
     if (soft) db_soft(u, soft + 2 * i);
   }
 }
@@ -149,7 +148,7 @@ NOINLINE static void dx_slice(const ds_t *d, uint32_t P0, int n, int32_t c, int3
 /* a sync hit: queue what to read */
 static void dx_push(dx_t *x, uint32_t due, uint32_t sj, int k, int pat) {
   dx_q_t *q = &x->q[x->nq];
-  if (x->nq < DX_NQ) q->due = due, q->sj = sj, q->k = (int16_t)k, q->pat = (int16_t)pat, x->nq++;
+  if (x->nq < DX_NQ) q->sj = sj, q->dd = (int16_t)(due - sj), q->k = (uint8_t)k, q->pat = (uint8_t)pat, x->nq++;
 }
 
 /* the grid's step from DMR's own timing: syncs (as dx_align places them, to a quarter grid
@@ -176,6 +175,17 @@ static void dx_voice(dx_t *x, uint32_t sj, int pat) {
   x->fmask = 0;
   x->voff = 0;
   for (i = 1; i <= 4; i++) dx_push(x, sj + 576u * i + 12u, sj + 576u * i, i, 0);
+}
+
+/* may housekeeping run now? Its API calls stop the counting (the radio's for longer than the
+   DMA ring) and the filter fills again after them, ~5 ms lost in all: while a voice chain runs,
+   only in the other slot's time (its burst A's sync ends at vj; its slot's bursts, CACH to the
+   end, are -178 to +110 grid points from there, every 576) */
+__attribute__((unused)) static int dx_quiet(const dx_t *x, uint32_t j) {
+  uint32_t e = j - x->vj;
+  if (e > 3u * 3456u) return 1;
+  e -= ds_udiv(e, 576u) * 576u;
+  return e - 120u <= 200u;
 }
 
 /* sj one or two superframes (3456 grid points) after vj, give or take 24 */
@@ -226,15 +236,15 @@ NOINLINE static void dx_poll(dx_t *x, ds_t *d) {
   int i = 0;
   while (i < x->nq) {
     dx_q_t q = x->q[i];
-    uint8_t b[288];
     int err;
     uint32_t P, j;
-    if ((int32_t)(d->j - q.due) < 0) {
+    int32_t late = (int32_t)(d->j - q.sj) - q.dd;
+    if (late < 0) {
       i++;
       continue;
     }
     x->q[i] = x->q[--x->nq];
-    if ((int32_t)(d->j - q.due) > 200) continue;            /* overwritten meanwhile */
+    if (late > 200) continue;                               /* overwritten meanwhile */
     if (q.k == 6) {                                         /* the next superframe's A, due: */
       if (x->nfly >= DX_FLY || (q.sj - x->vj) - 3456u + 24u > 48u) continue;  /* its hit came, */
       x->nfly++, x->vj = q.sj;                              /* or a newer chain, or enough */
@@ -242,9 +252,8 @@ NOINLINE static void dx_poll(dx_t *x, ds_t *d) {
       continue;
     }
     if (q.k == 7) {                                         /* a data burst's info, after its slot type */
-      int8_t sb[288];
-      dx_slice(d, x->dP - 712u, 144, x->dc, x->dinv, b, sb);
-      for (j = 0; j < 98; j++) x->soft[j] = sb[24 + j], x->soft[98 + j] = sb[24 + 166 + j];
+      dx_slice(d, x->dP - 712u + 8u * 12u, 49, x->dc, x->dinv, 0, x->soft);       /* after the CACH */
+      dx_slice(d, x->dP - 712u + 8u * 95u, 49, x->dc, x->dinv, 0, x->soft + 98);  /* after the sync */
       x->pend = 1;
       return;
     }
@@ -260,8 +269,9 @@ NOINLINE static void dx_poll(dx_t *x, ds_t *d) {
     }
     if (q.k) {                                              /* a voice burst's middle */
       uint32_t e;
-      P = 4u * q.sj + (uint32_t)x->voff;
+      uint8_t b[48];
       int8_t sb[48];
+      P = 4u * q.sj + (uint32_t)x->voff;
       dx_slice(d, P - 184u, 24, x->vc, x->vinv, b, sb);
       e = db_emb(b, &err);
       x->nmid++;
@@ -389,8 +399,8 @@ DX_COLD static char *dx_house(dx_t *x, char *line) {
     for (j = 0; j < 196; j++) {
       int s = x->soft[j];
       if (x->dtype == 2 && ((DX_TDELTA[j >> 3] >> (7 - (j & 7))) & 1)) s = -s;
-      s += x->comb[j];
-      x->comb[j] = (int16_t)(s > 30000 ? 30000 : s < -30000 ? -30000 : s);
+      s = (s >> 2) + x->comb[j];
+      x->comb[j] = (int8_t)(s > 127 ? 127 : s < -127 ? -127 : s);
     }
     x->ncomb++;
     if (!ok && x->ncomb >= 2) {

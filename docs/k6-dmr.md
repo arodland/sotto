@@ -218,7 +218,13 @@ not fit the M0 anyway.
   fragment set that fails alone is added to the last superframe's, then the one before (talker
   alias LCs come between the call's LC), then both: a call's LC is the same each superframe.
 - The grid's step locks to DMR's 30 ms slots. The DMA's measured rate is only good to ~2%,
-  which over a superframe is 10 symbols.
+  which over a superframe is 10 symbols. The first measurement (~50 ms in) is taken whole,
+  later ones averaged: the old 1/4 steps from the 5.49 MS/s guess cost most embedded LCs when
+  the DMA ran 1% off it.
+- Housekeeping (keys, RSSI, the screen, a line) waits, up to twice its 48 ms, for the other
+  slot's time while a voice chain runs. Its API calls stop the counting and the filter fills
+  again after them, ~5 ms lost, and on the radio they outlast the DMA ring. Emulated at 52
+  dB-Hz with 300 us register reads: embedded LCs 16 to 24 of 32, full aliases 3 to 12 of 16.
 - The grid index counts across pauses (`ds_skip`, laps from the clock), so bursts can still be
   predicted by it.
 - Every line ends in ` @` and the module's time in tenths of a second, for
@@ -241,13 +247,16 @@ every call down to 48 dB-Hz.
   counter's reads, and what ran between them) put 45 of the 62 long gaps in the old quarter-step
   sync search. With the parabola, one alignment a poll, Hamming fixes found from the masks'
   columns, and BPTC stopping after a clean pass, it loses 3, all in housekeeping (the status
-  line and an LC decode). dmrdet alone loses none.
+  line and an LC decode). dmrdet alone loses none. Since the first bench run the ring is 512
+  bytes, in scratch: it laps ~20 times a second while a burst is read, which costs nothing
+  (the burst is in the filter's ring by then; the same lines as with 1 KB at 50-52 dB-Hz), and
+  housekeeping's laps aren't counted as lost.
 
 | | |
 |---|---|
 | Code | 9.4 KB, so only the SPI voice images' 11,776-byte shared module block (PR #146); not EXPLORE or the lean images |
-| Scratch | the filter's 512-byte ring and the decoder's 1,296-byte state; the 1 KB DMA ring too where there is room |
-| Stack | ~2.6 KB with the DMA ring on it (emulated 2,580 B), ~1.6 KB without |
+| Scratch | the filter's 512-byte ring, the decoder's 1,032-byte state and the 512-byte DMA ring (2,056 B), or it returns -6 and says `dmr scratch N need M`: never on the stack |
+| Stack | 1,288 B emulated, of the 3,112 B the module call gets on the vlrh image |
 
 Serial lines, besides dmrdet's (the summary line gains `L=` and `E=` counts, and every line ends
 in ` @` and tenths of a second since the start):
@@ -258,8 +267,19 @@ in ` @` and tenths of a second since the start):
     K TS1 bd00800104c2bf301cd5 @803          a CSBK that passed its CRC (here a preamble)
     H TS1 ... @804                           a data header
 
-The screen (level 6) shows "DMR CC1 TS1", "TG 3027", "ID 3025107" and the alias. Not yet on the
-radio.
+The screen (level 6) shows "DMR CC1 TS1", "TG 3027", "ID 3025107" and the alias.
+
+**First bench run (16:43-16:53Z 2026-11-08, main bf7990a vlrh image, quiet repeater).** The
+module ran its 10 minutes and returned 1, then the K6 reported `stack_free=0`, keyed for its
+upload report and hung with the carrier up on 440.850 (low power) until Jeff cut the power at
+~17:09Z. The module's stack had overrun the core's RAM: 2,580 B emulated (the 1 KB DMA ring and
+two 288-byte slicing buffers on it) of the 3,112 B, plus the firmware's own frames inside the
+API calls, which the emulator doesn't count. Also: `lost` climbed ~21 a second with no DMR on
+the air (every housekeeping: the radio's API calls outlast the 1 KB ring, which the emulator's
+20 us register reads never did; reproduced at 300 us) and `ks` never left its 5490 start (each
+of those laps restarted the ~90 ms rate measurement). Fixed after: everything in scratch, the
+stack at 1,288 B, housekeeping's laps not counted and the rate measured over each ~45 ms
+stretch between them. The repeater was quiet (at most 11 syncs a summary), so nothing decoded yet.
 
 **Scoring a bench run.** On hamlet, `tools/k6_dmrwatch.py` turns the IC-7100's 440.925
 recordings into the answer key. `tools/k6_dmrscore.py --key KEY.jsonl --log K6.log` then lines

@@ -233,13 +233,15 @@ def test_c_decoder_on_the_k6_model():
     assert alias >= 2 and ok >= 88, (alias, mids, ok)
 
 
-@pytest.mark.parametrize("block,max_stack", [(11776, 2900), (13312, 1900)])
-def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
+def test_dmrrx_module_on_the_emulated_k6():
     """the dmrrx module (dmrdet + the decoder) on the emulated M0 with the modelled DMA: the
     call's talkgroup and source on the serial line and the screen, its alias, in the shared
-    module block, the receiver's registers put back. The scratch past the code takes the filter's
-    ring, the decoder's state and the DMA ring as far as it goes: in the SPI voice images'
-    11,776-byte block all but the DMA ring; in a bigger one (a slimmer image) all three"""
+    module block, the receiver's registers put back. The filter's ring, the decoder's state and
+    the DMA ring all go in the scratch past the code, never on the stack (the module call gets
+    3,112 B of it on the vlrh image: the first bench run overran it): a block too small for them
+    and it says so and returns -6. FD6818 register reads take 300 us here, as slow as the
+    radio's housekeeping seemed on the first bench run (its calls outlast the DMA ring: not
+    counted as lost)"""
     import shutil
     if not (shutil.which("clang") and shutil.which("ld.lld")):
         pytest.skip("needs clang and ld.lld")
@@ -249,13 +251,22 @@ def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
     from sim.k6if import frontend as fe
     src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "c", "k6", "mod", "dmrrx.c")
     code, entry = T.build([("RUN_S", "3u"), ("S_MS", "1000u")], src)
-    assert len(code) + 24 + 512 + 1296 <= 11776 - 256, len(code)  # the shared block: code, the
-                                                               # filter ring and the decoder in scratch, 256 B to spare
     _, (ib, on, off) = k6_counts(dd.voice_call_symbols(**CALL), 56.0)
-    e = le.Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=len(ib) / fe.FDMA + 0.5, level=6, stack_win=7000,
-               scratch=(block - 24 - len(code)) & ~3)
-    e.rssi = lambda: -60 if on <= e.sample_now() < off else -125
-    ret, stack = e.run()
+
+    def emu(block, ib, sig=True):
+        e = le.Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=len(ib) / fe.FDMA + 0.5, level=6, stack_win=7000,
+                   scratch=(block - 24 - len(code)) & ~3, fd_us=300)
+        e.rssi = lambda: -60 if sig and on <= e.sample_now() < off else -125
+        ret, stack = e.run()
+        return e, ret, stack
+
+    e, ret, _ = emu(len(code) + 24 + 1024, ib[:on])   # too small a block: refused, and why
+    assert ret - (1 << 32) == -6 and e.said and e.said[0].startswith("dmr scratch "), (ret, e.said)
+    need = int(e.said[0].split(" need ")[1])
+    # the shared block: header and tag, code, scratch, 64 B to spare (CI's clang, whose build is the
+    # one the radio gets, makes ~260 B more code than a local clang 18: 9,578 B against 9,322)
+    assert len(code) + 24 + need <= 11776 - 64, (len(code), need)
+    e, ret, stack = emu(11776, ib)
     txt = "\n".join(e.said)
     print(txt, e.lcd, stack)
     assert ret >= 1, txt
@@ -264,9 +275,16 @@ def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
     assert any(ln.startswith("A AG7EW T") for ln in e.said), txt
     assert e.lcd.get(1) == "TG 3027" and e.lcd.get(2) == "ID 3025107", e.lcd
     assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0               # put back (reads 0 here)
-    assert stack < max_stack, stack
+    assert stack < 1500, stack                         # of the 3,112 B
     lost = [int(ln.split("lost=")[1].split()[0]) for ln in e.said if ln.startswith("s ")]
-    assert lost and lost[-1] <= 8, txt           # the DMA ring outran: only by housekeeping's lines
+    ks = [int(ln.split("ks=")[1].split()[0]) for ln in e.said if ln.startswith("s ")]
+    assert lost and lost[-1] <= 80, txt               # overruns while a burst is read (and the
+                                                       # bursts are in the filter's ring by then)
+    assert abs(ks[0] - fe.FDMA / 1000) < 10, txt      # the DMA's rate measured, housekeeping or no
+    # no signal: housekeeping's long calls aren't lost samples
+    e, ret, _ = emu(11776, np.random.default_rng(3).integers(0, 2, len(ib)).astype(np.uint8) * 2, sig=False)
+    lost = [int(ln.split("lost=")[1].split()[0]) for ln in e.said if ln.startswith("s ")]
+    assert lost and lost[-1] == 0, e.said
 
 
 def test_dmrscore_against_a_key(tmp_path):
@@ -306,3 +324,18 @@ def test_dmrscore_against_a_key(tmp_path):
     assert (r["data"], r["data_hit"], r["alias"], r["alias_hit"]) == (1, 1, 1, 1), r
     assert len(r["miss"]) == 1 and "TG 91" in r["miss"][0], r
 
+
+
+def test_dmrwatch_on_a_recording_with_no_calls(tmp_path):
+    """tools/k6_dmrwatch.py: a cut with nothing in it gives one "none" line (it raised
+    KeyError('t') on hamlet, 2026-11-08)"""
+    sf = pytest.importorskip("soundfile")
+    import importlib.util
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    spec = importlib.util.spec_from_file_location("k6_dmrwatch", os.path.join(root, "tools", "k6_dmrwatch.py"))
+    w = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(w)
+    p = tmp_path / "440.9250_20261108T042456Z.wav"
+    sf.write(str(p), np.random.default_rng(1).normal(0, 0.05, 48000), 48000)
+    out = w.decode_file(str(p))
+    assert [e["kind"] for e in out] == ["none"] and out[0]["at"] == "2026-11-08T04:24:56.000Z", out
