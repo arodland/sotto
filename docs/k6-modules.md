@@ -214,9 +214,37 @@ no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated 
 - **Replays.** The K6 refuses a serial that isn't newer than the last module it ran since
   power-on (`r=-6`). After a reboot a recorded transmission of an old module of yours would
   run again; that's the gap a boot nonce would close later.
-- **The module is trusted code once it runs.** The M0 has no MPU and Aura has no watchdog
-  yet, so a bad module can hang the radio until a power cycle. Recovery is the usual one:
-  power off and on, or reflash.
+- **The module is trusted code once it runs.** The M0 has no MPU, so a bad module can still
+  hang the radio with interrupts off until a power cycle. A fault or a hung key-up reboots it
+  (txdog, below). Recovery is the usual one: power off and on, or reflash.
+- **A stack overrun can leave the transmitter keyed** (2026-11-08 16:53-17:09Z). dmrrx returned
+  with `stack_free=0` on the vlrh image (3,112 B of stack): the overrun had written over RAM
+  below the stack, the core's ARQ report then printed a garbage status (`xfer=243
+  have=109/110`), keyed up on 440.850 at Low power and hung before its first packet. A bare
+  carrier stayed up for about 16 minutes, with no K6 ID, until Jeff switched the radio off. A
+  HardFault on this MCU landed in the bootloader's `b .` (its vector table at 0x08000000 is the
+  one in use: no VTOR), so no handler of Aura's ran. Since then the core reboots
+  instead when a module returns with under 64 B of stack never touched (`K6 RAM stack ran out`),
+  checks the same before an ARQ key-up, and won't key up on a status with `have > count`. A
+  module must show real headroom in the emulator (about 512 B or more at its deepest) with the
+  stack the target image gives it before it goes on air.
+- **txdog: faults and hung key-ups reboot the radio** (`hal::txdog` in the Aura patch). The
+  `vecprobe` module showed on the K6 (2026-11-08 17:51Z, `alias=1 fault=1 back=1`) that SYSCFG
+  CFGR1 MEM_MODE = 3 maps SRAM at address 0 and a fault then reaches a handler of ours. At boot
+  the image copies the bootloader's 48 vectors to 0x2000_0000, points HardFault and TIM14 at
+  Aura's and maps SRAM at 0 (`K6 TXDOG on cfgr1=00000002`; `OFF` if the remap doesn't read
+  back, and then nothing changes). SysTick and USART1 still go through the bootloader's
+  trampolines. A HardFault notes its pc and lr in unused vector slots and reboots at once
+  (boot soft-resets the FD6818: transmitter off); the next boot says `K6 FAULT last boot pc=
+  lr=`. TIM14, uptime's 10 kHz counter, interrupts at each wrap (6.55 s): a key-up older than
+  its limit reboots (`K6 TXDOG last boot: key-up ran N ms, limit M ms`). Every enter_tx starts
+  the clock with 200 s (Aura's PTT TOT tops out at 180 s; SSTV 330 s), and the pager tightens
+  it: 30 s for an ARQ report, 20 s for the calibration send, a module's tx_on time + 10 s.
+  Every reboot goes through `txdog::reset`, which maps flash at 0 again first. It can't catch
+  a hang with interrupts off, or a fault while stacking a fault (the core locks up). The `lean`
+  images (codebook install, -table fallbacks) never transmit and leave txdog out for room. Bench
+  tests: `dogfault` (a deliberate UDF) and `dogtx` (CW ID, then keyed with the PA off and hung),
+  both uploaded without ARQ.
 - **Part 97.** The code goes out in the clear and this format is published; the tag only
   proves who sent it.
 
