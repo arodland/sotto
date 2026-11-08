@@ -244,6 +244,19 @@ no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated 
   `K6 TXDOG remap`, `K6 TXDOG on` and `K6 FAULT pc lr` straight to USART1, so each pass of a
   loop says where it faulted. The last boot's note moved to `.uninit`: the bootloader clears its
   own RAM, where the vector slots are, at every reset.
+- **The diagnostic image works (006ee1b vlrh-txdog, on the K6 2026-11-08 21:19-21:27Z).** It
+  booted normally, three times, and:
+  - `dogfault`: `K6 FAULT pc lr 20001d38 0800c479` (the module's UDF), a reboot in under a
+    second, then `K6 FAULT last boot pc=20001d38 lr=0800c479`: the `.uninit` note survives the
+    bootloader.
+  - `dogtx`: the CW ID, then keyed with the PA off (S9+20 on the bench IC-7100 even so) and hung;
+    `K6 TXDOG key-up over its limit` at 19.4 s against 18 s, the carrier gone the same second,
+    then `K6 TXDOG last boot: key-up ran 19403 ms, limit 18000 ms: rebooted`.
+  - `remapspeed`: code runs as fast with SRAM at 0 as with flash (`rsp m3=00ca m2=00ca`).
+
+  Why acd06ba looped is still open. Its txdog differed only in the note's place (vector slots
+  45-47, in the bootloader's RX buffer) and in printing nothing. The table stays in the
+  diagnostic image until that is understood or the default images have run it on the bench.
 - **txdog: faults and hung key-ups reboot the radio** (`hal::txdog` in the Aura patch). The
   `vecprobe` module showed on the K6 (2026-11-08 17:51Z, `alias=1 fault=1 back=1`) that SYSCFG
   CFGR1 MEM_MODE = 3 maps SRAM at address 0 and a fault then reaches a handler of ours. At boot
