@@ -1,5 +1,7 @@
 /* The FD6818's tone detector set up for CW (docs/k6-cwid.md): single-tone mode, 16 tones from
-   600 to 1350 Hz (coefficient 128 cos(2 pi f / 8463 Hz)), threshold 24, read in REG_0B (bit 12
+   400 to 1300 Hz in 60 Hz steps (coefficient 128 cos(2 pi f / 8463 Hz); 600-1350 until
+   2026-11-08, when a repeater's 400 Hz ID fell below it and the bench heard 400 Hz IDs with
+   this bank, mod/cwlisten_lo.c), threshold 24, read in REG_0B (bit 12
    a tone now, [11:8] which). Shared by xlisten (Listen for ID) and xscan (the peek at an up
    carrier). BK4819 register numbers (Jeff's 0x4819 chip). SPDX-License-Identifier: MIT */
 #ifndef TONEDET_H
@@ -9,12 +11,12 @@
 
 #define TD_TH 24
 #define TD_IDLE 1
-#define TD_LO 600
-#define TD_STEP 50
+#define TD_LO 400
+#define TD_STEP 60
 #define TD_ON 0x1000u      /* REG_0B: a tone now */
 
 static const uint8_t td_coef[16] = {
-    116, 113, 111, 109, 106, 103, 100, 97, 94, 91, 88, 84, 80, 77, 73, 69};
+    122, 121, 119, 116, 114, 111, 108, 105, 102, 98, 94, 90, 86, 82, 77, 73};
 
 static inline void td_on(const k6_api_t *api) {
   int i;

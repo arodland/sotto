@@ -53,6 +53,7 @@ typedef struct {
   uint32_t tc;                 /* the clock at the last count the detector had */
   uint32_t start, until, on_ms;/* api->ms(): the listen began; DMR held until; DMR came on */
   uint32_t hits, steps, lost, busy, win;
+  uint32_t stuck;              /* waits that api->ms() ended: the 96 MHz clock didn't move */
   uint32_t ahb, apb2;
   uint16_t r33, r34, r47, r7e, r13, r51;
   uint16_t tone, tcand;        /* the confirmed CTCSS tone (0.1 Hz), the last reading's */

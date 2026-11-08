@@ -517,7 +517,7 @@ def test_up_list_leaves_out_a_louder_carrier_s_skirts(lib):
 
 
 class Detector:
-    """the FD6818's tone detector keyed by an ID: REG_0B bit 12 set (tone 4, 800 Hz, in [11:8])
+    """the FD6818's tone detector keyed by an ID: REG_0B bit 12 set (tone 7, 820 Hz, in [11:8])
     while a mark is on, 10 ms late on and off as on air"""
 
     def __init__(self, spans):
@@ -532,7 +532,7 @@ class Detector:
     def reg(self, reg, us):
         if reg == 0x0B:
             on = any(a + 10_000 <= us < b + 10_000 for a, b in self.spans)
-            return 0xC006 | (0x1000 | 0x0400 if on else 0)
+            return 0xC006 | (0x1000 | 0x0700 if on else 0)
         return 0
 
 
@@ -565,7 +565,7 @@ class Keyed(Receiver):
     def reg(self, reg, us):
         if reg == 0x0B:
             on = any(a <= us < b for a, b in self.tones.get(self.f, ()))
-            return 0xC006 | (0x1400 if on else 0)
+            return 0xC006 | (0x1700 if on else 0)
         return 0
 
 
@@ -623,7 +623,7 @@ def test_listen_for_id_confirms_the_call_on_the_second_id(lib):
     assert res[-1] == 1 and res.count(3) == 1 and s_(46) < radio.us < s_(50)
     assert radio.longest < 100_000
     ok = [ln for ln in radio.lines if "CWID ok" in ln]
-    assert len(ok) == 1 and "CWID ok AG7EW fl=0 rx=440850000 tone=800 wpm=20" in ok[0], radio.lines
+    assert len(ok) == 1 and "CWID ok AG7EW fl=0 rx=440850000 tone=820 wpm=20" in ok[0], radio.lines
     assert radio.lines[-1].endswith("CWID end ok msgs=2 short=0")
     assert (0x24, 0) in radio.writes                      # the detector off at the end
     # the replay tool reads the listener's ok line as cwlisten's

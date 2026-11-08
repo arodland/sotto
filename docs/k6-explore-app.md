@@ -186,7 +186,8 @@ K6 MOD say DMR on bs d r2=243 +104    DMR: family, voice/data sync, rho^2 x 256,
 K6 EX dmr 440925000                   the row is marked DMR
 K6 MOD say DMR off 2630
 K6 MOD say CTCSS 1000                 the carrier's tone, 0.1 Hz
-K6 MOD say DMR end n=1 h=41 lost=0 steps=50 busy=24 ks=5490 ctcss=1000/40
+K6 MOD say DMR end n=1 h=41 lost=0 steps=50
+K6 MOD say DMR rate busy=24 ks=5490 ctcss=1000/40
 K6 EX heard 440925000 tone=1000 dmr=1 rt=2 saved_tone=1000   the saved entry took the tone
 K6 EX save 146940000 id=1 slot=0 live=1 erases=0/32
 K6 CAND 0 R 146940000 off=-600000 tone=0 call=W7ABC/R score=8 overs=5 ...

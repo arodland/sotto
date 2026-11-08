@@ -40,7 +40,7 @@ there.
 | 24-39 | name | 16 characters |
 | 40-49 | call | 10 characters, as heard |
 | 50 | call_flags | portable, mobile, repeater, from CW, decoded twice |
-| 51 | cw | tone index (600 + 50 i Hz) in bits 3:0, wpm / 3 in bits 7:4, 0 = never decoded |
+| 51 | cw | tone index (400 + 60 i Hz; 600 + 50 i in records written before 2026-11-08) in bits 3:0, wpm / 3 in bits 7:4, 0 = never decoded |
 | 52 | group | scan group 0-15 |
 | 53 | spare | |
 | 54-55 | id | the entry, 1-65534, never reused |
