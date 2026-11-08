@@ -77,6 +77,11 @@ typedef struct {
   char line[64];
   uint8_t held;              /* segments whose last floor read was held as desense (a bit each) */
   uint8_t news, pad2[2];     /* new hot entries in this segment's sweep (XS_BURST) */
+  /* the peek (xs_tone): every XS_PEEK_EVERY_MS one up carrier with no call yet, in turn, gets
+     peek_ms of the tone detector; one heard keyed is kept in tone_hz for the caller */
+  uint16_t peek_ms;
+  uint8_t peek_i, pad3;
+  uint32_t peek_t, tone_hz;
 } xs_t;
 
 /* the usual settings: 1.5 ms quick reads, 12 ms full, wide, noise 6 dB, hits 10 dB, refine on */
@@ -113,6 +118,11 @@ void xs_info(const xs_t *s, xs_info_t *out);
 /* the hot entries that are up now worth a listen (not spurs, skirts, or weak), loudest first:
    their centres into out, at most max; how many */
 unsigned xs_up(const xs_t *s, uint32_t *out, unsigned max);
+/* The peek at up carriers for a keyed tone (a CW ID going out mid-carrier: WA7DMR on 440.925,
+   2026-11-08, sent its 4 s ID 13 s into a carrier the listener had left). peek_ms sets each
+   peek's length (0: off). Returns the centre of an up carrier the last peek heard keyed (on and
+   off both seen), once, else 0. */
+uint32_t xs_tone(xs_t *s, unsigned peek_ms);
 /* reads the level at hz now (a tune and a full read), for the details screen */
 int xs_level(xs_t *s, uint32_t hz);
 
