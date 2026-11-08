@@ -6697,10 +6697,10 @@ index 0000000..37404d9
 +}
 diff --git a/src/hal/txdog.rs b/src/hal/txdog.rs
 new file mode 100644
-index 0000000..36cf74b
+index 0000000..aaec063
 --- /dev/null
 +++ b/src/hal/txdog.rs
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,195 @@
 +//! Crash and stuck-transmitter backstop (2026-11-08: a module overran its stack, the report
 +//! key-up after it hung, and the K6 sent a bare carrier on 440.850 for 16 minutes).
 +//!
@@ -6721,6 +6721,7 @@ index 0000000..36cf74b
 +//!   the first wrap after it (up to 6.6 s late).
 +//!
 +//! If the remap doesn't read back, nothing is enabled and the radio runs as before.
++#![cfg_attr(feature = "lean", allow(dead_code))]
 +
 +use core::ptr::{read_volatile, write_volatile};
 +use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -6765,6 +6766,7 @@ index 0000000..36cf74b
 +
 +/// Install the vector table in SRAM and start the watchdog tick. Returns the last boot's note,
 +/// CFGR1 as found and whether the remap took.
++#[cfg(not(feature = "lean"))]
 +pub fn install() -> (Note, u32, bool) {
 +    let m = rd(NOTE);
 +    let note = match m {
@@ -6803,6 +6805,7 @@ index 0000000..36cf74b
 +    (note, cfgr1, true)
 +}
 +
++#[cfg(not(feature = "lean"))]
 +fn now() -> u32 {
 +    // WRAPS and CNT read so a wrap between them is seen: read WRAPS again after CNT
 +    loop {
@@ -6819,28 +6822,33 @@ index 0000000..36cf74b
 +
 +/// The transmitter is about to key up: start the clock, `DEFAULT_LIMIT_MS` unless `limit`
 +/// tightens it
++#[cfg(not(feature = "lean"))]
 +pub fn keyed() {
 +    keyed_for(DEFAULT_LIMIT_MS);
 +}
 +
 +/// The same with a longer cap (an SSTV picture: PD290 takes 290 s)
++#[cfg(not(feature = "lean"))]
 +pub fn keyed_for(ms: u32) {
 +    LIMIT.store(ms * 10, Ordering::Relaxed);
 +    KEYED_AT.store(now() | 1, Ordering::Relaxed);
 +}
 +
 +/// Cap this key-up at `ms` from its start (only ever lower)
++#[cfg(not(feature = "lean"))]
 +pub fn limit(ms: u32) {
 +    let l = LIMIT.load(Ordering::Relaxed);
 +    LIMIT.store((ms * 10).min(l), Ordering::Relaxed);
 +}
 +
 +/// The transmitter is off
++#[cfg(not(feature = "lean"))]
 +pub fn unkeyed() {
 +    KEYED_AT.store(0, Ordering::Relaxed);
 +}
 +
 +/// TIM14 update: one per 6.5536 s
++#[cfg(not(feature = "lean"))]
 +unsafe extern "C" fn tim14() {
 +    wr(TIM14_SR, 0);
 +    let w = WRAPS.load(Ordering::Relaxed).wrapping_add(1);
@@ -6858,6 +6866,17 @@ index 0000000..36cf74b
 +        reset();
 +    }
 +}
++
++// The `lean` images (the codebook install, the -table fallbacks) never transmit and have no
++// room: no SRAM table, no key-up clock.
++#[cfg(feature = "lean")]
++pub fn keyed() {}
++#[cfg(feature = "lean")]
++pub fn keyed_for(_ms: u32) {}
++#[cfg(feature = "lean")]
++pub fn limit(_ms: u32) {}
++#[cfg(feature = "lean")]
++pub fn unkeyed() {}
 +
 +/// From Aura's HardFault: note where and reboot at once. Printing first could fault again,
 +/// and a fault inside a fault locks the core up with the transmitter on.
@@ -7024,7 +7043,7 @@ index 131f932..99ae011 100644
  
  /// Pull one byte received on USART1 since the last call, if any.
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..d6e777c 100644
+index 9d2b0c0..e687029 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -14,7 +14,7 @@ mod ui;
@@ -7072,7 +7091,7 @@ index 9d2b0c0..d6e777c 100644
  #[entry]
  fn main() -> ! {
      let _dp = unsafe { Peripherals::steal() };
-@@ -79,6 +108,23 @@ fn main() -> ! {
+@@ -79,6 +108,27 @@ fn main() -> ! {
      uart::install_bootloader_trampoline();
      unsafe { cortex_m::peripheral::NVIC::unmask(kd32f328_pac::Interrupt::USART1) };
      writeln!(dbg, "bfk6-fw boot, sysclk={}Hz", clock::SYSCLK_HZ).ok();
@@ -7086,17 +7105,21 @@ index 9d2b0c0..d6e777c 100644
 +    }
 +    writeln!(dbg).ok();
 +    // crash and stuck-key-up backstop: a vector table in SRAM at 0 (hal::txdog)
-+    let (note, cfgr1, dog) = hal::txdog::install();
-+    writeln!(dbg, "K6 TXDOG {} cfgr1={:08x} limit={} ms", if dog { "on" } else { "OFF" }, cfgr1, hal::txdog::DEFAULT_LIMIT_MS).ok();
-+    match note.0 {
-+        1 => writeln!(dbg, "K6 FAULT last boot pc={:08x} lr={:08x}", note.1, note.2).ok(),
-+        2 => writeln!(dbg, "K6 TXDOG last boot: key-up ran {} ms, limit {} ms: rebooted", note.1, note.2).ok(),
-+        _ => None,
-+    };
++    #[cfg(not(feature = "lean"))]
++    {
++        let (note, cfgr1, dog) = hal::txdog::install();
++        let on = if dog { "on" } else { "OFF" };
++        writeln!(dbg, "K6 TXDOG {} cfgr1={:08x} limit={} ms", on, cfgr1, hal::txdog::DEFAULT_LIMIT_MS).ok();
++        match note.0 {
++            1 => writeln!(dbg, "K6 FAULT last boot pc={:08x} lr={:08x}", note.1, note.2).ok(),
++            2 => writeln!(dbg, "K6 TXDOG last boot: key-up ran {} ms, limit {} ms: rebooted", note.1, note.2).ok(),
++            _ => None,
++        };
++    }
  
      let mut cp = cortex_m::Peripherals::take().unwrap();
      unsafe { cp.NVIC.set_priority(kd32f328_pac::Interrupt::USART1, 0) };
-@@ -98,9 +144,16 @@ fn main() -> ! {
+@@ -98,9 +148,16 @@ fn main() -> ! {
          .unwrap_or_else(|_| unreachable!());
      let interface = display_interface_spi::SPIInterface::new(spi_device, dc_pin);
  
@@ -7114,7 +7137,7 @@ index 9d2b0c0..d6e777c 100644
  
      {
          let mut syst_delay = SystDelay(&mut cp.SYST);
-@@ -109,6 +162,7 @@ fn main() -> ! {
+@@ -109,6 +166,7 @@ fn main() -> ! {
      lcd.flush().ok();
      lcd.set_display_on(true).ok();
      let mut display = Display::new(lcd);
@@ -7122,7 +7145,7 @@ index 9d2b0c0..d6e777c 100644
      writeln!(dbg, "lcd init done").ok();
  
      // rfic
-@@ -149,12 +203,17 @@ fn main() -> ! {
+@@ -149,12 +207,17 @@ fn main() -> ! {
      }
  
      let cal_buf = storage.read_calibration();
@@ -7140,7 +7163,7 @@ index 9d2b0c0..d6e777c 100644
          writeln!(
              dbg,
              "squelch cal @0xf0c0: th_in={:?} th_out={:?}",
-@@ -234,7 +293,11 @@ fn main() -> ! {
+@@ -234,7 +297,11 @@ fn main() -> ! {
      }
  
      // app class
@@ -7153,7 +7176,7 @@ index 9d2b0c0..d6e777c 100644
          radio,
          chip_id,
          keypad,
-@@ -265,8 +328,7 @@ fn main() -> ! {
+@@ -265,8 +332,7 @@ fn main() -> ! {
              display.flush();
          }
          3 => {
@@ -7163,7 +7186,7 @@ index 9d2b0c0..d6e777c 100644
              display.flush();
          }
          _ => {}
-@@ -301,6 +363,63 @@ fn main() -> ! {
+@@ -301,6 +367,63 @@ fn main() -> ! {
      )
      .ok();
  
@@ -7227,7 +7250,7 @@ index 9d2b0c0..d6e777c 100644
      // scheduler + main loop
      let mut scheduler = scheduler::Scheduler::new();
      let mut applied_contrast: u8 = u8::MAX;
-@@ -329,6 +448,19 @@ fn main() -> ! {
+@@ -329,6 +452,19 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -7247,7 +7270,7 @@ index 9d2b0c0..d6e777c 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +533,8 @@ fn main() -> ! {
+@@ -401,6 +537,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -7256,7 +7279,7 @@ index 9d2b0c0..d6e777c 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +599,13 @@ fn main() -> ! {
+@@ -465,9 +603,13 @@ fn main() -> ! {
              }
          }
  

@@ -241,7 +241,8 @@ no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated 
   the clock with 200 s (Aura's PTT TOT tops out at 180 s; SSTV 330 s), and the pager tightens
   it: 30 s for an ARQ report, 20 s for the calibration send, a module's tx_on time + 10 s.
   Every reboot goes through `txdog::reset`, which maps flash at 0 again first. It can't catch
-  a hang with interrupts off, or a fault while stacking a fault (the core locks up). Bench
+  a hang with interrupts off, or a fault while stacking a fault (the core locks up). The `lean`
+  images (codebook install, -table fallbacks) never transmit and leave txdog out for room. Bench
   tests: `dogfault` (a deliberate UDF) and `dogtx` (CW ID, then keyed with the PA off and hung),
   both uploaded without ARQ.
 - **Part 97.** The code goes out in the clear and this format is published; the tag only
