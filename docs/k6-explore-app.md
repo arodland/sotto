@@ -218,6 +218,21 @@ was -93 (the first F0 line, at 20:27:14). Three faults locked together, all fixe
   1/8-segment hop between floor points. The quick read now comes one bin over a settled full
   read, as in the sweep.
 
+## Bench 8 (2026-11-08 02:16-02:27 UTC, main aa44cdb)
+
+The floor clamp held: the keeper's ID read 70 cm 26 dB low (desense) and no wall of hits came
+after it, and about 6 weak rows came up in 10 minutes against bench 7's 35. Those six came from
+the keeper's desense, the floors dipping 7-25 dB while Jeff pressed keys (each band change reads
+the floors fresh), and hits refined onto a frequency that wasn't up (441.025 at -115, fl-115).
+And the listener went to 440.850, saved as AG7EW, the moment it first keyed: its candidate was
+new, so the table's call wasn't on it yet. Three changes:
+
+- a hit refined onto a frequency under `hit_db` over the floor is no hit;
+- a weak over (under `XS_PICK_DB`, 15 dB, over the floor) that's a hit's first, or shorter than
+  `XS_WEAK_MS` (1 s), makes no candidate: a `W` line instead of `H` (a carrier at the threshold
+  flaps in 0 ms overs);
+- the automatic pick looks a saved repeater's call up before it listens, and doesn't if there is one.
+
 ## Bench 7 (2026-11-08 01:23-01:36 UTC, main 9572f5e)
 
 Save on a confirmed ID works on air: with 15 s of Jeff's voice before the ID, AG7EW on 441.000

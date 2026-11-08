@@ -4243,10 +4243,10 @@ index 0000000..8064b18
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..b89412d
+index 0000000..bc36ca3
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1487 @@
+@@ -0,0 +1,1498 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -5061,7 +5061,18 @@ index 0000000..b89412d
 +    if p.is_null() {
 +        return;
 +    }
-+    let c = unsafe { &*p };
++    let c = unsafe { &mut *p };
++    // a saved repeater keyed up for the first time since entry: its candidate is new, so the
++    // table's call isn't on it yet (bench 8, 02:18: the listener went to 440.850, saved as AG7EW)
++    if c.flags & EX_F_KNOWN != 0 && c.flags & EX_F_LOOKED == 0 {
++        ctx_on(app, syst);
++        known_calls();
++        ctx_off();
++        if c.call[0] != 0 {
++            c.listens = c.listens.saturating_sub(1);
++            return;
++        }
++    }
 +    t.hz = c.hz;
 +    t.off = c.off_hz;
 +    t.auto_now = true;
