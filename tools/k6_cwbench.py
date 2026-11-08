@@ -94,15 +94,19 @@ def cw_tone(x, fs):
     return float(f[band][np.argmax(p[band])])
 
 
-def key_ideal(x, fs, tone=None, win_ms=8.0):
-    """Key state per poll from the energy at the clip's own tone, threshold halfway (in dB)
-    between the key-up and key-down levels."""
+def key_ideal(x, fs, tone=None, win_ms=16.0):
+    """Key state per poll from the clip's own tone, as a share of the 300-3000 Hz energy (so the
+    open-squelch hiss around a carrier, louder than the ID itself, doesn't key it), threshold
+    halfway in dB between the key-up and key-down shares."""
     tone = tone or cw_tone(x, fs)
     fr, n = frames(x, fs, win_ms)
-    e = 10 * np.log10(dft_power(fr, fs, [tone])[:, 0] + 1e-12)
+    pt = dft_power(fr, fs, [tone])[:, 0]
+    spec = np.abs(np.fft.rfft(fr, axis=1)) ** 2
+    f = np.fft.rfftfreq(n, 1 / fs)
+    tot = spec[:, (f >= 300) & (f <= 3000)].sum(axis=1) + 1e-12
+    e = 10 * np.log10(pt / tot + 1e-12)
     lo, hi = np.percentile(e, 20), np.percentile(e, 99)
-    th = (lo + hi) / 2
-    k = e > th
+    k = e > (lo + hi) / 2
     return k.astype(int), {"tone": round(tone), "contrast_db": round(hi - lo, 1)}
 
 
