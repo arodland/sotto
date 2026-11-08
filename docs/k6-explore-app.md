@@ -94,7 +94,18 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
   screen says `TONE DIFFERS FROM SAVED` (`rt_heard_apply`). DMR sets the entry's `RT_F_DMR`.
   A new entry saved from the row carries both. On the emulated M0 the detector found a
   repeater's DMR in ~100 ms of a listen with no lost samples and ~24% of the CPU
-  (tests/test_k6_xdmr.py).
+  (tests/test_k6_xdmr.py). On the radio (image 3a20b61, 2026-11-08 14:00-14:31Z) it read 136.5 Hz
+  on 443.525 and 110.9 Hz on 442.025, and muted 440.925's DMR at +250 to +425 ms, so the first
+  quarter second of a burst still reached the speaker.
+- **DMR by default** (Jeff 2026-11-08: "if we figure out a repeater is dmr we can mute by default
+  until listening to it for a longer duration reveals that it's not actually a dmr repeater"): a
+  row marked DMR, on the candidate (`EX_F_DMR`) or in the saved entry (`RT_F_DMR`), starts every
+  listen with the speaker shut (`xd_known`, said as `DMR known: shut till clear`). It opens only
+  after 3 s (`XD_CLEAR_MS`) with no DMR sync of any family, so an FM user on a mixed-mode repeater
+  is still heard, 3 s late. Any DMR during a listen resets the count; three automatic listens in
+  a row of 10 s or more with no DMR (`ex_dmr_heard`, `EX_CLEAN_N`, `EX_CLEAN_S`) clear the mark
+  and the saved flag (`rt_heard_apply` with dmr < 0, logged `K6 EX dmr clear`). A listen by hand
+  never counts towards clearing, since it may sit on a dead carrier.
 - **The table** (`c/k6/rt.c`): Save writes one 64-byte record in SPI flash at 0x0F0000-0x0FFFFF,
   through the same checks as module API level 5. A confirmed CW ID follows Jeff's rule: a saved
   entry with no call takes it at once, and a different saved call waits for MENU. With no saved
@@ -182,6 +193,7 @@ K6 EX watch 440925000                 a watched station keyed up: the listener w
 K6 MOD say CWID ok W7ABC/R fl=4 rx=146940000 tone=800 wpm=20
 K6 EX cw 146940000 call=W7ABC/R check=0 apply=0 id=0
 K6 MOD say DMR listen lvl=-86 frozen=1 adj=7   the side detectors on (level, gain frozen, RSSI adj)
+K6 MOD say DMR known: shut till clear the row was marked DMR before: shut until 3 s with no sync
 K6 MOD say DMR on bs d r2=243 +104    DMR: family, voice/data sync, rho^2 x 256, ms into the listen
 K6 EX dmr 440925000                   the row is marked DMR
 K6 MOD say DMR off 2630
@@ -189,6 +201,7 @@ K6 MOD say CTCSS 1000                 the carrier's tone, 0.1 Hz
 K6 MOD say DMR end n=1 h=41 lost=0 steps=50
 K6 MOD say DMR rate busy=24 ks=5490 ctcss=1000/40
 K6 EX heard 440925000 tone=1000 dmr=1 rt=2 saved_tone=1000   the saved entry took the tone
+K6 EX dmr clear 440925000             3 long listens heard no DMR: mark and saved flag cleared (dmr=-1)
 K6 EX save 146940000 id=1 slot=0 live=1 erases=0/32
 K6 CAND 0 R 146940000 off=-600000 tone=0 call=W7ABC/R score=8 overs=5 ...
 ```

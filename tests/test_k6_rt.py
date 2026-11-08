@@ -106,7 +106,7 @@ def test_builds_for_the_m0_without_library_calls(tmp_path):
     und = subprocess.run(["llvm-nm", "-u", o], capture_output=True, text=True, check=True).stdout.split()
     assert und == [], und
     size = subprocess.run(["llvm-size", o], capture_output=True, text=True, check=True).stdout.split("\n")[1]
-    assert int(size.split()[0]) < 3200
+    assert int(size.split()[0]) < 3240     # 3204 B since the DMR flag can be cleared (2026-11-08)
 
 
 @need_cc
@@ -317,6 +317,13 @@ def test_heard_tone_and_dmr_policy(lib):
     assert lib.rth_writes() == w1
     assert L.rt_heard_apply(T, 440_925_000, 5000, 1413, 0, ctypes.byref(r)) == 3     # differs: kept
     assert lib.rth_writes() == w1 and t.find(rx=440_925_000)[1].rx_tone == 1000
+    # long clean listens cleared the explorer's mark (ex_dmr_heard): dmr < 0 clears the flag once
+    assert L.rt_heard_apply(T, 440_925_000, 5000, 0, -1, ctypes.byref(r)) == 1
+    e = t.find(rx=440_925_000)[1]
+    assert not e.flags & 0x20 and e.rx_tone == 1000 and lib.rth_writes() > w1
+    w2 = lib.rth_writes()
+    assert L.rt_heard_apply(T, 440_925_000, 5000, 0, -1, ctypes.byref(r)) == 1
+    assert lib.rth_writes() == w2                                                   # clear already
 
 
 # ---- rtls (c/k6/mod/rtls.c): the table read by a RAM module through API level 5 ----

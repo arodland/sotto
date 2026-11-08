@@ -40,7 +40,8 @@ class Cand(ctypes.Structure):
                 ("flags", ctypes.c_uint8),
                 ("score", ctypes.c_int8), ("grade", ctypes.c_char), ("call", ctypes.c_char * 10),
                 ("listens", ctypes.c_uint8),
-                ("heard_s", ctypes.c_uint16)]
+                ("heard_s", ctypes.c_uint16),
+                ("clean", ctypes.c_uint8)]
 
 
 class Ex(ctypes.Structure):
@@ -95,6 +96,7 @@ def load(so=None):
     L.ex_listen_cap.restype = ctypes.c_uint
     L.ex_heard.argtypes = [P, ctypes.c_uint32, ctypes.c_uint]
     L.ex_heard.restype = None
+    L.ex_dmr_heard.argtypes = [P, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint]
     L.ex_pick_id.argtypes = [P, ctypes.POINTER(ctypes.c_uint32), ctypes.c_uint]
     L.ex_pick_id.restype = ctypes.POINTER(Cand)
     return L

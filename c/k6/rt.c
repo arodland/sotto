@@ -363,7 +363,8 @@ int rt_heard_apply(rt_t *t, uint32_t rx_hz, uint32_t tol, uint16_t tone, int dmr
       res = RT_TONE_FILL, write = 1;
     }
   }
-  if (dmr && !(r.flags & RT_F_DMR)) r.flags |= RT_F_DMR, write = 1;
+  /* dmr > 0 sets the flag, dmr < 0 clears it (long listens heard none: ex_dmr_heard) */
+  if (dmr > 0 ? !(r.flags & RT_F_DMR) : dmr && (r.flags & RT_F_DMR)) r.flags ^= RT_F_DMR, write = 1;
   if (write && (e = rt_put(t, &r)) < 0) return e;
   if (out) cp(out, &r);
   return res;

@@ -4,7 +4,10 @@
    ring through c/k6/dmrsync.h in the waits between polls (xl_step_w), so the CW ID listener and
    the DMR detector share the listen. A confirmed DMR sync mutes the speaker (REG_47's AF bits)
    until 720 ms after the last sync of that family, as the dmrdet module does; the CW ID goes on
-   being decoded, since the tone detector doesn't hear REG_47. The caller marks the row DMR.
+   being decoded, since the tone detector doesn't hear REG_47. The caller marks the row DMR, and
+   on a row marked before it calls xd_known: the speaker then starts shut and opens only after
+   XD_CLEAR_MS with no sync of any kind (an FM user on a mixed-mode repeater, or no DMR after
+   all). The caller clears the mark after a few long listens with no DMR (ex_dmr_heard).
 
    The DMA ring (XD_RSZ bytes) lives on xd_step's stack, so the DMA runs only during a step.
    The detector's state (in xd_t, which the caller keeps in RAM that's free during a listen)
@@ -43,6 +46,9 @@ extern "C" {
                                  carrier's first syncs can keep it shut */
 #define XD_KEEP_MS 720u       /* DMR held this long after its family's last sync (a voice
                                  superframe has one every 360 ms a slot) */
+#define XD_CLEAR_MS 3000u     /* a row already known as DMR (xd_known): the speaker stays shut
+                                 until this long has gone by with no DMR sync at all (Jeff
+                                 2026-11-08: mute a DMR repeater by default) */
 
 enum { XD_NOW = 1, XD_EVER = 2 };
 
@@ -52,6 +58,7 @@ typedef struct {
   uint32_t cps8;               /* the DMA's rate: 96 MHz cycles a transfer, Q8 */
   uint32_t tc;                 /* the clock at the last count the detector had */
   uint32_t start, until, on_ms;/* api->ms(): the listen began; DMR held until; DMR came on */
+  uint32_t last;               /* api->ms() at the last sync of any family (start: none yet) */
   uint32_t hits, steps, lost, busy, win;
   uint32_t stuck;              /* waits that api->ms() ended: the 96 MHz clock didn't move */
   uint32_t ahb, apb2;
@@ -61,12 +68,16 @@ typedef struct {
   int16_t adj, lvl;            /* dB the frozen gain adds to RSSI reads; the level at the start */
   uint8_t ok;                  /* 1 running; 0 off (PB1 not an input, REG_33 refused) */
   uint8_t spk, frozen, dmr, ever, af, pend, fam, sign, r2, ndmr, rated;
+  uint8_t known;               /* xd_known: shut until XD_CLEAR_MS clear of syncs */
   ds_t d;
 } xd_t;
 
 /* After xl_start, on the same channel: set the detector up (spk: the listen plays on the
    speaker, so DMR mutes it; cps8: the DMA rate the last listen measured, xd_rate8, or 0) */
 void xd_start(xd_t *s, const k6_api_t *api, int spk, uint32_t cps8);
+/* After xd_start: the row is known as DMR (a listen heard it there before), so the speaker
+   stays shut until XD_CLEAR_MS go by with no DMR sync, instead of the XD_HOLD_MS hold */
+void xd_known(xd_t *s);
 /* One listen step: xl_step with the detector running in its waits; xl_step's result */
 int xd_step(xd_t *s, xl_t *x);
 /* Before xl_stop: everything put back; the DMR transmissions heard */
