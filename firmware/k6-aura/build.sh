@@ -253,6 +253,7 @@ fi
 # one module per line, in alphabetical order, so PRs that add modules don't collide:
 K6_MODULES=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' <<'EOF'
 afsweep
+aprsclk        # level 2 (screen at 6, LED at 7), docs/k6-aprs-clock.md
 bandreg        # level 2, patched by tools/k6_hf.py
 ctcssprobe     # level 2, docs/k6-explore-app.md
 cwkey          # level 3

@@ -1,0 +1,117 @@
+# K6 APRS clock: UTC from packets heard on 144.390
+
+*2026-11-08.* Jeff's idea: the K6 has no clock (the WSPR beacon uses the bench's CW ID as its sync
+mark, `docs/k6-ft8-wspr.md`), but APRS traffic carries the time. `c/k6/mod/aprsclk.c` is a
+receive-only RAM module that listens on 144.390 MHz, decodes APRS packets on the MCU, reads
+their timestamps and votes them into a UTC clock. Nothing is transmitted (an upload sent with
+`--arq` still gets its usual report on 440.850 after the module returns).
+
+**Why not Aura's APRS code.** Aura (commit `edf3b98`, the one the pager patch is based on) can
+only *send* APRS: `app/ax25/` builds a position beacon (address field, CRC, NRZI) and
+`drivers/fd6818.rs` keys it out as Bell 202 by switching the chip's tone oscillator between
+1200 and 2200 Hz on a TIM6 bit clock. There is no demodulator, no HDLC deframer and no parser,
+and the chip's own FSK modem can't receive AX.25 (it wants its sync words and fixed lengths).
+The receiver had to be new either way, so it is MIT C on the IF tap the FT8 and softmodem
+modules already use. If the K6 ever sends APRS, Aura's tone switching is the reference for that
+module.
+
+## What it does
+
+```
+GP0 code 13 on PB1 -> DMA ch1 ring (1 KB, ~5.5 MS/s)                       (gp0rx.h's front end)
+ -> counts of 64 samples (~86 kHz) -> mixed down by the nominal IF (64-entry sine)
+ -> 2nd-order CIC, decimate by 6 (~14.3 kHz complex)
+ -> CORDIC phase (11 steps); the phase step is the FM discriminator (no division)
+ -> DC removed; sliding correlators over one bit at 1200 and 2200 Hz; mark > space
+ -> DPLL bit clock (nudged towards each transition, firmer inside a frame), NRZI
+ -> HDLC: flags, bit stuffing, CRC-16/X.25 (good residue 0xF0B8)
+ -> the APRS information field's timestamp -> one interval per station -> Marzullo's vote
+```
+
+**Timestamps it reads.** `/` and `@` positions, `;` objects and `>` status reports with
+`DDHHMMz` (zulu, one-minute resolution) or `HHMMSSh` (zulu, one second); raw NMEA
+`$GPRMC`/`$GNRMC` with status `A` (`hhmmss[.ss]` and the date `ddmmyy`). It ignores `DDHHMM/`
+(local time, zone unknown), Mic-E (no time), `}` third-party traffic (internet delays) and
+everything else.
+
+**The vote.** A stamp says the true UTC at the frame's first bit (the frame's end, less its bits
+at 1200 baud) was between the stamp and the stamp plus its resolution plus a delay: 3 s heard
+direct, 8 s through a digipeater (any H bit in the path). In offsets (UTC ms of day less the
+module's ms, taken round the day so midnight is no edge) each station keeps one interval, the
+newest; a digipeated copy of the same stamp is not a second vote. Marzullo's algorithm (NTP's)
+finds the offset the most stations agree on, the narrowest region among ties, so a station with
+a wrong clock is outvoted. With two or more agreeing the clock is set: the estimate is the
+region's low edge plus half its width, at most 0.5 s, because a stamp can't be later than the
+send and GPS trackers key within a second of their fix. A seconds stamp in the vote gives the
+second ("(sec)" on the screen); `DDHHMMz` alone gives the minute. The date comes from the newest
+agreeing stamp that has one (`$GPRMC` gives day/month/year, `DDHHMMz` the day).
+
+**On the radio.** Level 2 to run (receive, GP0, TIM17, DMA channel 1, all put back as gp0rx.h
+does); at level 6 it draws its screen (UTC, stations voting, frames good/bad/stamped, the
+date) once a second, never while a frame or its flags are coming (a flush takes 20-40 ms and
+the ring holds 0.2 ms); at level 7 it blinks the green LED on each good frame. Any key ends it,
+else 15 minutes (`RUN_MS`). It tunes 144.390 with the wide filter and leaves the chip's AFC on,
+which pulls a sender's offset in (unlike FT8's narrow tones, AFSK on FM doesn't mind). Lines:
+
+```
+aprs start hz=144390000 ks=5490 n=12
+f VE7ABC-9 n=47 h=0 ts=17:52:00h               (a good frame: source, bytes, hops, stamp and kind)
+clk --:--:-- w=4000 v=1                        (the clock after each stamp: UTC, region ms, votes)
+f VE7WX n=67 h=1 ts=17:51:00z
+clk 17:52:03.060 w=4000 v=2 d=08
+f N0CALL-7 n=81 h=0 ts=17:52:04.220r
+clk 17:52:05.274 w=3010 v=3 d=08/11
+aprs end ok=3 bad=0 ts=3 v=3 utc=17:52:06.562 lost=0
+```
+
+It returns the votes behind the clock (0: not set), or -2 (a key before any frame), -3 (old
+image), -4 (PB1 not an input), -5 (REG_33 refused), -7 (TIM17 or DMA channel 1 in use), -8 (the
+scratch too small).
+
+## Size: which images
+
+5,046 bytes of code (clang -Oz) and about 2.3 KB of state (the DMA ring 1 KB, a frame 332 B, the
+correlators 256 B, twelve stations 336 B), 288 B of stack. That needs the shared arena of the SPI
+images (`aura-pager-only`, `-lr`, `-vlr`, `-vlrh`: 11,776 B since PR #146). It does **not** fit
+the EXPLORE image or the lean images (5,376 B block): the radio needs a voice image, and the
+module can move into the SPI module library unchanged once that exists.
+
+## Tested (emulator and host, `tests/test_k6_aprsclk.py`)
+
+Three stations through the study's model of the K6's receive path (sim/k6if: FM, the FD6818's
+filter and AGC, the GP0 sigma-delta at 5.49 MS/s): a tracker's `HHMMSSh` stamped 0.4 s before
+it keys, a weather station's `DDHHMMz` through a digipeater, and a `$GPRMC` 0.7 s old.
+
+- **Emulated M0** (`tests/k6_live_emu.py`, CPI 1.5 calibrated on gp0dma): all three decoded, no
+  bad frames, no counts lost, clock 0.19 s behind the truth (the stamps' own lag), v=3, screen
+  and LED as above. It still decodes everything at CPI 4 and 5 (the CPU cost x 3.3), fails at 6:
+  the receiver takes roughly a quarter to a third of the CPU.
+- **Host build of the same C** (`c/k6/aprsclk_host.c`), 3 seeds each: clean with the space tone
+  +6 dB over the mark (a sender's pre-emphasis) or -4 dB, deviation 2 to 4.5 kHz, carrier ±800 Hz
+  off. At ±1500 Hz with 3 kHz deviation it loses some frames (peaks past 4.5 kHz); on the radio
+  the AFC pulls the carrier in. Noise: 17 of 18 frames at C/N0 52 dB-Hz, 4 at 50, none at 48, about
+  where a float discriminator on the same model breaks (13, 9, 0): it's the FM threshold. 52 dB-Hz is
+  roughly -116 dBm at the antenna, so local digipeaters and igates, not distant mobiles.
+- A peak tracker per tone (to undo pre-emphasis twist) made it worse (lost frames at +6 dB): left
+  out. Parser cases: one station isn't enough; a digipeated copy is one vote; three agreeing GPS
+  stations outvote one 7 minutes slow; local-time, impossible, no-fix, untimed and third-party
+  packets give nothing; objects and status reports count; stamps either side of midnight agree.
+
+## Making it the radio's clock
+
+A module's clock dies with the module: `ms()` counts from its own start, and the core's uptime
+is TIM14's 16-bit 100 µs counter, which wraps every 6.5 s. Proposed API level 8, a few dozen
+bytes of core: the main loop keeps a UTC ms-of-day and date running from TIM14's deltas (it polls
+far more often than 6.5 s; a module's run adds its `ms()` when it returns), corrected by the
+calibration record's ppb (`k6_cal.h`: Jeff's K6 is -53 ppm, 0.2 s an hour), with `clock_set(utc_ms,
+date, quality)` and `clock_get(&utc_ms, &date)`. Then the pager screen can show UTC, and the WSPR
+and FT8 modules can start on their slots from the clock instead of the bench's CW ID. Not built:
+it changes the core image, so it waits for Jeff's go.
+
+## Bench
+
+Receive only, so it needs no keying and no IC-7100: upload `mod-aprsclk.bin` to a voice image
+(any SPI image with the 11,776 B arena), leave the K6 a few minutes on 144.390 with traffic,
+and compare the `clk` lines (or the screen) with NTP on hamlet. An IC-7100 recording of 144.390
+(receive only) run through `python -m modem.aprs decode REC.wav` would first count how many
+local packets carry stamps.
