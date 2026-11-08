@@ -114,7 +114,7 @@ s 146.520   S  ======
 
 | Key | In the list |
 |---|---|
-| UP / DOWN | pick a row |
+| UP / DOWN | pick a row; past the last row it wraps to the first and back. During an automatic listen the arrows scroll the list and the listen goes on (a redraw at most every 150 ms, so the CW decoder keeps its polls); any other key stops it |
 | MENU | Try: the sweep stops, the radio parks on the row with the speaker open (squelch open, so you hear the noise between overs). MENU or EXIT goes back |
 | 0 | Listen for ID on the row: speaker open, up to 25 minutes, any key stops |
 | 5 | Save the row to the table (`SAVED #3 (3 in table)`) |
