@@ -5955,6 +5955,22 @@ index 0000000..66c2158
 +        }
 +    }
 +}
+diff --git a/src/app/spectrum.rs b/src/app/spectrum.rs
+index 8e35e53..c8a473f 100644
+--- a/src/app/spectrum.rs
++++ b/src/app/spectrum.rs
+@@ -12,7 +12,11 @@ use crate::device::keypad::{KeyEvent, KeyEventKind, KeyId};
+ use crate::device::radio::Modulation;
+ use cortex_m::peripheral::SYST;
+ 
++#[cfg(not(feature = "pager-only"))]
+ const MAX_BINS: usize = 128;
++/// (the pager-only images never open the spectrum: 254 bytes of `App` back for sotto's RAM block)
++#[cfg(feature = "pager-only")]
++const MAX_BINS: usize = 1;
+ 
+ /// Selectable scan step sizes, Hz
+ const SCAN_STEPS_HZ: [u32; 15] = [
 diff --git a/src/drivers/fd6818.rs b/src/drivers/fd6818.rs
 index a4f1729..1b8d400 100644
 --- a/src/drivers/fd6818.rs
@@ -5976,12 +5992,29 @@ index a4f1729..1b8d400 100644
      pub fn init(&mut self, syst: &mut SYST) {
          // soft reset
          self.write_reg(syst, REG_SOFT_RESET, 0x8000);
+diff --git a/src/flash_map.rs b/src/flash_map.rs
+index 73a6de2..65c81cc 100644
+--- a/src/flash_map.rs
++++ b/src/flash_map.rs
+@@ -73,7 +73,12 @@ pub mod addr {
+ }
+ 
+ /// Maximum number of satellites stored in SPI flash.
++#[cfg(not(feature = "pager-only"))]
+ pub const MAX_SATELLITES: usize = 20;
++/// The pager-only images never open the satellite screens, and `App` keeps this many records
++/// in RAM: one slot keeps the code compiling and gives 608 bytes to sotto's shared RAM block.
++#[cfg(feature = "pager-only")]
++pub const MAX_SATELLITES: usize = 1;
+ 
+ /// Written to `addr::FIRST_BOOT_MARKER_ADDR` once the first-boot format
+ /// prompt has run
 diff --git a/src/hal/arena.rs b/src/hal/arena.rs
 new file mode 100644
-index 0000000..9990e5e
+index 0000000..a4ef326
 --- /dev/null
 +++ b/src/hal/arena.rs
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,83 @@
 +//! One block of RAM shared by the things that never run at the same time.
 +//!
 +//! A voice message needs the message store, the PWM audio ring and the decoder's working
@@ -6001,20 +6034,24 @@ index 0000000..9990e5e
 +//! starts. The telemetry text of a module (the last TLM_BYTES) stays there after the module
 +//! returns, for the upload report, until a playback's decoder overwrites it.
 +//!
-+//! Size: the same 8,896 bytes in every image that reads its codebooks from SPI flash and plays
-+//! voice, so a module that fits one fits all: in the hiss band image that is exactly store
-+//! 4,096 + ring 2,560 + decoder 2,240 (sotto_pager.c SP_DEC_MAX 2,232); the 8 kHz images (ring
-+//! 1,280, decoder at most 1,504) give the rest of the block to modules, out of stack they had
-+//! to spare. The EXPLORE image has no decoder, so its block is the store and the ring (5,376
-+//! bytes). So is the lean images' (codebook install, codebooks in MCU flash): they have no
-+//! flash for the pool's code, and their library keeps the decoder's memory in its own static.
++//! Size: the same 9,760 bytes in every image that reads its codebooks from SPI flash and plays
++//! voice, so a module that fits one fits all. In the hiss band image that is store 4,096 + ring
++//! 2,560 + decoder 2,240 (sotto_pager.c SP_DEC_MAX 2,232) + the 864 bytes the pager-only build
++//! takes out of Aura's `App` (MAX_SATELLITES 1, the spectrum's MAX_BINS 1: screens it never
++//! shows); the 8 kHz images (ring 1,280, decoder at most 1,504) give the rest of the block to
++//! modules, out of stack they had to spare. The running stack is what limits it: the decoder's
++//! deepest call (main 2,952 + synth 2,240 + the pager's frames) leaves the hiss image about 400
++//! bytes never touched, as before. The EXPLORE image has no decoder, so its block is the store
++//! and the ring (5,376 bytes). So is the lean images' (codebook install, codebooks in MCU
++//! flash): they have no flash for the pool's code, and their library keeps the decoder's memory
++//! in its own static.
 +
 +/// the message store: sp_init's buffer
 +pub const STORE_BYTES: usize = 4096;
 +/// the PWM audio ring (hal::pwm_audio)
 +pub const RING_BYTES: usize = super::pwm_audio::RING_BYTES;
 +#[cfg(not(any(feature = "explore", feature = "lean")))]
-+pub const ARENA_BYTES: usize = 8896;
++pub const ARENA_BYTES: usize = 9760;
 +#[cfg(any(feature = "explore", feature = "lean"))]
 +pub const ARENA_BYTES: usize = STORE_BYTES + RING_BYTES;
 +/// the decoder's pool: what is left after the store and the ring

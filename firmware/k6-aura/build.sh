@@ -255,7 +255,7 @@ for m in hello settle cwprobe cwlisten i2sprobe i2scap gp0tone gp0fm gp0raw gp0d
   cmp "$HERE/build/$m-0.bin" "$HERE/build/$m-4096.bin"
   cp "$HERE/build/$m-0.bin" "$OUT/mod-$m.bin"
   ls -l "$OUT/mod-$m.bin"
-  # the shared RAM block (hal::arena in the Aura patch, 8,896 bytes in every voice image) holds a
+  # the shared RAM block (hal::arena in the Aura patch, 9,760 bytes in every SPI voice image) holds a
   # 16-byte header, the code and an 8-byte tag; the scratch a module asks for comes after them
-  [ "$(wc -c < "$OUT/mod-$m.bin")" -le 8872 ] || { echo "mod-$m.bin: over the 8,896-byte module block"; exit 1; }
+  [ "$(wc -c < "$OUT/mod-$m.bin")" -le 9736 ] || { echo "mod-$m.bin: over the 9,760-byte module block"; exit 1; }
 done
