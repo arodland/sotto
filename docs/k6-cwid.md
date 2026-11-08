@@ -231,3 +231,22 @@ detector may not lock), and whether 50 Hz steps are finer than the detector can 
 - The table update: the explorer's `rt_find` / `rt_update_call` once they exist (fill only an
   empty or CW-sourced call, never a user one; on a mismatch set the mismatch flag; byte 51 gets
   the tone and speed). Until then the ok line is the result, and this module writes no flash.
+
+## CW workbench: real repeater IDs (2026-11-08)
+
+EXPLORE missed the CW IDs of local repeaters on air (Jeff, 2026-11-08 03:18), and every test
+so far used our own clean 20 wpm, 800 Hz ID. The workbench uses real IDs:
+
+- **Corpus**: the IC-7100 on hamlet records receive-only FM audio (48 kHz, open squelch),
+  switching each hour between local repeater outputs, and a cutter lifts each keyed tone
+  burst (300-2500 Hz) into a labelled clip (`<MHz>_<UTC>_<wpm>wpm_<tone>Hz_<text>.wav`). The
+  K6's serial log runs alongside, so each real ID can be matched with what the K6 did.
+  440.925 is a DMR repeater (it IDs in CW too).
+- **Replay** (`tools/k6_cwbench.py clip.wav ...`): each clip goes through the K6's own
+  `cw_feed`/`cw_call` twice. Model `ideal` keys from the clip's own tone, at any frequency,
+  so a miss there is the decoder's. Model `k6` keys from a model of the tone detector: 16
+  bins at 600-1350 Hz, `--share` of the band's energy, with the measured +10/+20 ms stretch.
+  A miss only there is the detector's (a tone above 1350 Hz, or an ID too quiet under voice).
+  `--synth` makes test clips (tone, wpm, noise, voice mixed under).
+- The `k6` model's threshold is a guess until it is fitted to clips recorded at the same time
+  as the K6's `CWID d` lines.
