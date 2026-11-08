@@ -47,7 +47,7 @@ extern "C" {
 #define KM_HDR 16
 #define KM_TAG 8
 #define KM_ABI 1
-#define KM_LEVEL 6
+#define KM_LEVEL 7
 
 typedef struct k6_api {
   uint16_t abi, level;              /* KM_ABI, KM_LEVEL */
@@ -117,6 +117,12 @@ typedef struct k6_api {
   void (*lcd_bar)(int line, uint32_t num, uint32_t den);       /* den 0 removes it */
   void (*lcd_wf)(const uint8_t *ring, int rows, int head);     /* rows 0 removes it */
   int (*lcd_flush)(void);                                      /* 0, or -1 (no display) */
+  /* level 7 (2026-11-08, Jeff asked for it): the green RX LED by the volume knob (MCU PA3, Aura's
+     G_LED). The pager blinks it once a packet while its modem receives (chip FSK and the coded
+     4FSK session); a module may blink it for its own receive activity. The core turns it off
+     when the module returns. Same run-time check as level 6 for a module that also runs on
+     older images. */
+  void (*led)(int on);                                         /* 1 lit, 0 dark */
 } k6_api_t;
 
 #define KM_WF_TOP 21                /* lcd_wf's first pixel row */

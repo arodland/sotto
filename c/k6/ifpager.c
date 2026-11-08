@@ -189,6 +189,8 @@ int ifp_sym(ifp_t *p, int tone, const uint32_t met[4]) {
 /* the burst is over after this many symbols with no sync word: two packets' time (and the
    rest of a 2 s lead before the first) */
 #define END_SYMS(rate) (2 * (IFP_SYMS(rate) + IFP_SYNC_LEN))
+#define LED_SYMS 144u  /* the green RX LED (api->led, level 7) lit for 144 symbols (120 ms) from
+                          each sync word: one blink a packet, as the chip FSK packets blink it */
 #define FIRST_SYMS(rate) (2400 + END_SYMS(rate))
 
 static uint32_t rd(uint32_t a) { return *(volatile uint32_t *)a; }
@@ -412,6 +414,9 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
       break;
     }
     if (api->ms() - t0 > max_ms) break;
+    /* no state of its own (the session's stack is at its limit): set from the last sync word on
+       every check, ~3 ms apart; a GPIO write */
+    if (api->level >= 7) api->led(p.syncs && p.syms - p.last_sync < LED_SYMS);
     if (!s.locked) {
       if (api->ms() - t0 > wait_ms) {
         r = -6;
@@ -422,6 +427,7 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
     if (p.syncs ? p.syms - p.last_sync > END_SYMS(p.rate) : p.syms - s.lock_sym > FIRST_SYMS(p.rate)) break;
   }
   stop();
+  if (api->level >= 7) api->led(0);
 #ifdef SP_PKT_YIELD
   sp_set_packet_yield(0, 0);
 #endif

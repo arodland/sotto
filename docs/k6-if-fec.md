@@ -79,6 +79,8 @@ it:
 - It ends when no sync word has come for two packets' time, when a key is pressed, or at the
   control packet's limit.
 - The pager then plays the message as it would any other.
+- It blinks the green RX LED by the volume knob once a packet, 120 ms from each sync word
+  (module API level 7, `docs/k6-modules.md`), as the chip FSK packets do.
 
 It prints two lines:
 

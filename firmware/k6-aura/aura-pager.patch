@@ -246,10 +246,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..8064b18
+index 0000000..36795ba
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3991 @@
+@@ -0,0 +1,4057 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -502,6 +502,8 @@ index 0000000..8064b18
 +        pub lcd_bar: unsafe extern "C" fn(i32, u32, u32),
 +        pub lcd_wf: unsafe extern "C" fn(*const u8, i32, i32),
 +        pub lcd_flush: unsafe extern "C" fn() -> i32,
++        // level 7: the green RX LED (PA3)
++        pub led: unsafe extern "C" fn(i32),
 +    }
 +    #[repr(C)]
 +    pub struct KmStatus {
@@ -528,7 +530,7 @@ index 0000000..8064b18
 +/// through MOD_CTX, set only while a module runs.
 +static MOD_API: ffi::K6Api = ffi::K6Api {
 +    abi: 1,
-+    level: 6,
++    level: 7,
 +    say: mod_say,
 +    ticks: mod_ticks,
 +    fd_read: mod_fd_read,
@@ -552,7 +554,64 @@ index 0000000..8064b18
 +    lcd_bar: mod_lcd_bar,
 +    lcd_wf: mod_lcd_wf,
 +    lcd_flush: mod_lcd_flush,
++    led: mod_led,
 +};
++
++/// Level 7: the green RX LED, for a module's own receive activity (and the coded 4FSK session's
++/// one blink a packet). Off again when the module returns.
++unsafe extern "C" fn mod_led(on: i32) {
++    rx_led(on != 0);
++}
++
++// ---- the green RX LED by the volume knob (PA3, Aura's G_LED; Jeff asked 2026-11-08) ----
++//
++// One blink a packet while the modem receives: lit at each packet's sync (or its first
++// FIFO-full), dark RX_LED_TICKS later, so a burst of packets (391 ms apart at PHY F) blinks
++// about 2.5 times a second and the coded 4FSK session's (0.92 s apart) about once. Normal-RX
++// Aura lights it while the squelch is open; the pager has no squelch, and main skips that
++// housekeeping in pager mode, so the pin is the pager's here.
++
++#[cfg(not(feature = "lean"))]
++const RX_LED_TICKS: u16 = 1200; // 120 ms
++
++/// When the LED was lit (uptime ticks), None while dark.
++#[cfg(not(feature = "lean"))]
++static mut RX_LED_T: Option<u16> = None;
++
++#[cfg(not(feature = "lean"))]
++fn rx_led(on: bool) {
++    let gpioa = unsafe { &*kd32f328_pac::Gpioa::ptr() };
++    crate::board::set_rx_led(gpioa, on);
++    if !on {
++        unsafe { *addr_of_mut!(RX_LED_T) = None };
++    }
++}
++
++/// A packet's sync: the LED on for RX_LED_TICKS.
++#[cfg(not(feature = "lean"))]
++fn rx_blink(now: u16) {
++    rx_led(true);
++    unsafe { *addr_of_mut!(RX_LED_T) = Some(now) };
++}
++
++/// The LED off once its time is up (cheap: called from the receive loops' waits).
++#[cfg(not(feature = "lean"))]
++fn rx_led_poll(now: u16) {
++    if let Some(t) = unsafe { *addr_of!(RX_LED_T) } {
++        if now.wrapping_sub(t) >= RX_LED_TICKS {
++            rx_led(false);
++        }
++    }
++}
++
++// The lean images (codebook install, MCU-flash table) leave the LED dark: aura-pager-cbi had
++// 96 B of flash to spare, and the LED took 184 (CI, 07bb380). Their led() is a no-op.
++#[cfg(feature = "lean")]
++fn rx_led(_on: bool) {}
++#[cfg(feature = "lean")]
++fn rx_blink(_now: u16) {}
++#[cfg(feature = "lean")]
++fn rx_led_poll(_now: u16) {}
 +
 +struct ModCtx {
 +    app: *mut App,
@@ -1934,6 +1993,7 @@ index 0000000..8064b18
 +
 +fn exit(app: &mut App, syst: &mut SYST) {
 +    disarm(app, syst);
++    rx_led(false);
 +    app.mode = Mode::Standby;
 +    app.reset_key_idle();
 +    app.sync_watching_to_master(syst);
@@ -2406,6 +2466,7 @@ index 0000000..8064b18
 +        return;
 +    }
 +    let now = uptime::now();
++    rx_led_poll(now);
 +    let dt = now.wrapping_sub(app.pager.last_tick) as u32;
 +    app.pager.idle_ticks = app.pager.idle_ticks.saturating_add(dt);
 +    app.pager.cfg_ticks = app.pager.cfg_ticks.saturating_add(dt);
@@ -2452,6 +2513,7 @@ index 0000000..8064b18
 +        // packet slipped (5e60d8f: 7-10/16). The screen catches up after the burst.
 +        flags = 0;
 +        while uptime::now().wrapping_sub(app.pager.t_rearm) < NEXT_SYNC_WAIT_TICKS {
++            rx_led_poll(uptime::now());
 +            flags = take_irq(app, syst);
 +            if flags != 0 {
 +                break;
@@ -2524,6 +2586,7 @@ index 0000000..8064b18
 +        return;
 +    }
 +    let t_first = uptime::now();
++    rx_blink(t_first);
 +    app.pager.gap_ms = t_first.wrapping_sub(app.pager.t_rearm) / 10;
 +    if app.pager.t_timed_done.is_some() {
 +        app.pager.stray_ms = -1;
@@ -2631,6 +2694,7 @@ index 0000000..8064b18
 +                delay::us(syst, 500);
 +            }
 +            let now = uptime::now();
++            rx_led_poll(now);
 +            waited += now.wrapping_sub(last) as u32;
 +            last = now;
 +            if filled {
@@ -2717,6 +2781,7 @@ index 0000000..8064b18
 +                    app.pager.stray_ms = (uptime::now().wrapping_sub(t_done) / 10) as i16;
 +                }
 +                let since = uptime::now().wrapping_sub(t_sync);
++                rx_led_poll(uptime::now());
 +                if (done && since >= rearm_min) || since >= rearm_max {
 +                    break;
 +                }
@@ -2927,6 +2992,7 @@ index 0000000..8064b18
 +        mod_screen_clear();
 +        let ret = unsafe { ffi::km_run(addr_of_mut!(STORE) as *mut u8, &MOD_API) };
 +        unsafe { mod_tx_off() }; // a module that left the transmitter on
++        rx_led(false); // or the LED lit
 +        mod_screen_clear(); // its waterfall rows were in its own memory
 +        let ms = unsafe { mod_ms() };
 +        unsafe {
