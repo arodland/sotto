@@ -106,7 +106,7 @@ static const band_t BANDS[] = {
     {430000000u, 450000000u, 3, "70cm"}, {462550000u, 467725000u, 2, "GMRS"},
     {156000000u, 162550000u, 3, "MAR/WX"}};
 #define NBANDS 5
-static const uint32_t STEPS[] = {5000, 10000, 12500, 25000, 50000, 100000};
+static const uint8_t STEPS[] = {2, 4, 5, 10, 20, 40};   /* x 2.5 kHz: 5, 10, 12.5, 25, 50, 100 kHz */
 #define NSTEPS 6
 
 /* Aura's KEY_TABLE: phase 0 (no row driven) side keys, then rows PB0, PB4, PB10, PB11, PB9;
@@ -281,7 +281,7 @@ static void limits(sf_t *s) {
 static void window(sf_t *s, uint32_t hz) {
   const band_t *b = s->bd;
   int c, i, mx;
-  s->step = STEPS[s->zi];
+  s->step = STEPS[s->zi] * 2500u;
   s->nbb = (int)udiv(b->hi - b->lo, s->step) + 1;
   if (hz < b->lo) hz = b->lo;
   c = (int)udiv(hz - b->lo + s->step / 2, s->step);
@@ -528,11 +528,13 @@ static void pair(uint8_t *b, int i, int r) { b[16 * r + (i >> 2)] |= (uint8_t)(0
 static void rt_load(sf_t *s) {
   uint32_t r[2];
   int i;
-  for (i = 0; i < RT_SLOTS && s->nk < NK; i++)
-    if (!s->api->fl_read(RT_BASE + 64u * (uint32_t)i, r, 8) && (uint8_t)r[0] == 0xFC && r[1]) {
+  for (i = 0; i < RT_SLOTS && s->nk < NK; i++) {
+    s->api->fl_read(RT_BASE + 64u * (uint32_t)i, r, 8);   /* (in range: it can't refuse) */
+    if ((uint8_t)r[0] == 0xFC && r[1]) {
       s->khz[s->nk] = r[1];
       s->kslot[s->nk++] = (uint16_t)i;
     }
+  }
 }
 
 /* line 5 on a known repeater: its call, offset (MHz) and TX tone, from its record */
