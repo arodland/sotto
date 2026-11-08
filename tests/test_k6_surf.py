@@ -109,7 +109,9 @@ def test_bench_build_surfs_by_itself_and_wraps():
     sig = [(440_850_000, -80, 0, FOREVER), (441_200_000, -95, 0, FOREVER), (430_300_000, -90, 0, FOREVER)]
     ret, said, regs, writes, lcd = go(sig, [], src=AUTO)
     s = sels(said)
-    assert s[:3] == ["440.6000", "440.8500", "441.2000"]
+    assert s[:2] == ["440.8500", "441.2000"]                 # each with its confirming read
+    lv = [ln.split()[2:] for ln in said if ln.startswith("sel ")][:2]
+    assert lv[0][0] == "-80" and int(lv[0][1]) < -120 and int(lv[1][0]) > int(lv[1][1]) + 10
     assert "430.3000" in s and said[-1].startswith("end sw=")
     assert lcd["st"]["us"] >= 60_000_000 and regs[0x47] == 0x6040
     # the last bargraph comes back as say lines (under 60 characters), and draws as the screen did
