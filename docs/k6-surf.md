@@ -79,8 +79,9 @@ changes when PR #142 grows the store.
 
 ## Bench build (surfauto)
 
-`mod-surfauto.bin` is the same module for unattended runs: SIDE1 presses itself every 4 s, saying
-`sel <MHz> <dBm>` first. It wraps to the band's bottom at the top and leaves after 60 s. The keys
+`mod-surfauto.bin` is the same module for unattended runs: SIDE1 presses itself every 4 s. Each
+peak it jumps to says `sel <MHz> <dBm> <floor>`: the settled read that confirmed it and the
+settled floor it beat by 10 dB (runs 1 and 2 said the bar's level 4 s later, before the jump). It wraps to the band's bottom at the top and leaves after 60 s. The keys
 still work. Before it ends it says its last bargraph: `bar <first bin MHz> <step>`, then two
 lines of 32 letters, one a bin, `a` for 1 pixel up to `x` for 24 (about 112 bytes of the 684 the
 telemetry carries). `python tools/k6_screen.py RUN.txt OUT.png` draws it as the screen showed
@@ -124,6 +125,34 @@ What it showed:
   code fails that test.
 - No serial log: auto mode refused the read-only logger, so the run's bargraph itself isn't
   recorded. Next run: allow `k6_harness listen` on ttyUSB2 (read-only) or watch the screen.
+
+## Bench run 2 (2026-11-08 16:3xZ, hamlet, receive only)
+
+`mod-surfauto.bin` from main bf7990a (#153) went up on 440.850: 69 of 69 chunks on the first
+pass. It ran 60,051 ms, returned 9 sweeps (5 in run 1), and had 5,040 B of stack free.
+
+```
+surf 70cm 440.850 25k
+sel 440.8500 -25      the upload's own carrier: the IC-7100 was still sending
+sel 440.9250 -97      sel 441.0250 -113     sel 441.0750 -108     sel 441.1250 -112
+sel 441.9500 -116     sel 442.0000 -104     sel 442.0750 -130     sel 445.3000 -102
+bar 447.2500 25k
+aaaaaaaaaaaaaaaabaaaaaaaaaaaaaaa
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+end sw=9
+```
+
+What it showed:
+- The bargraph telemetry works end to end: `tools/k6_screen.py` drew the last window
+  (447.250-448.825), flat but for one bin a pixel up at 447.650. The climb ended up there,
+  where nothing is on the air and no saved repeater falls, so no marks showed.
+- The settled-read confirm made the climb go further (9 jumps to 445.3 against 13 to 442.4) and
+  sweep more. 440.925 at -97 is the DMR repeater.
+- The levels can't be judged yet. Each `sel` said the bar's level when the next press came 4 s
+  later, not the read that confirmed it, and not the floor it beat. A -130 on 442.075 means
+  that channel had dropped by then. The build after run 2 says the confirming read and the
+  floor at the jump, and drops the line for the starting bar, which caught the upload carrier.
+  Run 3 can then tell whether the -108 to -116 stops are short signals or a floor read too low.
 
 ## The bargraph as the radio's main VFO? (Jeff's thought, 2026-11-08)
 

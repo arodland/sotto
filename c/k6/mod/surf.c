@@ -40,11 +40,13 @@
    AGC is left alone (dmrdet's frozen gain shifts RSSI by up to 15 dB).
 
    surfauto.c builds the same module for unattended bench runs: SIDE1 presses itself every
-   SURF_AUTO_MS (saying the bar's frequency and level first), it wraps to the band's bottom at
+   SURF_AUTO_MS (each peak it finds says "sel" with the settled read that confirmed it and the
+   settled floor), it wraps to the band's bottom at
    the top, and it leaves after SURF_AUTO_S; keys still work. Before it ends it says its last
    bargraph ("bar 441.2000 25k" and two lines of a letter a bin, tools/k6_screen.py draws them).
 
-   Lines (K6 MOD say ...): "surf 70cm 440.850 25k", "sel 441.2000 -71", "end sw=N".
+   Lines (K6 MOD say ...): "surf 70cm 440.850 25k", "sel 441.2000 -71 -127" (MENU, or the
+   bench build's jumps: the bar, its settled dBm, the settled floor), "end sw=N".
    Writes REG_47 and GPIOB bit 2 (speaker) and the keypad rows' GPIOB BSRR/BRR bits, all put back.
    Reads the SPI flash (level 5's fl_read), never writes it. No TX. The bitmap (480 B) and the state (~400 B) live on the stack, about 0.8 KB of the
    3.5 KB a module has at its call; the store holds only the code.
@@ -324,11 +326,14 @@ static int is_peak(sf_t *s, int i) {
   return 1;
 }
 
+/* "sel <bar MHz> <its settled dBm> <the settled floor>" */
 static void say_sel(sf_t *s) {
   char *p = put(s->ln, "sel ");
   p = mhz(p, hz_of(s, s->sel), 4);
   *p++ = ' ';
-  say_end(s, sint(p, s->sel_dbm));
+  p = sint(p, s->sel_dbm);
+  *p++ = ' ';
+  say_end(s, sint(p, s->sfl));
 }
 
 /* the first peak from bin j on, going d (+1 up, -1 down) that a settled read confirms (SQ_DB over
@@ -343,6 +348,9 @@ static int seek(sf_t *s, int d, int j) {
       s->sel = j;
       s->sel_dbm = v;
       moved(s);
+#ifdef SURF_AUTO_S
+      say_sel(s);                         /* the bench: the read that confirmed it */
+#endif
       return 1;
     }
   return 0;
@@ -652,7 +660,6 @@ int k6_main(const k6_api_t *api) {
     k = kp_event(s);
 #ifdef SURF_AUTO_S
     if (!k && !s->pend && !s->check && s->now - s->t_auto >= SURF_AUTO_MS) {
-      say_sel(s);
       k = 'A';
       s->t_auto = s->now;
     }
