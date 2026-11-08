@@ -224,6 +224,11 @@ if [ "${HISS:-1}" = 1 ]; then
   lib build-vlrh-cbs
   variant aura-pager-vlrh "pager-only image, sotto 1200 + 600 + 400 with the hiss band (16 kHz), codebooks in SPI flash" \
     --features pager-only,hiss
+  # the same with hal::txdog's SRAM vector table on and its lines straight to USART1: the
+  # diagnostic image for the boot loop of 2026-11-08 (docs/k6-modules.md, Security). Flash it
+  # only to test txdog: if it loops, k6_update.py --manual puts a good image back
+  variant aura-pager-vlrh-txdog "diagnostic: the hiss band image with txdog's SRAM vector table on" \
+    --features pager-only,hiss,txdog
 fi
 if [ "${INSTALL:-1}" = 1 ]; then
   K6_CB=install sh "$ROOT/tools/k6_build.sh"

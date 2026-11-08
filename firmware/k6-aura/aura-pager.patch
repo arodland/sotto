@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 785c441..6af31c1 100644
+index 785c441..5d99be0 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -21,6 +21,21 @@ st7565 = "0.6"
+@@ -21,6 +21,24 @@ st7565 = "0.6"
  embedded-graphics = "0.8"
  profont = "0.7"
  
@@ -20,6 +20,9 @@ index 785c441..6af31c1 100644
 +# the hiss band image (docs/k6-hiss-port.md): sotto 1200, 600 and 400 played at 16 kHz through the
 +# K6 hiss layer, with a library built K6_HISS=1 (320-sample frames; the PWM ring is 3 of them)
 +hiss = []
++# hal::txdog with its SRAM vector table (off by default since the boot loop of 2026-11-08), lines
++# straight to USART1 from install and a fault: the diagnostic image aura-pager-vlrh-txdog
++txdog = []
 +
  [profile.release]
  opt-level = "z"
@@ -6796,10 +6799,10 @@ index 0000000..37404d9
 +}
 diff --git a/src/hal/txdog.rs b/src/hal/txdog.rs
 new file mode 100644
-index 0000000..7c54c79
+index 0000000..04f5cbb
 --- /dev/null
 +++ b/src/hal/txdog.rs
-@@ -0,0 +1,226 @@
+@@ -0,0 +1,280 @@
 +//! Crash and stuck-transmitter backstop (2026-11-08: a module overran its stack, the report
 +//! key-up after it hung, and the K6 sent a bare carrier on 440.850 for 16 minutes).
 +//!
@@ -6821,12 +6824,19 @@ index 0000000..7c54c79
 +//!
 +//! If the remap doesn't read back, nothing is enabled and the radio runs as before.
 +//!
-+//! OFF since 2026-11-08 19:51Z (REMAP = false): the voice image with it on (acd06ba) reset in a
-+//! loop about 5 times a second, before its first serial line, and was flashed back over the
-+//! cable in one of the bootloader's windows. Suspect: the copy from 0x08000000 isn't the live
-+//! table (vecprobe only took a HardFault through it, never an IRQ). sotto's vectab module checks
-+//! that on the radio; until it and a bench test pass, the key-up clock still runs (it costs
-+//! nothing) but no table is installed, so it can't act.
++//! OFF by default since 2026-11-08 19:51Z: the voice image with it on (acd06ba) reset in a loop
++//! about 5 times a second, before its first serial line, and was flashed back over the cable in
++//! one of the bootloader's windows. On the radio since (sotto's RAM modules, 20:02-20:13Z): the
++//! copy equals the live table (vectab), nothing writes 0x20000000-0x20000FFF while Aura runs
++//! (loram), and a module that held this same table 10 s with interrupts on, TIM14's handler
++//! included, ran clean (remapsoak). So the loop comes from how the image sets it up at boot.
++//! The `txdog` feature turns it on for a diagnostic image: install and a fault print their lines
++//! straight to USART1 (waiting on each byte), so each pass of a loop says where it faulted.
++//! Without the feature the key-up clock still runs (it costs nothing) but no table is installed.
++//!
++//! The note lives in `.uninit` (not zeroed by Aura's start-up), not in the vector slots: the
++//! bootloader's own RAM (0x20000000-0x2000046F: its 200 ms count, RX buffer) is its to clear at
++//! every reset.
 +#![cfg_attr(feature = "lean", allow(dead_code))]
 +
 +use core::ptr::{read_volatile, write_volatile};
@@ -6844,12 +6854,18 @@ index 0000000..7c54c79
 +const TIM14_SR: u32 = 0x4000_2010;
 +const TIM14_CNT: u32 = 0x4000_2024;
 +const NVIC_ISER: u32 = 0xE000_E100;
-+/// the last reboot's reason, kept across the reset in unused vector slots 45-47
-+const NOTE: u32 = SRAM0 + 4 * 45;
++/// the last reboot's reason (magic, a, b), kept across the reset: not zeroed at start-up
++#[link_section = ".uninit.txdog"]
++static mut NOTE_RAM: [u32; 3] = [0; 3];
++fn note_addr() -> u32 {
++    core::ptr::addr_of!(NOTE_RAM) as u32
++}
 +const NOTE_FAULT: u32 = 0xFA17_0001;
 +const NOTE_TX: u32 = 0xFA17_0002;
-+/// install the SRAM table (see above: off until it's understood)
-+const REMAP: bool = false;
++/// install the SRAM table (see above: only in the `txdog` diagnostic image for now)
++const REMAP: bool = cfg!(feature = "txdog");
++const USART1_ISR: u32 = 0x4001_381C;
++const USART1_TDR: u32 = 0x4001_3828;
 +
 +/// Aura's PTT TOT goes up to 180 s; this is the cap for a key-up that sets no limit of its own
 +pub const DEFAULT_LIMIT_MS: u32 = 200_000;
@@ -6881,12 +6897,15 @@ index 0000000..7c54c79
 +/// CFGR1 as found and whether the remap took.
 +#[cfg(not(feature = "lean"))]
 +pub fn install() -> (Note, u32, bool) {
-+    let m = rd(NOTE);
-+    let note = match m {
-+        NOTE_FAULT => Note(1, rd(NOTE + 4), rd(NOTE + 8)),
-+        NOTE_TX => Note(2, rd(NOTE + 4), rd(NOTE + 8)),
++    let n = note_addr();
++    let note = match rd(n) {
++        NOTE_FAULT => Note(1, rd(n + 4), rd(n + 8)),
++        NOTE_TX => Note(2, rd(n + 4), rd(n + 8)),
 +        _ => Note(0, 0, 0),
 +    };
++    for i in 0..3 {
++        wr(n + 4 * i, 0);
++    }
 +    NOTE_K.store(note.0, Ordering::Relaxed);
 +    NOTE_A.store(note.1, Ordering::Relaxed);
 +    NOTE_B.store(note.2, Ordering::Relaxed);
@@ -6902,11 +6921,9 @@ index 0000000..7c54c79
 +        }
 +        wr(SRAM0 + 4 * V_HARDFAULT, rd(APP_VEC + 4 * V_HARDFAULT));
 +        wr(SRAM0 + 4 * V_TIM14, tim14 as unsafe extern "C" fn() as usize as u32);
-+        for i in 0..3 {
-+            wr(NOTE + 4 * i, 0);
-+        }
 +        wr(SYSCFG_CFGR1, (cfgr1 & !3) | 3); // SRAM at address 0
 +    });
++    raw(b"K6 TXDOG remap", cfgr1, rd(4 * 15));
 +    let ok = rd(4 * V_HARDFAULT) == rd(SRAM0 + 4 * V_HARDFAULT)
 +        && rd(4 * V_TIM14) == rd(SRAM0 + 4 * V_TIM14)
 +        && rd(4 * V_HARDFAULT) != rd(BOOT_VEC + 4 * V_HARDFAULT);
@@ -6919,6 +6936,7 @@ index 0000000..7c54c79
 +    wr(TIM14_SR, 0);
 +    wr(TIM14_DIER, rd(TIM14_DIER) | 1); // update interrupt: one per wrap
 +    wr(NVIC_ISER, 1 << 19);
++    raw(b"K6 TXDOG on", rd(4 * V_HARDFAULT), rd(4 * V_TIM14));
 +    (note, cfgr1, true)
 +}
 +
@@ -6977,9 +6995,11 @@ index 0000000..7c54c79
 +    let on = w.wrapping_mul(0x1_0000).wrapping_sub(at);
 +    let lim = LIMIT.load(Ordering::Relaxed);
 +    if on > lim {
-+        wr(NOTE + 4, on / 10);
-+        wr(NOTE + 8, lim / 10);
-+        wr(NOTE, NOTE_TX);
++        let n = note_addr();
++        wr(n + 4, on / 10);
++        wr(n + 8, lim / 10);
++        wr(n, NOTE_TX);
++        raw(b"K6 TXDOG key-up over its limit: ms limit", on / 10, lim / 10);
 +        reset();
 +    }
 +}
@@ -7011,10 +7031,47 @@ index 0000000..7c54c79
 +/// From Aura's HardFault: note where and reboot at once. Printing first could fault again,
 +/// and a fault inside a fault locks the core up with the transmitter on.
 +pub fn fault(pc: u32, lr: u32) -> ! {
-+    wr(NOTE + 4, pc);
-+    wr(NOTE + 8, lr);
-+    wr(NOTE, NOTE_FAULT);
++    let n = note_addr();
++    wr(n + 4, pc);
++    wr(n + 8, lr);
++    wr(n, NOTE_FAULT);
++    raw(b"K6 FAULT pc lr", pc, lr);
 +    reset()
++}
++
++/// A line straight to USART1, waiting on each byte (with a time-out): from a fault or before
++/// the serial report's ring and interrupt run. `<what> xxxxxxxx xxxxxxxx`. Only in the `txdog`
++/// image, where the table is installed.
++fn raw(what: &[u8], a: u32, b: u32) {
++    if !REMAP {
++        return;
++    }
++    fn put(c: u8) {
++        let mut n = 0u32;
++        while rd(USART1_ISR) & 0x80 == 0 && n < 100_000 {
++            n += 1;
++        }
++        wr(USART1_TDR, c as u32);
++    }
++    fn hex(v: u32) {
++        put(b' ');
++        for i in (0..8).rev() {
++            put(b"0123456789abcdef"[(v >> (4 * i)) as usize & 15]);
++        }
++    }
++    put(b'\r');
++    put(b'\n');
++    for &c in what {
++        put(c);
++    }
++    hex(a);
++    hex(b);
++    put(b'\r');
++    put(b'\n');
++    let mut n = 0u32;
++    while rd(USART1_ISR) & 0x40 == 0 && n < 100_000 {
++        n += 1; // TC: the last byte has left
++    }
 +}
 +
 +/// Every reboot goes through here: flash at address 0 again first, so the bootloader starts
