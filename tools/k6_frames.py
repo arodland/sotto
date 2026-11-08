@@ -4,7 +4,15 @@ prologue (push, sub sp, #n, and ldr rX, =-n; add sp, rX), largest first. For the
 whose stack ran out on the radio: shows which of Aura's and the decoder's functions hold it.
 
   llvm-objdump -d -C --no-show-raw-insn aura.elf | python3 tools/k6_frames.py [N]
+  llvm-objdump -d -C --no-show-raw-insn aura.elf | python3 tools/k6_frames.py --deep [ROOT]
+                                                    the deepest chain of calls under ROOT (main),
+                                                    its frames added up: the stack it needs
   python3 tools/k6_frames.py --sizes aura.elf      the App's and its parts' sizes (K6_SIZES)
+
+--deep follows direct calls (bl, and b to another function: tail calls). Calls through a pointer
+are not followed: a RAM module's (km_run), a module's API calls back into the pager (lcd_flush
+and the rest), interrupts. So it is a floor, for comparing builds: the K6 measures the stack it
+really used (K6 MOD ret ... stack_free=, the pager's free-RAM line).
 
 Only the prologue (the first 24 instructions) is read, so alloca-style growth later in a
 function is missed; thumbv6m code from rustc and clang doesn't do that. SPDX-License-Identifier: MIT
@@ -83,7 +91,51 @@ def sizes(elf):
     return dict(zip(["App", "PagerState", "Settings", "Storage", "Radio", "Keypad"], w))
 
 
+CALL = re.compile(r"^\s*[0-9a-f]+:\s+(bl|b)\s+0x[0-9a-f]+\s*<(.+?)(\+0x[0-9a-f]+)?>")
+
+
+def deepest(lines, root):
+    """(bytes, [(function, frame), ...]) of the deepest chain of direct calls under `root`."""
+    lines = list(lines)
+    words, funcs = parse(lines)
+    fr = {f[0]: frame(words, f[2]) for f in funcs}
+    calls, cur = {}, None
+    for ln in lines:
+        m = FUNC.match(ln.strip())
+        if m:
+            cur = m.group(2)
+            calls.setdefault(cur, set())
+            continue
+        m = CALL.match(ln)
+        # a bl is a call; a b to another function's first instruction is a tail call
+        if m and cur and m.group(2) != cur and (m.group(1) == "bl" or m.group(3) is None):
+            calls[cur].add(m.group(2))
+    memo = {}
+
+    def walk(f, seen):
+        if f in memo:
+            return memo[f]
+        best = (0, [])
+        for c in calls.get(f, ()):
+            if c not in seen:
+                d = walk(c, seen | {f})
+                if d[0] > best[0]:
+                    best = d
+        memo[f] = (fr.get(f, 0) + best[0], [(f, fr.get(f, 0))] + best[1])
+        return memo[f]
+
+    names = [f for f in calls if f == root] or [f for f in calls if f.endswith(root)]
+    return walk(names[0], frozenset()) if names else (0, [])
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--deep":
+        root = sys.argv[2] if len(sys.argv) > 2 else "aura::__cortex_m_rt_main"
+        total, path = deepest(sys.stdin, root)
+        print(f"deepest: {total} B of stack under {root} (direct calls only)")
+        for name, size in path:
+            print(f"{size:6d}  {name[:110]}")
+        return
     if len(sys.argv) > 2 and sys.argv[1] == "--sizes":
         print("sizes:", sizes(sys.argv[2]))
         return

@@ -22,9 +22,10 @@ modules".
 ring and the voice decoder's working memory side by side in one block (`hal::arena` in the Aura
 patch), because a module never runs while a message plays. A module gets the whole block: in
 every image that reads its codebooks from SPI flash (`aura-pager-only`, `-lr`, `-vlr`, `-vlrh`)
-it is 9,760 bytes, so the header, code and tag can be up to 9,736 bytes, and whatever the code
-leaves is the module's scratch. The serial line `K6 ARENA bytes=9760 ... dec=... need=...` at
-power-on shows the layout. The EXPLORE image and the lean images (codebook install, codebooks in
+it is 11,776 bytes, so the header, code and tag can be up to 11,752 bytes, and whatever the code
+leaves is the module's scratch. The serial line `K6 ARENA bytes=11776 ... dec=... need=...` at
+power-on shows the layout (9,760 bytes in the first images of 2026-11-08, before the screen
+buffer left main's stack frame: insight 37). The EXPLORE image and the lean images (codebook install, codebooks in
 MCU flash) keep the store plus the ring: 5,376 bytes. Before
 2026-11-08 every image gave modules the 4 KB store only.
 
@@ -77,7 +78,7 @@ API level 2 (images from 2026-11-06 on) adds the receiver:
 | `rx_hz()` | the frequency the pager listens on |
 | `ms()` | ms since the module started, 32 bits |
 | `key_down()` | 1 while any key is held |
-| `scratch(&bytes)` | RAM free while the module runs: the rest of the shared block past the code and tag (up to the telemetry text, if the module keeps one), word aligned, its size in `bytes`. About 9.7 KB less the code in the SPI images; 4 KB less the code before 2026-11-08 |
+| `scratch(&bytes)` | RAM free while the module runs: the rest of the shared block past the code and tag (up to the telemetry text, if the module keeps one), word aligned, its size in `bytes`. About 11.7 KB less the code in the SPI images; 4 KB less the code before 2026-11-08 |
 
 Level 2 is receive only: there is no way to key the transmitter. After the module returns the
 firmware puts the radio back on the pager's frequency and sets the FSK receiver up again,
@@ -269,7 +270,7 @@ Copy `c/k6/mod/hello.c`. The rules, which the build checks where it can:
   on variables either (clang would call a run-time helper the module doesn't have).
 - No writable statics (`.data`, `.bss`): the linker script refuses them. Use the stack, and
   keep it small: the module runs on the pager's stack, with about 700 B to spare. Level 2's `scratch()` gives the rest of the shared block
-  for tables and buffers (about 9.7 KB less the code). `K6 MOD run` reports the stack room at the call (`stack=`) and the scratch size,
+  for tables and buffers (about 11.7 KB less the code). `K6 MOD run` reports the stack room at the call (`stack=`) and the scratch size,
   and `K6 MOD ret` the stack never touched since VOICE MSG started (`stack_free=`).
 - No tables of pointers: they need relocation, and the two-address check refuses them.
 - Return quickly, or give a way out: the pager doesn't receive while the module runs. A
@@ -663,22 +664,37 @@ what would settle it.
       image switching"). Built (this section's "How much room"); not yet on air.
     - The message store, the PWM ring and the decoder's pool are only busy while a message is
       received or played, and a module never runs then, so the three sit side by side in
-      `hal::arena` and a module gets all 9,760 bytes instead of the 4 KB store (864 of them from shrinking two arrays in `App` that only stock Aura screens use: insight 38, half done). The 8 kHz images
+      `hal::arena` and a module gets all 11,776 bytes instead of the 4 KB store (864 of them from shrinking two arrays in `App` that only stock Aura screens use: insight 38, half done; 2,016 from the screen buffer leaving main's frame: insight 37). The 8 kHz images
       pay about 2 KB of the stack they had spare, so every SPI image offers the same block as
       the hiss image.
-    - It would buy: modules up to 9.5 KB of code and scratch, most of the way to `ft8rx`
-      (7.2 KB of code and about 4 KB of RAM; without `fk_text`, 0.9 KB, it needs about 10.3 KB).
+    - It buys: modules up to 11.5 KB of code and scratch, room for the whole `ft8rx` (7.2 KB of
+      code and about 4 KB of RAM, about 11.2 KB) with about 0.5 KB over.
     - Settled by: `K6 ARENA` at boot, a module over 4 KB running, and voice playback with a
       matching `pcm=` and a sane `stack_free=` on a v3.7 and a hiss image.
-37. **Draw the screen a page at a time.**
-    - From: the memory plan thread, 2026-11-08 (Jeff: page the screen buffer out). Not built.
-    - Aura keeps a whole 1 KB copy of the 128x64 screen in main's stack frame for good, though
-      the ST7565 holds its own copy. u8g2's page-buffer mode draws a frame once per 128-byte
-      page and sends each page as it goes: 128 B of RAM instead of 1 KB, for 8 passes of the
-      drawing code (mostly text here). Redrawing only the pages that changed is cheaper still.
-    - It would buy: about 896 B more for the module block in every image.
-    - Settled by: the screens looking the same, a redraw time on the serial log, and the
-      `boot stack:` and `K6 ARENA` lines showing the bytes.
+37. **Keep the screen buffer only while the screen is drawn.**
+    - From: the memory plan thread, 2026-11-08 (Jeff: page the screen buffer out). Built in the
+      images that play voice from SPI codebooks (cfg `shared_lcd`); not yet on air.
+    - Aura kept a whole 1 KB copy of the 128x64 screen (1,120 B with the driver's dirty marks)
+      in main's stack frame for good, though the ST7565 holds its own copy. Two tricks instead
+      of u8g2's eight passes of all the drawing code:
+      - The main loop's screen (VOICE MSG) is drawn into a buffer made afresh in the PWM ring
+        (`hal::arena::lcd`) and sent whole: the ring is idle whenever the screen is drawn (no
+        redraw while a message plays or streams; `draw_pager_only` checks). The driver is
+        rebuilt around the buffer for each frame, so nothing reads what a playback left there.
+      - A RAM module has the ring (it has the whole block), so its screen (`lcd_flush`) goes out
+        a 128-byte page at a time from the stack: `ui::pager::draw_mod_page` draws only the
+        lines that reach each page, straight from the font's bitmap, no embedded-graphics code.
+        Pixel for pixel the same as `draw_mod_screen` (checked on the host over 3,000 random
+        screens of text, bars and waterfall), and 330 B less flash.
+    - Main's frame went from 2,952 to 928 B (the buffer was in it twice over, it seems, with
+      the copy it was built in), so the block grew by 2,016 B to 11,776 with the deepest chain of
+      direct calls (main through the coded 4FSK receiver, 4,588 B) keeping the 244 B to spare
+      it had. `build.sh` now prints that chain's total (`running stack:`, from
+      `tools/k6_frames.py --deep`).
+    - The EXPLORE image keeps the buffer in main: its sweep holds the ring while it draws.
+    - Settled by: VOICE MSG and a module's screen looking right on the radio, `K6 ARENA
+      bytes=11776`, a voice playback with a matching `pcm=` and a sane `stack_free=` on a hiss
+      image, and a module's screen updating while it runs.
 38. **Drop stock Aura's screen state from `App` in the pager images.**
     - From: the memory plan thread, 2026-11-08. Half built: `MAX_SATELLITES` 1 and the spectrum's
       `MAX_BINS` 1 under `pager-only` took `App` from 3,028 to 2,164 B, and `place_app`'s boot
