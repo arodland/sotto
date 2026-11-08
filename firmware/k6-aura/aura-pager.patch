@@ -5818,10 +5818,10 @@ index 0000000..5448a2d
 +    }
 +}
 diff --git a/src/hal/uart.rs b/src/hal/uart.rs
-index 131f932..f215109 100644
+index 131f932..99ae011 100644
 --- a/src/hal/uart.rs
 +++ b/src/hal/uart.rs
-@@ -53,7 +53,56 @@ impl RxRing {
+@@ -53,7 +53,62 @@ impl RxRing {
  
  static RX_RING: Mutex<RefCell<RxRing>> = Mutex::new(RefCell::new(RxRing::new()));
  
@@ -5832,8 +5832,12 @@ index 131f932..f215109 100644
 +// that time on every packet (2026-11-08, the hiss band image: 2 speaker underruns a packet,
 +// docs/k6-hiss-port.md). A writer that finds the ring full sends its oldest byte itself.
 +// 512: a PKT line fits; the hiss band image's boot stack has about 480 B to spare with it.
++// Not in the lean images (codebook install, codebook in MCU flash): they are at the flash
++// limit and don't stream; they keep the wait per byte.
++#[cfg(not(feature = "lean"))]
 +const TX_RING_CAP: usize = 512;
 +
++#[cfg(not(feature = "lean"))]
 +struct TxRing {
 +    buf: [u8; TX_RING_CAP],
 +    head: usize,
@@ -5841,6 +5845,7 @@ index 131f932..f215109 100644
 +    len: usize,
 +}
 +
++#[cfg(not(feature = "lean"))]
 +impl TxRing {
 +    const fn new() -> Self {
 +        TxRing {
@@ -5872,6 +5877,7 @@ index 131f932..f215109 100644
 +    }
 +}
 +
++#[cfg(not(feature = "lean"))]
 +static TX_RING: Mutex<RefCell<TxRing>> = Mutex::new(RefCell::new(TxRing::new()));
 +
 +/// USART1 IRQ handler: drains RDR into `RX_RING` on every received byte, and feeds TDR from
@@ -5879,10 +5885,11 @@ index 131f932..f215109 100644
  #[no_mangle]
  pub unsafe extern "C" fn USART1() {
      let regs = &*kd32f328_pac::Usart1::ptr();
-@@ -65,6 +114,60 @@ pub unsafe extern "C" fn USART1() {
+@@ -65,6 +120,77 @@ pub unsafe extern "C" fn USART1() {
          let byte = regs.rdr().read().rdr().bits() as u8;
          cortex_m::interrupt::free(|cs| RX_RING.borrow(cs).borrow_mut().push(byte));
      }
++    #[cfg(not(feature = "lean"))]
 +    if isr.txe().bit_is_set() && regs.cr1().read().txeie().bit_is_set() {
 +        let next = cortex_m::interrupt::free(|cs| TX_RING.borrow(cs).borrow_mut().pop());
 +        match next {
@@ -5894,6 +5901,7 @@ index 131f932..f215109 100644
 +
 +/// Queue one byte for USART1: the interrupt sends it. With the ring full (or the interrupt
 +/// still masked, as before `NVIC::unmask` at boot) the caller sends the oldest byte itself.
++#[cfg(not(feature = "lean"))]
 +pub fn send_byte(byte: u8) {
 +    let regs = unsafe { &*kd32f328_pac::Usart1::ptr() };
 +    loop {
@@ -5919,8 +5927,23 @@ index 131f932..f215109 100644
 +    }
 +}
 +
++/// Lean images: the byte goes out here, with a wait on TXE, as every image did before
++#[cfg(feature = "lean")]
++#[inline(always)]
++pub fn send_byte(byte: u8) {
++    let regs = unsafe { &*kd32f328_pac::Usart1::ptr() };
++    while regs.isr().read().txe().bit_is_clear() {}
++    regs.tdr().write(|w| unsafe { w.tdr().bits(byte as u16) });
++}
++
++/// Lean images: nothing is queued (the callers' own delays before a reset cover the last byte)
++#[cfg(feature = "lean")]
++#[inline(always)]
++pub fn flush() {}
++
 +/// Wait until every queued byte has left (before a reset or a jump to the bootloader), at
 +/// most about 100 ms; sends them itself if the interrupt is masked.
++#[cfg(not(feature = "lean"))]
 +pub fn flush() {
 +    let regs = unsafe { &*kd32f328_pac::Usart1::ptr() };
 +    for _ in 0..200_000u32 {
