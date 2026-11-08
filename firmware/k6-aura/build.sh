@@ -297,6 +297,7 @@ settle         # level 2
 spksweep
 surf           # level 6, docs/k6-surf.md
 surfauto       # level 6, docs/k6-surf.md
+vecprobe       # level 1, can Aura catch its own HardFaults (docs/k6-modules.md)
 wsprbcn
 wspriq
 wsprtx
