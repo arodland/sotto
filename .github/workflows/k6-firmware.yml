@@ -69,6 +69,7 @@ jobs:
         run: |
           python -m pytest -q -n auto --dist worksteal --durations=8 \
             tests/test_k6_air.py \
+            tests/test_k6_aprsclk.py \
             tests/test_k6_arq.py \
             tests/test_k6_bench.py \
             tests/test_k6_cb.py \
