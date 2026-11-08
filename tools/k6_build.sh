@@ -82,6 +82,10 @@ esac
 # in SPI flash: there sp_packet yields to the session's receiver while a packet goes in
 PKY=
 [ "${K6_CB:-}" = spi ] && PKY=-DSP_PKT_YIELD
+# the decoder's working memory in the firmware's shared RAM block (SP_DEC_POOL, sotto_pager.h):
+# the SPI images, which take RAM modules of up to 8.7 KB; the lean images (install, table, rom)
+# keep the library's own static pool and give modules the store and the PWM ring only
+[ "${K6_CB:-}" = spi ] && PKY="$PKY -DSP_DEC_POOL"
 CC=${K6_CC:-clang}
 AR=${K6_AR:-llvm-ar}
 OBJCOPY=${K6_OBJCOPY:-llvm-objcopy}
@@ -189,6 +193,6 @@ $CC $CFLAGS -fno-builtin -c "$ROOT/c/fixed/cm4/shim.c" -o "$OUT/shim.o"
 $CC $CFLAGS -fno-builtin -c "$ROOT/c/fixed/cm0/rt.c" -o "$OUT/rt.o"
 $CC --target=thumbv6m-none-eabi -mcpu=cortex-m0 -c "$ROOT/c/fixed/cm0/divmod.s" -o "$OUT/divmod.o"
 ld.lld -T "$ROOT/c/fixed/cm4/link.ld" --gc-sections -e sp_init -u sp_packet -u sp_status -u sp_play_start \
-  -u sp_play_frame -u sp_play_pwm -u sp_pcm_to_pwm -u sp_test_packet -u sp_last_packet -u sp_static_bytes -u sotto_fx_dec_bytes -u heap_used -u sp_set_yield -u sp_yield_probe -u sp_set_packet_yield -u sp_set_stream -u sp_cb_setup -u sp_cb_bench -u sp_vlr_setup $UHISS \
+  -u sp_play_frame -u sp_play_pwm -u sp_pcm_to_pwm -u sp_test_packet -u sp_last_packet -u sp_static_bytes -u sotto_fx_dec_bytes -u heap_used -u sp_set_yield -u sp_yield_probe -u sp_set_packet_yield -u sp_set_stream -u sp_cb_setup -u sp_cb_bench -u sp_vlr_setup -u sp_dec_pool -u sp_dec_need $UHISS \
   $LIBOBJS $BENCHCB "$OUT/shim.o" "$OUT/rt.o" "$OUT/divmod.o" -o "$OUT/bench.elf"
 echo "built $OUT/bench.elf"

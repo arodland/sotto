@@ -13,10 +13,20 @@ modules".
    two addresses and refuses it unless the bytes come out identical.
 2. It adds a 16-byte header and an 8-byte SipHash-2-4 tag under your 16-byte key, cuts the
    image into packets with magic `0xAB`, and makes transmit audio like any other packet.
-3. The K6 (`c/k6/k6_mod.c`) puts the chunks straight into the 4 KB message store, in any
-   order, repeats ignored. Once all are in, it checks the header, the tag and the serial,
-   then calls the entry function with a table of services. The store is set up for messages
-   again afterwards, so any message held before the module is gone.
+3. The K6 (`c/k6/k6_mod.c`) puts the chunks straight into the firmware's shared RAM block
+   (below), in any order, repeats ignored. Once all are in, it checks the header, the tag and
+   the serial, then calls the entry function with a table of services. The message store is
+   set up again afterwards, so any message held before the module is gone.
+
+**How much room.** Images built from 2026-11-08 on keep the message store (4 KB), the PWM audio
+ring and the voice decoder's working memory side by side in one block (`hal::arena` in the Aura
+patch), because a module never runs while a message plays. A module gets the whole block: in
+every image that reads its codebooks from SPI flash (`aura-pager-only`, `-lr`, `-vlr`, `-vlrh`)
+it is 9,760 bytes, so the header, code and tag can be up to 9,736 bytes, and whatever the code
+leaves is the module's scratch. The serial line `K6 ARENA bytes=9760 ... dec=... need=...` at
+power-on shows the layout. The EXPLORE image and the lean images (codebook install, codebooks in
+MCU flash) keep the store plus the ring: 5,376 bytes. Before
+2026-11-08 every image gave modules the 4 KB store only.
 
 The hello module is about 360 bytes of code (366 with clang 18 here, 358 in CI), 4 XL packets,
 3.1 s on air at F/1800 per copy; `modem.k6 mod` sends every chunk twice by default.
@@ -67,7 +77,7 @@ API level 2 (images from 2026-11-06 on) adds the receiver:
 | `rx_hz()` | the frequency the pager listens on |
 | `ms()` | ms since the module started, 32 bits |
 | `key_down()` | 1 while any key is held |
-| `scratch(&bytes)` | RAM free while the module runs: the rest of the 4 KB module store past the code, word aligned, its size in `bytes` |
+| `scratch(&bytes)` | RAM free while the module runs: the rest of the shared block past the code and tag (up to the telemetry text, if the module keeps one), word aligned, its size in `bytes`. About 9.7 KB less the code in the SPI images; 4 KB less the code before 2026-11-08 |
 
 Level 2 is receive only: there is no way to key the transmitter. After the module returns the
 firmware puts the radio back on the pager's frequency and sets the FSK receiver up again,
@@ -109,8 +119,9 @@ REC.wav` does the same for any recording), resends what's missing, and stops on 
 "refused".
 
 **Telemetry.** `--telemetry N` (with `--arq`) puts N in header byte 14: while the module runs,
-the K6 keeps its `say` lines (up to N x 57 bytes, at most 12 parts) in the idle PWM audio ring
-and sends them after the status report. No serial cable is needed, so the speaker stays on.
+the K6 keeps its `say` lines (up to N x 57 bytes, at most 12 parts) in the top 696 bytes of the
+shared block (the idle PWM audio ring before 2026-11-08), which the module's scratch then stops
+short of, and sends them after the status report. No serial cable is needed, so the speaker stays on.
 
 **Calibration.** `c/k6/mod/ifcal.c` (level 4) measures where a bare carrier on 440.850 lands on
 the GP0 IF with the AFC off and writes a 32-byte record (`c/k6/mod/k6_cal.h`: magic `K6CL`, the
@@ -257,9 +268,8 @@ Copy `c/k6/mod/hello.c`. The rules, which the build checks where it can:
 - No libraries: no `memcpy`, no `printf`. The M0 has no divide instruction, so no `/` or `%`
   on variables either (clang would call a run-time helper the module doesn't have).
 - No writable statics (`.data`, `.bss`): the linker script refuses them. Use the stack, and
-  keep it small: the module runs on the pager's stack, with about 700 B to spare. Level 2's
-  `scratch()` gives the rest of the module store for tables and buffers (4 KB less the
-  code). `K6 MOD run` reports the stack room at the call (`stack=`) and the scratch size,
+  keep it small: the module runs on the pager's stack, with about 700 B to spare. Level 2's `scratch()` gives the rest of the shared block
+  for tables and buffers (about 9.7 KB less the code). `K6 MOD run` reports the stack room at the call (`stack=`) and the scratch size,
   and `K6 MOD ret` the stack never touched since VOICE MSG started (`stack_free=`).
 - No tables of pointers: they need relocation, and the two-address check refuses them.
 - Return quickly, or give a way out: the pager doesn't receive while the module runs. A
@@ -317,6 +327,14 @@ every word of that range, holds a third for 50 ms, restores what it found, and s
 it). If the SRAM ends lower the first access past the end faults and the radio resets, so run it
 when a reset is acceptable. If it holds, `memory.x` can grow by 2720 bytes: the hiss band image
 (docs/k6-hiss-port.md) would get its fourth PWM segment and its 4 KB message store back.
+
+## Band surfing (surf)
+
+`c/k6/mod/surf.c` (2026-11-08, level 6): a bargraph of signal strength across 64 bins, the
+listening frequency a blinking bar with a caret, the side keys jumping from peak to peak, UP/DOWN
+stepping, BAND/zoom/monitor keys. It listens first (sweeps only while the bar's channel is
+quiet) and scans the keypad matrix itself, since the API has no key identity. `surfauto.c` is
+the unattended bench build. See [k6-surf.md](k6-surf.md).
 
 ## Insights (a living list)
 
@@ -648,24 +666,52 @@ what would settle it.
     - It would buy: a K6 that mutes DMR (and later YSF/P25) buzz, an EXPLORE "DMR" mark, and a
       way into DMR metadata (colour code, talkgroup, source ID) with the same front end.
     - Settled by: `mod-dmrdet.bin` on 440.925 with the IC-7100 recording alongside.
-
-36. **The main VFO as EXPLORE's bargraph.**
+36. **Share one RAM block between the voice path and the modules.**
+    - From: the memory plan thread, 2026-11-08 (Claude Doc "K6 memory plan: RAM, modules and
+      image switching"). Built (this section's "How much room"); not yet on air.
+    - The message store, the PWM ring and the decoder's pool are only busy while a message is
+      received or played, and a module never runs then, so the three sit side by side in
+      `hal::arena` and a module gets all 9,760 bytes instead of the 4 KB store (864 of them from shrinking two arrays in `App` that only stock Aura screens use: insight 38, half done). The 8 kHz images
+      pay about 2 KB of the stack they had spare, so every SPI image offers the same block as
+      the hiss image.
+    - It would buy: modules up to 9.5 KB of code and scratch, most of the way to `ft8rx`
+      (7.2 KB of code and about 4 KB of RAM; without `fk_text`, 0.9 KB, it needs about 10.3 KB).
+    - Settled by: `K6 ARENA` at boot, a module over 4 KB running, and voice playback with a
+      matching `pcm=` and a sane `stack_free=` on a v3.7 and a hiss image.
+37. **Draw the screen a page at a time.**
+    - From: the memory plan thread, 2026-11-08 (Jeff: page the screen buffer out). Not built.
+    - Aura keeps a whole 1 KB copy of the 128x64 screen in main's stack frame for good, though
+      the ST7565 holds its own copy. u8g2's page-buffer mode draws a frame once per 128-byte
+      page and sends each page as it goes: 128 B of RAM instead of 1 KB, for 8 passes of the
+      drawing code (mostly text here). Redrawing only the pages that changed is cheaper still.
+    - It would buy: about 896 B more for the module block in every image.
+    - Settled by: the screens looking the same, a redraw time on the serial log, and the
+      `boot stack:` and `K6 ARENA` lines showing the bytes.
+38. **Drop stock Aura's screen state from `App` in the pager images.**
+    - From: the memory plan thread, 2026-11-08. Half built: `MAX_SATELLITES` 1 and the spectrum's
+      `MAX_BINS` 1 under `pager-only` took `App` from 3,028 to 2,164 B, and `place_app`'s boot
+      frame from 3,448 to 2,296 B; the 864 B went into the shared block (insight 36).
+    - Left: SSTV 204, settings 156, the satellite screen 152, the channel manager 132 B, which
+      would take `cfg` on code the pager images never reach rather than one constant each.
+    - It would buy: about 0.6 KB more for the module block.
+    - Settled by: `tools/k6_frames.py --sizes` showing `App` under 1.6 KB and the image booting.
+39. **The main VFO as EXPLORE's bargraph.**
     - From: Jeff, 2026-11-08 07:19 ("maybe the main radio VFO should simply be that bargraph of
       frequencies").
     - It would buy: one screen instead of two; tuning by picking a row, with the list's levels,
       grades, calls, tones and DMR marks beside each frequency.
     - Settled by: EXPLORE in full Aura (with the VFO and PTT path), which also unblocks Try with
       transmit.
-37. **A weak-signal settle run off the IC-7100's carrier.**
+40. **A weak-signal settle run off the IC-7100's carrier.**
     - From: the scanner thread, 2026-11-08.
     - Tune the K6 12.5 and 25 kHz off the IC-7100's carrier on 440.850, so its skirt arrives
       near -110 dBm, and set a coarse "something there" threshold from what the sweep reads.
     - Settled by: a receive-only run with the IC-7100 sending PSK31 ident, levels logged.
-38. **REG_63 (noise) as a faster carrier detect than RSSI.**
+41. **REG_63 (noise) as a faster carrier detect than RSSI.**
     - From: the scanner thread, 2026-11-08.
     - It would buy: shorter dwells per bin, so more bins a second.
     - Settled by: timing REG_63's response against REG_67's on a keyed carrier.
-39. **Learn each repeater's ID timer and be there when it's due.**
+42. **Learn each repeater's ID timer and be there when it's due.**
     - From: the scanner thread and the CW workbench, 2026-11-08. VE7RVA on 442.025 sent ID-only
       key-ups at 06:46:13Z and 07:16:15Z, 30 min 02 s apart; WA7DMR sent one ID in 52 minutes.
     - It would buy: the listener on frequency before a timed ID, instead of catching it by the

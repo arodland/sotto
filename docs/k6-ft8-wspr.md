@@ -384,7 +384,9 @@ cycles a transfer (`cps8`) after every row. One thing is fixed at set-up, though
 ## Getting ft8rx onto the radio
 
 The whole decoder needs about 7.3 KB of code and about 4 KB of RAM besides the stack. These
-are the options, none tried:
+are the options, none tried (2026-11-08: the SPI images now give modules a 9,760-byte block, the
+store, ring and decoder pool together, docs/k6-modules.md; about 1.5 KB short of ft8rx, or 0.6 KB
+without fk_text, which insight 37 there, the paged screen, would close):
 
 1. **A bigger module arena in the firmware.** For example, a dev image without the sotto
    decoder (about 8 KB free, from the modular-firmware memo), or modules loaded into the
