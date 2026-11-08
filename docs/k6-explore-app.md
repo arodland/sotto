@@ -70,7 +70,10 @@ and the 4FSK session borrow the same memory. Leaving EXPLORE clears the store fo
   the A on would be "A7DMR"): logged as `K6 EX tail`, not kept. The station also goes on a
   watch list (4 places): from then on, each time it keys up (20 s or more after its last listen)
   the listener goes there at once and stays for the whole carrier, so the next ID is heard from
-  its start. It leaves the list when it has a call.
+  its start. It leaves the list when it has a call. Each watch listen that hears no ID doubles
+  that station's gap (20 s, 40 s, 80 s, up to 10.7 minutes), and a peek on a watched station
+  keeps to the gap too: on 2026-11-08 17:52-18:34Z a busy voice repeater (443.525, its speech
+  keying the tone detector) took 48 of 55 listens and the other rows waited 15-40 minutes.
 - **DMR mute and the CTCSS read** (`c/k6/xdmr.c`, 2026-11-08, Jeff's ideas): every listen, by
   hand or automatic, also runs the DMR detector (`c/k6/dmrsync.h`, docs/k6-dmr.md) on the GP0
   receive IF and the FD6818's sub-audio scan. xlisten polls the tone detector every 2 ms; in the
@@ -187,9 +190,9 @@ K6 MOD say N 146.940 -80 fl-93 b294   a new hit
 K6 MOD say H 146.940 9050 -80 a61250  an over: the candidate list's input
 K6 EX auto 146940000 listens=1        the automatic listener went there
 K6 MOD say K 440.925 9/20             the peek heard keying (polls with a tone / polls)
-K6 EX tone 440925000 watch           listening now, and at each key-up from now on
+K6 EX tone 440925000 watch gap=20 s  listening now, and at key-ups 20 s or more after it
 K6 EX tail 440925000 A7DMR            the ID's tail, not kept
-K6 EX watch 440925000                 a watched station keyed up: the listener went there
+K6 EX watch 440925000 gap=40 s        a watched station keyed up: the listener went there
 K6 MOD say CWID ok W7ABC/R fl=4 rx=146940000 tone=800 wpm=20
 K6 EX cw 146940000 call=W7ABC/R check=0 apply=0 id=0
 K6 MOD say DMR listen lvl=-86 frozen=1 adj=7   the side detectors on (level, gain frozen, RSSI adj)

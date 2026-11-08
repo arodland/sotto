@@ -4379,10 +4379,10 @@ index 0000000..07a7819
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..4f9582b
+index 0000000..13b4a06
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1776 @@
+@@ -0,0 +1,1799 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4693,8 +4693,16 @@ index 0000000..4f9582b
 +/// a listen begun on a peek hears the end of that ID only, so the station goes on the watch list:
 +/// each time it keys up after that, the listener goes there at once and stays the whole carrier
 +/// (WA7DMR sent its one ID in 52 minutes 13 s into a key-up: no 10 minute timer). Not again
-+/// within WATCH_GAP_MS of the last listen there.
++/// within WATCH_GAP_MS of the last listen there, and the gap doubles with each listen there that
++/// hears no ID, up to 2^WATCH_BACKOFF times (10.7 minutes): a busy voice repeater whose speech
++/// keys the tone detector took 48 of 55 listens on 2026-11-08 17:52-18:34Z (443.525).
 +const WATCH_GAP_MS: u32 = 20_000;
++const WATCH_BACKOFF: u8 = 5;
++
++/// how long a watched station waits after its last listen, with `misses` listens there done
++fn watch_gap(misses: u8) -> u32 {
++    WATCH_GAP_MS << misses.min(WATCH_BACKOFF)
++}
 +const ROWS: usize = 7;
 +
 +/// The band sets, # cycles them: (name, segments (lo, step, bins, snap)). Each set's floors and
@@ -4760,9 +4768,10 @@ index 0000000..4f9582b
 +    auto_pass: u32,
 +    once: [(u32, [u8; 11]); 6],
 +    once_i: u8,
-+    /// the watch list (frequency, ms its last listen ended; 0 free), and whether the listen going
-+    /// on began on a peek (its first transmission is the tail of an ID, not kept)
-+    watch: [(u32, u32); 4],
++    /// the watch list (frequency, ms its last listen ended, listens there with no ID yet; 0 free),
++    /// and whether the listen going on began on a peek (its first transmission is the tail of an
++    /// ID, not kept)
++    watch: [(u32, u32, u8); 4],
 +    mid: bool,
 +    /// the sweep was left for Try or Listen: its segment reads its floor again on the way back
 +    resume: bool,
@@ -4815,7 +4824,7 @@ index 0000000..4f9582b
 +    auto_pass: 0,
 +    once: [(0, [0; 11]); 6],
 +    once_i: 0,
-+    watch: [(0, 0); 4],
++    watch: [(0, 0, 0); 4],
 +    mid: false,
 +    resume: false,
 +    xd: null_mut(),
@@ -5360,11 +5369,24 @@ index 0000000..4f9582b
 +    if c.call[0] != 0 || c.flags & (EX_F_IGNORED | EX_F_SPUR) != 0 {
 +        return;
 +    }
-+    let i = t.watch.iter().position(|w| w.0 == hz).or_else(|| t.watch.iter().position(|w| w.0 == 0));
-+    // a full list: the one listened to longest ago makes room
-+    let i = i.unwrap_or_else(|| (0..t.watch.len()).min_by_key(|&k| t.watch[k].1).unwrap_or(0));
-+    t.watch[i] = (hz, now_ms());
-+    say(format_args!("K6 EX tone {} watch", hz));
++    let now = now_ms();
++    let misses = match t.watch.iter().position(|w| w.0 == hz) {
++        // already watched: its gap holds for peeks too
++        Some(i) if now.wrapping_sub(t.watch[i].1) < watch_gap(t.watch[i].2) => return,
++        Some(i) => {
++            t.watch[i].1 = now;
++            t.watch[i].2 = t.watch[i].2.saturating_add(1);
++            t.watch[i].2
++        }
++        None => {
++            // a full list: the one listened to longest ago makes room
++            let i = t.watch.iter().position(|w| w.0 == 0);
++            let i = i.unwrap_or_else(|| (0..t.watch.len()).min_by_key(|&k| t.watch[k].1).unwrap_or(0));
++            t.watch[i] = (hz, now, 0);
++            0
++        }
++    };
++    say(format_args!("K6 EX tone {} watch gap={} s", hz, watch_gap(misses) / 1000));
 +    auto_listen(app, syst, c, AUTO_MAX_S);
 +    t.mid = true;
 +}
@@ -5379,17 +5401,18 @@ index 0000000..4f9582b
 +    let n = unsafe { ffi::xs_up(t.xs, up.as_mut_ptr(), up.len() as u32) } as usize;
 +    let now = now_ms();
 +    for i in 0..t.watch.len() {
-+        let (hz, last) = t.watch[i];
-+        if hz == 0 || now.wrapping_sub(last) < WATCH_GAP_MS || !up[..n].contains(&hz) {
++        let (hz, last, misses) = t.watch[i];
++        if hz == 0 || now.wrapping_sub(last) < watch_gap(misses) || !up[..n].contains(&hz) {
 +            continue;
 +        }
 +        let p = unsafe { ffi::ex_find(&mut t.ex, hz) };
 +        if p.is_null() || unsafe { (*p).call[0] } != 0 {
-+            t.watch[i] = (0, 0);
++            t.watch[i] = (0, 0, 0);
 +            continue;
 +        }
 +        t.watch[i].1 = now;
-+        say(format_args!("K6 EX watch {}", hz));
++        t.watch[i].2 = misses.saturating_add(1);
++        say(format_args!("K6 EX watch {} gap={} s", hz, watch_gap(misses.saturating_add(1)) / 1000));
 +        auto_listen(app, syst, unsafe { &mut *p }, AUTO_MAX_S);
 +        return true;
 +    }
