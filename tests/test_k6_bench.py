@@ -24,8 +24,11 @@ def work(tmp_path, monkeypatch):
 
 
 class Rig:
-    def __init__(self, hz=440850000):
+    """rigctl as the bench sees it; shift/split model the IC-7100's DUP and split (stuck: R ignored)"""
+
+    def __init__(self, hz=440850000, shift="None", split="0", stuck=False):
         self.hz, self.ptt, self.calls = hz, 0, []
+        self.shift, self.split, self.stuck = shift, split, stuck
 
     def __call__(self, *args):
         self.calls.append(" ".join(str(v) for v in args))
@@ -35,7 +38,18 @@ class Rig:
             return str(self.ptt)
         if args[0] == "T":
             self.ptt = int(args[1])
+        if args[0] == "R" and not self.stuck:
+            self.shift = {"+": "+", "-": "-"}.get(str(args[1]), "None")
+        if args[0] == "S":
+            self.split = str(args[1])
+        if args[0] == "r":
+            return self.shift
+        if args[0] == "s":
+            return f"{self.split}\nVFOA"
         return ""
+
+
+KEY = ["t", "V VFOA", "S 0 VFOA", "R 0", "r", "s", "T 1", "T 0"]
 
 
 def test_paths_follow_sotto_work(work):
@@ -52,7 +66,7 @@ def test_default_is_sotto_work_in_home(monkeypatch):
 def test_key_and_play_records_data_and_id(work):
     r = Rig()
     b.key_and_play(r, "ctl.wav", what="ctl.wav")
-    assert r.calls == ["t", "T 1", "T 0"] and r.ptt == 0
+    assert r.calls == KEY and r.ptt == 0
     assert b._read("last_tx") > 0 and b._read("last_id") == 0
     assert open(b.path("txlog")).read().split()[2] == "ctl.wav"
     b.key_and_play(r, "id.wav", kind="id", what="end of run", text="AG7EW")
@@ -68,6 +82,19 @@ def test_unkeys_when_play_fails(work, monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         b.key_and_play(r, "x.wav")
     assert r.ptt == 0 and r.calls[-1] == "T 0"
+
+
+def test_clears_repeater_shift_before_keying(work):
+    r = Rig(shift="+", split="1")
+    b.key_and_play(r, "x.wav")
+    assert r.calls == KEY and r.shift == "None" and r.split == "0"
+
+
+def test_refuses_when_shift_will_not_clear(work):
+    r = Rig(shift="+", stuck=True)
+    with pytest.raises(SystemExit):
+        b.key_and_play(r, "x.wav")
+    assert "T 1" not in r.calls and r.ptt == 0
 
 
 def test_refuses_when_already_keyed():
@@ -118,7 +145,7 @@ def test_keyer_waits_for_the_lock(work):
     assert not done and r.calls == []       # held off while the keeper's ID is on the air
     holder.close()
     th.join(5)
-    assert done and r.calls == ["t", "T 1", "T 0"]
+    assert done and r.calls == KEY
 
 
 @pytest.mark.parametrize("since_tx, since_id, why", [

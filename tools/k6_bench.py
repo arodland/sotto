@@ -191,6 +191,19 @@ def in_band(hz, bands=(BAND_70CM,)):
     return any(lo <= hz <= hi for lo, hi in bands)
 
 
+def simplex(rig):
+    """transmit where the rig listens: VFO A, split off, no repeater shift, set and read back right
+    before PTT. The IC-7100's auto repeater turns DUP on by itself in the 70 cm repeater sub-bands
+    (the CW recorder parks there), and on 2026-11-08 a CW ID went out shifted after that."""
+    rig("V", "VFOA")
+    rig("S", 0, "VFOA")
+    rig("R", "0")
+    shift = (rig("r").splitlines() or [""])[0]
+    split = (rig("s").splitlines() or [""])[0]
+    if shift != "None" or split != "0":
+        raise SystemExit(f"refusing to key: repeater shift {shift!r}, split {split!r} after clearing them")
+
+
 @contextlib.contextmanager
 def keyed(rig, kind="data", what="", text=ID_TEXT, dry_run=False, lead=0.2):
     """PTT on for the with-body, under the lock, then off (always). Afterwards the keeper's state:
@@ -200,6 +213,8 @@ def keyed(rig, kind="data", what="", text=ID_TEXT, dry_run=False, lead=0.2):
         t = rig("t")
         if t != "0":
             raise SystemExit(f"the IC-7100 is already keyed (t={t}) by something outside the PTT lock")
+        if not dry_run:
+            simplex(rig)
         t0 = time.time()
         try:
             rig("T", 1)
