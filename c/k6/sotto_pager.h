@@ -58,6 +58,10 @@ extern "C" {
 #ifdef SP_HISS
 #define SP_FRAME_SAMPLES 320      /* 20 ms at 16 kHz */
 #define SP_RATE 16000
+/* the hiss band in the output (1 at start): off, the core's speech alone goes out, upsampled,
+   for an A/B on the speaker; the layer keeps running so the band returns in step */
+int sp_hiss(void);
+void sp_hiss_on(int on);
 #else
 #define SP_FRAME_SAMPLES 160      /* 20 ms at 8 kHz */
 #define SP_RATE 8000

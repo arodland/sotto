@@ -1338,14 +1338,20 @@ static void band_run(struct sotto_dec16 *d, int f, int q, const int16_t *w, int1
    speech + N8 (the caller decoded the core there): sample i is read before outputs 2 i and
    2 i + 1 are written, and 160 + i > 2 i + 1 up to i = 158. The noise and the mirror s live on
    the stack: the layer runs after the core has returned, well inside the core's own depth. */
+int sotto_hiss_mute;                        /* sotto.h: the band left out, the layer still run */
+
 static void dec_block(struct sotto_dec16 *d, const short *y8, int32_t j0, short *speech) {
   int16_t w[N8], sb[N8];
   int32_t g[FBN], dg[FBN], i;
   dec_run(d, 2 * (j0 / N8) + 1);              /* the odd frame centred on the block's end */
-  for (i = 0; i < N8; i++) w[i] = (int16_t)((int16_t)(rng_next(&d->rng) >> 16) >> 5), sb[i] = 0;   /* uniform +-1024 */
   gains_at(d, j0, g, dg);
-  band_run(d, 0, 0, w, sb, g[0], dg[0], g[3], dg[3]);
-  band_run(d, 1, fb_nsec[0], w, sb, g[1], dg[1], g[2], dg[2]);
+  if (sotto_hiss_mute) {                      /* an A/B on the radio: the core alone, upsampled */
+    memset(sb, 0, sizeof sb);
+  } else {
+    for (i = 0; i < N8; i++) w[i] = (int16_t)((int16_t)(rng_next(&d->rng) >> 16) >> 5), sb[i] = 0;   /* uniform +-1024 */
+    band_run(d, 0, 0, w, sb, g[0], dg[0], g[3], dg[3]);
+    band_run(d, 1, fb_nsec[0], w, sb, g[1], dg[1], g[2], dg[2]);
+  }
   for (i = 0; i < N8; i++) {
     int32_t j = j0 + i, s = sb[i], v = y8[i] - s, p = j - 10, e;
     int16_t y[2];

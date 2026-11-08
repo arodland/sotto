@@ -124,6 +124,11 @@ SOTTO_API void sotto_dec16_destroy(struct sotto_dec16 *d);
 SOTTO_API void sotto_decode16(struct sotto_dec16 *d, const unsigned char in[SOTTO_BYTES_PER_FRAME], int good,
                               short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
 SOTTO_API int sotto_dec16_flush(struct sotto_dec16 *d, short speech[SOTTO_SAMPLES_PER_FRAME_16K]);
+/* Non-zero: every 16 kHz decoder (this one, sotto 1200's and sotto 600 / 400's) leaves the hiss
+ * band out of its output, the core's speech upsampled alone, while the layer's model keeps
+ * running so the band comes back in step when cleared. For A/B listening on a radio (the K6's
+ * key 6); 0 at start. */
+SOTTO_API extern int sotto_hiss_mute;
 
 /* ---- sotto 1200: 48 bits per 40 ms (sotto_lr.c, sim/sotto_lr.py), every VARIANT ----------
  * For links slower than 2400 bit/s, such as the UV-K6 pager at FFSK 1800 baud. The v3.7 core
