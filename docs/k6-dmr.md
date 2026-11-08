@@ -159,21 +159,75 @@ On the emulated Cortex-M0 (`tests/k6_live_emu.py`'s CPU and DMA model, calibrate
   spread gate). It would go into the pager patch, like EXPLORE, after the module has proved
   it on air.
 
-## Decoding DMR later
+## Decoding DMR metadata (2026-11-08)
 
-- **Metadata: feasible on the M0.** The same discriminator and grid, sliced to dibits at the
-  sync's timing, give the CACH (TACT, Hamming (7,4): which slot, busy or idle), the slot type
-  (Golay (20,8): colour code and data type), and in a voice LC header the full link control
-  (BPTC (196,96) and RS (12,9): talkgroup and source ID). Those are a few hundred bytes of code
-  each, and the symbol slicer must do better than the hard decisions a detector gets away
-  with. A module could print "CC1 TG 3100 from 3112345" per call. That is the natural next step
-  after the bench run.
-- **Voice: not planned.** DMR voice is AMBE+2. The open decoders that exist are of uncertain
-  legal standing, and an AMBE+2 decoder plus the K6's PWM playback would not fit the M0
-  alongside everything else anyway.
-- **Other 4800-baud modes:** P25's frame sync (5575F5FF77FF) also uses only outer symbols and
-  could be a fifth family at no extra cost per sample. YSF's sync uses inner symbols too: the
-  same correlator works, with the gate widened.
+Metadata only: colour code, slot, talkgroup or unit, source ID, talker alias, and which CSBKs and
+data packets go by. No voice: DMR voice is AMBE+2, which is patent-encumbered. The open decoders
+(mbelib, and OpenDMR's voice path built on it) are PC code of uncertain legal standing that would
+not fit the M0 anyway.
+
+**Python reference (`sim/k6if/dmrdec.py`).**
+- It reads a receiver's FM audio (`audio`, `calls`, `summary`, `check`) or the K6's GP0 counts
+  (`counts_symbols`), resampled to 8 points a symbol through an RRC matched filter.
+- The input's polarity comes from the slot types (data syncs must give clean Golay words). The
+  IC-7100's audio is inverted.
+- Each burst decodes as follows:
+  - TACT: Hamming (7,4).
+  - Slot type: Golay (20,8), the (23,12) generator 0xC75 shortened, plus overall parity.
+  - Voice LC headers and terminators: BPTC (196,96) and RS (12,9), parity masks 0x96 and 0x99.
+  - CSBKs and data headers: CRC-CCITT, init 0, inverted, masks 0xA5A5 and 0xCCCC.
+  - Voice bursts B-E: the EMB, QR (16,7,6) from the (17,9) QR code's generator 0x139, and the
+    embedded LC, BPTC (128,72) with a 5-bit checksum.
+  - Talker alias: FLCO 4-7.
+- A call's headers and terminators are also soft-combined. A terminator's masks are turned
+  into a header's, which works because the codes are linear.
+- `voice_call_symbols` builds whole calls for the tests.
+- `tools/k6_dmrwatch.py` turns recordings into a JSONL answer key, one line per call or data
+  packet.
+
+**Checked on 440.925 (11 IC-7100 recordings).**
+- Every layout came out at zero syndromes. Everything is colour code 1.
+- Voice is on TG 3027 (FLCO 0, FID 0x10) from three radio IDs.
+- Every ~7 s burst is a DMR GPS report: 5 preamble CSBKs, an unconfirmed data header (SAP 3)
+  and 8 rate-1/2 blocks carrying `$GPRMC`, relayed over the network from distant stations.
+- No talker alias was seen.
+
+**On the K6 (`c/k6/mod/dmrrx.c`).** It is dmrdet with the decoder (`c/k6/mod/dmrdec.inc`,
+`c/k6/dmrburst.h`). It keeps the mute.
+- dmrsync.h's 2-point-a-symbol grid feeds a 13-tap RRC whose output is kept in an 8-bit ring of
+  512 in the module's scratch.
+- At each sync hit, the burst is read back:
+  - The timing is found again to a quarter grid point on the filtered sync, with Catmull-Rom
+    between points. At 2 points a symbol, the nearest point alone left 1-2 bit errors a burst
+    at any level.
+  - The burst is scaled by its own sync.
+  - The slot type is read first. The whole burst is sliced only for headers, terminators,
+    CSBKs and data headers.
+- Voice bursts B-E are read at A + 576 k grid points.
+- The grid's step locks to DMR's 30 ms slots. The DMA's measured rate is only good to ~2%,
+  which over a superframe is 10 symbols.
+- The grid index counts across pauses (`ds_skip`, laps from the clock), so bursts can still be
+  predicted by it.
+- On the K6 model (`tests/test_k6_dmrdec.py`), the host build decodes a call's LC, all 24 EMBs
+  and the alias at 52 dB-Hz, and the LC down to 48 dB-Hz. The emulated module shows them on the
+  serial line and the screen.
+
+| | |
+|---|---|
+| Code | 8.6 KB, so only images with the 9,760-byte shared module block (the SPI voice images) |
+| Scratch | 512 B |
+| Stack | ~3.8 KB |
+
+Serial lines, besides dmrdet's (the summary line gains `L=` and `E=` counts):
+
+    L TS1 CC1 TG 3027 src 3025107 F0     voice LC header or terminator (comb N: only the soft sum decoded)
+    E TS1 TG 3027 src 3025107            embedded LC, when it says something new (late entry)
+    A AG7EW TEST                         talker alias so far
+    K TS1 bd00800104c2bf301cd5           a CSBK that passed its CRC (here a preamble)
+    H TS1 ...                            a data header
+
+The screen (level 6) shows "DMR CC1 TS1", "TG 3027", "ID 3025107" and the alias. Not yet on the
+radio.
 
 ## Real DMR from 440.925 (IC-7100 audio, 2026-11-08)
 
