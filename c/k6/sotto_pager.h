@@ -84,6 +84,14 @@ enum {
    or 0 if the buffer is too small. Clears any message. */
 int sp_init(void *mem, unsigned bytes);
 
+/* The decoder's working memory (SP_DEC_POOL builds, the K6's SPI images): the firmware hands the library
+   a pool of at least sp_dec_need() bytes, 4-byte aligned, once at boot. It is part of the
+   firmware's RAM arena, which RAM modules borrow while nothing plays, so sp_init (which the
+   firmware calls after every module) forgets any decoder that was in it. Without
+   SP_DEC_POOL the library keeps its own static pool and sp_dec_pool doesn't exist. */
+void sp_dec_pool(void *mem, unsigned bytes);
+unsigned sp_dec_need(void);
+
 /* One received packet, as the chip's FIFO gave it (whitened), SP_PAYLOAD_L or SP_PAYLOAD_XL
    bytes. Returns one of the codes above. The checked, de-whitened packet is kept for
    sp_last_packet. */

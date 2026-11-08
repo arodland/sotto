@@ -103,6 +103,9 @@ def main():
         r, c = m.call('sp_vlr_setup')
         assert r > 0, r
         print(f'sotto 600 / 400 tables check: {c / 96e3:.1f} ms')
+    if 'sp_dec_pool' in m.sym:   # the K6 build: the decoder's pool is the firmware's (SP_DEC_POOL)
+        need, _ = m.call('sp_dec_need')
+        m.call('sp_dec_pool', store + a.store, need)
     nmax, _ = m.call('sp_init', store, a.store)
     pc, pgaps, plast = [], [], [0]
     if a.packet_yield_gap:
