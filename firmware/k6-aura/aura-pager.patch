@@ -246,10 +246,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..36795ba
+index 0000000..5716e7e
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,4057 @@
+@@ -0,0 +1,4098 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -278,7 +278,7 @@ index 0000000..36795ba
 +use crate::device::radio::{BandLock, Modulation, SubAudio};
 +use crate::drivers::fd6818::AfOutState;
 +use crate::hal::pwm_audio::{self, PwmAudio};
-+use crate::hal::{delay, uptime};
++use crate::hal::{arena, delay, uptime};
 +use core::ptr::{addr_of, addr_of_mut, read_volatile, write_volatile};
 +use cortex_m::peripheral::SYST;
 +
@@ -348,11 +348,11 @@ index 0000000..36795ba
 +
 +/// 4 KB in every image since the RAM above Aura's old region was found (2026-11-07, memory.x);
 +/// the hiss band image had 2.5 KB before that (413 slots: two XL groups at depth 8, so sotto
-+/// 1200 messages over 13 s streamed only at depth 4)
-+const STORE_BYTES: usize = 4096;
++/// 1200 messages over 13 s streamed only at depth 4). The first part of the shared RAM block
++/// (hal::arena), which RAM modules take whole while nothing plays.
 +// (The RAM below UserVectors, 0x2000_0000-0x2000_0FFF, is not free: images that put the store
 +// there, even from 0x2000_0100, hung at boot on the radio on 2026-11-04.)
-+static mut STORE: [u32; STORE_BYTES / 4] = [0; STORE_BYTES / 4];
++pub(super) const STORE_BYTES: usize = arena::STORE_BYTES;
 +
 +/// The FD6818 (BK4819 family) needs CHIPID 0x4819; the FD6818B (0x4829) has
 +/// other registers.
@@ -406,6 +406,10 @@ index 0000000..36795ba
 +    pub const NO_BITERR: SpBiterr = SpBiterr { errors: -1, seq: 0, swap: 0, invert: 0, block: [0; 8] };
 +    extern "C" {
 +        pub fn sp_init(mem: *mut u8, bytes: u32) -> i32;
++        #[cfg(not(feature = "lean"))]
++        pub fn sp_dec_pool(mem: *mut u8, bytes: u32);
++        #[cfg(not(feature = "lean"))]
++        pub fn sp_dec_need() -> u32;
 +        pub fn sp_packet(payload: *const u8, len: i32) -> i32;
 +        pub fn sp_check(payload: *const u8, len: i32) -> i32;
 +        pub fn sp_test_errors(payload: *const u8, len: i32, e: *mut SpBiterr) -> i32;
@@ -717,15 +721,31 @@ index 0000000..36795ba
 +    mod_tick() / 10
 +}
 +
-+/// The store past the module's code and tag: free while the module runs (a module has no
-+/// statics; this is where its tables and buffers go). Word aligned; its size into *bytes.
++/// The shared RAM block (hal::arena) past the module's code and tag, up to the telemetry text
++/// if the module keeps one: free while the module runs (a module has no statics; this is where
++/// its tables and buffers go). Word aligned; its size into *bytes.
 +unsafe extern "C" fn mod_scratch(bytes: *mut u32) -> *mut u8 {
 +    let at = unsafe { (*addr_of!(MOD_CTX)).scratch };
-+    let end = addr_of_mut!(STORE) as usize + STORE_BYTES;
++    let end = scratch_end();
 +    if !bytes.is_null() {
-+        unsafe { *bytes = (end - at) as u32 };
++        unsafe { *bytes = end.saturating_sub(at) as u32 };
 +    }
 +    at as *mut u8
++}
++
++/// Where a module's scratch ends: the block's end, or the telemetry text's start
++#[cfg(not(feature = "lean"))]
++fn scratch_end() -> usize {
++    if unsafe { (*addr_of!(MOD_CTX)).tlm_cap } != 0 {
++        arena::tlm() as usize
++    } else {
++        arena::end()
++    }
++}
++
++#[cfg(feature = "lean")] // no telemetry
++fn scratch_end() -> usize {
++    arena::end()
 +}
 +
 +unsafe extern "C" fn mod_key_down() -> i32 {
@@ -1099,9 +1119,11 @@ index 0000000..36795ba
 +
 +// ---- telemetry: a module's say lines, kept for the over-the-air report ----
 +//
-+// They go in the PWM audio ring (2,560 bytes), free whenever nothing plays: a playback fills
-+// its segments before it starts, which overwrites the "TLM1" mark, so a report sends the text
-+// only while the mark is intact. No RAM of its own: the pager's stack has little to spare.
++// They go in the last TLM_BYTES of the shared RAM block (hal::arena): past the store and the
++// ring, so they outlast the module and clear_store, until a playback's decoder takes that RAM
++// (it zeroes its pool, which overwrites the "TLM1" mark) or the next module. A report sends the
++// text only while the mark is intact. A module that keeps telemetry gets that much less
++// scratch. No RAM of its own: the pager's stack has little to spare.
 +// The text is a ring of tlm_cap bytes that keeps the newest, written a byte at a time (a
 +// memmove would pull in compiler_builtins' mem functions, 1.8 KB of flash).
 +
@@ -1111,7 +1133,7 @@ index 0000000..36795ba
 +
 +#[cfg(not(feature = "lean"))]
 +fn tlm_hdr() -> (u32, usize, usize) {
-+    let b = pwm_audio::idle_bytes();
++    let b = arena::tlm();
 +    unsafe {
 +        let m = read_volatile(b as *const u32);
 +        (m, *b.add(4) as usize | (*b.add(5) as usize) << 8, *b.add(6) as usize | (*b.add(7) as usize) << 8)
@@ -1120,7 +1142,7 @@ index 0000000..36795ba
 +
 +#[cfg(not(feature = "lean"))]
 +fn tlm_set(n: usize, w: usize) {
-+    let b = pwm_audio::idle_bytes();
++    let b = arena::tlm();
 +    unsafe {
 +        *b.add(4) = n as u8;
 +        *b.add(5) = (n >> 8) as u8;
@@ -1132,9 +1154,9 @@ index 0000000..36795ba
 +/// Start keeping say lines, at most cap bytes (the newest)
 +#[cfg(not(feature = "lean"))]
 +fn tlm_start(cap: usize) {
-+    unsafe { write_volatile(pwm_audio::idle_bytes() as *mut u32, TLM_MARK) };
++    unsafe { write_volatile(arena::tlm() as *mut u32, TLM_MARK) };
 +    tlm_set(0, 0);
-+    unsafe { (*addr_of_mut!(MOD_CTX)).tlm_cap = cap.min(pwm_audio::RING_BYTES - TLM_HDR) as u16 };
++    unsafe { (*addr_of_mut!(MOD_CTX)).tlm_cap = cap.min(arena::TLM_BYTES - TLM_HDR) as u16 };
 +}
 +
 +/// A line, '\n' after it
@@ -1145,7 +1167,7 @@ index 0000000..36795ba
 +    if cap == 0 || m != TLM_MARK {
 +        return;
 +    }
-+    let b = pwm_audio::idle_bytes();
++    let b = arena::tlm();
 +    for &c in t.iter().chain(b"\n".iter()) {
 +        unsafe { *b.add(TLM_HDR + w) = c };
 +        w += 1;
@@ -1166,7 +1188,7 @@ index 0000000..36795ba
 +#[cfg(not(feature = "lean"))]
 +fn tlm_len() -> usize {
 +    let (m, n, _) = tlm_hdr();
-+    if m != TLM_MARK || n > pwm_audio::RING_BYTES - TLM_HDR {
++    if m != TLM_MARK || n > arena::TLM_BYTES - TLM_HDR {
 +        0
 +    } else {
 +        n
@@ -1177,7 +1199,7 @@ index 0000000..36795ba
 +#[cfg(not(feature = "lean"))]
 +fn tlm_read(k0: usize, out: &mut [u8], cap: usize) -> usize {
 +    let (_, n, w) = tlm_hdr();
-+    let b = pwm_audio::idle_bytes();
++    let b = arena::tlm();
 +    let mut i = if n < cap { k0 } else { w + k0 };
 +    let mut got = 0;
 +    while got < out.len() && k0 + got < n {
@@ -1965,8 +1987,27 @@ index 0000000..36795ba
 +        // first entry since power-on
 +        default_freq(app);
 +        cb_setup(app);
++        // the decoder's pool is the shared block's tail (hal::arena); the lean images' library
++        // keeps its own (and they have no flash for the report)
++        #[cfg(not(feature = "lean"))]
++        unsafe {
++            ffi::sp_dec_pool(arena::dec(), arena::DEC_BYTES as u32)
++        };
++        #[cfg(not(feature = "lean"))]
++        let need = unsafe { ffi::sp_dec_need() };
++        #[cfg(not(feature = "lean"))]
++        report_line(format_args!(
++            "K6 ARENA bytes={} at {:#010x} store={} ring={} dec={} need={}{}",
++            arena::ARENA_BYTES,
++            arena::base() as usize,
++            STORE_BYTES,
++            arena::RING_BYTES,
++            arena::DEC_BYTES,
++            need,
++            if need as usize > arena::DEC_BYTES { " SHORT" } else { "" }
++        ));
 +        app.pager.store_frames =
-+            unsafe { ffi::sp_init(addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) } as u16;
++            unsafe { ffi::sp_init(arena::base(), STORE_BYTES as u32) } as u16;
 +        app.pager.stream_play = unsafe { ffi::sp_stream() } != 0;
 +    }
 +    app.sync_watching_to_master(syst);
@@ -2836,9 +2877,9 @@ index 0000000..36795ba
 +    }
 +
 +    // a RAM module packet (magic 0xAB, c/k6/k6_mod.h)? Not while a message plays: the module
-+    // lands in the message store
++    // lands in the shared RAM block (hal::arena), over the store, the PWM ring and the decoder
 +    if let (false, false, Some(syst)) = (app.pager.play_pending, stream_on(), syst) {
-+        let r = unsafe { ffi::km_packet(buf.as_ptr(), len as i32, addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) };
++        let r = unsafe { ffi::km_packet(buf.as_ptr(), len as i32, arena::base(), arena::ARENA_BYTES as u32) };
 +        if r != 0 {
 +            module_packet(app, syst, r);
 +            return;
@@ -2955,7 +2996,7 @@ index 0000000..36795ba
 +        app.pager.ctl_prev = None;
 +    }
 +    if r == KM_READY {
-+        let at = addr_of_mut!(STORE) as usize + 16;
++        let at = (arena::base() as usize) + 16;
 +        // 8-byte tag after the code, then word aligned
 +        let scratch = (at + st.code_len as usize + 8 + 3) & !3;
 +        let room = cortex_m::register::msp::read() as usize - ((addr_of!(__sheap) as usize + 3) & !3);
@@ -2965,7 +3006,7 @@ index 0000000..36795ba
 +            st.code_len,
 +            at,
 +            room,
-+            addr_of_mut!(STORE) as usize + STORE_BYTES - scratch
++            scratch_end().saturating_sub(scratch)
 +        ));
 +        let gpio = app.radio.fd6818.reg_read(syst, MOD_GPIO);
 +        let t0 = uptime::now();
@@ -2990,7 +3031,7 @@ index 0000000..36795ba
 +            tlm_start(st.tlm as usize * KM_TLM_PART);
 +        }
 +        mod_screen_clear();
-+        let ret = unsafe { ffi::km_run(addr_of_mut!(STORE) as *mut u8, &MOD_API) };
++        let ret = unsafe { ffi::km_run(arena::base(), &MOD_API) };
 +        unsafe { mod_tx_off() }; // a module that left the transmitter on
 +        rx_led(false); // or the LED lit
 +        mod_screen_clear(); // its waterfall rows were in its own memory
@@ -3070,7 +3111,7 @@ index 0000000..36795ba
 +            rx_hz: app.master_freq_hz(),
 +            t_last: t0,
 +            ticks: 0,
-+            scratch: addr_of_mut!(STORE) as usize + STORE_BYTES, // none: the store is in use
++            scratch: arena::end(), // none: the store and the ring are in use
 +            tx_until: 0,
 +            tx: false,
 +            cal_written: true, // no calibration writes
@@ -3245,7 +3286,7 @@ index 0000000..36795ba
 +/// Drop the stored message (key *, control action clear).
 +fn clear_store(app: &mut App) {
 +    let p = &mut app.pager;
-+    p.store_frames = unsafe { ffi::sp_init(addr_of_mut!(STORE) as *mut u8, STORE_BYTES as u32) } as u16;
++    p.store_frames = unsafe { ffi::sp_init(arena::base(), STORE_BYTES as u32) } as u16;
 +    p.played_id = -1;
 +    p.last_result = i8::MIN;
 +    p.ber = ffi::NO_BITERR;
@@ -3964,7 +4005,7 @@ index 0000000..36795ba
 +    arq().sent += 1;
 +    let st = unsafe { &*ffi::km_status() };
 +    let state = if kind == 1 { KM_ST_PARTWAY } else { arq().state };
-+    let cap = (st.tlm as usize * KM_TLM_PART).min(pwm_audio::RING_BYTES - TLM_HDR);
++    let cap = (st.tlm as usize * KM_TLM_PART).min(arena::TLM_BYTES - TLM_HDR);
 +    let tlen = if kind == 2 && state == KM_ST_RAN && cap > 0 { tlm_len() } else { 0 };
 +    let nparts = ((tlen + KM_TLM_PART - 1) / KM_TLM_PART).min(KM_TLM_MAX);
 +    let parts = 1 + nparts as u8;
@@ -4309,10 +4350,10 @@ index 0000000..36795ba
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..8d5fe3c
+index 0000000..66c2158
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1600 @@
+@@ -0,0 +1,1601 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4342,7 +4383,8 @@ index 0000000..8d5fe3c
 +//! the store for messages again.
 +
 +use super::{arm, clear_store, disarm, ffi as pffi, mod_tick, report_line, stream_on, MOD_API, MOD_CTX};
-+use super::{FL_ERASES, STORE, STORE_BYTES};
++use super::{FL_ERASES, STORE_BYTES};
++use crate::hal::arena;
 +use crate::app::App;
 +use crate::device::keypad::{KeyEvent, KeyEventKind, KeyId};
 +use crate::drivers::fd6818::AfOutState;
@@ -4853,7 +4895,7 @@ index 0000000..8d5fe3c
 +            rx_hz: app.master_freq_hz(),
 +            t_last: uptime::now(),
 +            ticks: 0,
-+            scratch: addr_of_mut!(STORE) as usize + STORE_BYTES,
++            scratch: arena::end(), // none: EXPLORE has the store and the ring
 +            tx_until: 0,
 +            tx: false,
 +            cal_written: true,
@@ -4862,7 +4904,7 @@ index 0000000..8d5fe3c
 +        };
 +    }
 +    let t = st();
-+    let store = addr_of_mut!(STORE) as *mut u8;
++    let store = arena::base();
 +    let xs_bytes = (unsafe { ffi::xs_state_bytes() } as usize + 3) & !3;
 +    t.xs = store;
 +    let cands = unsafe { store.add(xs_bytes) } as *mut Cand;
@@ -5934,11 +5976,100 @@ index a4f1729..1b8d400 100644
      pub fn init(&mut self, syst: &mut SYST) {
          // soft reset
          self.write_reg(syst, REG_SOFT_RESET, 0x8000);
+diff --git a/src/hal/arena.rs b/src/hal/arena.rs
+new file mode 100644
+index 0000000..9990e5e
+--- /dev/null
++++ b/src/hal/arena.rs
+@@ -0,0 +1,79 @@
++//! One block of RAM shared by the things that never run at the same time.
++//!
++//! A voice message needs the message store, the PWM audio ring and the decoder's working
++//! memory, but only while it is received and played. A RAM module, EXPLORE and the coded 4FSK
++//! session need memory only while no message plays. So all three live here side by side, in
++//! this order, and a RAM module gets the whole block (its code, then its scratch), instead of
++//! only the 4 KB store as before 2026-11-08:
++//!
++//! ```text
++//!   0             STORE_BYTES        + RING_BYTES                         ARENA_BYTES
++//!   | message store | PWM audio ring  | decoder pool (sp_dec_pool) ...      |
++//!   | module header, code, tag, scratch ................ | telemetry text  |
++//! ```
++//!
++//! The pager sets the store up again (sp_init) after anything that borrowed the block, and
++//! sp_init forgets the decoder that was in the pool; a playback fills the ring before it
++//! starts. The telemetry text of a module (the last TLM_BYTES) stays there after the module
++//! returns, for the upload report, until a playback's decoder overwrites it.
++//!
++//! Size: the same 8,896 bytes in every image that reads its codebooks from SPI flash and plays
++//! voice, so a module that fits one fits all: in the hiss band image that is exactly store
++//! 4,096 + ring 2,560 + decoder 2,240 (sotto_pager.c SP_DEC_MAX 2,232); the 8 kHz images (ring
++//! 1,280, decoder at most 1,504) give the rest of the block to modules, out of stack they had
++//! to spare. The EXPLORE image has no decoder, so its block is the store and the ring (5,376
++//! bytes). So is the lean images' (codebook install, codebooks in MCU flash): they have no
++//! flash for the pool's code, and their library keeps the decoder's memory in its own static.
++
++/// the message store: sp_init's buffer
++pub const STORE_BYTES: usize = 4096;
++/// the PWM audio ring (hal::pwm_audio)
++pub const RING_BYTES: usize = super::pwm_audio::RING_BYTES;
++#[cfg(not(any(feature = "explore", feature = "lean")))]
++pub const ARENA_BYTES: usize = 8896;
++#[cfg(any(feature = "explore", feature = "lean"))]
++pub const ARENA_BYTES: usize = STORE_BYTES + RING_BYTES;
++/// the decoder's pool: what is left after the store and the ring
++pub const DEC_OFF: usize = STORE_BYTES + RING_BYTES;
++pub const DEC_BYTES: usize = ARENA_BYTES - DEC_OFF;
++/// the module telemetry text at the top: its header and up to 12 parts of 57 bytes
++pub const TLM_BYTES: usize = 696;
++
++const _: () = assert!(ARENA_BYTES % 4 == 0 && DEC_OFF % 4 == 0);
++const _: () = assert!(ARENA_BYTES >= DEC_OFF);
++#[cfg(feature = "hiss")]
++const _: () = assert!(DEC_BYTES >= 2232); // sotto_pager.c's SP_DEC_MAX with SP_HISS
++#[cfg(not(any(feature = "explore", feature = "lean")))]
++const _: () = assert!(ARENA_BYTES - TLM_BYTES >= DEC_OFF); // telemetry clear of the ring
++
++static mut ARENA: [u32; ARENA_BYTES / 4] = [0; ARENA_BYTES / 4];
++
++/// The block's first byte (word aligned): the message store, and a module's header
++#[inline(always)]
++pub fn base() -> *mut u8 {
++    core::ptr::addr_of_mut!(ARENA) as *mut u8
++}
++
++/// One past the block's last byte
++#[inline(always)]
++pub fn end() -> usize {
++    base() as usize + ARENA_BYTES
++}
++
++/// The PWM ring (u16 samples, word aligned)
++#[inline(always)]
++pub fn ring() -> *mut u16 {
++    unsafe { base().add(STORE_BYTES) as *mut u16 }
++}
++
++/// The decoder's pool
++#[inline(always)]
++pub fn dec() -> *mut u8 {
++    unsafe { base().add(DEC_OFF) }
++}
++
++/// A module's telemetry text: the block's last TLM_BYTES
++#[inline(always)]
++pub fn tlm() -> *mut u8 {
++    unsafe { base().add(ARENA_BYTES - TLM_BYTES) }
++}
 diff --git a/src/hal/mod.rs b/src/hal/mod.rs
-index 57e9999..3717bb7 100644
+index 57e9999..8ebf569 100644
 --- a/src/hal/mod.rs
 +++ b/src/hal/mod.rs
-@@ -4,6 +4,7 @@ pub mod debounce;
+@@ -1,9 +1,11 @@
+ pub mod adc;
++pub mod arena;
+ pub mod clock;
+ pub mod debounce;
  pub mod delay;
  pub mod hal_shim;
  pub mod i2c;
@@ -5948,10 +6079,10 @@ index 57e9999..3717bb7 100644
  pub mod timer;
 diff --git a/src/hal/pwm_audio.rs b/src/hal/pwm_audio.rs
 new file mode 100644
-index 0000000..5448a2d
+index 0000000..e95345d
 --- /dev/null
 +++ b/src/hal/pwm_audio.rs
-@@ -0,0 +1,167 @@
+@@ -0,0 +1,168 @@
 +//! 8 kHz PCM (16 kHz in the hiss band image) out of the MCU's PWM pin, the path the stock firmware uses for
 +//! its voice prompts: PA11 = TIM1_CH4 (AF2) -> two RC poles (4.7k/3.9n,
 +//! 4.7k/22n) -> 22k -> the speaker amplifier's input, summed with the RF
@@ -6021,8 +6152,9 @@ index 0000000..5448a2d
 +    wr(a, (rd(a) & !clear) | set);
 +}
 +
-+/// The DMA ring. Only `PwmAudio` touches it, except through `idle_bytes`.
-+static mut RING_BUF: [u16; RING] = [0; RING];
++// The DMA ring is part of the shared RAM block (hal::arena), right after the message store.
++// Only `PwmAudio` touches it while it plays; others borrow it through `idle_bytes`, and a RAM
++// module's code may cover it while nothing plays.
 +
 +/// The ring's size in bytes
 +pub const RING_BYTES: usize = RING * 2;
@@ -6030,7 +6162,7 @@ index 0000000..5448a2d
 +/// The ring as bytes, for other uses while nothing plays (the pager keeps a module's report
 +/// text here). A playback fills it before it starts, which overwrites whatever was there.
 +pub fn idle_bytes() -> *mut u8 {
-+    core::ptr::addr_of_mut!(RING_BUF) as *mut u8
++    super::arena::ring() as *mut u8
 +}
 +
 +pub struct PwmAudio {
@@ -6048,7 +6180,7 @@ index 0000000..5448a2d
 +        // SAFETY: the DMA only reads the segment it is playing; callers
 +        // write only the others (see `play_segment`).
 +        unsafe {
-+            let p = core::ptr::addr_of_mut!(RING_BUF) as *mut u16;
++            let p = super::arena::ring();
 +            &mut *(p.add(i * SEG) as *mut [u16; SEG])
 +        }
 +    }
@@ -6075,7 +6207,7 @@ index 0000000..5448a2d
 +        wr(DMA_CCR5, 0);
 +        wr(DMA_IFCR, 0xF << 16); // clear channel 5 flags
 +        wr(DMA_CPAR5, TIM_DMAR);
-+        wr(DMA_CMAR5, core::ptr::addr_of!(RING_BUF) as u32);
++        wr(DMA_CMAR5, super::arena::ring() as u32);
 +        wr(DMA_CNDTR5, RING as u32);
 +        // PL high, MSIZE 16, PSIZE 16, MINC, CIRC, DIR = memory to peripheral
 +        wr(DMA_CCR5, (0b10 << 12) | (0b01 << 10) | (0b01 << 8) | (1 << 7) | (1 << 5) | (1 << 4));
