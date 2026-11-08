@@ -177,10 +177,11 @@ The pager itself blinks it once a packet while its modem receives (no module nee
 - **Chip FSK packets** (PHY F and D: voice messages, control packets, module chunks): lit at a
   packet's sync (or its first FIFO-full), dark 120 ms later. A burst at PHY F (a packet every
   391 ms) blinks about 2.5 times a second. A false sync on noise blinks it once.
-- **The coded 4FSK session** (PHY G, `c/k6/ifpager.c`): lit at each sync word, dark 120 ms
+- **The coded 4FSK session** (PHY G, `c/k6/ifpager.c`): lit at each sync word, dark 144 symbols (120 ms)
   later, through the same `api->led` (the session gets the module table); a packet every
   0.92 s at rate 1/2. The check runs with the session's key poll (every 256 counts, about
-  3 ms), away from the receiver's bursts. `test_session_blinks_the_led_once_a_packet` checks
+  3 ms), away from the receiver's bursts, and keeps no state (it sets the LED from the last sync
+  word each time: the session's stack is at its test limit). `test_session_blinks_the_led_once_a_packet` checks
   the pattern on the emulated M0 and that the session keeps its CPU margin.
 
 A module reads `api->level` and calls `led` only on 7 or more, as with the screen; the

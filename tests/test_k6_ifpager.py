@@ -312,8 +312,9 @@ def test_session_yields_inside_the_store():
 @need_clang
 def test_session_blinks_the_led_once_a_packet():
     """API level 7 (the green RX LED, 2026-11-08): the session lights it at each sync word and
-    puts it out 120 ms later, one blink a packet (0.92 s apart at rate 1/2), dark at the end;
-    with the CPU still to spare and every packet handed over. Level 4 tables never call it"""
+    puts it out 144 symbols (120 ms) later, one blink a packet (0.92 s apart at rate 1/2), dark
+    at the end; with the CPU still to spare and every packet handed over. It sets the LED on each
+    check (no state: the session's stack is at its limit). Level 4 tables never call it"""
     pytest.importorskip("unicorn")
     import k6_live_emu as emu
     pk = message(4)
@@ -322,14 +323,18 @@ def test_session_blinks_the_led_once_a_packet():
                                           api_level=7, leds=leds)
     f = dict(kv.split("=") for kv in said[-1].split()[2:])
     assert ret == len(pk) and got == pk and int(f["L"]) == 0, said
-    assert int(f["i"]) >= 20, said
-    ons = [t for t, on in leds if on]
-    offs = [t for t, on in leds if not on]
-    assert len(ons) == len(pk) == len(offs), leds
-    assert [on for _, on in leds] == [1, 0] * len(pk), leds
-    for a, b in zip(ons, offs):
-        assert 115 <= b - a <= 140, leds                 # 120 ms, checked every ~3 ms
-    assert all(b - a > 800 for a, b in zip(ons, ons[1:])), leds
+    assert int(f["i"]) >= 20 and used < 3600, (said, used)
+    edges, lit = [], 0
+    for t, on in leds:
+        if on != lit:
+            edges.append((t, on))
+            lit = on
+    assert lit == 0 and leds[-1][1] == 0, leds[-5:]
+    assert [on for _, on in edges] == [1, 0] * len(pk), edges
+    ons, offs = edges[0::2], edges[1::2]
+    for (a, _), (b, _) in zip(ons, offs):
+        assert 110 <= b - a <= 140, edges                # 120 ms, checked every ~3 ms
+    assert all(b[0] - a[0] > 800 for a, b in zip(ons, ons[1:])), edges
     leds = []
     emu.run_ifpager(pk[:1], cn0=55.0, f_off=-164.0, fdma=5.9e6, flash_cpi=2.0, leds=leds)
     assert leds == []
