@@ -610,3 +610,14 @@ what would settle it.
     - It would buy: about 3.4 KB of boot-time stack in every image, so the stores could grow
       back and a 16 kHz ring of four segments would fit.
     - Settled by: `tools/k6_frames.py` showing `place_app` under 500 B and the image booting.
+35. **Read DMR's sync words off the GP0 IF.**
+    - From: the DMR thread, 2026-11-08 ([k6-dmr.md](k6-dmr.md)). Modelled and emulated, not yet on air.
+    - DMR's 48-bit syncs use only the +-1944 Hz symbols and are balanced, so a normalised
+      correlation on the zero-crossing discriminator, at 2 points a symbol, finds them at
+      rho 0.95-0.99 where FM voice, FFSK and tones stay under 0.77. Two hits a whole number of
+      30 ms slots apart confirm DMR. `dmrdet` mutes the speaker on it (3 KB code, ~45% CPU
+      while a DMR carrier is up). A repeater's output doesn't pulse (both slots go out), so
+      RSSI alone can't do it.
+    - It would buy: a K6 that mutes DMR (and later YSF/P25) buzz, an EXPLORE "DMR" mark, and a
+      way into DMR metadata (colour code, talkgroup, source ID) with the same front end.
+    - Settled by: `mod-dmrdet.bin` on 440.925 with the IC-7100 recording alongside.
