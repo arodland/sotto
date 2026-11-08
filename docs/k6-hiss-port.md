@@ -507,8 +507,9 @@ stack 476 B to spare.
 depth 8: `under=0` on all three (39 / 24 / 0 on a65f7e6), bit-exact, `late=0`, every packet
 received (18/18 at 1200, so the shorter hold lost none), `dec_mean` 17.5-17.7 ms (0.9 ms a frame
 back from the yield cadence), worst 33.8. The serial log came through whole, 61 lines, none split.
-`ram_free` while playing 332-500 B (860-1124 on a65f7e6: the 512 B ring). Jeff's listening pass
-with the cable out follows.
+`ram_free` while playing 332-500 B (860-1124 on a65f7e6: the 512 B ring). Jeff listened with the
+cable out at 01:12 and 01:16 UTC, the same three Lynden clips streamed twice: "Perfectly smooth."
+PR #126 merged at 01:11 UTC; the K6 stays on 717f40d with stream mode on.
 
 **On the bench.** Encode a 16 kHz clip with `c/sotto_enc -16 -600 in.raw out.sot` (also `-1200`,
 `-400`; `make -C c sotto_enc`, VARIANT v3.8), send it with `python -m modem.k6 send ... --codec 600`,
@@ -517,3 +518,12 @@ and check `K6 PLAY pcm=` against `tools/k6_pcmhash.py --hiss --check`, which run
 segment (`K6 PWM frame 320 != segment ...`), so a plain image given a hiss stream, or the other
 way round, fails loudly rather than playing at the wrong rate. The serial cable mutes the K6
 speaker; key 4 toggles pre-emphasis as before.
+
+**A/B on the speaker (key 6 in the hiss image).** Jeff: "I'd need an a/b test to tell" whether the
+band earns its place at 400. Key 6 takes the hiss band out of the playback and puts it back: the
+decoder still runs the hiss layer's model (so the frame cost barely moves), only the noise band is
+left out before the upsample (`sotto_hiss_mute` in `c/fixed/sotto_fx_hiss.c`, `sp_hiss_on` in
+the pager library). The title line reads `NO HISS` while the band is out, and the serial line is
+`K6 HISS band=0` / `band=1`. MENU replays the stored message, so the A/B is two plays seconds apart;
+the `pcm=` hash only matches with the band in. Plain images keep key 6 as the raw-bytes view.
+Hiss image with the key: flash 121728 (1152 free), static RAM 13560, boot stack 472 B to spare.

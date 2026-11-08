@@ -246,10 +246,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..8936b0a
+index 0000000..8064b18
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,3973 @@
+@@ -0,0 +1,3991 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -263,7 +263,8 @@ index 0000000..8936b0a
 +//!
 +//! Keys: MENU play (again), EXIT leave (or stop playback), UP/DOWN volume,
 +//! 1 PHY D/F, 2 frames L/S, 3 RX invert, 4 pre-emphasis, 5 1200/2400 baud
-+//! (profile D), * clear the message, PTT transmit the calibration packet
++//! (profile D), 6 raw packet bytes on the screen (hiss image: the hiss band off and
++//! on, an A/B on the speaker), * clear the message, PTT transmit the calibration packet
 +//! (twice in profile D, then twice in F).
 +//!
 +//! Serial report: every packet, setting change, playback and calibration
@@ -294,6 +295,12 @@ index 0000000..8936b0a
 +};
 +
 +/// The commit part of `BUILD`, for the screen.
++/// Hiss image: whether the hiss band is in the playback (key 6 takes it out and puts it back).
++#[cfg(feature = "hiss")]
++pub fn hiss_band_on() -> bool {
++    unsafe { ffi::sp_hiss() != 0 }
++}
++
 +pub fn build_short() -> &'static str {
 +    BUILD.get(..7).unwrap_or(BUILD)
 +}
@@ -413,6 +420,10 @@ index 0000000..8936b0a
 +        pub fn sp_pcm_hash(samples: *mut u32) -> u32;
 +        pub fn sp_set_stream(on: i32);
 +        pub fn sp_stream() -> i32;
++        #[cfg(feature = "hiss")]
++        pub fn sp_hiss() -> i32;
++        #[cfg(feature = "hiss")]
++        pub fn sp_hiss_on(on: i32);
 +        pub fn sp_stream_ready() -> i32;
 +        pub fn sp_stream_end();
 +        pub fn sp_stream_info(overruns: *mut i32) -> i32;
@@ -3111,6 +3122,13 @@ index 0000000..8936b0a
 +            rearm = true;
 +        }
 +        KeyId::Digit4 => p.emphasis = !p.emphasis,
++        #[cfg(feature = "hiss")]
++        KeyId::Digit6 => {
++            let on = unsafe { ffi::sp_hiss() } == 0;
++            unsafe { ffi::sp_hiss_on(on as i32) };
++            report_line(format_args!("K6 HISS band={}", on as u8));
++        }
++        #[cfg(not(feature = "hiss"))]
 +        KeyId::Digit6 => p.raw_view = !p.raw_view,
 +        KeyId::Digit7 => {
 +            p.len_mode = (p.len_mode + 1) % 2; // 2-3 were stream mode
@@ -6365,10 +6383,10 @@ index cdfa0f7..91caa2f 100644
      display.flush();
 diff --git a/src/ui/pager.rs b/src/ui/pager.rs
 new file mode 100644
-index 0000000..84c730f
+index 0000000..54b172e
 --- /dev/null
 +++ b/src/ui/pager.rs
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,282 @@
 +//! VOICE MSG screen (app/pager.rs): link settings, message progress, the
 +//! last packet's sync / CRC / magic, and after a playback the decoder's time
 +//! per 20 ms frame and the free RAM, for the first on-air tests.
@@ -6442,7 +6460,11 @@ index 0000000..84c730f
 +        write!(b, " MHz").ok();
 +    } else {
 +        let hz = app.master_freq_hz();
-+        write!(b, "VOICE MSG {:>4}.{:05}", hz / 1_000_000, (hz % 1_000_000) / 10).ok();
++        #[cfg(feature = "hiss")]
++        let title = if app::pager::hiss_band_on() { "VOICE MSG" } else { "NO HISS  " };
++        #[cfg(not(feature = "hiss"))]
++        let title = "VOICE MSG";
++        write!(b, "{} {:>4}.{:05}", title, hz / 1_000_000, (hz % 1_000_000) / 10).ok();
 +    }
 +    line(lcd, 9, b.as_str());
 +

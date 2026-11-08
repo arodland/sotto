@@ -627,6 +627,11 @@ int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
 }
 #endif
 
+#ifdef SP_HISS
+int sp_hiss(void) { return !sotto_hiss_mute; }
+void sp_hiss_on(int on) { sotto_hiss_mute = !on; }
+#endif
+
 void sp_set_stream(int on) { stream_on = on != 0; }
 int sp_stream(void) { return stream_on; }
 int sp_stream_ready(void) { return ring && S.st.have && MSG_PLAYS && avail > 0; }
