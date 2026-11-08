@@ -10,7 +10,7 @@
    writes at run time, then tries the remap, faults once on purpose and returns, and puts
    everything back. Receive only, touches no radio register. Says (under 60 characters):
      vec cfgr1=00000000 ram=30/30 alias=1 fault=1 back=1
-   cfgr1: SYSCFG CFGR1 as found; ram: words of 0x20000000-0x200000BF that took two patterns, of
+   cfgr1: SYSCFG CFGR1 as found (00000002 on the K6, 2026-11-08 17:43Z: MEM_MODE 10, main flash); ram: words of 0x20000000-0x200000BF that took two patterns, of
    48; alias: address 0 read the SRAM copy once remapped; fault: the deliberate UDF reached this
    module's handler (it skips the instruction and returns); back: MEM_MODE and the RAM restored.
    If the remap or the fault goes wrong the radio hangs (no transmitter is on): power-cycle it.
@@ -68,7 +68,8 @@ int k6_main(const k6_api_t *api) {
   wr(RCC_APB2ENR, apb2 | 1u);                 /* SYSCFG's clock */
   cfgr1 = rd(SYSCFG_CFGR1);
   alias = fault = 0;
-  if (ok == NVEC && (cfgr1 & 3u) == 0) {
+  /* MEM_MODE x0 is main flash at 0 (the K6 reads 2: the boot pins' value), 01 system flash */
+  if (ok == NVEC && (cfgr1 & 1u) == 0) {
     for (i = 0; i < NVEC; i++) wr(SRAM0 + 4u * i, rd(BOOT_VEC + 4u * i));
     wr(SRAM0 + 12u, (uint32_t)(uintptr_t)&vp_fault | 1u);
     wr(FLAG, 0);
