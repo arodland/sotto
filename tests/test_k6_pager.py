@@ -579,12 +579,23 @@ def test_pause_frames_compact_and_expand(codec):
     assert len(ex) == len(fr) and good.all()
     pc = [pager.pause_count(c[i:i + 6]) for i in range(0, len(c), 6)]
     assert sum(pc) == saved + sum(1 for k in pc if k)
-    # every slot is the original or (inside a pause) the run's first slot again, and the decoder's
-    # voicing state after each run is the original's
+    # every slot is the original or (inside a pause) the run's first slot again with its energy
+    # code stepping down to 0, and the decoder's voicing state after each run is the original's
     e = pager.energy_codes(fr, codec)
+    ee = pager.energy_codes(ex, codec)
+    mask = ~(0x1F << 34)
+    held = None
     for i in range(0, len(fr), 6):
         if ex[i:i + 6] != fr[i:i + 6]:
             assert e[i // 6] <= 30 - pager.TRIM_BELOW or e[i // 6] == 0
+            v, h = int.from_bytes(ex[i:i + 6], "big"), int.from_bytes(ex[held:held + 6], "big")
+            assert v & mask == h & mask                 # the run's first slot, its energy aside
+            prev = ee[i // 6 - 1]
+            assert ee[i // 6] == (prev - pager.PAUSE_FADE[codec] if prev > pager.PAUSE_FADE[codec] else 0)
+        else:
+            held = i
+    assert (ee[1:] < ee[:-1]).sum() > 20                 # some fades happened
+    assert pager.fade_slot(pager.fade_slot(fr[:6], 3), 40) == pager.fade_slot(fr[:6], 31)
     st_a = st_b = 0
     for i in range(0, len(fr), 6):
         st_a = pager._prev_v(st_a, pager._voicing_codes(fr[i:i + 6], codec))

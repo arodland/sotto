@@ -278,6 +278,10 @@ def trim_silence(frames, codec="2400", keep_s=0.06, below=TRIM_BELOW):
 PAUSE_MARKER = 0xA5304B      # bits 32-33 (1200 voicing B) = 00, bits 37-39 (1200 energy B step) = 000
 PAUSE_MAX = 1023
 PAUSE_CODECS = ("2400", "1200")
+# The fill fades (K6 from 2026-11-08; Jeff heard a quiet slot held for 0.56 s as a 25 Hz loop):
+# each replay's energy code (bits 9-13, 2.26 dB a code) is PAUSE_FADE codes below the last, down
+# to 0 (silence): about 27 dB in the first 120 ms. c/k6/sotto_pager.c does the same.
+PAUSE_FADE = {"2400": 2, "1200": 4}      # codes per replay (a 20 ms frame, a 40 ms slot)
 _PAUSE_HEAD = 0x3F80         # bits 0-13: voicing 00, Wo 1111111, energy 00000 (as the top 14 of 16)
 
 
@@ -295,6 +299,14 @@ def pause_count(slot):
     if v >> 34 != _PAUSE_HEAD >> 2 or v & 0xFFFFFF != PAUSE_MARKER:
         return 0
     return v >> 24 & 0x3FF
+
+
+def fade_slot(slot, codes):
+    """The 6-byte slot with its energy code (bits 9-13) `codes` lower, not below 0."""
+    v = int.from_bytes(bytes(slot), "big")
+    e = v >> 34 & 0x1F
+    e = e - codes if e > codes else 0
+    return (v & ~(0x1F << 34) | e << 34).to_bytes(6, "big")
 
 
 def _voicing_codes(slot, codec):
@@ -373,7 +385,8 @@ def compact_pauses(frames, codec="2400", below=TRIM_BELOW, min_run=4):
 
 def expand_pauses(frames, good=None, codec="2400"):
     """Undo compact_pauses as the K6 plays it: each good pause frame becomes N copies of the last
-    real slot before it, with that slot's good flag. -> (frames, good as uint8)."""
+    real slot before it, with that slot's good flag, each PAUSE_FADE energy codes quieter than
+    the one before (fade_slot). -> (frames, good as uint8)."""
     sl = _split(frames)
     good = np.ones(len(sl), np.uint8) if good is None else np.asarray(good, np.uint8)
     if codec not in PAUSE_CODECS:
@@ -382,7 +395,10 @@ def expand_pauses(frames, good=None, codec="2400"):
     for f, g in zip(sl, good):
         k = pause_count(f) if g else 0
         if k and last is not None:
-            out += [last[0]] * k
+            held = last[0]
+            for _ in range(k):
+                held = fade_slot(held, PAUSE_FADE[codec])
+                out.append(held)
             og += [last[1]] * k
         else:
             out.append(f)
