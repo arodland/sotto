@@ -348,3 +348,22 @@ int rt_cw_apply(rt_t *t, uint32_t rx_hz, uint32_t tol, const char *call, uint8_t
   if (out) cp(out, &r);
   return res == RT_CW_FILL ? RT_CW_FILL : RT_CW_CHANGED;
 }
+
+int rt_heard_apply(rt_t *t, uint32_t rx_hz, uint32_t tol, uint16_t tone, int dmr, rt_rec_t *out) {
+  rt_rec_t r;
+  int res = RT_TONE_SAME, e, write = 0;
+  if (rt_find(t, 0, rx_hz, tol, &r) < 0) return RT_TONE_NO_ENTRY;
+  if (tone && r.rx_tone != tone) {
+    if (r.rx_tone) {
+      res = RT_TONE_DIFFERS;
+    } else {
+      r.rx_tone = tone;
+      if (!r.tx_tone) r.tx_tone = tone;
+      res = RT_TONE_FILL, write = 1;
+    }
+  }
+  if (dmr && !(r.flags & RT_F_DMR)) r.flags |= RT_F_DMR, write = 1;
+  if (write && (e = rt_put(t, &r)) < 0) return e;
+  if (out) cp(out, &r);
+  return res;
+}

@@ -93,7 +93,9 @@ done:
   return ok;
 }
 
-int xl_step(xl_t *x) {
+int xl_step(xl_t *x) { return xl_step_w(x, 0, 0); }
+
+int xl_step_w(xl_t *x, xl_wait_fn wait, void *c) {
   const k6_api_t *api = x->api;
   uint32_t t0 = api->ms() - x->start, t = t0;
   int res = XL_RUN;
@@ -115,7 +117,10 @@ int xl_step(xl_t *x) {
     }
     {
       uint32_t used = api->ms() - x->start - t;
-      if (used < XL_POLL_MS) api->delay_us((XL_POLL_MS - used) * 1000u);
+      if (used < XL_POLL_MS) {
+        if (wait) wait(c, (XL_POLL_MS - used) * 1000u);
+        else api->delay_us((XL_POLL_MS - used) * 1000u);
+      }
     }
     t = api->ms() - x->start;
   }

@@ -147,7 +147,10 @@ On the emulated Cortex-M0 (`tests/k6_live_emu.py`'s CPU and DMA model, calibrate
 
 ## How it fits EXPLORE and the listener
 
-- **EXPLORE (firmware, after the bench run):** when it listens to a row, run the detector
+- **EXPLORE: built (2026-11-08, `c/k6/xdmr.c`, docs/k6-explore-app.md "DMR mute and the CTCSS
+  read").** Every listen runs the detector alongside the CW ID listener, mutes DMR on the
+  speaker, marks the row DMR and sets the saved entry's `RT_F_DMR`. The plan was:
+  when it listens to a row, run the detector
   alongside the CW ID listener. The CW ID decoder uses the FD6818's tone detector, not the
   audio, so muting doesn't affect it. A row that confirms DMR gets a DMR mark, and its
   table record a mode flag and later the colour code (byte 53 is spare,

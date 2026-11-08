@@ -4350,10 +4350,10 @@ index 0000000..5716e7e
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..66c2158
+index 0000000..6538c4b
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1601 @@
+@@ -0,0 +1,1715 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4579,6 +4579,16 @@ index 0000000..66c2158
 +            confirmed: i32,
 +            out: *mut RtRec,
 +        ) -> i32;
++        pub fn rt_heard_apply(t: *mut Rt, rx_hz: u32, tol: u32, tone: u16, dmr: i32, out: *mut RtRec) -> i32;
++        pub fn ex_tone(e: *mut Ex, hz: u32, tone: u16);
++        pub fn xd_state_bytes() -> u32;
++        pub fn xd_start(s: *mut u8, api: *const K6Api, spk: i32, cps8: u32);
++        pub fn xd_step(s: *mut u8, x: *mut u8) -> i32;
++        pub fn xd_stop(s: *mut u8) -> i32;
++        pub fn xd_flags(s: *const u8) -> u32;
++        pub fn xd_adj(s: *const u8) -> i32;
++        pub fn xd_rate8(s: *const u8) -> u32;
++        pub fn xd_tone(s: *const u8) -> u32;
 +    }
 +}
 +use ffi::{Cand, Ex, Rt, RtFlash, RtRec, Seg, XsHead, XsInfo, XlInfo};
@@ -4609,6 +4619,14 @@ index 0000000..66c2158
 +const EX_F_KNOWN: u8 = 0x20;
 +/// known_calls has looked this one up in the table (a bit c/k6/explore.h leaves free)
 +const EX_F_LOOKED: u8 = 0x40;
++/// a listen heard DMR syncs there (c/k6/explore.h EX_F_DMR, set from c/k6/xdmr.c's xd_flags)
++const EX_F_DMR: u8 = 0x80;
++const XD_NOW: u32 = 1;
++const XD_EVER: u32 = 2;
++const RT_TONE_FILL: i32 = 2;
++const RT_TONE_DIFFERS: i32 = 3;
++/// dB the listen's frozen receiver gain adds to RSSI reads (xd_adj), taken off by rssi_dbm
++static mut DMR_ADJ: i16 = 0;
 +/// the saved table's frequencies, for the new / known rule on the list (more stay unmarked)
 +const KNOWN_N: usize = 64;
 +static mut KNOWN: [u32; KNOWN_N] = [0; KNOWN_N];
@@ -4701,6 +4719,12 @@ index 0000000..66c2158
 +    mid: bool,
 +    /// the sweep was left for Try or Listen: its segment reads its floor again on the way back
 +    resume: bool,
++    /// Listen for ID's side detectors (c/k6/xdmr.c: DMR mute, the CTCSS read): their state at the
++    /// end of the message store (null: no room, listens run without them), the DMA rate the last
++    /// listen measured, and whether DMR is on now (for the header)
++    xd: *mut u8,
++    cps8: u32,
++    dmr_now: bool,
 +}
 +
 +static mut S: State = State {
@@ -4747,6 +4771,9 @@ index 0000000..66c2158
 +    watch: [(0, 0); 4],
 +    mid: false,
 +    resume: false,
++    xd: null_mut(),
++    cps8: 0,
++    dmr_now: false,
 +};
 +
 +/// the C side's ms (module API time), kept by mod_tick
@@ -4756,7 +4783,7 @@ index 0000000..66c2158
 +
 +fn rssi_dbm(app: &mut App, syst: &mut SYST) -> i16 {
 +    let v = app.radio.fd6818.reg_read(syst, 0x67);
-+    (((v & 0x1FF) >> 1) as i16) - 174
++    (((v & 0x1FF) >> 1) as i16) - 174 - unsafe { DMR_ADJ }
 +}
 +
 +fn st() -> &'static mut State {
@@ -4908,7 +4935,15 @@ index 0000000..66c2158
 +    let xs_bytes = (unsafe { ffi::xs_state_bytes() } as usize + 3) & !3;
 +    t.xs = store;
 +    let cands = unsafe { store.add(xs_bytes) } as *mut Cand;
-+    let cap = ((STORE_BYTES - xs_bytes) / core::mem::size_of::<Cand>()).min(CAP);
++    // the side detectors' state at the store's end, if the candidates can spare it
++    let xd_bytes = (unsafe { ffi::xd_state_bytes() } as usize + 3) & !3;
++    let room = STORE_BYTES - xs_bytes;
++    let cap = (room.saturating_sub(xd_bytes) / core::mem::size_of::<Cand>()).min(CAP);
++    t.xd = if room >= xd_bytes + cap * core::mem::size_of::<Cand>() {
++        unsafe { store.add(STORE_BYTES - xd_bytes) }
++    } else {
++        null_mut()
++    };
 +    unsafe {
 +        ffi::ex_init(&mut t.ex, cands, cap as u32);
 +        ffi::ex_known_store(&mut t.ex, addr_of_mut!(KNOWN) as *mut u32, KNOWN_N as u32);
@@ -4937,8 +4972,8 @@ index 0000000..66c2158
 +    start_band(t.band);
 +    ctx_off();
 +    say(format_args!(
-+        "K6 EX enter cap={} rt={} live={} repairs={} xl={}",
-+        cap, t.rt_res, t.rt.live, t.rt.repairs, unsafe { ffi::xl_state_bytes() }
++        "K6 EX enter cap={} rt={} live={} repairs={} xl={} xd={}",
++        cap, t.rt_res, t.rt.live, t.rt.repairs, unsafe { ffi::xl_state_bytes() }, if t.xd.is_null() { 0 } else { xd_bytes }
 +    ));
 +    if t.rt_res < 0 {
 +        note(if t.rt_res == -5 { "TABLE AREA NOT BLANK" } else { "TABLE READ FAILED" });
@@ -5010,8 +5045,9 @@ index 0000000..66c2158
 +        }
 +        View::Listen => {
 +            ctx_on(app, syst);
-+            let r = unsafe { ffi::xl_step(t.xl) };
++            let r = if t.xd.is_null() { unsafe { ffi::xl_step(t.xl) } } else { unsafe { ffi::xd_step(t.xd, t.xl) } };
 +            ctx_off();
++            dmr_seen();
 +            if r == XL_OK || r == XL_TIME {
 +                listen_end(app, syst, r);
 +            } else if t.auto_now {
@@ -5085,6 +5121,7 @@ index 0000000..66c2158
 +        View::Listen => {
 +            // any other key ends the listen
 +            ctx_on(app, syst);
++            side_end();
 +            unsafe { ffi::xl_stop(t.xl, 3) };
 +            ctx_off();
 +            monitor_off(app, syst);
@@ -5189,6 +5226,7 @@ index 0000000..66c2158
 +    t.auto_now = false;
 +    ctx_on(app, syst);
 +    unsafe { ffi::xl_start(t.xl, &MOD_API, t.hz, LISTEN_S) };
++    side_start(true);
 +    ctx_off();
 +    t.view = View::Listen;
 +}
@@ -5244,6 +5282,7 @@ index 0000000..66c2158
 +    }
 +    ctx_on(app, syst);
 +    unsafe { ffi::xl_start(t.xl, &MOD_API, t.hz, t.auto_max_s) };
++    side_start(t.auto_spk);
 +    ctx_off();
 +    say(format_args!("K6 EX auto {} listens={} heard={} max={}", t.hz, c.listens, c.heard_s, t.auto_max_s));
 +    t.view = View::Listen;
@@ -5332,6 +5371,72 @@ index 0000000..66c2158
 +    }
 +}
 +
++/// The listen's side detectors on (inside ctx_on, after xl_start): DMR mutes the speaker when the
++/// listen plays on it (spk), the CTCSS read runs throughout
++fn side_start(spk: bool) {
++    let t = st();
++    t.dmr_now = false;
++    if t.xd.is_null() {
++        return;
++    }
++    unsafe {
++        ffi::xd_start(t.xd, &MOD_API, spk as i32, t.cps8);
++        DMR_ADJ = ffi::xd_adj(t.xd) as i16;
++    }
++}
++
++/// After a listen step: DMR heard marks the row (once), and the header follows DMR on and off
++fn dmr_seen() {
++    let t = st();
++    if t.xd.is_null() {
++        return;
++    }
++    let f = unsafe { ffi::xd_flags(t.xd) };
++    if (f & XD_NOW != 0) != t.dmr_now {
++        t.dmr_now = f & XD_NOW != 0;
++        t.dirty = true;
++    }
++    if f & XD_EVER != 0 {
++        let p = unsafe { ffi::ex_find(&mut t.ex, t.hz) };
++        if !p.is_null() && unsafe { (*p).flags } & EX_F_DMR == 0 {
++            unsafe { (*p).flags |= EX_F_DMR };
++            say(format_args!("K6 EX dmr {}", t.hz));
++            t.dirty = true;
++        }
++    }
++}
++
++/// The listen's side detectors off (inside ctx_on, before xl_stop): the tone heard goes on the
++/// row, and with DMR into the saved entry by the rule for calls (Jeff 2026-11-07): a blank tone
++/// fills, a different one is shown, not written (rt_heard_apply)
++fn side_end() {
++    let t = st();
++    t.dmr_now = false;
++    if t.xd.is_null() {
++        return;
++    }
++    let (tone, dmr) = unsafe { (ffi::xd_tone(t.xd) as u16, ffi::xd_flags(t.xd) & XD_EVER != 0) };
++    unsafe {
++        t.cps8 = ffi::xd_rate8(t.xd);
++        ffi::xd_stop(t.xd);
++        DMR_ADJ = 0;
++    }
++    if tone != 0 {
++        unsafe { ffi::ex_tone(&mut t.ex, t.hz, tone) };
++    }
++    if t.rt_res < 0 || (tone == 0 && !dmr) {
++        return;
++    }
++    let mut rec: RtRec = unsafe { core::mem::zeroed() };
++    let k = unsafe { ffi::rt_heard_apply(&mut t.rt, t.hz, RT_TOL_HZ, tone, dmr as i32, &mut rec) };
++    say(format_args!("K6 EX heard {} tone={} dmr={} rt={} saved_tone={}", t.hz, tone, dmr as u8, k, rec.rx_tone));
++    if k == RT_TONE_FILL {
++        note("TONE SAVED");
++    } else if k == RT_TONE_DIFFERS {
++        note("TONE DIFFERS FROM SAVED");
++    }
++}
++
 +/// An automatic listen ended: the next pick waits for a whole pass, and the time it took counts
 +/// against the station's next cap (ex_listen_cap).
 +fn auto_done() {
@@ -5354,10 +5459,9 @@ index 0000000..66c2158
 +    let t = st();
 +    let mut info: XlInfo = unsafe { core::mem::zeroed() };
 +    ctx_on(app, syst);
-+    unsafe {
-+        ffi::xl_info(t.xl, &mut info);
-+        ffi::xl_stop(t.xl, r);
-+    }
++    unsafe { ffi::xl_info(t.xl, &mut info) };
++    side_end();
++    unsafe { ffi::xl_stop(t.xl, r) };
 +    let auto = core::mem::take(&mut t.auto_now);
 +    if auto {
 +        auto_done();
@@ -5739,6 +5843,9 @@ index 0000000..66c2158
 +            }
 +        } else if c.call[0] != 0 {
 +            Text::with_baseline(cstr(&c.call), Point::new(x, y), st, Baseline::Top).draw(lcd).ok();
++        } else if c.flags & EX_F_DMR != 0 {
++            // DMR heard, no ID yet (Jeff 2026-11-08: detect DMR and mute it)
++            Text::with_baseline("DMR", Point::new(x, y), st, Baseline::Top).draw(lcd).ok();
 +        }
 +    }
 +}
@@ -5861,7 +5968,11 @@ index 0000000..66c2158
 +                if c.flags & EX_F_SPUR != 0 {
 +                    write!(b, "{} dBm  birdie, not a station", c.hi).ok();
 +                } else {
-+                    write!(b, "{} dBm  score {}  {} overs", c.hi, c.score, c.overs).ok();
++                    if c.tone != 0 {
++                        write!(b, "{} dBm  score {}  tone {}.{}", c.hi, c.score, c.tone / 10, c.tone % 10).ok();
++                    } else {
++                        write!(b, "{} dBm  score {}  {} overs", c.hi, c.score, c.overs).ok();
++                    }
 +                }
 +            } else {
 +                write!(b, "listening...").ok();
@@ -5918,6 +6029,9 @@ index 0000000..66c2158
 +                fill(lcd, 0, 10, BinaryColor::On);
 +                ditdah(lcd, now_ms() / 1000 % 2 == 1);
 +                mhz(&mut b, t.hz);
++                if t.dmr_now {
++                    write!(b, " DMR").ok();
++                }
 +                head_text(lcd, 15, b.as_str());
 +                watch(lcd, info.ms, if t.auto_now { t.auto_max_s } else { LISTEN_S } * 1000);
 +            }
