@@ -598,27 +598,27 @@ def voice_call_symbols(cc=1, tg=91, src=3112345, superframes=4, alias=None, seed
 
 # ---- a stream of bursts: polarity, voice superframes, calls ----
 
-def stream_polarity(y, syncs, layout="dpp"):
+def stream_polarity(y, syncs, layout="dpp", sps=SPS):
     """the input's polarity: each sync read as a data sync must give a clean slot type"""
     votes = 0
     for s0, fam, sign, r in syncs:
-        sym, _ = burst_symbols(y, s0, pol=-sign)
+        sym, _ = burst_symbols(y, s0, sps, pol=-sign)
         if sym is not None and golay_decode(split(sym)["slot"], layout)[1] == 0:
             votes -= sign
     return 1 if votes >= 0 else -1
 
 
-def decode_stream(y, layout="dpp", thr=0.85):
+def decode_stream(y, layout="dpp", thr=0.85, sps=SPS):
     """matched-filtered samples -> (polarity, [event dicts]): data bursts as decode_burst plus
     t, slot and soft values; voice bursts A with the EMBs of B-F and their embedded LC"""
-    syncs = find_syncs(y, thr=thr)
-    pol = stream_polarity(y, syncs, layout)
+    syncs = find_syncs(y, sps, thr=thr)
+    pol = stream_polarity(y, syncs, layout, sps)
     ev = []
     for s0, fam, sign, r in syncs:
-        sym, u = burst_symbols(y, s0, pol=pol)
+        sym, u = burst_symbols(y, s0, sps, pol=pol)
         if sym is None:
             continue
-        t = s0 / (SPS * dmr.BAUD)
+        t = s0 / (sps * dmr.BAUD)
         if sign * pol < 0:
             d = decode_burst(sym, layout)
             if d["golay_err"] > 3:
@@ -626,10 +626,10 @@ def decode_stream(y, layout="dpp", thr=0.85):
             d.update(t=t, fam=fam, kind="data", u=u, rho=r)
         else:
             d = {"t": t, "fam": fam, "kind": "voice", "tact": tact(split(sym)["cach"]), "rho": r}
-            ref = burst_ref(y, s0, pol=pol)
+            ref = burst_ref(y, s0, sps, pol=pol)
             frags = []
             for k in range(1, 6):
-                sk, _ = burst_symbols(y, s0 + 288 * SPS * k, pol=pol, ref=ref)
+                sk, _ = burst_symbols(y, s0 + 288 * sps * k, sps, pol=pol, ref=ref)
                 if sk is None:
                     break
                 mid = split(sk)["mid"]

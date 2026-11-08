@@ -108,3 +108,71 @@ def test_combining_at_the_k6_bench_level():
     _, c = call_of(dd.counts_symbols(dmr.to_counts(s, 48.0, seed=4)))
     cb = c[0]["combined"]
     assert cb["rs_ok"] and (cb["dst"], cb["src"]) == (3027, 3027436) and c[0]["n_comb"] >= 3
+
+
+def burst_lib():
+    """c/k6/dmrburst.h built for the host, or None without a compiler"""
+    import ctypes
+    import shutil
+    import subprocess
+    import tempfile
+    if not shutil.which("cc"):
+        return None
+    k6 = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "c", "k6")
+    so = os.path.join(tempfile.mkdtemp(), "dmrburst.so")
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-o", so,
+                    os.path.join(k6, "dmrburst_host.c")], check=True)
+    return ctypes.CDLL(so)
+
+
+def test_c_codes_match_python():
+    import ctypes
+    import pytest
+    lib = burst_lib()
+    if lib is None:
+        pytest.skip("no cc")
+    u8 = lambda a: (ctypes.c_uint8 * len(a))(*[int(v) for v in a])     # noqa: E731
+    err = ctypes.c_int()
+    rng = np.random.default_rng(5)
+    for v in rng.integers(0, 256, 30):
+        w = int(dd.GOLAY["dpp"][v])
+        b = np.array([(w >> (19 - i)) & 1 for i in range(20)], np.uint8)
+        b[rng.integers(20, size=3)] ^= 1
+        assert lib.h_slot(u8(b), ctypes.byref(err)) == dd.golay_decode(b)[0] and err.value == dd.golay_decode(b)[1]
+    for d in rng.integers(0, 128, 30):
+        e = dd.emb_encode(d >> 3, d & 3, (d >> 2) & 1)
+        e[rng.integers(16)] ^= 1
+        mid = np.concatenate([e[:8], rng.integers(0, 2, 32), e[8:]])
+        assert lib.h_emb(u8(mid), ctypes.byref(err)) == d and err.value == 1
+    out = (ctypes.c_uint8 * 12)()
+    for k in range(20):
+        kind = ("voice_hdr", "term")[k & 1]
+        by = rng.integers(0, 256, 9)
+        b = dd.bptc196_encode(dd.lc_encode(by[0] & 63, int(by[3]) << 16 | int(by[4]) << 8 | int(by[5]),
+                                           int(by[6]) << 16 | int(by[7]) << 8 | int(by[8]), int(by[1]),
+                                           int(by[2]), kind))
+        if k % 3:
+            b[rng.integers(196)] ^= 1
+        assert lib.h_bptc196(u8(b), out) == 0
+        data, _, _ = dd.bptc196(b)
+        assert list(out) == dd.lc_bytes(data)
+        assert lib.h_rs_ok(out, dd.MASK[kind]) == 1 and lib.h_rs_ok(out, dd.MASK[kind] ^ 1) == 0
+    o9 = (ctypes.c_uint8 * 9)()
+    for k in range(20):
+        by = [int(v) for v in rng.integers(0, 256, 9)]
+        f = dd.emb_lc_encode(by)
+        if k % 2:
+            f[rng.integers(128)] ^= 1
+        assert lib.h_emb_lc(u8(f), o9) == 1 and list(o9) == by
+        f[rng.integers(128, size=4)] ^= 1
+        assert lib.h_emb_lc(u8(f), o9) == int(dd.emb_lc_decode(f)[1])
+    for _ in range(10):
+        by = [int(v) for v in rng.integers(0, 256, 10)]
+        for i, x in ((0, 0), (0, 0xFFFF), (0xFFFF, 0)):
+            assert lib.h_crc16(u8(by), 10, i, x) == dd.crc_ccitt(bytes(by), i, x)
+    cach = np.zeros(24, np.uint8)
+    t = np.array([1, 0, 1, 1], np.uint8)
+    cach[dd.TACT_POS] = list(t) + [t[0] ^ t[1] ^ t[2], t[1] ^ t[2] ^ t[3], t[0] ^ t[1] ^ t[3]]
+    assert lib.h_tact(u8(cach)) == 0b1011
+    cach[4] ^= 1
+    assert lib.h_tact(u8(cach)) == -1
