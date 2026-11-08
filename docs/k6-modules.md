@@ -48,7 +48,7 @@ The chunks' data, in order, is the image (the last chunk padded with zeros):
 | 4 | code length, u16 little-endian |
 | 6 | entry offset in the code, u16, even |
 | 8 | serial, u32: must be newer than the last module this boot ran |
-| 12 | API level the module needs (1 to 6; a K6 refuses a newer one), flags (0), telemetry parts (0-12, level 4 images; see below), 1 reserved byte |
+| 12 | API level the module needs (1 to 7; a K6 refuses a newer one), flags (0), telemetry parts (0-12, level 4 images; see below), 1 reserved byte |
 | 16 | code: Thumb, position-independent, no writable statics |
 | 16 + code length | SipHash-2-4 tag of bytes 0 .. 15 + code length, u64 little-endian |
 
@@ -163,6 +163,28 @@ screen only when it is 6 or more; its `K6_MODULE_LEVEL` stays what its other cal
 `wsprtx` (level 3) and `wspriq` (level 2) run on today's images without a screen and draw one
 on a level 6 image. The emulators (`tests/test_k6_i2s.py` `run(lcd=...)`, `tests/test_k6_ft8.py`
 `emulate(lcd=...)`) record each flushed frame, and fail a screen call below level 6.
+
+## API level 7: the green RX LED
+
+Added 2026-11-08 (Jeff: "indicate modem receive activity by blinking the green LED in the front
+of the radio by the volume knob"). The LED is MCU pin PA3 (Aura's `G_LED`, push-pull, active
+high; stock Aura lights it while the squelch is open, which main skips in pager mode, so in
+VOICE MSG the pin is free). One call, `led(on)`: 1 lit, 0 dark. The core puts it out when the
+module returns.
+
+The pager itself blinks it once a packet while its modem receives (no module needed):
+
+- **Chip FSK packets** (PHY F and D: voice messages, control packets, module chunks): lit at a
+  packet's sync (or its first FIFO-full), dark 120 ms later. A burst at PHY F (a packet every
+  391 ms) blinks about 2.5 times a second. A false sync on noise blinks it once.
+- **The coded 4FSK session** (PHY G, `c/k6/ifpager.c`): lit at each sync word, dark 120 ms
+  later, through the same `api->led` (the session gets the module table); a packet every
+  0.92 s at rate 1/2. The check runs with the session's key poll (every 256 counts, about
+  3 ms), away from the receiver's bursts. `test_session_blinks_the_led_once_a_packet` checks
+  the pattern on the emulated M0 and that the session keeps its CPU margin.
+
+A module reads `api->level` and calls `led` only on 7 or more, as with the screen; the
+emulator (`tests/k6_live_emu.py`, `api_level=7`) records each call as `(ms, on)`.
 
 ## Security
 

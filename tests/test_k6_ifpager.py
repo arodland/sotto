@@ -307,3 +307,29 @@ def test_session_yields_inside_the_store():
     ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0, fdma=5.773e6, flash_cpi=2.0, flags=2)
     f = dict(kv.split("=") for kv in said[-1].split()[2:])
     assert ret == 0 and got == [] and int(f["syncs"]) == len(pk), said
+
+
+@need_clang
+def test_session_blinks_the_led_once_a_packet():
+    """API level 7 (the green RX LED, 2026-11-08): the session lights it at each sync word and
+    puts it out 120 ms later, one blink a packet (0.92 s apart at rate 1/2), dark at the end;
+    with the CPU still to spare and every packet handed over. Level 4 tables never call it"""
+    pytest.importorskip("unicorn")
+    import k6_live_emu as emu
+    pk = message(4)
+    leds = []
+    ret, said, used, got = emu.run_ifpager(pk, cn0=55.0, f_off=-164.0, fdma=5.9e6, flash_cpi=2.0,
+                                          api_level=7, leds=leds)
+    f = dict(kv.split("=") for kv in said[-1].split()[2:])
+    assert ret == len(pk) and got == pk and int(f["L"]) == 0, said
+    assert int(f["i"]) >= 20, said
+    ons = [t for t, on in leds if on]
+    offs = [t for t, on in leds if not on]
+    assert len(ons) == len(pk) == len(offs), leds
+    assert [on for _, on in leds] == [1, 0] * len(pk), leds
+    for a, b in zip(ons, offs):
+        assert 115 <= b - a <= 140, leds                 # 120 ms, checked every ~3 ms
+    assert all(b - a > 800 for a, b in zip(ons, ons[1:])), leds
+    leds = []
+    emu.run_ifpager(pk[:1], cn0=55.0, f_off=-164.0, fdma=5.9e6, flash_cpi=2.0, leds=leds)
+    assert leds == []

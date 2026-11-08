@@ -189,6 +189,8 @@ int ifp_sym(ifp_t *p, int tone, const uint32_t met[4]) {
 /* the burst is over after this many symbols with no sync word: two packets' time (and the
    rest of a 2 s lead before the first) */
 #define END_SYMS(rate) (2 * (IFP_SYMS(rate) + IFP_SYNC_LEN))
+#define LED_MS 120u    /* the green RX LED lit from each sync word (api->led, level 7): one blink a
+                          packet, as the chip FSK packets blink it */
 #define FIRST_SYMS(rate) (2400 + END_SYMS(rate))
 
 static uint32_t rd(uint32_t a) { return *(volatile uint32_t *)a; }
@@ -345,8 +347,9 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
   svc_t s;
   ifp_t p;
   int nodec = flags & IFP_NODECODE;
-  uint32_t k = 0, kq = 0, idle = 0, bp = 0, bt = 0, t0 = api->ms();
-  int r = 0;
+  uint32_t k = 0, kq = 0, idle = 0, bp = 0, bt = 0, t0 = api->ms(), now, led_t = 0, led_n = 0;
+  int r = 0, lit = 0;
+  void (*led)(int) = api->level >= 7 ? api->led : 0;
   uint32_t code[IFP_RAM_MAX / 4];
   ifrx_zero(&s, sizeof(s) / 4);
   s.p = &p, s.res = res, s.rb = rb, s.cnt = count, s.ks = KS0 * 16;
@@ -411,9 +414,19 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
       r = -2;
       break;
     }
-    if (api->ms() - t0 > max_ms) break;
+    now = api->ms();
+    if (now - t0 > max_ms) break;
+    /* the LED: on at each sync word, off LED_MS later (a call only when it changes) */
+    if (led) {
+      if (p.syncs != led_n) {
+        led_n = p.syncs, led_t = now;
+        if (!lit) lit = 1, led(1);
+      } else if (lit && now - led_t >= LED_MS) {
+        lit = 0, led(0);
+      }
+    }
     if (!s.locked) {
-      if (api->ms() - t0 > wait_ms) {
+      if (now - t0 > wait_ms) {
         r = -6;
         break;
       }
@@ -422,6 +435,7 @@ IFRX_NOINLINE static int run(const k6_api_t *api, uint8_t *rb, uint32_t wait_ms,
     if (p.syncs ? p.syms - p.last_sync > END_SYMS(p.rate) : p.syms - s.lock_sym > FIRST_SYMS(p.rate)) break;
   }
   stop();
+  if (lit) led(0);
 #ifdef SP_PKT_YIELD
   sp_set_packet_yield(0, 0);
 #endif
