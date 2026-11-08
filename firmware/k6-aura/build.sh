@@ -301,6 +301,7 @@ spksweep
 surf           # level 6, docs/k6-surf.md
 surfauto       # level 6, docs/k6-surf.md
 vecprobe       # level 1, can Aura catch its own HardFaults (docs/k6-modules.md)
+vectab         # level 1, is 0x08000000's vector table the live one (hal::txdog)
 wsprbcn
 wspriq
 wsprtx

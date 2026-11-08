@@ -228,6 +228,13 @@ no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated 
   checks the same before an ARQ key-up, and won't key up on a status with `have > count`. A
   module must show real headroom in the emulator (about 512 B or more at its deepest) with the
   stack the target image gives it before it goes on air.
+- **txdog is OFF for now (2026-11-08 19:51Z).** The first voice image with it on (acd06ba)
+  reset in a loop about 5 times a second, before its first serial line; `k6_update.py --manual`
+  caught one of the bootloader's 200 ms windows and flashed 843b8e0 back with no hands on the
+  radio. `REMAP = false` in txdog.rs keeps the table out (the boot line says `K6 TXDOG OFF`, now on
+  the serial report: the debug UART prints nothing in release builds). Suspect: the copy from
+  0x08000000 isn't the live table, which vecprobe couldn't see (it only took a HardFault through
+  it, never an IRQ). The `vectab` module compares the two on the radio.
 - **txdog: faults and hung key-ups reboot the radio** (`hal::txdog` in the Aura patch). The
   `vecprobe` module showed on the K6 (2026-11-08 17:51Z, `alias=1 fault=1 back=1`) that SYSCFG
   CFGR1 MEM_MODE = 3 maps SRAM at address 0 and a fault then reaches a handler of ours. At boot
