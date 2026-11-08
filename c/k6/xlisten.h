@@ -1,7 +1,7 @@
 /* xlisten: "Listen for ID" for the core image: the CW ID listener (c/k6/mod/cwlisten.c,
    docs/k6-cwid.md) cut into steps for the main loop.
 
-   xl_start programs the FD6818's tone detector (16 tones, 600-1350 Hz) on the channel the
+   xl_start programs the FD6818's tone detector (16 tones, 400-1300 Hz) on the channel the
    caller tuned, xl_step polls REG_0B every 2 ms for about XL_STEP_MS and feeds cw_feed, and
    when two transmissions in a row give the same callsign it returns XL_OK with the call, its
    flags, the tone and the speed. Report lines go out as cwlisten's (CWID ..., CWID ok ...),

@@ -727,5 +727,6 @@ what would settle it.
       voice). 400/50 holds better in crowded audio (`--share 0.2`) but stops at 1150 Hz.
     - Cost: the 7-bit coefficients bunch up near 128 at the low end (400 and 460 Hz are 122 and
       121), so the detector's "which tone" is coarse there; the keying bit is what decodes.
-    - Settled by: `mod-cwlisten_lo.bin` (cwlisten with this bank) hearing a 400 Hz CW ID from the
-      IC-7100, then the same for 800 and 1250 Hz; if it does, tonedet.h takes the new table.
+    - Settled 2026-11-08 08:20Z: `mod-cwlisten_lo.bin` read the IC-7100's 'AG7EW TEST' at 400 and
+      1250 Hz with q 99-100 (800 Hz was spoilt by a squelch tail, now dropped by the decoder).
+      Built: tonedet.h has the 400-1300 Hz bank (docs/k6-cwid.md).
