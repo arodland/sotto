@@ -176,6 +176,8 @@ def main():
     ap.add_argument("clips", nargs="*")
     ap.add_argument("--model", default="ideal,k6")
     ap.add_argument("--share", type=float, default=0.5, help="k6 model: tone share of the band")
+    ap.add_argument("--td-lo", type=int, default=600, help="k6 model: the tone bank's lowest tone, Hz")
+    ap.add_argument("--td-step", type=int, default=50, help="k6 model: the bank's spacing (16 tones), Hz")
     ap.add_argument("--csv")
     ap.add_argument("--synth", help="make a test clip of this text instead")
     ap.add_argument("--wpm", type=float, default=20)
@@ -186,6 +188,8 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("-o", default="cw-test.wav")
     a = ap.parse_args()
+    global TONES
+    TONES = a.td_lo + a.td_step * np.arange(16)
     if a.synth:
         return synth(a)
     rows = []
