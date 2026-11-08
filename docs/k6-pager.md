@@ -43,7 +43,12 @@ with the receiver firmware. The test vectors in that spec are in `tests/test_k6.
   speech frame). When replaying would leave the decoder's voicing state (prev_v, for code 3) other
   than the real run does, the run's last slot goes too. Older images play a pause frame as one
   silent slot (its sotto 1200 B half is unvoiced with energy step -6), so pauses come out short.
-  `rx` plays pause frames out (`--no-expand` keeps them). All three together on 25 clips: XL
+  `rx` plays pause frames out (`--no-expand` keeps them). The fill fades: each replay of the
+  held slot carries an energy code 2 (sotto 2400, per 20 ms) or 4 (sotto 1200, per 40 ms) codes
+  lower than the last, down to silence, so a pause is a short fade-out (about 27 dB in 120 ms)
+  rather than a quiet 40 ms slot looping at 25 Hz, which Jeff heard on 2026-11-08 at the end of a
+  sotto 1200 clip ("with... frequency tracking"). The radio and the PC twin (`expand_pauses`,
+  `k6_pcmhash`) fade alike, so `pcm=` checks still match. All three together on 25 clips: XL
   19.0% fewer packets (2400), 21.5% (1200); L 15.5% / 15.0%.
 - **Profile XL** (`--payload XL`, K6 key 2): 128-byte payload, the same header, 20 frames, no
   reserved bytes; groups of 8 packets carry 160 frames. In packet mode the preamble is 16 bytes

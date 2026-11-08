@@ -200,11 +200,35 @@ static void set_bit(uint8_t *m, int i) { m[i >> 3] |= (uint8_t)(1u << (i & 7)); 
 
 /* pause frames (sotto 2400 and 1200, senders from 2026-11-07): a good slot of voicing 0, Wo 127,
    energy 0, a 10-bit count N and PAUSE_MARKER plays as N slots of fill: the last real slot again,
-   with its good flag */
+   with its good flag, fading (below) */
 #define PAUSE_MARKER 0xA5304Bu
 static uint8_t fill_frame[6];
 static int fill_good = -1;          /* the last real slot's good flag; -1 none played yet */
 static int fill_left;               /* fill slots still to play */
+
+/* The fill fades (2026-11-08, Jeff heard a quiet 40 ms slot held for 0.56 s as a 25 Hz loop):
+   each replay carries an energy code FADE_STEP codes (2.26 dB each) below the last, down to 0
+   (silence), so a pause is a short fade-out, about 27 dB in the first 120 ms. Bits 9-13 hold
+   the code in both sotto v3.7 and sotto 1200's A frame; the hiss band follows the core's level.
+   modem/pager.py expand_pauses does the same, so rx and k6_pcmhash agree with the radio. */
+#ifdef SP_LR
+#define FADE_STEP 4                 /* per 40 ms slot */
+#else
+#define FADE_STEP 2                 /* per 20 ms frame */
+#endif
+static uint8_t fill_play[6];        /* the held slot as played: its energy code stepping down */
+
+static void fill_start(int n) {
+  fill_left = n;
+  memcpy(fill_play, fill_frame, 6);
+}
+
+static const uint8_t *fill_next(void) {
+  int c = (fill_play[1] >> 2) & 0x1F;
+  c = c > FADE_STEP ? c - FADE_STEP : 0;
+  fill_play[1] = (uint8_t)((fill_play[1] & 0x83) | (c << 2));
+  return fill_play;
+}
 
 static int pause_slots(int r) {
   const uint8_t *q = S.frames + 6 * r;
@@ -546,10 +570,11 @@ static int lr_half(int16_t pcm[SP_FRAME_SAMPLES]) {
     if (!fill_left) {
       if (ring && play_pos >= avail) return SP_PLAY_WAIT;
       r = pos_of(play_pos);
-      if (!half && (n = pause_slots(r)) > 0) fill_left = n, play_pos++;
+      if (!half && (n = pause_slots(r)) > 0) fill_start(n), play_pos++;
     }
     if (fill_left) {
-      lr_decode_half(dec, fill_frame, fill_good, half, pcm);
+      if (!half) fill_next();
+      lr_decode_half(dec, fill_play, fill_good, half, pcm);
       if (half) fill_left--;
     } else {
       r = pos_of(play_pos);
@@ -603,10 +628,10 @@ int sp_play_frame(int16_t pcm[SP_FRAME_SAMPLES]) {
     int r, n;
     if (!fill_left) {
       if (ring && play_pos >= avail) return SP_PLAY_WAIT;
-      if ((n = pause_slots(pos_of(play_pos))) > 0) fill_left = n, play_pos++;
+      if ((n = pause_slots(pos_of(play_pos))) > 0) fill_start(n), play_pos++;
     }
     if (fill_left) {
-      sotto_decode(dec, fill_frame, fill_good, pcm);
+      sotto_decode(dec, fill_next(), fill_good, pcm);
       fill_left--;
     } else {
       r = pos_of(play_pos);
