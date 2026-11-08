@@ -291,6 +291,7 @@ iflive_h1500
 iflive_h1600
 iflive_k6t
 iflive_tsweep
+loram          # level 1, does anything write 0x20000000-0x20000FFF (hal::txdog)
 morse          # level 6, docs/k6-morse.md
 ramprobe
 rtls
