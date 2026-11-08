@@ -4,8 +4,8 @@
 the orange side keys jumping from peak to peak, UP/DOWN stepping along the frequency axis, and the
 listening frequency drawn as a blinking bar with a caret above it.
 
-**Status: built as a RAM module and tested on the emulated M0 against a modelled receiver and
-the real keypad matrix. Not yet run on the radio.** It needs API level 6 (the module screen), so
+**Status: runs on the radio** (bench run 1, 2026-11-08, below). It is also tested on the emulated M0
+against a modelled receiver and the real keypad matrix. It needs API level 6 (the module screen), so
 it runs on the image already on the K6 (ffa7dbf, level 7) with no reflash: 3.6 KB of code in
 the 4 KB store, receive only.
 
@@ -25,7 +25,7 @@ starts on the band holding the pager's frequency (70 cm on the bench), centred o
 | key | does |
 |---|---|
 | UP / DOWN | the bar one bin up / down; held, it repeats. Past the window's edge the window pans a quarter span |
-| SIDE1 / SIDE2 (orange) | next peak above / below. With none left in the window it pans half a span and looks again after the sweep, on up the band until it finds one or reaches the band's edge ("no peak") |
+| SIDE1 / SIDE2 (orange) | next peak above / below that a settled read confirms (10 dB over the settled floor). With none left in the window it pans half a span and looks again after the sweep, on up the band until it finds one or reaches the band's edge ("no peak") |
 | BAND or # | next band: 2m (144-148, 10 kHz), 1.25m (222-225, 10 kHz), 70cm (430-450, 25 kHz), GMRS (462.550-467.725, 12.5 kHz), MAR/WX (156.000-162.550, 25 kHz: marine and NOAA weather) |
 | 1 / 3 | zoom in / out around the bar: bins of 5, 10, 12.5, 25, 50, 100 kHz (64 bins = 0.32-6.4 MHz on screen) |
 | * | monitor: audio open on the bar all the time, no sweeping (title says MON) |
@@ -84,6 +84,34 @@ DMR when up). For a known peak, the IC-7100 can send PSK31 `AG7EW TEST` on a fre
 frequency during the run (`modem/psk31.py`), back on 440.850 before the module ends so the
 report gets through. In the emulator (tests/test_k6_surf.py) it finds 440.850, then 441.200,
 wraps from 450 to 430, then finds 430.300 and the others again.
+
+## Bench run 1 (2026-11-08 08:08Z, hamlet, receive only)
+
+`mod-surfauto.bin` (CI 5877cc6) went up by `tools/k6_upload.py` on 440.850. All 30 XL chunks
+arrived on the first send. It ran 60,053 ms, returned 5 (sweeps), and had 2,128 B of stack
+free. Its 13 `sel` lines came back over the air:
+
+```
+surf 70cm 440.850 25k
+sel 440.8500 -35      the IC-7100 still keyed after the upload
+sel 440.9250 -103     sel 440.9750 -103     sel 441.0750 -110     sel 441.1250 -108
+sel 441.5500 -103     sel 441.6250 -107     sel 441.8000 -118     sel 441.8500 -122
+sel 441.9250 -104     sel 442.2000 -104     sel 442.3250 -104     sel 442.4250 -103
+end sw=5
+```
+
+What it showed:
+- The module, the screen calls and the keypad scan run on the real image, and the stack has
+  room to spare.
+- **The side keys stopped on noise.** Each peak was a bump in the quick reads that a settled read
+  put at only -103 to -122 dBm, so the climb took 13 presses to reach 442.4 and never wrapped.
+  Each of those bumps opened the squelch, so the module spent most of the run parked, which is why
+  it made only 5 sweeps. Fix (the PR after #143): a candidate peak counts only when a settled read
+  puts it 10 dB over the settled floor (12 ms a candidate). The emulator now has bumps that show
+  only in quick reads (`test_side_keys_skip_bumps_a_settled_read_doesnt_confirm`), and the old
+  code fails that test.
+- No serial log: auto mode refused the read-only logger, so the run's bargraph itself isn't
+  recorded. Next run: allow `k6_harness listen` on ttyUSB2 (read-only) or watch the screen.
 
 ## The bargraph as the radio's main VFO? (Jeff's thought, 2026-11-08)
 
