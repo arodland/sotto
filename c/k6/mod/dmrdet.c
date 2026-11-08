@@ -16,7 +16,7 @@
      D off 2340                             (DMR gone after ms)
      c -95 2400 h=41                        (a carrier came and went: its dBm, ms, and the
                                              syncs heard during it)
-     s 60 h=58 lost=0 idle=64 ks=5490       (every minute: s, syncs, ring overruns, CPU idle %,
+     s 40 h=58 lost=0 idle=64 ks=5490       (every 40 s: s, syncs, ring overruns, CPU idle %,
                                              kS/s)
    and the firmware's `K6 MOD ret=` gives the DMR detections.
    Any key stops it. (No screen yet: the module store's 4 KB holds the code, the DMA ring and
@@ -49,7 +49,8 @@
 #define SQ_DB 10                /* a carrier: RSSI this far over the floor */
 #endif
 #ifndef S_MS
-#define S_MS 60000u             /* the summary line's period */
+#define S_MS 40000u             /* the summary line's period: under 44.7 s, where the idle and
+                                   window sums (96 MHz cycles) would wrap a u32 */
 #endif
 #define CONF_G 6912u            /* 720 ms of grid points */
 #define HK_COUNTS 4096u         /* housekeeping every ~48 ms */
@@ -125,8 +126,7 @@ typedef struct {
   /* the ring */
   uint8_t *ring;
   uint32_t laps, lastw, consumed, p0, t0, cps8, lost, idle, tp;
-  uint32_t thk, rem, ms, win, iwin, next_s; /* housekeeping's clock: ms since the start; the
-     minute's window and idle time in 256-cycle units (in cycles they wrap at 44.7 s) */
+  uint32_t thk, rem, ms, win, next_s; /* housekeeping's clock: ms since the start */
   /* the listener */
   int floor, db, cdb, car, af, dmr, pend, nd;
   int32_t fam, sign;
@@ -196,7 +196,7 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
   char line[64], *p = line;
   uint32_t j = s->d.j, t = s->t, P = s->laps * RSZ + s->lastw, dt = t - s->thk, q;
   int car, af;
-  s->thk = t, s->win += dt >> 8, s->iwin += s->idle >> 8, s->idle = 0;
+  s->thk = t, s->win += dt;
   q = ds_udiv(dt + s->rem, 96000u);
   s->rem = dt + s->rem - q * 96000u;
   s->ms += q;
@@ -231,9 +231,9 @@ NOINLINE static int housekeeping(const k6_api_t *api, st_t *s) {
     s->next_s += S_MS;
     p = kv(kv(line, "s ", (int)ds_udiv(s->ms, 1000u)), " h=", (int)s->hits);
     p = kv(kv(p, " lost=", (int)s->lost), " idle=",
-           (int)ds_udiv(s->iwin * 100u, s->win + 1u));
+           (int)ds_udiv((s->idle >> 8) * 100u, (s->win >> 8) + 1u));
     p = kv(p, " ks=", (int)ds_udiv(96000u * 256u, s->cps8));
-    s->iwin = s->win = 0;
+    s->idle = s->win = 0;
   }
   af = s->car && !s->dmr && j - s->car_j >= HOLD_MS * 96u / 10u;
   if (af != s->af) s->af = af, api->fd_write(0x47, af ? AF_FM : AF_MUTE);

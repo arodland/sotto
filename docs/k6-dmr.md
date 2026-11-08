@@ -131,8 +131,9 @@ On the emulated Cortex-M0 (`tests/k6_live_emu.py`'s CPU and DMA model, calibrate
   carrier, inside the 150 ms hold, so the speaker never opened. No samples lost, CPU idle
   54-58% (busy 42-46%), the DMA rate tracked to 5490 kS/s.
 - **FM voice:** no DMR, the audio opened after 150 ms, one `c` line with `h=0`.
-- **Size:** 3044 bytes of code. With the 24-byte header and tag, the 512-byte ring and the
-  432-byte state, that's 4012 of the store's 4096 bytes. The ring is 512 bytes (93 us) rather
+- **Size:** 3028 bytes of code. With the 24-byte header and tag, the 512-byte ring and the
+  428-byte state, that's 3992 of the store's 4096 bytes (CI's clang makes the code ~90 bytes
+  bigger: 4080). The ring is 512 bytes (93 us) rather
   than gp0dma's 1 KB because the module needs the room. That's why it checks keys with
   `key_poll` (5 us) rather than `key_down` (60 us), and makes only one FD6818 call at a time
   between drains. Getting it to fit cost the screen (the WSPR modules' level 6 calls) and
@@ -218,8 +219,9 @@ Two receive-only runs of CI's `mod-dmrdet.bin` (3116 B with header, from main f5
 - **CPU idle:** the run printed `idle=286` and then 1-2%, which was a reporting bug: the idle
   and window sums were in 96 MHz cycles and wrap a u32 every 44.7 s, so a 60 s window can't be
   measured. Unwrapping the numbers gives about 73% idle in the first minute and 75% after that,
-  better than the emulator's 54-58% (its CPI 1.5 is pessimistic). The module now sums both in
-  256-cycle units.
+  better than the emulator's 54-58% (its CPI 1.5 is pessimistic). The summary line now comes
+  every 40 s, inside the wrap (summing in coarser units cost 32 bytes the store doesn't have
+  with CI's compiler).
 - **Run time:** the firmware's `K6 MOD ret=0 in 3766 ms` is also wrong (600 s ran). Its
   module clock only advances when the module calls into the firmware's tick (delays, TX
   guard), and the 100 us counter wraps every 6.5 s between calls; dmrdet only polls keys and
