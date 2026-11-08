@@ -2,19 +2,48 @@
 # built with the pager patch, with its flash and RAM fit; the .bin is kept as a build artifact.
 name: K6 pager firmware
 on:
+  # Globs, one per line, so a new test or tool needs no edit here (and PRs don't collide on it).
   push:
     branches: [main]
-    paths: ["c/k6/**", "c/fixed/**", "c/sotto.h", "c/sotto_lr_dec.inc", "c/sotto_lr_tables.h", "c/sotto_vlr.h", "c/sotto_vlr_dec.inc", "c/sotto_vlr_tables.h", "c/sotto_vlr_tables.c", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py", "tests/test_k6_hiss.py",
-            "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "tests/test_k6_cb.py", "tests/test_k6_vlr.py", "modem/k6mod.py", "modem/pager.py", "tools/k6_ifcap.py", "tests/test_k6_ifcap.py", "tests/test_k6_ifrx.py", "tests/test_k6_ifpager.py", "modem/k6g.py", "tests/k6_live_emu.py", "sim/k6if/**", "tests/test_k6_ft8.py", "tests/test_k6_ft8tx.py", "sim/k6digi/**",
-            "tools/k6_ft8.py", "tools/k6_upload.py", "tests/test_k6_i2s.py", "tests/test_k6_cwkey.py",
-            "tests/test_k6_txrules.py", "tests/test_k6_air.py", "tests/data/k6/air/**", "tests/test_k6_ifcal.py", "tests/test_k6_arq.py", "tests/test_k6_rxmap.py", "tools/k6_rxmap.py", "tests/test_k6_hf.py", "tools/k6_hf.py", "modem/psk31.py", "tests/test_psk31.py", "modem/k6.py", "modem/fsk.py",
-            "tools/k6_bench.py", "tests/test_k6_bench.py", "tools/k6_sweep.py", "tests/test_k6_sweep.py", "tools/k6_scan.py", "tests/test_k6_scan.py", "tests/test_k6_rt.py", "tests/test_k6_explore.py", "tests/test_k6_xscan.py", "tests/test_k6_dmr.py", "tests/test_k6_dmrdec.py", "tests/test_k6_surf.py", "tools/k6_screen.py", "tools/k6_explore.py", "tools/k6_afsweep.py", "tools/k6_update.py", ".github/workflows/k6-firmware.yml"]
+    paths:
+      - "c/k6/**"
+      - "c/fixed/**"
+      - "c/sotto.h"
+      - "c/sotto_lr_*"
+      - "c/sotto_vlr*"
+      - "firmware/k6-aura/**"
+      - "modem/fsk.py"
+      - "modem/k6*.py"
+      - "modem/pager.py"
+      - "modem/psk31.py"
+      - "sim/k6digi/**"
+      - "sim/k6if/**"
+      - "tests/data/k6/air/**"
+      - "tests/k6_live_emu.py"
+      - "tests/test_k6_*.py"
+      - "tests/test_psk31.py"
+      - "tools/k6_*"
+      - ".github/workflows/k6-firmware.yml"
   pull_request:
-    paths: ["c/k6/**", "c/fixed/**", "c/sotto.h", "c/sotto_lr_dec.inc", "c/sotto_lr_tables.h", "c/sotto_vlr.h", "c/sotto_vlr_dec.inc", "c/sotto_vlr_tables.h", "c/sotto_vlr_tables.c", "firmware/k6-aura/**", "tools/k6_build.sh", "tools/k6_frames.py", "tests/test_k6_pager.py", "tests/test_k6_hiss.py",
-            "tests/test_k6_harness.py", "modem/k6_harness.py", "tests/test_k6_mod.py", "tests/test_k6_cb.py", "tests/test_k6_vlr.py", "modem/k6mod.py", "modem/pager.py", "tools/k6_ifcap.py", "tests/test_k6_ifcap.py", "tests/test_k6_ifrx.py", "tests/test_k6_ifpager.py", "modem/k6g.py", "tests/k6_live_emu.py", "sim/k6if/**", "tests/test_k6_ft8.py", "tests/test_k6_ft8tx.py", "sim/k6digi/**",
-            "tools/k6_ft8.py", "tools/k6_upload.py", "tests/test_k6_i2s.py", "tests/test_k6_cwkey.py",
-            "tests/test_k6_txrules.py", "tests/test_k6_air.py", "tests/data/k6/air/**", "tests/test_k6_ifcal.py", "tests/test_k6_arq.py", "tests/test_k6_rxmap.py", "tools/k6_rxmap.py", "tests/test_k6_hf.py", "tools/k6_hf.py", "modem/psk31.py", "tests/test_psk31.py", "modem/k6.py", "modem/fsk.py",
-            "tools/k6_bench.py", "tests/test_k6_bench.py", "tools/k6_sweep.py", "tests/test_k6_sweep.py", "tools/k6_scan.py", "tests/test_k6_scan.py", "tests/test_k6_rt.py", "tests/test_k6_explore.py", "tests/test_k6_xscan.py", "tests/test_k6_dmr.py", "tests/test_k6_dmrdec.py", "tests/test_k6_surf.py", "tools/k6_screen.py", "tools/k6_explore.py", "tools/k6_afsweep.py", "tools/k6_update.py", ".github/workflows/k6-firmware.yml"]
+    paths:
+      - "c/k6/**"
+      - "c/fixed/**"
+      - "c/sotto.h"
+      - "c/sotto_lr_*"
+      - "c/sotto_vlr*"
+      - "firmware/k6-aura/**"
+      - "modem/fsk.py"
+      - "modem/k6*.py"
+      - "modem/pager.py"
+      - "modem/psk31.py"
+      - "sim/k6digi/**"
+      - "sim/k6if/**"
+      - "tests/data/k6/air/**"
+      - "tests/k6_live_emu.py"
+      - "tests/test_k6_*.py"
+      - "tests/test_psk31.py"
+      - "tools/k6_*"
+      - ".github/workflows/k6-firmware.yml"
 
 jobs:
   host-tests:
@@ -31,13 +60,47 @@ jobs:
         run: |
           make -C c VARIANT=v3.7 fixed PYTHON=false
           make -C c/k6
-          python -m pytest -q tests/test_k6_pager.py tests/test_k6_harness.py tests/test_k6_mod.py tests/test_k6_cb.py tests/test_k6_cwid.py tests/test_k6_air.py tests/test_k6_ifcap.py tests/test_k6_ifrx.py tests/test_k6_ifpager.py tests/test_k6_vlr.py tests/test_k6_hiss.py
+          python -m pytest -q \
+            tests/test_k6_air.py \
+            tests/test_k6_cb.py \
+            tests/test_k6_cwid.py \
+            tests/test_k6_harness.py \
+            tests/test_k6_hiss.py \
+            tests/test_k6_ifcap.py \
+            tests/test_k6_ifpager.py \
+            tests/test_k6_ifrx.py \
+            tests/test_k6_mod.py \
+            tests/test_k6_pager.py \
+            tests/test_k6_vlr.py
       # WSPR (tests/test_k6_wsprtx.py, tests/test_k6_wspriq.py) is left out of CI: it was the slowest
       # step. Run it by hand after touching the WSPR modules: python -m pytest -q tests/test_k6_wspr*.py
       - name: FT8 (host core, GP0 path sim, ft8wf and ft8tx on an emulated M0)
-        run: python -m pytest -q tests/test_k6_ft8.py tests/test_k6_ft8tx.py
-      - name: modules on an emulated M0 (the transmit rules for every module that keys up, the IF tap, calibration) and upload ARQ
-        run: python -m pytest -q tests/test_k6_txrules.py tests/test_k6_cwkey.py tests/test_k6_i2s.py tests/test_k6_ifcal.py tests/test_k6_arq.py tests/test_k6_rxmap.py tests/test_k6_hf.py tests/test_psk31.py tests/test_k6_bench.py tests/test_k6_update.py tests/test_k6_sweep.py tests/test_k6_scan.py tests/test_k6_rt.py tests/test_k6_explore.py tests/test_k6_xscan.py tests/test_k6_dmr.py tests/test_k6_dmrdec.py tests/test_k6_surf.py
+        run: |
+          python -m pytest -q \
+            tests/test_k6_ft8.py \
+            tests/test_k6_ft8tx.py
+      - name: modules on an emulated M0 (the transmit rules for every module that keys up, Morse RTX with a modelled operator, the IF tap, calibration) and upload ARQ
+        run: |
+          python -m pytest -q \
+            tests/test_k6_arq.py \
+            tests/test_k6_bench.py \
+            tests/test_k6_cwkey.py \
+            tests/test_k6_dmr.py \
+            tests/test_k6_dmrdec.py \
+            tests/test_k6_explore.py \
+            tests/test_k6_hf.py \
+            tests/test_k6_i2s.py \
+            tests/test_k6_ifcal.py \
+            tests/test_k6_morse.py \
+            tests/test_k6_rt.py \
+            tests/test_k6_rxmap.py \
+            tests/test_k6_scan.py \
+            tests/test_k6_surf.py \
+            tests/test_k6_sweep.py \
+            tests/test_k6_txrules.py \
+            tests/test_k6_update.py \
+            tests/test_k6_xscan.py \
+            tests/test_psk31.py
 
   aura-pager:
     runs-on: ubuntu-latest

@@ -20,8 +20,11 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_k6_i2s import ROOT, START, need_clang, rssi_reg, run  # noqa: E402
 
+# Modules that key up only when a person keys them (the paddles) run the same rules in their own
+# test, with a modelled operator: morse.c in tests/test_k6_morse.py
+INTERACTIVE = {"morse.c"}
 MODS = sorted(p for p in glob.glob(os.path.join(ROOT, "c", "k6", "mod", "*.c"))
-              if re.search(r"->\s*tx_on\s*\(", open(p).read()))
+              if re.search(r"->\s*tx_on\s*\(", open(p).read()) and os.path.basename(p) not in INTERACTIVE)
 IDS = [os.path.basename(p)[:-2] for p in MODS]
 MORSE = {"A": ".-", "G": "--.", "7": "--...", "E": ".", "W": ".--", "S": "...", "O": "---", "T": "-",
          "K": "-.-", "N": "-.", "C": "-.-.", "Q": "--.-", "D": "-..", "I": "..", "R": ".-.", "M": "--"}
