@@ -99,8 +99,35 @@ def ts_hms(utc_s):
 
 def rmc(utc_s, date="081126"):
     r = utc_s % 86400
-    hh, mm, ss = int(r // 3600), int(r // 60 % 60), r % 60
+    hh, mm, ss = int(r // 3600), int(r // 60 % 60), int(r % 60 * 100 + 1e-6) / 100  # truncated, as a stamp
     return f"$GPRMC,{hh:02d}{mm:02d}{ss:05.2f},A,4857.00,N,12229.00,W,000.0,000.0,{date},,*00"
+
+
+def bench_wav(t_utc, call="AG7EW", gap=0.6, fs=FS):
+    """the on-air loopback (c/k6/mod/aprsclk_440.c): three stations of one call (-1 HHMMSSh, -2
+    $GPRMC, -3 DDHHMMz) each stamped with the true UTC at its own first bit if the audio starts at
+    t_utc (Unix seconds), truncated, so every stamp is early by the keying delay only.
+    -> (audio, [(call, info, the frame's end in s from the audio's start)])"""
+    import time as _t
+    tm = _t.gmtime(t_utc)
+    month0 = t_utc - (tm.tm_mday * 86400 + tm.tm_hour * 3600 + tm.tm_min * 60 + tm.tm_sec)
+    pos, out, sent = 0.0, [], []
+    for k, kind in enumerate("hrz"):
+        pre = 40
+        u = t_utc + pos + pre * 8 / BAUD                 # this frame's first bit
+        if kind == "h":
+            info = "/" + ts_hms(u) + "4857.00N/12229.00W>K6 clock test"
+        elif kind == "r":
+            g = _t.gmtime(u)
+            info = rmc(u % 86400, f"{g.tm_mday:02d}{g.tm_mon:02d}{g.tm_year % 100:02d}")
+        else:
+            info = "@" + ts_dhm(u - month0) + "4857.00N/12229.00W_K6 clock test"
+        c = f"{call}-{k + 1}"
+        x, _ = packet_audio([frame(c, "APRS", info)], fs=fs, pre_flags=pre)
+        out += [x, np.zeros(int(gap * fs))]
+        sent.append((c, info, pos + len(x) / fs))
+        pos += (len(x) + int(gap * fs)) / fs
+    return np.concatenate(out), sent
 
 
 # ---- a float decoder for recordings (correlators + PLL + HDLC, as the K6 module) ----
@@ -172,10 +199,25 @@ def main(argv=None):
     w = sub.add_parser("wav")
     w.add_argument("out")
     w.add_argument("--utc", type=float, default=8 * 86400 + 17 * 3600 + 52 * 60 + 1.0)
+    w.add_argument("--now", action="store_true",
+                   help="the on-air loopback: three AG7EW stations stamped with the UTC now (play it at once)")
+    w.add_argument("--call", default="AG7EW")
+    w.add_argument("--delay", type=float, default=0.0,
+                   help="with --now: seconds from now until the audio starts (keying time); the stamps stay "
+                        "truncated, so too small only makes them early")
     d = sub.add_parser("decode")
     d.add_argument("wav")
     a = ap.parse_args(argv)
     import soundfile as sf
+    if a.cmd == "wav" and a.now:
+        import time
+        t0 = time.time() + a.delay
+        x, sent = bench_wav(t0, a.call)
+        sf.write(a.out, 0.5 * x, FS)
+        print(f"start {t0:.3f}")
+        for c, info, end in sent:
+            print(f"{c} {info}  (ends +{end:.3f} s)")
+        return 0
     if a.cmd == "wav":
         fr = [frame("N0CALL-9", "APRS", "/" + ts_hms(a.utc) + "4857.00N/12229.00W>test"),
               frame("N0CALL-1", "APRS", "@" + ts_dhm(a.utc) + "4857.00N/12229.00W_test")]

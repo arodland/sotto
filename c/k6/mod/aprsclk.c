@@ -94,7 +94,7 @@ typedef struct {
   uint32_t ph1, ph2, st1, st2, pll, stb;
   int32_t n, w, lastv, lastbit;
   /* HDLC */
-  uint32_t sr, bb, nbits, flag_ms;
+  uint32_t sr, bb, nbits, flag_ms, run, pre, min_ms;
   int32_t len, in;
   /* results */
   uint32_t ok, bad, nts, seq, now_ms, scr_ms;
@@ -403,6 +403,10 @@ static void hdlc(const k6_api_t *api, st_t *s, uint32_t bit) {
   uint32_t sr = s->sr = (s->sr << 1) | bit;
   if ((sr & 0xFF) == 0x7E) {
     s->flag_ms = s->now_ms;
+    /* a preamble: flags back to back (7 bits since the last: its last 0 is this one's first).
+       Noise makes a lone flag every second or so, four in a row hardly ever */
+    s->run = s->in && s->nbits == 7 ? s->run + 1 : 0;
+    if (s->run == 3) s->pre++;
     if (s->in && s->len >= 18) {
       if (crc_ok(s->fr, s->len)) {
         s->ok++;
@@ -529,7 +533,11 @@ static void dma_on(uint8_t *ring) {
 
 static void screen(const k6_api_t *api, st_t *s) {
   char *p;
-  api->lcd_text(0, " APRS CLOCK 144.390");
+  p = dec(put(s->ln, " APRS CLOCK "), udiv(APRS_HZ, 1000000), 3);
+  *p++ = '.';
+  p = dec(p, udiv(APRS_HZ, 1000) - 1000 * udiv(APRS_HZ, 1000000), 3);
+  *p = 0;
+  api->lcd_text(0, s->ln);
   p = put(s->ln, "UTC ");
   if (s->votes >= 2) p = hms(p, utc(s, s->now_ms), 0);
   else p = put(p, "--:--:--");
@@ -628,6 +636,16 @@ int k6_main(const k6_api_t *api) {
           /* a stretch past TIM14's 6.5 s wrap reads wrong: only a rate within 1/16 */
           if (c - s->cps8 + (s->cps8 >> 4) <= (s->cps8 >> 3)) s->cps8 = (3 * s->cps8 + c) >> 2, steps(s);
         }
+        if (s->now_ms - s->min_ms >= 60000) { /* once a minute: the channel, for the bench */
+          s->min_ms = s->now_ms;
+          p = kv(s->ln, "m ", udiv(s->now_ms, 60000));
+          p = put(p, " rssi=-");
+          p = dec(p, (uint32_t)-KM_RSSI_DBM(api->fd_read(0x67)), 1);
+          p = kv(p, " pre=", s->pre);
+          p = kv(p, " ok=", s->ok);
+          p = kv(p, " bad=", s->bad);
+          say(api, s, p);
+        }
         if (api->level >= 6) screen(api, s);
         resync(s);
       }
@@ -651,6 +669,7 @@ int k6_main(const k6_api_t *api) {
   p = kv(p, " v=", (uint32_t)s->votes);
   if (s->votes >= 2) p = hms(put(p, " utc="), utc(s, s->now_ms), 1);
   p = kv(p, " lost=", s->lost);
+  p = kv(p, " pre=", s->pre);
   say(api, s, p);
   if (!s->ok && s->now_ms < RUN_MS) return -2;
   return s->votes;

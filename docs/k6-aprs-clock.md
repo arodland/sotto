@@ -110,8 +110,35 @@ it changes the core image, so it waits for Jeff's go.
 
 ## Bench
 
-Receive only, so it needs no keying and no IC-7100: upload `mod-aprsclk.bin` to a voice image
-(any SPI image with the 11,776 B arena), leave the K6 a few minutes on 144.390 with traffic,
-and compare the `clk` lines (or the screen) with NTP on hamlet. An IC-7100 recording of 144.390
-(receive only) run through `python -m modem.aprs decode REC.wav` would first count how many
-local packets carry stamps.
+Receive only on 144.390: upload `mod-aprsclk.bin` to a voice image (any SPI image with the
+11,776 B arena), leave the K6 on 144.390 with traffic, and compare the `clk` lines (or the
+screen) with NTP on hamlet.
+
+**Run 1** (2026-11-08 21:45-22:00Z, image 006ee1b, 15 min on 144.390): `ok=0 bad=589 ts=0 v=0
+lost=1`, stack free 2,276 B, the report went out on 440.850 as planned. No frame passed its CRC.
+The 589 bad frames are flag-to-flag runs, which noise makes too, so they do not show whether any
+APRS reached the radio: the IF tap had never been tried at 144 MHz, and nobody had checked that
+144.390 is busy at hamlet. The module now prints a line every minute, `m <min> rssi=-<dBm> pre=
+ok= bad=`, where `pre` counts preambles (three flags in a row inside a run), which noise rarely
+makes, so a quiet channel and a deaf demodulator look different.
+
+**Loopback on 70 cm** (`mod-aprsclk_440.bin`, `c/k6/mod/aprsclk_440.c`: the same module on
+440.850 for 5 minutes). The IC-7100 sends three AG7EW stations whose stamps are hamlet's UTC at
+each frame's first bit:
+
+    python3 -m modem.aprs wav ~/sotto-work/runs/aprs-loop/loop.wav --now
+    sh tools/k6_send.sh ~/sotto-work/runs/aprs-loop/loop.wav
+
+The first prints `start` (the time the stamps assume the audio starts) and each frame's end
+offset; the second prints `t0`, and the audio starts about 0.2 s after it (PTT settling). The
+upload is the usual `python3 tools/k6_upload.py mod-aprsclk_440.bin --api-level 2 --telemetry 12
+--run-s 360 --key-file ~/.config/sotto/k6-mod.key --payload XL`, and a CW ID sent just before
+keeps the send from putting one in. With exact stamps the interval's low edge is the truth, and
+the estimate adds the half second a real station's stamp leads its keying, so the `clk` line
+after AG7EW-3 should read (start + its end offset) + 0.5 s. The stamps are early by
+D = t0 + 0.2 s minus start, so against hamlet's clock it reads 0.5 s minus D ahead
+(`test_bench_loopback_packets` checks 0.45 to 0.55 s through the modelled radio).
+
+This tests the IF tap, demodulator, HDLC, parser and clock on the real radio; if it passes and
+144.390 still decodes nothing, the next step is an IC-7100 recording of 144.390 (receive only)
+run through `python -m modem.aprs decode REC.wav` to count local stamped packets.
