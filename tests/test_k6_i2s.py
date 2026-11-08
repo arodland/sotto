@@ -22,7 +22,7 @@ need_clang = pytest.mark.skipif(not (shutil.which("clang") and shutil.which("ld.
                                 reason="needs clang and ld.lld")
 NAMES = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms", "key_down",
          "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read", "cal_write",
-         "fl_read", "fl_prog", "fl_erase", "lcd_text", "lcd_bar", "lcd_wf", "lcd_flush"]
+         "fl_read", "fl_prog", "fl_erase", "lcd_text", "lcd_bar", "lcd_wf", "lcd_flush", "led"]
 FL_LO, FL_HI, FL_READ_HI = 0x0F0000, 0x100000, 0x200000   # level 5's flash (c/k6/k6_mod.h)
 REFUSED = (0x30, 0x33, 0x36, 0x37)
 PERIOD = 400            # samples between modelled DFS edges
@@ -30,7 +30,7 @@ PERIOD = 400            # samples between modelled DFS edges
 
 def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024,
         mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None, tune=None, count=200_000_000, code=None, gpiob=None,
-        flash=None, lcd=None, keypad=None):
+        flash=None, lcd=None, pb_idr=None, led=None, keypad=None):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
@@ -54,6 +54,8 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     lcd: a dict for level 6's screen: lcd["frames"] gets one dict a flush (us, text: six lines,
     bar: six (num, den), wf: the waterfall's rows top first, as bytes), each flush costing 30 ms;
     without it (or below level 6) a screen call fails the test.
+    pb_idr(st): GPIOB's input bits other than PB1 (default only PB4 high, a keypad row; a module
+    that reads the side keys wants PB14 high too, Side 2 up: tests/test_k6_morse.py). led: a list that gets level 7's led calls as (us, on).
     keypad: (from_us, to_us, key) spans of keys held on the real matrix, for a module that scans
     the keypad itself (Aura's KEY_TABLE: 'A'/'B' side 1/2, 'U'/'D' up/down, 'M' menu, 'X' exit,
     'N' band, '0'-'9', '*', '#'): the module's GPIOB row writes (BSRR/BRR) are tracked, the columns
@@ -94,7 +96,7 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
                 st["pin"] = (st["reads"] // PERIOD) & 1
             else:
                 st["pin"] = 0
-            return 0x10 | (st["pin"] << 1)          # PB4 high (a keypad row), PB1 = GP0
+            return (pb_idr(st) if pb_idr else 0x10) | (st["pin"] << 1)   # PB1 = GP0
         return 0
 
     def gpio_write(uc, off, size, value, _):
@@ -238,6 +240,10 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
                 lcd.setdefault("frames", []).append({"us": st["us"], "text": list(scr["text"]),
                                                      "bar": list(scr["bar"]), "wf": wf})
                 st["us"] += 30000
+        elif name == "led":
+            assert level >= 7, "led called below level 7"
+            if led is not None:
+                led.append((st["us"], r0))
         elif name == "ms":
             ret = st["us"] // 1000
         elif name == "scratch":
