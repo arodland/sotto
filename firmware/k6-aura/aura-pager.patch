@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 785c441..5d99be0 100644
+index 785c441..d0cf1ee 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -21,6 +21,24 @@ st7565 = "0.6"
+@@ -21,6 +21,26 @@ st7565 = "0.6"
  embedded-graphics = "0.8"
  profont = "0.7"
  
@@ -20,9 +20,11 @@ index 785c441..5d99be0 100644
 +# the hiss band image (docs/k6-hiss-port.md): sotto 1200, 600 and 400 played at 16 kHz through the
 +# K6 hiss layer, with a library built K6_HISS=1 (320-sample frames; the PWM ring is 3 of them)
 +hiss = []
-+# hal::txdog with its SRAM vector table (off by default since the boot loop of 2026-11-08), lines
-+# straight to USART1 from install and a fault: the diagnostic image aura-pager-vlrh-txdog
++# hal::txdog with its SRAM vector table: a fault or a hung key-up reboots the radio (sotto's
++# build turns it on in every image that transmits); lines straight to USART1 from install and a fault
 +txdog = []
++# with txdog: no lines straight to USART1 (the boot-loop hunt: does their time at boot matter?)
++txdog-quiet = ["txdog"]
 +
  [profile.release]
  opt-level = "z"
@@ -6799,10 +6801,10 @@ index 0000000..37404d9
 +}
 diff --git a/src/hal/txdog.rs b/src/hal/txdog.rs
 new file mode 100644
-index 0000000..04f5cbb
+index 0000000..9e51b7f
 --- /dev/null
 +++ b/src/hal/txdog.rs
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,281 @@
 +//! Crash and stuck-transmitter backstop (2026-11-08: a module overran its stack, the report
 +//! key-up after it hung, and the K6 sent a bare carrier on 440.850 for 16 minutes).
 +//!
@@ -6824,15 +6826,14 @@ index 0000000..04f5cbb
 +//!
 +//! If the remap doesn't read back, nothing is enabled and the radio runs as before.
 +//!
-+//! OFF by default since 2026-11-08 19:51Z: the voice image with it on (acd06ba) reset in a loop
-+//! about 5 times a second, before its first serial line, and was flashed back over the cable in
-+//! one of the bootloader's windows. On the radio since (sotto's RAM modules, 20:02-20:13Z): the
-+//! copy equals the live table (vectab), nothing writes 0x20000000-0x20000FFF while Aura runs
-+//! (loram), and a module that held this same table 10 s with interrupts on, TIM14's handler
-+//! included, ran clean (remapsoak). So the loop comes from how the image sets it up at boot.
-+//! The `txdog` feature turns it on for a diagnostic image: install and a fault print their lines
-+//! straight to USART1 (waiting on each byte), so each pass of a loop says where it faulted.
-+//! Without the feature the key-up clock still runs (it costs nothing) but no table is installed.
++//! 2026-11-08: the first voice image with it (acd06ba) reset in a loop about 5 times a second at
++//! boot, every time it was flashed. sotto's RAM modules then ruled out the copy (vectab), writes
++//! to the table's RAM (loram), the table itself held 10 s with interrupts on (remapsoak) and any
++//! cost in speed (remapspeed). This version, with the note in `.uninit` and lines straight to
++//! USART1, boots and passed the crash and stuck key-up tests on the K6, and so did the same
++//! without the lines (`txdog-quiet`): the note's old place in vector slots 45-47 is the one
++//! difference left. The `txdog` feature turns it on (sotto's build: every image that transmits);
++//! without it the key-up clock still runs (it costs nothing) but no table is installed.
 +//!
 +//! The note lives in `.uninit` (not zeroed by Aura's start-up), not in the vector slots: the
 +//! bootloader's own RAM (0x20000000-0x2000046F: its 200 ms count, RX buffer) is its to clear at
@@ -6862,7 +6863,7 @@ index 0000000..04f5cbb
 +}
 +const NOTE_FAULT: u32 = 0xFA17_0001;
 +const NOTE_TX: u32 = 0xFA17_0002;
-+/// install the SRAM table (see above: only in the `txdog` diagnostic image for now)
++/// install the SRAM table (the `txdog` feature)
 +const REMAP: bool = cfg!(feature = "txdog");
 +const USART1_ISR: u32 = 0x4001_381C;
 +const USART1_TDR: u32 = 0x4001_3828;
@@ -7043,7 +7044,9 @@ index 0000000..04f5cbb
 +/// the serial report's ring and interrupt run. `<what> xxxxxxxx xxxxxxxx`. Only in the `txdog`
 +/// image, where the table is installed.
 +fn raw(what: &[u8], a: u32, b: u32) {
-+    if !REMAP {
++    // txdog-quiet: the same image without these lines, to see whether their few ms at boot
++    // are what keeps it out of acd06ba's loop (2026-11-08)
++    if !REMAP || cfg!(feature = "txdog-quiet") {
 +        return;
 +    }
 +    fn put(c: u8) {
