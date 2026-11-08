@@ -648,3 +648,26 @@ what would settle it.
     - It would buy: a K6 that mutes DMR (and later YSF/P25) buzz, an EXPLORE "DMR" mark, and a
       way into DMR metadata (colour code, talkgroup, source ID) with the same front end.
     - Settled by: `mod-dmrdet.bin` on 440.925 with the IC-7100 recording alongside.
+
+36. **The main VFO as EXPLORE's bargraph.**
+    - From: Jeff, 2026-11-08 07:19 ("maybe the main radio VFO should simply be that bargraph of
+      frequencies").
+    - It would buy: one screen instead of two; tuning by picking a row, with the list's levels,
+      grades, calls, tones and DMR marks beside each frequency.
+    - Settled by: EXPLORE in full Aura (with the VFO and PTT path), which also unblocks Try with
+      transmit.
+37. **A weak-signal settle run off the IC-7100's carrier.**
+    - From: the scanner thread, 2026-11-08.
+    - Tune the K6 12.5 and 25 kHz off the IC-7100's carrier on 440.850, so its skirt arrives
+      near -110 dBm, and set a coarse "something there" threshold from what the sweep reads.
+    - Settled by: a receive-only run with the IC-7100 sending PSK31 ident, levels logged.
+38. **REG_63 (noise) as a faster carrier detect than RSSI.**
+    - From: the scanner thread, 2026-11-08.
+    - It would buy: shorter dwells per bin, so more bins a second.
+    - Settled by: timing REG_63's response against REG_67's on a keyed carrier.
+39. **Learn each repeater's ID timer and be there when it's due.**
+    - From: the scanner thread and the CW workbench, 2026-11-08. VE7RVA on 442.025 sent ID-only
+      key-ups at 06:46:13Z and 07:16:15Z, 30 min 02 s apart; WA7DMR sent one ID in 52 minutes.
+    - It would buy: the listener on frequency before a timed ID, instead of catching it by the
+      peek.
+    - Settled by: the hamlet recorder's ID timing tables over a night (runs/cwbench-*/idtiming/).

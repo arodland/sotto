@@ -138,8 +138,11 @@ $CC $CFLAGS -Os -c "$ROOT/c/k6/ifpager.c" -o "$OUT/ifpager.o"
 # only the images that call it link it (rt.c goes in as k6_rt.o: c/fixed/cm0/rt.c is the bench's)
 for f in xscan xlisten explore cwid; do $CC $CFLAGS -Oz -c "$ROOT/c/k6/$f.c" -o "$OUT/$f.o"; done
 $CC $CFLAGS -Oz -c "$ROOT/c/k6/rt.c" -o "$OUT/k6_rt.o"
+# Listen for ID's side detectors (DMR syncs on the GP0 IF, the CTCSS read): -Os, the DMR
+# detector runs on every count (as the emulator's timing of it, tests/test_k6_xdmr.py)
+$CC $CFLAGS -Os -c "$ROOT/c/k6/xdmr.c" -o "$OUT/xdmr.o"
 LIBOBJS="$OUT/sotto_pager.o $OUT/k6_mod.o $OUT/sotto_fx_dec.o $OUT/sp_cb.o $OUT/sp_vlr.o $OUT/fx_math.o $OUT/fx_tables.o $OUT/ifpager.o
-  $OUT/xscan.o $OUT/xlisten.o $OUT/explore.o $OUT/cwid.o $OUT/k6_rt.o"
+  $OUT/xscan.o $OUT/xlisten.o $OUT/xdmr.o $OUT/explore.o $OUT/cwid.o $OUT/k6_rt.o"
 if [ -n "$LR" ]; then     # not hot (field unpacking and shape sums once per 40 ms): -Os
   $CC $CFLAGS -Os -Dcalloc=sp_calloc -Dfree=sp_free -c "$ROOT/c/fixed/sotto_fx_lr.c" -o "$OUT/sotto_fx_lr.o"
   LIBOBJS="$LIBOBJS $OUT/sotto_fx_lr.o"
