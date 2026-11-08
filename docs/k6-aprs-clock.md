@@ -150,6 +150,13 @@ noise between frames (about 40 a minute on a quiet channel), so `pre` is the lin
 serial logger sees each line about 3.3 s after its frame, which is why a `clk` line looks 3.4 s
 behind the logger's own stamp.
 
+**Run 3** (2026-11-08 23:03-23:18Z, image 61cc53a, `mod-aprsclk.bin` 5,480 B, 15 min on
+144.390): `ok=0 bad=592 ts=0 v=0 lost=0 pre=0`, `pre=0` in every minute line, so not one packet
+preamble. The minute RSSI sat at -85 to -87 dBm, flat for 15 minutes, against -115 dBm on an idle
+440.850 in run 2. Either a steady carrier or a K6 birdie (its own synth or an MCU harmonic) sits
+on 144.390 (a carrier would also quiet the discriminator, which fits `pre=0`), or the chip's RSSI
+reads about 29 dB higher on 2 m. Since the loopback decodes, the open question is the 2 m channel.
+
 This tests the IF tap, demodulator, HDLC, parser and clock on the real radio; if it passes and
 144.390 still decodes nothing, the next step is an IC-7100 recording of 144.390 (receive only)
 run through `python -m modem.aprs decode REC.wav` to count local stamped packets.
