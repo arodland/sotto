@@ -186,6 +186,10 @@ The pager itself blinks it once a packet while its modem receives (no module nee
 A module reads `api->level` and calls `led` only on 7 or more, as with the screen; the
 emulator (`tests/k6_live_emu.py`, `api_level=7`) records each call as `(ms, on)`.
 
+The lean images (`aura-pager-cbi` and the table images) keep the LED dark and their `led` is a
+no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated off it costs
+28 B there. The other images pay about 300 B.
+
 ## Security
 
 - **Signed.** A module runs only if its SipHash tag checks under the key the image was built

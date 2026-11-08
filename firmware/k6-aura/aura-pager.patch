@@ -246,10 +246,10 @@ index 5f006e4..97c80b9 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..4a844e0
+index 0000000..36795ba
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,4043 @@
+@@ -0,0 +1,4057 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -571,11 +571,14 @@ index 0000000..4a844e0
 +// Aura lights it while the squelch is open; the pager has no squelch, and main skips that
 +// housekeeping in pager mode, so the pin is the pager's here.
 +
++#[cfg(not(feature = "lean"))]
 +const RX_LED_TICKS: u16 = 1200; // 120 ms
 +
 +/// When the LED was lit (uptime ticks), None while dark.
++#[cfg(not(feature = "lean"))]
 +static mut RX_LED_T: Option<u16> = None;
 +
++#[cfg(not(feature = "lean"))]
 +fn rx_led(on: bool) {
 +    let gpioa = unsafe { &*kd32f328_pac::Gpioa::ptr() };
 +    crate::board::set_rx_led(gpioa, on);
@@ -585,12 +588,14 @@ index 0000000..4a844e0
 +}
 +
 +/// A packet's sync: the LED on for RX_LED_TICKS.
++#[cfg(not(feature = "lean"))]
 +fn rx_blink(now: u16) {
 +    rx_led(true);
 +    unsafe { *addr_of_mut!(RX_LED_T) = Some(now) };
 +}
 +
 +/// The LED off once its time is up (cheap: called from the receive loops' waits).
++#[cfg(not(feature = "lean"))]
 +fn rx_led_poll(now: u16) {
 +    if let Some(t) = unsafe { *addr_of!(RX_LED_T) } {
 +        if now.wrapping_sub(t) >= RX_LED_TICKS {
@@ -598,6 +603,15 @@ index 0000000..4a844e0
 +        }
 +    }
 +}
++
++// The lean images (codebook install, MCU-flash table) leave the LED dark: aura-pager-cbi had
++// 96 B of flash to spare, and the LED took 184 (CI, 07bb380). Their led() is a no-op.
++#[cfg(feature = "lean")]
++fn rx_led(_on: bool) {}
++#[cfg(feature = "lean")]
++fn rx_blink(_now: u16) {}
++#[cfg(feature = "lean")]
++fn rx_led_poll(_now: u16) {}
 +
 +struct ModCtx {
 +    app: *mut App,
