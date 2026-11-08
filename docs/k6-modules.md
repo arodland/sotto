@@ -254,9 +254,14 @@ no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated 
     then `K6 TXDOG last boot: key-up ran 19403 ms, limit 18000 ms: rebooted`.
   - `remapspeed`: code runs as fast with SRAM at 0 as with flash (`rsp m3=00ca m2=00ca`).
 
-  Why acd06ba looped is still open. Its txdog differed only in the note's place (vector slots
-  45-47, in the bootloader's RX buffer) and in printing nothing. The table stays in the
-  diagnostic image until that is understood or the default images have run it on the bench.
+  Why acd06ba looped is still open. It loops at every flash (again at 22:14Z), while
+  `aura-pager-vlrh-txdogq` (vlrh-txdog without its USART1 lines, 61cc53a) boots and passes
+  `dogfault` too (22:57Z), so the lines are not it: the note's old place, vector slots 45-47 in
+  the bootloader's RX buffer, is the one difference left.
+- **txdog is on again in every image that transmits** (the `txdog` feature in build.sh: pager-only,
+  lr, vlr, vlrh, explore; the lean images never transmit), with the tested code: the note in
+  `.uninit`, the boot lines `K6 TXDOG remap`/`K6 TXDOG on` and `K6 FAULT pc lr` straight to
+  USART1. A new image that loops at boot anyway: `k6_update.py IMAGE --manual`, Enter at once.
 - **txdog: faults and hung key-ups reboot the radio** (`hal::txdog` in the Aura patch). The
   `vecprobe` module showed on the K6 (2026-11-08 17:51Z, `alias=1 fault=1 back=1`) that SYSCFG
   CFGR1 MEM_MODE = 3 maps SRAM at address 0 and a fault then reaches a handler of ours. At boot

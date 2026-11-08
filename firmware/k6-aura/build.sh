@@ -101,6 +101,8 @@ cp "$LIB" "$WORK/lib/libsotto_k6.a"
 sed -i 's/LENGTH = 120K/LENGTH = 1024K/' "$WORK/memory.x"
 
 # variant NAME TITLE [cargo args]: build, report to out/size-NAME.txt, write out/NAME.bin if it fits
+# hal::txdog (the crash and stuck key-up backstop, docs/k6-modules.md, Security) is on in every
+# image that can transmit: the `txdog` feature. The lean images never transmit and have no room.
 variant() {
   name=$1; title=$2; shift 2
   (cd "$WORK" && cargo build --release "$@")
@@ -186,12 +188,12 @@ fi
 #                      SPI flash needed; lean (no module TX, ARQ reports or calibration
 #                      writes), with little flash to spare (TABLE=0 skips them)
 variant aura-pager-only "pager-only image (Aura drivers + VOICE MSG), v3.7, codebook in SPI flash" \
-  --features pager-only
+  --features pager-only,txdog
 if [ -n "$SOTTO_K6_LIB" ]; then LR=0; INSTALL=0; TABLE=0; VLR=0; EXPLORE=0; fi
 if [ "${LR:-1}" = 1 ]; then
   K6_CODEC=1200 K6_CB=spi sh "$ROOT/tools/k6_build.sh"
   lib build-lr-cbs
-  variant aura-pager-lr "pager-only image, sotto 1200, codebook in SPI flash" --features pager-only
+  variant aura-pager-lr "pager-only image, sotto 1200, codebook in SPI flash" --features pager-only,txdog
 fi
 # aura-explore: EXPLORE, the K6 signal explorer (docs/k6-explore-app.md), in a pager-only image
 # (VOICE MSG first, EXPLORE after 2 quiet minutes) whose library has no voice decoder
@@ -200,12 +202,12 @@ fi
 if [ "${EXPLORE:-1}" = 1 ]; then
   K6_VOICE=0 K6_CB=spi sh "$ROOT/tools/k6_build.sh"
   lib build-explore
-  variant aura-explore "EXPLORE image: the signal explorer, pager packets and modules, no voice" --features explore
+  variant aura-explore "EXPLORE image: the signal explorer, pager packets and modules, no voice" --features explore,txdog
 fi
 if [ "${VLR:-1}" = 1 ]; then
   K6_CODEC=vlr K6_CB=spi sh "$ROOT/tools/k6_build.sh"
   lib build-vlr-cbs
-  variant aura-pager-vlr "pager-only image, sotto 1200 + 600 + 400, codebooks in SPI flash" --features pager-only
+  variant aura-pager-vlr "pager-only image, sotto 1200 + 600 + 400, codebooks in SPI flash" --features pager-only,txdog
   K6_CODEC=vlr K6_CB=install sh "$ROOT/tools/k6_build.sh"
   lib build-vlr-cbi
   # it holds sotto 600 / 400's 21 KB of codebooks: lean, as the other install image
@@ -223,16 +225,7 @@ if [ "${HISS:-1}" = 1 ]; then
   K6_CODEC=vlr K6_CB=spi K6_HISS=1 sh "$ROOT/tools/k6_build.sh"
   lib build-vlrh-cbs
   variant aura-pager-vlrh "pager-only image, sotto 1200 + 600 + 400 with the hiss band (16 kHz), codebooks in SPI flash" \
-    --features pager-only,hiss
-  # the same with hal::txdog's SRAM vector table on and its lines straight to USART1: the
-  # diagnostic image for the boot loop of 2026-11-08 (docs/k6-modules.md, Security). Flash it
-  # only to test txdog: if it loops, k6_update.py --manual puts a good image back
-  variant aura-pager-vlrh-txdog "diagnostic: the hiss band image with txdog's SRAM vector table on" \
     --features pager-only,hiss,txdog
-  # the same without those USART1 lines: acd06ba (txdog, no lines) loops at boot every time and
-  # vlrh-txdog doesn't, so this tells whether the lines' few ms at boot are the difference
-  variant aura-pager-vlrh-txdogq "diagnostic: vlrh-txdog without its USART1 lines" \
-    --features pager-only,hiss,txdog-quiet
 fi
 if [ "${INSTALL:-1}" = 1 ]; then
   K6_CB=install sh "$ROOT/tools/k6_build.sh"
