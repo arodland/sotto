@@ -224,6 +224,11 @@ if [ "${HISS:-1}" = 1 ]; then
   lib build-vlrh-cbs
   variant aura-pager-vlrh "pager-only image, sotto 1200 + 600 + 400 with the hiss band (16 kHz), codebooks in SPI flash" \
     --features pager-only,hiss
+  # the same with hal::txdog's SRAM vector table on and its lines straight to USART1: the
+  # diagnostic image for the boot loop of 2026-11-08 (docs/k6-modules.md, Security). Flash it
+  # only to test txdog: if it loops, k6_update.py --manual puts a good image back
+  variant aura-pager-vlrh-txdog "diagnostic: the hiss band image with txdog's SRAM vector table on" \
+    --features pager-only,hiss,txdog
 fi
 if [ "${INSTALL:-1}" = 1 ]; then
   K6_CB=install sh "$ROOT/tools/k6_build.sh"
@@ -291,8 +296,10 @@ iflive_h1500
 iflive_h1600
 iflive_k6t
 iflive_tsweep
+loram          # level 1, does anything write 0x20000000-0x20000FFF (hal::txdog)
 morse          # level 6, docs/k6-morse.md
 ramprobe
+remapsoak      # level 1, 10 s on the SRAM vector table (hal::txdog)
 rtls
 rxmap          # level 2, its parameter block patched by tools/k6_rxmap.py
 scan           # level 2, patched by tools/k6_scan.py
@@ -301,6 +308,7 @@ spksweep
 surf           # level 6, docs/k6-surf.md
 surfauto       # level 6, docs/k6-surf.md
 vecprobe       # level 1, can Aura catch its own HardFaults (docs/k6-modules.md)
+vectab         # level 1, is 0x08000000's vector table the live one (hal::txdog)
 wsprbcn
 wspriq
 wsprtx

@@ -1,8 +1,8 @@
 diff --git a/Cargo.toml b/Cargo.toml
-index 785c441..6af31c1 100644
+index 785c441..5d99be0 100644
 --- a/Cargo.toml
 +++ b/Cargo.toml
-@@ -21,6 +21,21 @@ st7565 = "0.6"
+@@ -21,6 +21,24 @@ st7565 = "0.6"
  embedded-graphics = "0.8"
  profont = "0.7"
  
@@ -20,6 +20,9 @@ index 785c441..6af31c1 100644
 +# the hiss band image (docs/k6-hiss-port.md): sotto 1200, 600 and 400 played at 16 kHz through the
 +# K6 hiss layer, with a library built K6_HISS=1 (320-sample frames; the PWM ring is 3 of them)
 +hiss = []
++# hal::txdog with its SRAM vector table (off by default since the boot loop of 2026-11-08), lines
++# straight to USART1 from install and a fault: the diagnostic image aura-pager-vlrh-txdog
++txdog = []
 +
  [profile.release]
  opt-level = "z"
@@ -259,10 +262,10 @@ index 5f006e4..00686dd 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..aae9fbd
+index 0000000..cef027a
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,4124 @@
+@@ -0,0 +1,4126 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -2044,6 +2047,8 @@ index 0000000..aae9fbd
 +            need,
 +            if need as usize > arena::DEC_BYTES { " SHORT" } else { "" }
 +        ));
++        #[cfg(not(feature = "lean"))]
++        crate::hal::txdog::report(|a| report_line(a));
 +        app.pager.store_frames =
 +            unsafe { ffi::sp_init(arena::base(), STORE_BYTES as u32) } as u16;
 +        app.pager.stream_play = unsafe { ffi::sp_stream() } != 0;
@@ -6794,10 +6799,10 @@ index 0000000..37404d9
 +}
 diff --git a/src/hal/txdog.rs b/src/hal/txdog.rs
 new file mode 100644
-index 0000000..aaec063
+index 0000000..04f5cbb
 --- /dev/null
 +++ b/src/hal/txdog.rs
-@@ -0,0 +1,195 @@
+@@ -0,0 +1,280 @@
 +//! Crash and stuck-transmitter backstop (2026-11-08: a module overran its stack, the report
 +//! key-up after it hung, and the K6 sent a bare carrier on 440.850 for 16 minutes).
 +//!
@@ -6818,6 +6823,20 @@ index 0000000..aaec063
 +//!   the first wrap after it (up to 6.6 s late).
 +//!
 +//! If the remap doesn't read back, nothing is enabled and the radio runs as before.
++//!
++//! OFF by default since 2026-11-08 19:51Z: the voice image with it on (acd06ba) reset in a loop
++//! about 5 times a second, before its first serial line, and was flashed back over the cable in
++//! one of the bootloader's windows. On the radio since (sotto's RAM modules, 20:02-20:13Z): the
++//! copy equals the live table (vectab), nothing writes 0x20000000-0x20000FFF while Aura runs
++//! (loram), and a module that held this same table 10 s with interrupts on, TIM14's handler
++//! included, ran clean (remapsoak). So the loop comes from how the image sets it up at boot.
++//! The `txdog` feature turns it on for a diagnostic image: install and a fault print their lines
++//! straight to USART1 (waiting on each byte), so each pass of a loop says where it faulted.
++//! Without the feature the key-up clock still runs (it costs nothing) but no table is installed.
++//!
++//! The note lives in `.uninit` (not zeroed by Aura's start-up), not in the vector slots: the
++//! bootloader's own RAM (0x20000000-0x2000046F: its 200 ms count, RX buffer) is its to clear at
++//! every reset.
 +#![cfg_attr(feature = "lean", allow(dead_code))]
 +
 +use core::ptr::{read_volatile, write_volatile};
@@ -6835,16 +6854,29 @@ index 0000000..aaec063
 +const TIM14_SR: u32 = 0x4000_2010;
 +const TIM14_CNT: u32 = 0x4000_2024;
 +const NVIC_ISER: u32 = 0xE000_E100;
-+/// the last reboot's reason, kept across the reset in unused vector slots 45-47
-+const NOTE: u32 = SRAM0 + 4 * 45;
++/// the last reboot's reason (magic, a, b), kept across the reset: not zeroed at start-up
++#[link_section = ".uninit.txdog"]
++static mut NOTE_RAM: [u32; 3] = [0; 3];
++fn note_addr() -> u32 {
++    core::ptr::addr_of!(NOTE_RAM) as u32
++}
 +const NOTE_FAULT: u32 = 0xFA17_0001;
 +const NOTE_TX: u32 = 0xFA17_0002;
++/// install the SRAM table (see above: only in the `txdog` diagnostic image for now)
++const REMAP: bool = cfg!(feature = "txdog");
++const USART1_ISR: u32 = 0x4001_381C;
++const USART1_TDR: u32 = 0x4001_3828;
 +
 +/// Aura's PTT TOT goes up to 180 s; this is the cap for a key-up that sets no limit of its own
 +pub const DEFAULT_LIMIT_MS: u32 = 200_000;
 +
 +static LIVE: AtomicBool = AtomicBool::new(false);
 +static BOOT_CFGR1: AtomicU32 = AtomicU32::new(0);
++/// what install found, for the boot report (the debug UART prints nothing in release builds)
++static BOOT: AtomicU32 = AtomicU32::new(0);
++static NOTE_A: AtomicU32 = AtomicU32::new(0);
++static NOTE_B: AtomicU32 = AtomicU32::new(0);
++static NOTE_K: AtomicU32 = AtomicU32::new(0);
 +static WRAPS: AtomicU32 = AtomicU32::new(0);
 +/// TIM14 ticks (100 us, unwrapped) at key-up, plus 1; 0 while not keyed
 +static KEYED_AT: AtomicU32 = AtomicU32::new(0);
@@ -6865,15 +6897,22 @@ index 0000000..aaec063
 +/// CFGR1 as found and whether the remap took.
 +#[cfg(not(feature = "lean"))]
 +pub fn install() -> (Note, u32, bool) {
-+    let m = rd(NOTE);
-+    let note = match m {
-+        NOTE_FAULT => Note(1, rd(NOTE + 4), rd(NOTE + 8)),
-+        NOTE_TX => Note(2, rd(NOTE + 4), rd(NOTE + 8)),
++    let n = note_addr();
++    let note = match rd(n) {
++        NOTE_FAULT => Note(1, rd(n + 4), rd(n + 8)),
++        NOTE_TX => Note(2, rd(n + 4), rd(n + 8)),
 +        _ => Note(0, 0, 0),
 +    };
++    for i in 0..3 {
++        wr(n + 4 * i, 0);
++    }
++    NOTE_K.store(note.0, Ordering::Relaxed);
++    NOTE_A.store(note.1, Ordering::Relaxed);
++    NOTE_B.store(note.2, Ordering::Relaxed);
 +    wr(RCC_APB2ENR, rd(RCC_APB2ENR) | 1); // SYSCFG's clock
 +    let cfgr1 = rd(SYSCFG_CFGR1);
-+    if cfgr1 & 1 != 0 {
++    BOOT.store(cfgr1, Ordering::Relaxed);
++    if !REMAP || cfgr1 & 1 != 0 {
 +        return (note, cfgr1, false); // system flash at 0 (01): not the boot we know
 +    }
 +    cortex_m::interrupt::free(|_| {
@@ -6882,11 +6921,9 @@ index 0000000..aaec063
 +        }
 +        wr(SRAM0 + 4 * V_HARDFAULT, rd(APP_VEC + 4 * V_HARDFAULT));
 +        wr(SRAM0 + 4 * V_TIM14, tim14 as unsafe extern "C" fn() as usize as u32);
-+        for i in 0..3 {
-+            wr(NOTE + 4 * i, 0);
-+        }
 +        wr(SYSCFG_CFGR1, (cfgr1 & !3) | 3); // SRAM at address 0
 +    });
++    raw(b"K6 TXDOG remap", cfgr1, rd(4 * 15));
 +    let ok = rd(4 * V_HARDFAULT) == rd(SRAM0 + 4 * V_HARDFAULT)
 +        && rd(4 * V_TIM14) == rd(SRAM0 + 4 * V_TIM14)
 +        && rd(4 * V_HARDFAULT) != rd(BOOT_VEC + 4 * V_HARDFAULT);
@@ -6899,6 +6936,7 @@ index 0000000..aaec063
 +    wr(TIM14_SR, 0);
 +    wr(TIM14_DIER, rd(TIM14_DIER) | 1); // update interrupt: one per wrap
 +    wr(NVIC_ISER, 1 << 19);
++    raw(b"K6 TXDOG on", rd(4 * V_HARDFAULT), rd(4 * V_TIM14));
 +    (note, cfgr1, true)
 +}
 +
@@ -6957,9 +6995,11 @@ index 0000000..aaec063
 +    let on = w.wrapping_mul(0x1_0000).wrapping_sub(at);
 +    let lim = LIMIT.load(Ordering::Relaxed);
 +    if on > lim {
-+        wr(NOTE + 4, on / 10);
-+        wr(NOTE + 8, lim / 10);
-+        wr(NOTE, NOTE_TX);
++        let n = note_addr();
++        wr(n + 4, on / 10);
++        wr(n + 8, lim / 10);
++        wr(n, NOTE_TX);
++        raw(b"K6 TXDOG key-up over its limit: ms limit", on / 10, lim / 10);
 +        reset();
 +    }
 +}
@@ -6975,13 +7015,63 @@ index 0000000..aaec063
 +#[cfg(feature = "lean")]
 +pub fn unkeyed() {}
 +
++/// The boot report's line, once the serial report works: `K6 TXDOG on|OFF cfgr1=` and the
++/// last boot's note
++pub fn report(mut line: impl FnMut(core::fmt::Arguments)) {
++    let on = if LIVE.load(Ordering::Relaxed) { "on" } else { "OFF" };
++    line(format_args!("K6 TXDOG {} cfgr1={:08x} limit={} ms", on, BOOT.load(Ordering::Relaxed), DEFAULT_LIMIT_MS));
++    let (a, b) = (NOTE_A.load(Ordering::Relaxed), NOTE_B.load(Ordering::Relaxed));
++    match NOTE_K.load(Ordering::Relaxed) {
++        1 => line(format_args!("K6 FAULT last boot pc={:08x} lr={:08x}", a, b)),
++        2 => line(format_args!("K6 TXDOG last boot: key-up ran {} ms, limit {} ms: rebooted", a, b)),
++        _ => {}
++    }
++}
++
 +/// From Aura's HardFault: note where and reboot at once. Printing first could fault again,
 +/// and a fault inside a fault locks the core up with the transmitter on.
 +pub fn fault(pc: u32, lr: u32) -> ! {
-+    wr(NOTE + 4, pc);
-+    wr(NOTE + 8, lr);
-+    wr(NOTE, NOTE_FAULT);
++    let n = note_addr();
++    wr(n + 4, pc);
++    wr(n + 8, lr);
++    wr(n, NOTE_FAULT);
++    raw(b"K6 FAULT pc lr", pc, lr);
 +    reset()
++}
++
++/// A line straight to USART1, waiting on each byte (with a time-out): from a fault or before
++/// the serial report's ring and interrupt run. `<what> xxxxxxxx xxxxxxxx`. Only in the `txdog`
++/// image, where the table is installed.
++fn raw(what: &[u8], a: u32, b: u32) {
++    if !REMAP {
++        return;
++    }
++    fn put(c: u8) {
++        let mut n = 0u32;
++        while rd(USART1_ISR) & 0x80 == 0 && n < 100_000 {
++            n += 1;
++        }
++        wr(USART1_TDR, c as u32);
++    }
++    fn hex(v: u32) {
++        put(b' ');
++        for i in (0..8).rev() {
++            put(b"0123456789abcdef"[(v >> (4 * i)) as usize & 15]);
++        }
++    }
++    put(b'\r');
++    put(b'\n');
++    for &c in what {
++        put(c);
++    }
++    hex(a);
++    hex(b);
++    put(b'\r');
++    put(b'\n');
++    let mut n = 0u32;
++    while rd(USART1_ISR) & 0x40 == 0 && n < 100_000 {
++        n += 1; // TC: the last byte has left
++    }
 +}
 +
 +/// Every reboot goes through here: flash at address 0 again first, so the bootloader starts
@@ -7140,7 +7230,7 @@ index 131f932..99ae011 100644
  
  /// Pull one byte received on USART1 since the last call, if any.
 diff --git a/src/main.rs b/src/main.rs
-index 9d2b0c0..5f2164f 100644
+index 9d2b0c0..83d0c51 100644
 --- a/src/main.rs
 +++ b/src/main.rs
 @@ -14,7 +14,7 @@ mod ui;
@@ -7188,7 +7278,7 @@ index 9d2b0c0..5f2164f 100644
  #[entry]
  fn main() -> ! {
      let _dp = unsafe { Peripherals::steal() };
-@@ -79,6 +108,27 @@ fn main() -> ! {
+@@ -79,6 +108,19 @@ fn main() -> ! {
      uart::install_bootloader_trampoline();
      unsafe { cortex_m::peripheral::NVIC::unmask(kd32f328_pac::Interrupt::USART1) };
      writeln!(dbg, "bfk6-fw boot, sysclk={}Hz", clock::SYSCLK_HZ).ok();
@@ -7201,22 +7291,14 @@ index 9d2b0c0..5f2164f 100644
 +        write!(dbg, " {:08x}", w).ok();
 +    }
 +    writeln!(dbg).ok();
-+    // crash and stuck-key-up backstop: a vector table in SRAM at 0 (hal::txdog)
++    // crash and stuck-key-up backstop: a vector table in SRAM at 0 (hal::txdog); its boot line
++    // goes on the serial report from VOICE MSG's first entry
 +    #[cfg(not(feature = "lean"))]
-+    {
-+        let (note, cfgr1, dog) = hal::txdog::install();
-+        let on = if dog { "on" } else { "OFF" };
-+        writeln!(dbg, "K6 TXDOG {} cfgr1={:08x} limit={} ms", on, cfgr1, hal::txdog::DEFAULT_LIMIT_MS).ok();
-+        match note.0 {
-+            1 => writeln!(dbg, "K6 FAULT last boot pc={:08x} lr={:08x}", note.1, note.2).ok(),
-+            2 => writeln!(dbg, "K6 TXDOG last boot: key-up ran {} ms, limit {} ms: rebooted", note.1, note.2).ok(),
-+            _ => None,
-+        };
-+    }
++    hal::txdog::install();
  
      let mut cp = cortex_m::Peripherals::take().unwrap();
      unsafe { cp.NVIC.set_priority(kd32f328_pac::Interrupt::USART1, 0) };
-@@ -98,9 +148,16 @@ fn main() -> ! {
+@@ -98,9 +140,16 @@ fn main() -> ! {
          .unwrap_or_else(|_| unreachable!());
      let interface = display_interface_spi::SPIInterface::new(spi_device, dc_pin);
  
@@ -7234,7 +7316,7 @@ index 9d2b0c0..5f2164f 100644
  
      {
          let mut syst_delay = SystDelay(&mut cp.SYST);
-@@ -109,6 +166,7 @@ fn main() -> ! {
+@@ -109,6 +158,7 @@ fn main() -> ! {
      lcd.flush().ok();
      lcd.set_display_on(true).ok();
      let mut display = Display::new(lcd);
@@ -7242,7 +7324,7 @@ index 9d2b0c0..5f2164f 100644
      writeln!(dbg, "lcd init done").ok();
  
      // rfic
-@@ -149,12 +207,17 @@ fn main() -> ! {
+@@ -149,12 +199,17 @@ fn main() -> ! {
      }
  
      let cal_buf = storage.read_calibration();
@@ -7260,7 +7342,7 @@ index 9d2b0c0..5f2164f 100644
          writeln!(
              dbg,
              "squelch cal @0xf0c0: th_in={:?} th_out={:?}",
-@@ -234,7 +297,11 @@ fn main() -> ! {
+@@ -234,7 +289,11 @@ fn main() -> ! {
      }
  
      // app class
@@ -7273,7 +7355,7 @@ index 9d2b0c0..5f2164f 100644
          radio,
          chip_id,
          keypad,
-@@ -265,8 +332,7 @@ fn main() -> ! {
+@@ -265,8 +324,7 @@ fn main() -> ! {
              display.flush();
          }
          3 => {
@@ -7283,7 +7365,7 @@ index 9d2b0c0..5f2164f 100644
              display.flush();
          }
          _ => {}
-@@ -301,6 +367,65 @@ fn main() -> ! {
+@@ -301,6 +359,65 @@ fn main() -> ! {
      )
      .ok();
  
@@ -7349,7 +7431,7 @@ index 9d2b0c0..5f2164f 100644
      // scheduler + main loop
      let mut scheduler = scheduler::Scheduler::new();
      let mut applied_contrast: u8 = u8::MAX;
-@@ -329,6 +454,19 @@ fn main() -> ! {
+@@ -329,6 +446,19 @@ fn main() -> ! {
              app.transmit_pending_sstv(&mut cp.SYST, &power);
          }
  
@@ -7369,7 +7451,7 @@ index 9d2b0c0..5f2164f 100644
          // power sw
          if power.debounced_off(&mut cp.SYST) {
              writeln!(dbg, "power switch off, shutting down").ok();
-@@ -401,6 +539,8 @@ fn main() -> ! {
+@@ -401,6 +531,8 @@ fn main() -> ! {
              }
          } else if app.mode() == app::Mode::Sstv {
              app.handle_sstv_ptt(&mut cp.SYST);
@@ -7378,7 +7460,7 @@ index 9d2b0c0..5f2164f 100644
          } else if matches!(
              app.side_modulation(app.master_index()),
              Modulation::Cw | Modulation::Cwf
-@@ -465,9 +605,13 @@ fn main() -> ! {
+@@ -465,9 +597,13 @@ fn main() -> ! {
              }
          }
  
