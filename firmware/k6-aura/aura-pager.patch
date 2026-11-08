@@ -4350,10 +4350,10 @@ index 0000000..5716e7e
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..6538c4b
+index 0000000..0170903
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1715 @@
+@@ -0,0 +1,1748 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4627,6 +4627,20 @@ index 0000000..6538c4b
 +const RT_TONE_DIFFERS: i32 = 3;
 +/// dB the listen's frozen receiver gain adds to RSSI reads (xd_adj), taken off by rssi_dbm
 +static mut DMR_ADJ: i16 = 0;
++/// Listen trace (2026-11-08: the first DMR/CTCSS image froze 0-3 s into a listen with no clue):
++/// the listen's steps so far, every step of the first TRACE_ALL on the serial report and flushed
++static mut TRACE_N: u32 = 0;
++const TRACE_ALL: u32 = 100;
++
++fn trace(args: core::fmt::Arguments) {
++    report_line(args);
++    crate::hal::uart::flush();
++}
++
++fn trace_on() -> bool {
++    let n = unsafe { TRACE_N };
++    n < TRACE_ALL || n % 32 == 0
++}
 +/// the saved table's frequencies, for the new / known rule on the list (more stay unmarked)
 +const KNOWN_N: usize = 64;
 +static mut KNOWN: [u32; KNOWN_N] = [0; KNOWN_N];
@@ -5044,9 +5058,17 @@ index 0000000..6538c4b
 +            }
 +        }
 +        View::Listen => {
++            let n = unsafe { TRACE_N };
++            let tr = trace_on();
++            if tr {
++                trace(format_args!("K6 EX t {} a {}", n, now_ms()));
++            }
 +            ctx_on(app, syst);
 +            let r = if t.xd.is_null() { unsafe { ffi::xl_step(t.xl) } } else { unsafe { ffi::xd_step(t.xd, t.xl) } };
 +            ctx_off();
++            if tr {
++                trace(format_args!("K6 EX t {} b r={}", n, r));
++            }
 +            dmr_seen();
 +            if r == XL_OK || r == XL_TIME {
 +                listen_end(app, syst, r);
@@ -5055,6 +5077,10 @@ index 0000000..6538c4b
 +            } else if r != 0 {
 +                t.dirty = true;
 +            }
++            if tr {
++                trace(format_args!("K6 EX t {} c", n));
++            }
++            unsafe { TRACE_N = n.wrapping_add(1) };
 +        }
 +        View::Try => {
 +            if uptime::now().wrapping_sub(t.last_draw) >= DRAW_TICKS {
@@ -5380,9 +5406,11 @@ index 0000000..6538c4b
 +        return;
 +    }
 +    unsafe {
++        TRACE_N = 0;
 +        ffi::xd_start(t.xd, &MOD_API, spk as i32, t.cps8);
 +        DMR_ADJ = ffi::xd_adj(t.xd) as i16;
 +    }
++    trace(format_args!("K6 EX t started adj={}", unsafe { DMR_ADJ }));
 +}
 +
 +/// After a listen step: DMR heard marks the row (once), and the header follows DMR on and off
@@ -5416,11 +5444,13 @@ index 0000000..6538c4b
 +        return;
 +    }
 +    let (tone, dmr) = unsafe { (ffi::xd_tone(t.xd) as u16, ffi::xd_flags(t.xd) & XD_EVER != 0) };
++    trace(format_args!("K6 EX t end tone={} dmr={}", tone, dmr as u8));
 +    unsafe {
 +        t.cps8 = ffi::xd_rate8(t.xd);
 +        ffi::xd_stop(t.xd);
 +        DMR_ADJ = 0;
 +    }
++    trace(format_args!("K6 EX t stopped"));
 +    if tone != 0 {
 +        unsafe { ffi::ex_tone(&mut t.ex, t.hz, tone) };
 +    }
@@ -5429,6 +5459,7 @@ index 0000000..6538c4b
 +    }
 +    let mut rec: RtRec = unsafe { core::mem::zeroed() };
 +    let k = unsafe { ffi::rt_heard_apply(&mut t.rt, t.hz, RT_TOL_HZ, tone, dmr as i32, &mut rec) };
++    trace(format_args!("K6 EX t applied {}", k));
 +    say(format_args!("K6 EX heard {} tone={} dmr={} rt={} saved_tone={}", t.hz, tone, dmr as u8, k, rec.rx_tone));
 +    if k == RT_TONE_FILL {
 +        note("TONE SAVED");
@@ -5462,11 +5493,13 @@ index 0000000..6538c4b
 +    unsafe { ffi::xl_info(t.xl, &mut info) };
 +    side_end();
 +    unsafe { ffi::xl_stop(t.xl, r) };
++    trace(format_args!("K6 EX t xl stopped"));
 +    let auto = core::mem::take(&mut t.auto_now);
 +    if auto {
 +        auto_done();
 +    }
 +    monitor_off(app, syst);
++    trace(format_args!("K6 EX t monitor off"));
 +    t.view = View::List;
 +    if r != XL_OK {
 +        ctx_off();
