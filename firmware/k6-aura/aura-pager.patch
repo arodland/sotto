@@ -6801,10 +6801,10 @@ index 0000000..37404d9
 +}
 diff --git a/src/hal/txdog.rs b/src/hal/txdog.rs
 new file mode 100644
-index 0000000..9e51b7f
+index 0000000..2048b5b
 --- /dev/null
 +++ b/src/hal/txdog.rs
-@@ -0,0 +1,281 @@
+@@ -0,0 +1,284 @@
 +//! Crash and stuck-transmitter backstop (2026-11-08: a module overran its stack, the report
 +//! key-up after it hung, and the K6 sent a bare carrier on 440.850 for 16 minutes).
 +//!
@@ -6829,15 +6829,14 @@ index 0000000..9e51b7f
 +//! 2026-11-08: the first voice image with it (acd06ba) reset in a loop about 5 times a second at
 +//! boot, every time it was flashed. sotto's RAM modules then ruled out the copy (vectab), writes
 +//! to the table's RAM (loram), the table itself held 10 s with interrupts on (remapsoak) and any
-+//! cost in speed (remapspeed). This version, with the note in `.uninit` and lines straight to
++//! cost in speed (remapspeed). This version, with the note out of the vector slots and lines straight to
 +//! USART1, boots and passed the crash and stuck key-up tests on the K6, and so did the same
 +//! without the lines (`txdog-quiet`): the note's old place in vector slots 45-47 is the one
 +//! difference left. The `txdog` feature turns it on (sotto's build: every image that transmits);
 +//! without it the key-up clock still runs (it costs nothing) but no table is installed.
 +//!
-+//! The note lives in `.uninit` (not zeroed by Aura's start-up), not in the vector slots: the
-+//! bootloader's own RAM (0x20000000-0x2000046F: its 200 ms count, RX buffer) is its to clear at
-+//! every reset.
++//! The note lives at 0x2000_0FF0, not in the vector slots: the bootloader's own RAM
++//! (0x20000000-0x2000046F: its 200 ms count, RX buffer) is its to clear at every reset.
 +#![cfg_attr(feature = "lean", allow(dead_code))]
 +
 +use core::ptr::{read_volatile, write_volatile};
@@ -6855,11 +6854,15 @@ index 0000000..9e51b7f
 +const TIM14_SR: u32 = 0x4000_2010;
 +const TIM14_CNT: u32 = 0x4000_2024;
 +const NVIC_ISER: u32 = 0xE000_E100;
-+/// the last reboot's reason (magic, a, b), kept across the reset: not zeroed at start-up
-+#[link_section = ".uninit.txdog"]
-+static mut NOTE_RAM: [u32; 3] = [0; 3];
++/// the last reboot's reason (magic, a, b), kept across the reset: 0x2000_0FF0, just below the
++/// bootloader's UserVectors, in RAM that neither the bootloader (its data ends at 0x2000_046F,
++/// its stack starts at 0x2000_4028) nor Aura (from 0x2000_1028) uses; sotto's loram module saw
++/// nothing write 0x2000_0000-0x2000_0FFF while Aura runs. Not `.uninit`: that lands below the
++/// bootloader's stack in the smaller images, and the EXPLORE image lost its note there
++/// (2026-11-08 23:21Z)
++const NOTE: u32 = 0x2000_0FF0;
 +fn note_addr() -> u32 {
-+    core::ptr::addr_of!(NOTE_RAM) as u32
++    NOTE
 +}
 +const NOTE_FAULT: u32 = 0xFA17_0001;
 +const NOTE_TX: u32 = 0xFA17_0002;

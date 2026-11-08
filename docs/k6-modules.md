@@ -262,6 +262,13 @@ no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated 
   lr, vlr, vlrh, explore; the lean images never transmit), with the tested code: the note in
   `.uninit`, the boot lines `K6 TXDOG remap`/`K6 TXDOG on` and `K6 FAULT pc lr` straight to
   USART1. A new image that loops at boot anyway: `k6_update.py IMAGE --manual`, Enter at once.
+- **EXPLORE image on the K6 (f70e79e, 23:20-23:26Z):** boots with txdog on, `dogfault` reboots
+  it in a second, it goes into EXPLORE after 120 quiet seconds, and the bench's CW ID on 440.850
+  wakes it (`K6 EX beacon -25 dBm: VOICE MSG for 60 s`, 4.2 s into the ID), long enough to flash
+  it with nobody at the radio. But its next boot had no `K6 FAULT last boot` line: `.uninit`
+  lands lower in the smaller images, inside the bootloader's stack (it starts at 0x20004028), which
+  overwrote the note. The note now sits at 0x20000FF0, below the UserVectors, in RAM that neither
+  the bootloader (data to 0x2000046F) nor Aura (from 0x20001028) uses.
 - **txdog: faults and hung key-ups reboot the radio** (`hal::txdog` in the Aura patch). The
   `vecprobe` module showed on the K6 (2026-11-08 17:51Z, `alias=1 fault=1 back=1`) that SYSCFG
   CFGR1 MEM_MODE = 3 maps SRAM at address 0 and a fault then reaches a handler of ours. At boot
