@@ -333,11 +333,13 @@ static void code_superframe(struct sotto_vlr_enc *e, long s) {
         }
       }
     }
-    int c0 = (int)rint(c);
+    /* every centre (sotto_vlr.SottoVLR.FULL_SEARCH): a frame just inside VLR_OUTLIER (a creaky
+       onset, LibriSpeech 198 "all" at 9.48 s) skews the fit, and +-1 around it can't reach the
+       line the capped error wants. Equal errors go to the centre nearest the fit. */
+    int c0 = (int)rint(c), bd = 0;
     c0 = c0 < 0 ? 0 : c0 > 127 ? 127 : c0;
-    int lo = mixed ? 0 : c0 > 0 ? c0 - 1 : 0, hi = mixed ? 127 : c0 < 127 ? c0 + 1 : 127;
     long best = -1;
-    for (int x = lo; x <= hi; x++)
+    for (int x = 0; x <= 127; x++)
       for (int q = 0; q < (1 << m->bs); q++) {
         long err = 0;
         for (int k = 0; k < n; k++)
@@ -346,7 +348,7 @@ static void code_superframe(struct sotto_vlr_enc *e, long s) {
             if (d > VLR_OUTLIER) d = VLR_OUTLIER;
             err += wt[k] * d * d;
           }
-        if (best < 0 || err < best) best = err, wc = x, ws = q;
+        if (best < 0 || err < best || (err == best && abs(x - c0) < bd)) best = err, wc = x, ws = q, bd = abs(x - c0);
       }
   }
   e->prev_wc = wc;
