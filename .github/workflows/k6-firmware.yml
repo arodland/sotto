@@ -60,7 +60,7 @@ jobs:
         run: |
           make -C c VARIANT=v3.7 fixed PYTHON=false
           make -C c/k6
-          python -m pytest -q \
+          python -m pytest -q --durations=8 \
             tests/test_k6_air.py \
             tests/test_k6_cb.py \
             tests/test_k6_cwid.py \
@@ -76,12 +76,12 @@ jobs:
       # step. Run it by hand after touching the WSPR modules: python -m pytest -q tests/test_k6_wspr*.py
       - name: FT8 (host core, GP0 path sim, ft8wf and ft8tx on an emulated M0)
         run: |
-          python -m pytest -q \
+          python -m pytest -q --durations=8 \
             tests/test_k6_ft8.py \
             tests/test_k6_ft8tx.py
       - name: modules on an emulated M0 (the transmit rules for every module that keys up, Morse RTX with a modelled operator, the IF tap, calibration) and upload ARQ
         run: |
-          python -m pytest -q \
+          python -m pytest -q --durations=8 \
             tests/test_k6_arq.py \
             tests/test_k6_bench.py \
             tests/test_k6_cwkey.py \
