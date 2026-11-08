@@ -26,7 +26,7 @@ static void zero(void *p, unsigned n) {
 
 void ex_init(ex_t *e, ex_cand_t *store, unsigned cap) {
   e->c = store, e->n = 0, e->cap = (uint16_t)cap, e->tol_hz = 5000;
-  e->known = 0, e->known_n = e->known_cap = 0;
+  e->known = 0, e->known_n = e->known_cap = 0, e->now = 0;
 }
 
 void ex_known_store(ex_t *e, uint32_t *buf, unsigned cap) {
@@ -153,6 +153,7 @@ ex_cand_t *ex_over(ex_t *e, uint32_t hz, uint32_t start_ms, uint32_t dur_ms, int
     c->prev_start = start_ms | 1;
   }
   c->overs++, c->on_ms += dur_ms, c->last_ms = start_ms + dur_ms;
+  if (c->last_ms - e->now < 0x80000000u) e->now = c->last_ms;
   /* a skirt: this over and a neighbour's last one ended together, one EX_SKIRT_DB louder */
   for (i = 0; i < e->n; i++) {
     ex_cand_t *o = &e->c[i];
@@ -208,6 +209,14 @@ static int skirt(const ex_cand_t *c) { return c->overs && c->skirts >= c->overs;
 
 /* the i-th by selection (skirts left out unless all): no sorting in place, so a pointer the
    caller holds stays put */
+/* off the screen list: a skirt, or a stale one-over '?' (heard once, nothing more about it, and
+   nothing since for EX_STALE_MS: bench 7's 35 noise bins from a low floor read, 2026-11-08) */
+static int hidden(const ex_t *e, const ex_cand_t *c) {
+  return skirt(c) || (c->overs == 1 && c->grade == '?' && !c->call[0] &&
+                      !(c->flags & (EX_F_KNOWN | EX_F_TRIED | EX_F_OFF_HEARD)) &&
+                      e->now - c->last_ms > EX_STALE_MS && e->now - c->last_ms < 0x80000000u);
+}
+
 static ex_cand_t *nth(ex_t *e, unsigned i, int all) {
   unsigned k = 0, j;
   ex_cand_t *prev = 0;
@@ -223,7 +232,7 @@ static ex_cand_t *nth(ex_t *e, unsigned i, int all) {
     }
     if (!best) return 0;
     prev = best;
-    if (all || !skirt(best)) {
+    if (all || !hidden(e, best)) {
       if (k == i) return best;
       k++;
     }
@@ -235,7 +244,7 @@ ex_cand_t *ex_view(ex_t *e, unsigned i) { return nth(e, i, 0); }
 
 unsigned ex_view_n(const ex_t *e) {
   unsigned j, n = 0;
-  for (j = 0; j < e->n; j++) n += !skirt(&e->c[j]);
+  for (j = 0; j < e->n; j++) n += !hidden(e, &e->c[j]);
   return n;
 }
 

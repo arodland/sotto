@@ -48,8 +48,10 @@ extern "C" {
 #define EX_F_SIMPLEX 0x08        /* in a simplex range */
 #define EX_F_SPUR 0x10
 #define EX_F_KNOWN 0x20          /* in the saved repeater table (ex_know): listed after the new ones */
+/* 0x40 is the app's (EXPLORE: the table's call has been looked up) */
 #define EX_SKIRT_HZ 100000       /* a carrier this close and EX_SKIRT_DB louder, ending with it: a skirt */
 #define EX_SKIRT_DB 25
+#define EX_STALE_MS 600000u      /* a one-over '?' this long without another leaves the screen list */
 
 typedef struct {
   uint32_t hz;
@@ -76,6 +78,7 @@ typedef struct {
   uint32_t tol_hz;               /* overs within this of a candidate are its own (default 5 kHz) */
   uint32_t *known;               /* the saved table's frequencies (ex_know), known_cap of them */
   uint16_t known_n, known_cap;
+  uint32_t now;                  /* the latest over's end (ex_over), for EX_STALE_MS */
 } ex_t;
 
 /* band plan rows: an output range, its usual offset, and whether it is a simplex range */
@@ -110,7 +113,8 @@ void ex_grade(ex_cand_t *c);
    candidates come before known ones (EX_F_KNOWN), and in each group the ignored ones last. */
 ex_cand_t *ex_rank(ex_t *e, unsigned i);
 /* the same, leaving out skirts (every over a louder neighbour's: Jeff 2026-11-07, "lump close
-   together signals together"), for the list on the screen; and how many that leaves */
+   together signals together") and stale one-over '?'s (EX_STALE_MS), for the list on the
+   screen; and how many that leaves */
 ex_cand_t *ex_view(ex_t *e, unsigned i);
 unsigned ex_view_n(const ex_t *e);
 /* on its band plan row's channel raster (within 1 kHz), or on a row without one, or off the plan */

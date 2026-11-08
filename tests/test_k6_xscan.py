@@ -382,9 +382,30 @@ def test_a_floor_read_under_desense_is_held(lib):
     assert any(" F0 held " in l for l in lines), lines[:3]
     assert not [l for l in lines if " say N " in l], [l for l in lines if " say N " in l]
     assert -140 <= info.floor_dbm[0] <= -134, list(info.floor_dbm)
-    # a band that really went 20 dB quieter: the second read stands
+    # a band that really went 20 dB quieter: the second read is taken, XS_DROP_DB of it a read
     lines, info = run(Dip([], s_(20), s_(1000), 20), 20.2)
-    assert any(" F0 held " in l for l in lines) and info.floor_dbm[0] <= -150, list(info.floor_dbm)
+    assert any(" F0 held " in l for l in lines) and -144 <= info.floor_dbm[0] <= -137, list(info.floor_dbm)
+
+
+def test_a_floor_read_low_goes_down_a_little_at_a_time(lib):
+    """explore-bench-7 (2026-11-08 01:28:50): with nothing on the air the minute's floor read came
+    back 11 dB low (F2 -115 for -104), and 35 bins of ordinary noise became one-over candidates
+    before it was read again. A read goes down at most XS_DROP_DB, so they don't."""
+    L, kxl = lib
+    segs = [(440_000_000, 12_500, 100, 12_500)]
+    radio = Radio(Dip([], s_(59), s_(63), 11))
+    buf, mem, ex = explorer(L, kxl, segs, radio)
+    assert L.xs_init(buf, ctypes.byref(radio.api), ctypes.byref(ex.e), mem, len(mem)) == 0
+    run_steps(L, buf, radio, 58)
+    before = XsInfo()
+    L.xs_info(buf, ctypes.byref(before))
+    run_steps(L, buf, radio, 110)
+    info = XsInfo()
+    L.xs_info(buf, ctypes.byref(info))
+    f = [l for l in radio.lines if " say F0 " in l]
+    assert len(f) >= 2, f
+    assert not [l for l in radio.lines if " say N " in l], [l for l in radio.lines if " say N " in l][:5]
+    assert info.floor_dbm[0] >= before.floor_dbm[0] - 3, (before.floor_dbm[0], info.floor_dbm[0])
 
 
 def test_a_spur_does_not_hold_the_floor_off(lib):

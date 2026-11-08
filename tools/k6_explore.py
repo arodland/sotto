@@ -46,7 +46,7 @@ class Cand(ctypes.Structure):
 class Ex(ctypes.Structure):
     _fields_ = [("c", ctypes.POINTER(Cand)), ("n", ctypes.c_uint16), ("cap", ctypes.c_uint16),
                 ("tol_hz", ctypes.c_uint32), ("known", ctypes.POINTER(ctypes.c_uint32)),
-                ("known_n", ctypes.c_uint16), ("known_cap", ctypes.c_uint16)]
+                ("known_n", ctypes.c_uint16), ("known_cap", ctypes.c_uint16), ("now", ctypes.c_uint32)]
 
 
 class Plan(ctypes.Structure):

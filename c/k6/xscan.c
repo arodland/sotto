@@ -307,11 +307,19 @@ static int refloor_due(xs_t *s) {
 /* no bin's floor more than 6 dB under the segment's quick floor just read. A floor 15 dB or more
    under the last one is a strong carrier's desense, not a quieter band: bench 4 (21:09) read 70 cm
    at -139 for -109 while a -18 dBm ID was still up after a listen, and five phantoms (444.550 at
-   -116) came up against it. That read is held once and tried again in 5 s; a second one stands. */
-static void refloor(xs_t *s) {
+   -116) came up against it. That read is held once and tried again in 5 s; a second one stands.
+   And a floor goes down at most XS_DROP_DB a read (it goes up at once): bench 7 (2026-11-08
+   01:28:50) read 70 cm at -115 to -112 for 16 s with nothing on the air (-104 before and after),
+   and 35 bins of ordinary noise at -102 became one-over candidates. A band that really got
+   quieter is followed over a few reads. up: only raise it (a burst: the floor rose). */
+static void refloor(xs_t *s, int up) {
   uint8_t *fl = s->fl + s->base, lo, osf = s->sfl[s->g], oqf = s->qfl[s->g], bit = (uint8_t)(1u << s->g);
   uint32_t b;
   floors(s, s->g);
+  if (up && s->sfl[s->g] < osf) {
+    s->sfl[s->g] = osf, s->qfl[s->g] = oqf;
+    return;
+  }
   if (s->sfl[s->g] + XS_DESENSE_DB <= osf && !(s->held & bit)) {
     s->held |= bit;
     s->sfl[s->g] = osf, s->qfl[s->g] = oqf;
@@ -320,6 +328,8 @@ static void refloor(xs_t *s) {
     return;
   }
   s->held &= (uint8_t)~bit;
+  if (s->sfl[s->g] + XS_DROP_DB < osf) s->sfl[s->g] = (uint8_t)(osf - XS_DROP_DB);
+  if (s->qfl[s->g] + XS_DROP_DB < oqf) s->qfl[s->g] = (uint8_t)(oqf - XS_DROP_DB);
   lo = (uint8_t)(s->qfl[s->g] > 9 ? s->qfl[s->g] - 9 : 0);
   for (b = 0; b < s->seg[s->g].nbins; b++)
     if (fl[b] < lo) fl[b] = lo;
@@ -335,7 +345,7 @@ static void burst(xs_t *s) {
   uint32_t top = G->lo_hz + G->nbins * G->step_hz;
   xs_hot_t *h = s->hot;
   int i, n = 0;
-  refloor(s);
+  refloor(s, 1);
   for (i = 0; i < XS_HOT; i++, h++)
     if (h->hz >= G->lo_hz && h->hz < top && h->up && !h->spur && h->overs == 1 &&
         h->up - s->sweep_t0 < 0x80000000u && h->lvl < s->sfl[s->g] + s->hit_db) {
@@ -401,7 +411,7 @@ int xs_step(xs_t *s) {
     return XS_RUN;
   }
   if (!s->b && refloor_due(s)) {
-    refloor(s);
+    refloor(s, 0);
     sweep_start(s);
     return XS_RUN;
   }
@@ -457,7 +467,7 @@ int xs_step(xs_t *s) {
 
 void xs_resume(xs_t *s) {
   if (s->phase != XS_SWEEP) return;
-  refloor(s);
+  refloor(s, 0);
   sweep_start(s);
 }
 

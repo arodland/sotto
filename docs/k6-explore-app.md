@@ -218,6 +218,26 @@ was -93 (the first F0 line, at 20:27:14). Three faults locked together, all fixe
   1/8-segment hop between floor points. The quick read now comes one bin over a settled full
   read, as in the sweep.
 
+## Bench 7 (2026-11-08 01:23-01:36 UTC, main 9572f5e)
+
+Save on a confirmed ID works on air: with 15 s of Jeff's voice before the ID, AG7EW on 441.000
+decoded on both sends (20 wpm, q=100) and was saved by itself (`K6 EX cw ... check=0`, then
+`K6 EX save ... id=2`). Jeff's extra-tough test, the ID mixed under his voice 6 dB below its
+peaks on 441.200, decoded on both sends too ("AG7EW STATTO TEST" the second time: the call came
+through, the voice took one letter of the rest) and saved as id 3.
+
+The junk Jeff saw: at 01:28:50 the minute's 70 cm floor read came back 11 dB low (-115 for
+-104) with nothing on the air, and in 16 s 35 bins of ordinary noise at -102 became one-over '?'
+rows; the burst re-reads read low too and kept them. Three changes:
+
+- a floor read goes down at most `XS_DROP_DB` (3 dB) a read and up at once, and a burst's
+  re-read only raises it (`refloor(s, up)`);
+- a one-over '?' with no call, not saved, tried or input-heard, leaves the screen list after
+  `EX_STALE_MS` (10 min) of other overs and nothing from it (`ex_view`; the dump keeps it, and
+  another over brings it back);
+- a saved repeater's row takes the table's call (`known_calls`, once each), so 440.850 shows
+  its check mark and the listener leaves it alone.
+
 ## Bench 6 (2026-11-07 22:26-22:45 UTC, main 64d4fc7)
 
 The full-pass gate and loudest-first worked: the first pick came after a whole pass, and 440.850

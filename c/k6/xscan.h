@@ -29,6 +29,7 @@ extern "C" {
 #define XS_HOT 10
 #define XS_BLOCK 32
 #define XS_DESENSE_DB 15   /* a floor read this far under the last is desense (held once) */
+#define XS_DROP_DB 3       /* a floor read goes down at most this far (up at once) */
 #define XS_BURST 4         /* this many new hits in one segment sweep: its floor moved, read it again */
 #define XS_COLS 128        /* waterfall row: max-pooled to this many columns a segment at most */
 
