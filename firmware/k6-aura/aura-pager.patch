@@ -4243,10 +4243,10 @@ index 0000000..8064b18
 +];
 diff --git a/src/app/pager/explore.rs b/src/app/pager/explore.rs
 new file mode 100644
-index 0000000..b060cf5
+index 0000000..8d5fe3c
 --- /dev/null
 +++ b/src/app/pager/explore.rs
-@@ -0,0 +1,1592 @@
+@@ -0,0 +1,1600 @@
 +//! EXPLORE: the K6 signal explorer's list of likely repeaters, in the pager image (sotto's
 +//! docs/k6-explore-app.md; the design is the "K6 signal explorer" plan, Phase 3).
 +//!
@@ -4517,10 +4517,11 @@ index 0000000..b060cf5
 +/// the sweep's peek at an up carrier with no call (xs_tone), ms: the tone detector keyed there
 +/// means an ID is going out now (WA7DMR on 440.925, 2026-11-08 04:59: 4 s, mid-carrier)
 +const PEEK_MS: u32 = 40;
-+/// a listen begun on a peek hears the end of that ID only, so the station gets an appointment:
-+/// a listen APPT_S long from APPT_DUE_MS after the peek, for its next (10 minute) ID
-+const APPT_DUE_MS: u32 = 9 * 60_000;
-+const APPT_S: u32 = 180;
++/// a listen begun on a peek hears the end of that ID only, so the station goes on the watch list:
++/// each time it keys up after that, the listener goes there at once and stays the whole carrier
++/// (WA7DMR sent its one ID in 52 minutes 13 s into a key-up: no 10 minute timer). Not again
++/// within WATCH_GAP_MS of the last listen there.
++const WATCH_GAP_MS: u32 = 20_000;
 +const ROWS: usize = 7;
 +
 +/// The band sets, # cycles them: (name, segments (lo, step, bins, snap)). Each set's floors and
@@ -4586,12 +4587,10 @@ index 0000000..b060cf5
 +    auto_pass: u32,
 +    once: [(u32, [u8; 11]); 6],
 +    once_i: u8,
-+    /// appointments (frequency, ms due; 0 free), and what the listen going on is: begun on a
-+    /// peek (its first transmission is the tail of an ID, not kept), an appointment (it doesn't
-+    /// end when the carrier drops)
-+    appt: [(u32, u32); 4],
++    /// the watch list (frequency, ms its last listen ended; 0 free), and whether the listen going
++    /// on began on a peek (its first transmission is the tail of an ID, not kept)
++    watch: [(u32, u32); 4],
 +    mid: bool,
-+    appt_now: bool,
 +    /// the sweep was left for Try or Listen: its segment reads its floor again on the way back
 +    resume: bool,
 +}
@@ -4637,9 +4636,8 @@ index 0000000..b060cf5
 +    auto_pass: 0,
 +    once: [(0, [0; 11]); 6],
 +    once_i: 0,
-+    appt: [(0, 0); 4],
++    watch: [(0, 0); 4],
 +    mid: false,
-+    appt_now: false,
 +    resume: false,
 +};
 +
@@ -4891,7 +4889,7 @@ index 0000000..b060cf5
 +            }
 +            if !key && t.auto && tone != 0 {
 +                tone_heard(app, syst, tone);
-+            } else if !key && t.auto && appt_due(app, syst) {
++            } else if !key && t.auto && watch_up(app, syst) {
 +            } else if !key && t.auto {
 +                let n = passes();
 +                if n != t.auto_pass {
@@ -5120,7 +5118,6 @@ index 0000000..b060cf5
 +fn auto_listen(app: &mut App, syst: &mut SYST, c: &mut Cand, max_s: u32) {
 +    let t = st();
 +    t.mid = false;
-+    t.appt_now = false;
 +    t.hz = c.hz;
 +    t.off = c.off_hz;
 +    t.auto_now = true;
@@ -5146,7 +5143,7 @@ index 0000000..b060cf5
 +}
 +
 +/// The peek heard keying on an up carrier: if it has no call, listen now (that ID's tail: logged,
-+/// not kept) and come back for its next ID (an appointment).
++/// not kept) and watch the station from now on.
 +fn tone_heard(app: &mut App, syst: &mut SYST, hz: u32) {
 +    let t = st();
 +    let p = unsafe { ffi::ex_find(&mut t.ex, hz) };
@@ -5157,32 +5154,37 @@ index 0000000..b060cf5
 +    if c.call[0] != 0 || c.flags & (EX_F_IGNORED | EX_F_SPUR) != 0 {
 +        return;
 +    }
-+    let due = now_ms().wrapping_add(APPT_DUE_MS) | 1;
-+    let i = t.appt.iter().position(|a| a.0 == hz).or_else(|| t.appt.iter().position(|a| a.1 == 0)).unwrap_or(0);
-+    t.appt[i] = (hz, due);
-+    say(format_args!("K6 EX tone {} appt={}s", hz, APPT_DUE_MS / 1000));
-+    let max_s = unsafe { ffi::ex_listen_cap(c, AUTO_MAX_S, AUTO_MIN_S) };
-+    auto_listen(app, syst, c, max_s);
++    let i = t.watch.iter().position(|w| w.0 == hz).or_else(|| t.watch.iter().position(|w| w.0 == 0));
++    // a full list: the one listened to longest ago makes room
++    let i = i.unwrap_or_else(|| (0..t.watch.len()).min_by_key(|&k| t.watch[k].1).unwrap_or(0));
++    t.watch[i] = (hz, now_ms());
++    say(format_args!("K6 EX tone {} watch", hz));
++    auto_listen(app, syst, c, AUTO_MAX_S);
 +    t.mid = true;
 +}
 +
-+/// An appointment that's due: its listen starts (true), unless the station has a call by now
-+fn appt_due(app: &mut App, syst: &mut SYST) -> bool {
++/// A watched station with no call keyed up: listen to the whole carrier (true)
++fn watch_up(app: &mut App, syst: &mut SYST) -> bool {
 +    let t = st();
++    if t.watch.iter().all(|w| w.0 == 0) {
++        return false;
++    }
++    let mut up = [0u32; 10];
++    let n = unsafe { ffi::xs_up(t.xs, up.as_mut_ptr(), up.len() as u32) } as usize;
 +    let now = now_ms();
-+    for i in 0..t.appt.len() {
-+        let (hz, due) = t.appt[i];
-+        if due == 0 || (now.wrapping_sub(due) as i32) < 0 {
++    for i in 0..t.watch.len() {
++        let (hz, last) = t.watch[i];
++        if hz == 0 || now.wrapping_sub(last) < WATCH_GAP_MS || !up[..n].contains(&hz) {
 +            continue;
 +        }
-+        t.appt[i] = (0, 0);
 +        let p = unsafe { ffi::ex_find(&mut t.ex, hz) };
 +        if p.is_null() || unsafe { (*p).call[0] } != 0 {
++            t.watch[i] = (0, 0);
 +            continue;
 +        }
-+        say(format_args!("K6 EX appt {} s={}", hz, APPT_S));
-+        auto_listen(app, syst, unsafe { &mut *p }, APPT_S);
-+        t.appt_now = true;
++        t.watch[i].1 = now;
++        say(format_args!("K6 EX watch {}", hz));
++        auto_listen(app, syst, unsafe { &mut *p }, AUTO_MAX_S);
 +        return true;
 +    }
 +    false
@@ -5217,7 +5219,7 @@ index 0000000..b060cf5
 +            t.once_i = t.once_i.wrapping_add(1);
 +        }
 +    }
-+    if !t.appt_now && now.wrapping_sub(t.auto_seen_ms) >= AUTO_TAIL_MS {
++    if now.wrapping_sub(t.auto_seen_ms) >= AUTO_TAIL_MS {
 +        listen_end(app, syst, XL_TIME);
 +    }
 +}
@@ -5226,6 +5228,12 @@ index 0000000..b060cf5
 +/// against the station's next cap (ex_listen_cap).
 +fn auto_done() {
 +    let t = st();
++    let now = now_ms();
++    for w in t.watch.iter_mut() {
++        if w.0 == t.hz {
++            w.1 = now;
++        }
++    }
 +    t.auto_mark = passes();
 +    let s = now_ms().wrapping_sub(t.auto_start_ms) / 1000;
 +    unsafe { ffi::ex_heard(&mut t.ex, t.hz, s) };
