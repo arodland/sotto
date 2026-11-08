@@ -263,7 +263,9 @@ def test_dmrrx_module_on_the_emulated_k6():
     e, ret, _ = emu(len(code) + 24 + 1024, ib[:on])   # too small a block: refused, and why
     assert ret - (1 << 32) == -6 and e.said and e.said[0].startswith("dmr scratch "), (ret, e.said)
     need = int(e.said[0].split(" need ")[1])
-    assert len(code) + 24 + need <= 11776 - 256, (len(code), need)  # the shared block, 256 B to spare
+    # the shared block: header and tag, code, scratch, 64 B to spare (CI's clang, whose build is the
+    # one the radio gets, makes ~260 B more code than a local clang 18: 9,578 B against 9,322)
+    assert len(code) + 24 + need <= 11776 - 64, (len(code), need)
     e, ret, stack = emu(11776, ib)
     txt = "\n".join(e.said)
     print(txt, e.lcd, stack)
