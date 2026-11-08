@@ -231,7 +231,8 @@ def test_dmrrx_module_on_the_emulated_k6():
     from sim.k6if import frontend as fe
     src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "c", "k6", "mod", "dmrrx.c")
     code, entry = T.build([("RUN_S", "3u"), ("S_MS", "1000u")], src)
-    assert len(code) + 24 <= 9736 - 512, len(code)             # the shared block, 512 B to spare
+    assert len(code) + 24 + 512 <= 9736 - 256, len(code)       # the shared block: code, the filter
+                                                               # ring in scratch, 256 B to spare
     _, (ib, on, off) = k6_counts(dd.voice_call_symbols(**CALL), 56.0)
     e = le.Emu(code, entry, ib, on, fe.FDMA, 1.5, max_s=len(ib) / fe.FDMA + 0.5, level=6, stack_win=7000)
     e.rssi = lambda: -60 if on <= e.sample_now() < off else -125
@@ -243,4 +244,4 @@ def test_dmrrx_module_on_the_emulated_k6():
     assert any(ln.startswith("A AG7EW T") for ln in e.said), txt
     assert e.lcd.get(1) == "TG 3027" and e.lcd.get(2) == "ID 3025107", e.lcd
     assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0               # put back (reads 0 here)
-    assert stack < 6200, stack
+    assert stack < 4200, stack

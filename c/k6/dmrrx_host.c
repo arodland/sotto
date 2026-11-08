@@ -31,7 +31,9 @@ int main(int argc, char **argv) {
   int16_t buf[4096];
   size_t n, i, hk = 0;
   char line[96], *p;
+  static int8_t f[DS_FRING];
   ds_init(&d, argc > 1 ? (uint32_t)atoi(argv[1]) : 4476u);
+  d.f = f;
   while ((n = fread(buf, 2, 4096, stdin)) > 0)
     for (i = 0; i < n; i++) {
       if (ds_count(&d, buf[i])) dx_hit(&x, &d);

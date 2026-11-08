@@ -27,7 +27,8 @@
    GAIN13 0 leaves the AGC alone.
    Writes REG_33 bit 8, REG_34[3:0] (GP0 code 13), REG_47, REG_7E and REG_13, GPIOB bit 2, the
    MCU's TIM17 and DMA channel 1 (as gp0dma: Jeff OK'd them, 2026-11-06), all put back. No TX.
-   Returns the DMR detections, or -3 (old image), -4 (PB1 not an input), -5 (REG_33 refused).
+   Returns the DMR detections, or -3 (old image), -4 (PB1 not an input), -5 (REG_33 refused),
+   -6 (dmrrx: under 512 B of scratch for the decoder's filter ring).
    SPDX-License-Identifier: MIT */
 #ifndef K6_MODULE_LEVEL
 #define K6_MODULE_LEVEL 2
@@ -366,6 +367,13 @@ int k6_main(const k6_api_t *api) {
   if (api->level < 2) return -3;
   for (i = 0; i < sizeof *s; i++) ((volatile uint8_t *)s)[i] = 0;
   s->ring = (uint8_t *)ring;
+#ifdef DMR_DECODE
+  {
+    uint32_t n = 0;                                         /* the matched filter's ring: scratch */
+    s->d.f = (int8_t *)api->scratch(&n);
+    if (n < DS_FRING) return -6;
+  }
+#endif
   if (rd(GPIOB) & (3u << 2)) return -4;
   s->apb2 = rd(RCC_APB2ENR);
   s->ahb = rd(RCC_AHBENR);

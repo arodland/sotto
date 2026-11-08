@@ -106,7 +106,7 @@ NOINLINE static void dx_scale(const ds_t *d, uint32_t P, int32_t *c, int32_t *in
   s = (s * 2731) >> 16;                                     /* / 24 (about) */
   for (i = 0; i < 24; i++) m += v[i] > s ? v[i] - s : s - v[i];
   m = (m * 2731) >> 16;
-  if (m < 16) m = 16;
+  if (m < 4) m = 4;
   *c = s, *inv = (int32_t)ds_udiv(768u << 12, (uint32_t)m);
 }
 

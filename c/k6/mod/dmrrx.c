@@ -11,14 +11,15 @@
      K TS1 bd00800104c2bf301cd5                  a CSBK's 10 bytes (here a preamble)
      H TS1 ...                                   a data header's
    On an image with the module screen (level 6) the LCD shows "DMR CC1 TS1", "TG 3027",
-   "ID 3025107" and the alias. Code and stack: ~6 KB of code (the shared module arena, PR #142,
-   not the old 4 KB store), ~5 KB of stack.
+   "ID 3025107" and the alias. Room: ~8.6 KB of code, so only images with the 9,760-byte shared
+   module block (the SPI voice images; not EXPLORE or the lean ones), the filter's 512-byte ring
+   in the scratch left after the code, ~3.8 KB of stack.
    SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 2       /* the screen (level 6) only where the image has it */
 #define K6_MODULE_OPT s         /* -Os: the decoder's inner loops want the speed */
 #define DMR_DECODE 1
 #ifndef RSZ
-#define RSZ 2048u               /* 373 us of DMA: an idle burst's decode fits; a header's may
+#define RSZ 1024u               /* 186 us of DMA: an idle burst's decode fits; a header's may
                                    not, and the clock counts the laps it missed */
 #endif
 #include "dmrdet.c"

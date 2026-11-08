@@ -46,8 +46,8 @@
 #define DS_BP_A2 5235
 #ifdef DS_FRING
 /* the decoder's matched filter (DMR_DECODE builds, c/k6/mod/dmrdec.inc): a 13-tap RRC (alpha
-   0.2) at 2 points a symbol, Q14, centre tap first; its output for grid point g is kept in f[]
-   (DS_FRING of them, a power of 2) once y[g + 6] is in */
+   0.2) at 2 points a symbol, Q14, centre tap first; its output for grid point g, a quarter of
+   y's scale in 8 bits, is kept in f[] (DS_FRING of them, a power of 2) once y[g + 6] is in */
 static const int16_t DS_RRC[7] = {8547, 5082, -426, -1497, 378, 688, -306};
 #endif
 #ifndef DS_THR_K16
@@ -79,7 +79,7 @@ typedef struct {
   uint32_t j;                   /* grid points so far */
   int16_t y[DS_RING];
 #ifdef DS_FRING
-  int16_t f[DS_FRING];
+  int8_t *f;                    /* DS_FRING of them, the caller's (a module: its scratch) */
 #endif
   int32_t s1[2];
   uint32_t s2[2];
@@ -164,7 +164,8 @@ __attribute__((noinline)) static int ds_grid(ds_t *d, int32_t y) {
     uint32_t t;
     for (t = 1; t < 7; t++)
       a += DS_RRC[t] * (d->y[(j - 6u - t) & (DS_RING - 1)] + d->y[(j - 6u + t) & (DS_RING - 1)]);
-    d->f[(j - 6u) & (DS_FRING - 1)] = (int16_t)(a >> 14);
+    a >>= 16;                                               /* / 4: +-3 symbols ~ +-104 */
+    d->f[(j - 6u) & (DS_FRING - 1)] = (int8_t)(a > 127 ? 127 : a < -127 ? -127 : a);
   }
 #endif
   if (d->okg < 2) d->s1[par] = 0, d->s2[par] = 0;
