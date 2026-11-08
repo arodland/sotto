@@ -139,6 +139,17 @@ after AG7EW-3 should read (start + its end offset) + 0.5 s. The stamps are early
 D = t0 + 0.2 s minus start, so against hamlet's clock it reads 0.5 s minus D ahead
 (`test_bench_loopback_packets` checks 0.45 to 0.55 s through the modelled radio).
 
+**Run 2, the loopback** (2026-11-08 22:49-22:54Z, image 006ee1b, `mod-aprsclk_440.bin` from CI
+run 42530008074, 5,480 B as CI's clang builds it): three bursts 100 s apart, every packet
+decoded: `ok=9 bad=154 ts=9 v=3 lost=0 pre=9`, ret 3, stack free 1,828 B, RSSI -112 to -115 dBm
+(the IC-7100 at RF power 0, a few metres away). Each `clk` line against the frame's true end on
+air (audio start = t0 + 0.2 s): -135 to -251 ms, mean about -0.2 s. The bursts' stamps were early
+by D = 0.67-0.73 s, so the prediction was 0.5 s - D = -0.17 to -0.23 s: the receive chain, the
+parser and the vote work on the radio as modelled, within a few tens of ms. The `bad` count is
+noise between frames (about 40 a minute on a quiet channel), so `pre` is the line to read. The
+serial logger sees each line about 3.3 s after its frame, which is why a `clk` line looks 3.4 s
+behind the logger's own stamp.
+
 This tests the IF tap, demodulator, HDLC, parser and clock on the real radio; if it passes and
 144.390 still decodes nothing, the next step is an IC-7100 recording of 144.390 (receive only)
 run through `python -m modem.aprs decode REC.wav` to count local stamped packets.
