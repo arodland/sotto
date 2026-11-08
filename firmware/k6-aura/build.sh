@@ -300,6 +300,7 @@ loram          # level 1, does anything write 0x20000000-0x20000FFF (hal::txdog)
 morse          # level 6, docs/k6-morse.md
 ramprobe
 remapsoak      # level 1, 10 s on the SRAM vector table (hal::txdog)
+remapspeed     # level 1, does SRAM at address 0 slow code down (hal::txdog)
 rtls
 rxmap          # level 2, its parameter block patched by tools/k6_rxmap.py
 scan           # level 2, patched by tools/k6_scan.py
