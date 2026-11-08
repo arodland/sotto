@@ -80,7 +80,7 @@ def stream(mode, cn0, f_off=0.0, steps=10, seg_s=6.0, lead_s=1.5, seed=1, pre_s=
 
 class Emu:
     def __init__(self, code, entry, ib, on_at, fdma, cpi=1.5, max_s=None, key_us=60, stall=None,
-                 wobble=None, flash_cpi=None, level=4, stack_win=3504, scratch=4096):
+                 wobble=None, flash_cpi=None, level=4, stack_win=3504, scratch=4096, fd_us=20):
         import unicorn
         from unicorn import arm_const as A
         self.U, self.A = unicorn, A
@@ -107,6 +107,7 @@ class Emu:
         mu.mem_map(ram, 1 << 20)
         self.base, self.api, self.stubs = ram + 0x1000, ram + 0x8000, ram + 0x9000
         self.scratch = scratch                       # the API's scratch size (the 4 KB store; more past the code in the arena images)
+        self.fd_us = fd_us                           # an FD6818 register access (bit-banged)
         self.stack_win = stack_win                   # the stack measured (3504: the oldest images)
         self.stop, self.sp0, self.stack_lo = ram + 0x9F00, ram + 0x7F00, ram + 0x7F00 - stack_win
         mu.mem_write(self.base, code)
@@ -218,10 +219,10 @@ class Emu:
         elif name == "ticks":
             ret = int(self.cyc / 9600) & 0xFFFF
         elif name == "fd_read":
-            us = 20
+            us = self.fd_us
             ret = (self.rssi() + 174) << 1 if r0 == 0x67 else 0
         elif name == "fd_write":
-            us = 20
+            us = self.fd_us
             self.writes.setdefault(r0, []).append(r1)
         elif name == "delay_us":
             us = r0
