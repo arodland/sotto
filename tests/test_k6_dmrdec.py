@@ -265,3 +265,5 @@ def test_dmrrx_module_on_the_emulated_k6(block, max_stack):
     assert e.lcd.get(1) == "TG 3027" and e.lcd.get(2) == "ID 3025107", e.lcd
     assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0               # put back (reads 0 here)
     assert stack < max_stack, stack
+    lost = [int(ln.split("lost=")[1].split()[0]) for ln in e.said if ln.startswith("s ")]
+    assert lost and lost[-1] <= 8, txt           # the DMA ring outran: only by housekeeping's lines

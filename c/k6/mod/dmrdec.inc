@@ -36,7 +36,8 @@ static const uint8_t DX_TDELTA[25] = {0x00, 0x6F, 0x00, 0xD4, 0x00, 0xB0, 0x00, 
 
 typedef struct {
   uint32_t due, sj;            /* grid index it can be read at; the sync's last symbol */
-  int16_t k;                   /* 0 a data burst, 1-4 voice burst B-E's middle, 5 A's sync, 6 the flywheel's next A */
+  int16_t k;                   /* 0 a data burst, 1-4 voice burst B-E's middle, 5 A's sync, 6 the flywheel's
+                                  next A, 7 a data burst's info */
   int16_t pat;                 /* the sync's family, its sign in bit 3 (8: data) */
 } dx_q_t;
 
@@ -53,6 +54,8 @@ typedef struct {
   /* a data burst waiting for housekeeping */
   int pend, dtype, cc, slot;
   int8_t soft[196];
+  uint32_t dP;                 /* its sync and scale, for the second half of its reading */
+  int32_t dc, dinv;
   /* the soft sum of this transmission's headers and terminators */
   int16_t comb[196];
   int ncomb;
@@ -84,6 +87,7 @@ static int32_t dx_mf(const ds_t *d, uint32_t P) {
   uint32_t g = (P >> 2) - 1u, k;
   const int16_t *w = DX_CR[P & 3];
   int32_t a = 0;
+  if (!(P & 3)) return d->f[(g + 1u) & (DS_FRING - 1)] * DX_POL;   /* on a grid point */
   for (k = 0; k < 4; k++) a += w[k] * d->f[(g + k) & (DS_FRING - 1)];
   return (a >> 7) * DX_POL;
 }
@@ -102,14 +106,20 @@ static int32_t dx_corr(const ds_t *d, uint32_t P, int pat) {
 }
 
 NOINLINE static uint32_t dx_align(const ds_t *d, uint32_t sj, int pat) {
-  int32_t best = -0x7FFFFFFF, o, bo = 0, c, step;
+  /* the correlation at whole grid points -2..+2 (the filter's own values: cheap), then the
+     peak to a quarter from a parabola through the best and its neighbours: offset = (c+ - c-)
+     / 2 (2 c0 - c- - c+) grid points, rounded to quarters by comparisons (no division) */
+  int32_t c[5], best = 0, o, dl, k, a;
   uint32_t P0 = 4u * (sj - 46u);
-  for (step = 4; step; step >>= 1) {                        /* +-2 grid points, then +-2, +-1 quarters */
-    int32_t lo = step == 4 ? -8 : bo - step, hi = step == 4 ? 8 : bo + step;
-    for (o = lo; o <= hi; o += step)
-      if ((c = dx_corr(d, P0 + (uint32_t)o, pat)) > best) best = c, bo = o;
+  for (o = 0; o < 5; o++) {
+    c[o] = dx_corr(d, P0 + 4u * (uint32_t)o - 8u, pat);
+    if (c[o] > c[best]) best = o;
   }
-  return 4u * sj + (uint32_t)bo;
+  o = 4 * (best - 2);
+  if (best == 0 || best == 4) return 4u * sj + (uint32_t)o;
+  dl = c[best + 1] - c[best - 1], k = 2 * c[best] - c[best - 1] - c[best + 1], a = dl < 0 ? -dl : dl;
+  if (k > 0 && 4 * a > k) o += (dl < 0 ? -1 : 1) * (4 * a > 3 * k ? 2 : 1);
+  return 4u * sj + (uint32_t)o;
 }
 
 /* the sync ending at P (quarter grid points): its centre, and 768 << 12 / its mean
@@ -231,6 +241,13 @@ NOINLINE static void dx_poll(dx_t *x, ds_t *d) {
       dx_voice(x, q.sj, q.pat);
       continue;
     }
+    if (q.k == 7) {                                         /* a data burst's info, after its slot type */
+      int8_t sb[288];
+      dx_slice(d, x->dP - 712u, 144, x->dc, x->dinv, b, sb);
+      for (j = 0; j < 98; j++) x->soft[j] = sb[24 + j], x->soft[98 + j] = sb[24 + 166 + j];
+      x->pend = 1;
+      return;
+    }
     if (q.k == 5) {                                         /* voice burst A: its sync's scale */
       dx_push(x, q.sj + 3456u + 24u, q.sj + 3456u, 6, q.pat);  /* the flywheel: 360 ms on */
       P = dx_align(d, q.sj, q.pat);
@@ -239,7 +256,7 @@ NOINLINE static void dx_poll(dx_t *x, ds_t *d) {
       dx_scale(d, P, &x->vc, &x->vinv);
       dx_cach(x, d, P, x->vc, x->vinv, q.sj);
       x->vslot = dx_slotof(x, q.sj);
-      continue;
+      return;
     }
     if (q.k) {                                              /* a voice burst's middle */
       uint32_t e;
@@ -260,7 +277,6 @@ NOINLINE static void dx_poll(dx_t *x, ds_t *d) {
     {
       int32_t c, inv;
       uint32_t st;
-      int8_t sb[288];
       uint8_t s20[20];
       P = dx_align(d, q.sj, q.pat);
       dx_time(x, d, P);
@@ -275,12 +291,9 @@ NOINLINE static void dx_poll(dx_t *x, ds_t *d) {
       if (x->pend) continue;                                /* one waiting: only its slot and timing */
       x->dtype = (int)(st & 15), x->cc = (int)(st >> 4);
       x->slot = dx_slotof(x, q.sj), x->psj = q.sj;
-      if (x->dtype != 1 && x->dtype != 2 && x->dtype != 3 && x->dtype != 6) continue;
-      dx_slice(d, P - 712u, 144, c, inv, b, sb);
-      for (j = 0; j < 98; j++) {
-        x->soft[j] = sb[24 + j], x->soft[98 + j] = sb[24 + 166 + j];
-      }
-      x->pend = 1;
+      if (x->dtype == 1 || x->dtype == 2 || x->dtype == 3 || x->dtype == 6)
+        x->dP = P, x->dc = c, x->dinv = inv, dx_push(x, d->j, q.sj, 7, 0);  /* the rest next time */
+      return;                                               /* one align a call: the ring drains */
     }
   }
 }

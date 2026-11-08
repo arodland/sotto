@@ -127,16 +127,20 @@ static uint32_t db_syn(uint32_t w, const uint16_t *m, int nm) {
   return s;
 }
 
-/* correct one bit of an n-bit word: 0 clean, 1 fixed, -1 not correctable */
+/* correct one bit of an n-bit word: 0 clean, 1 fixed, -1 not correctable. Bit i's syndrome
+   is bit i of each mask */
 DB_NOINLINE static int db_fix(uint32_t *w, int n, const uint16_t *m, int nm) {
   uint32_t s = db_syn(*w, m, nm);
-  int i;
+  int i, k;
   if (!s) return 0;
-  for (i = 0; i < n; i++)
-    if (db_syn(1u << i, m, nm) == s) {
+  for (i = 0; i < n; i++) {
+    uint32_t si = 0;
+    for (k = 0; k < nm; k++) si = (si << 1) | ((m[k] >> i) & 1u);
+    if (si == s) {
       *w ^= 1u << i;
       return 1;
     }
+  }
   return -1;
 }
 
@@ -151,7 +155,7 @@ static void db_h15(uint16_t *m) {
 DB_COLD static int db_bptc196(const uint8_t *info, uint8_t *out12) {
   uint16_t row[13], h15[4];
   uint32_t i, r, c, pass, kr = 0, kc = 0;
-  int bad_r = 0, bad_c = 0;
+  int bad_r = 0, bad_c = 0, fixed = 1;
   db_h15(h15);
   for (r = 0; r < 13; r++) row[r] = 0;
   /* matrix bit k (after the reserved bit 0) = info[(k + 1) * 181 % 196], walked by adding 181
@@ -162,25 +166,34 @@ DB_COLD static int db_bptc196(const uint8_t *info, uint8_t *out12) {
     c += 181;
     if (c >= 196) c -= 196;
   }
-  for (pass = 0; pass < 3; pass++) {
+  for (pass = 0; pass < 3 && fixed; pass++) {                /* until a pass changes nothing */
+    fixed = bad_r = bad_c = 0;
     for (c = 0; c < 15; c++) {
       uint32_t col = 0;
+      int f;
       for (r = 0; r < 13; r++) col = (col << 1) | ((row[r] >> (14 - c)) & 1u);
-      if (db_fix(&col, 13, DB_H13, 4) > 0)
+      if ((f = db_fix(&col, 13, DB_H13, 4)) > 0) {
+        fixed++;
         for (r = 0; r < 13; r++)
           row[r] = (uint16_t)((row[r] & ~(1u << (14 - c))) | (((col >> (12 - r)) & 1u) << (14 - c)));
+      }
+      bad_c += f < 0;
     }
     for (r = 0; r < 9; r++) {
       uint32_t w = row[r];
-      db_fix(&w, 15, h15, 4);
+      int f = db_fix(&w, 15, h15, 4);
+      fixed += f > 0, bad_r += f < 0;
       row[r] = (uint16_t)w;
     }
   }
-  for (r = 0; r < 9; r++) bad_r += db_syn(row[r], h15, 4) != 0;
-  for (c = 0; c < 15; c++) {
-    uint32_t col = 0;
-    for (r = 0; r < 13; r++) col = (col << 1) | ((row[r] >> (14 - c)) & 1u);
-    bad_c += db_syn(col, DB_H13, 4) != 0;
+  if (fixed) {                                              /* the last pass fixed: count again */
+    bad_r = bad_c = 0;
+    for (r = 0; r < 9; r++) bad_r += db_syn(row[r], h15, 4) != 0;
+    for (c = 0; c < 15; c++) {
+      uint32_t col = 0;
+      for (r = 0; r < 13; r++) col = (col << 1) | ((row[r] >> (14 - c)) & 1u);
+      bad_c += db_syn(col, DB_H13, 4) != 0;
+    }
   }
   /* data: row 0 columns 3-10, rows 1-8 columns 0-10 */
   {
