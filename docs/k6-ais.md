@@ -240,6 +240,25 @@ RF POWER read 0 before each upload.
   mostly the 4 s local junk, but the few with signal put it at |16.9 kHz - offset| (3.6 kHz at
   +20, 13.5 at +30, 23.4 at +40), as a real signal tuned off would land.
 
+## Run 5, 2026-11-09 05:07-05:22Z (the IF's width: NOAA carriers, then the sweep rerun)
+
+Both receive only, RF POWER 0 before and after.
+
+- **The RSSI path is ±5 kHz.** The explorer's scan module (`mod-scan.bin`, 05d7555) swept
+  162.350-162.650 and 161.900-162.150 MHz in 2.5 kHz steps for 3 minutes, reading the chip's RSSI.
+  Three NOAA weather carriers (162.425, .475, .525 MHz, -91 to -97 dBm on a -114 floor) read 10-20
+  dB over the floor out to ±5 kHz and were back in the floor by ±7.5-10 kHz. That's the channel
+  filter the RSSI reading sits behind. (Files on hamlet: `~/sotto-work/runs/20261109T0507Z-ifskirt/`.)
+- **The GP0 tap is much wider** (`aiscap_sweep` 9e28202, log `tests/data/k6/air/sweep2-20261109T0514Z.log.gz`).
+  Tuned 0-200 kHz above the base station, the strongest bursts kept its 20.00 s cadence out to
+  +60 kHz: r = 10-11 dB over the floor at +10, 12 at +20, 11 at +30, 9-10 at +40, 8 at +50, 7 at
+  +60, then the floor from +80. In each capture the burst sits at |16.9 kHz - offset| (6.7-7.5 kHz
+  at +10, 11.5-12.7 at +30, 21-21.5 at +40, 31 at +50).
+- **The host decodes the station's message 4 off tune:** from 7 of the 10 off-tune captures, at
+  +10, +30, +40 and +50 kHz, by moving the receiver's IF to where the burst lands (a burst landing
+  below zero comes through mirrored, which NRZI doesn't mind). So the tap is taken before the
+  channel filter, and the counts carry 0-42 kHz of it at 256 reads a count.
+
 ## One clock from AIS and APRS
 
 The two modules can't share one 11,776 B arena (5.8 KB and aprsclk's), so they run one after the
@@ -279,12 +298,14 @@ kHz pilot line (3 dB over its neighbours, where controls at 15 and 21 kHz show 0
 nothing at 38 kHz or at 57 kHz's alias. Their IF spectrum is flat from 0 to 41 kHz, with twice
 AIS's spread of counts, which looks like the strong station overloading the 1-bit tap.
 
-Run 4's sweep (above) tuned off the AIS base station instead of a carrier, and the station still
-came through 10-12 dB over the floor 10 to 40 kHz off, and 7 dB at 60 kHz. So the 1-bit tap looks
-much wider than a voice channel filter, perhaps taken before it. That doesn't open RDS by itself:
-256 reads a count give ~82,000 counts a second, so the counts carry only 0-41 kHz and fold
-everything else into it, and a broadcast station swings ±75 kHz. A rerun dumps the strong bursts
-and goes out to 200 kHz on the clean side, to see where the tap stops.
+Runs 4 and 5 measured the IF (above): the chip's RSSI reading sits behind a ±5 kHz channel
+filter, but the GP0 tap the capture modules read is taken before it and passes stations up to
+50-60 kHz below the tuned frequency (the other side is unmeasured: channel A got in the way). That still rules RDS out, for a different reason. The tap is
+one real bit stream at a 16.9 kHz low IF, so anything more than 16.9 kHz below the station's
+centre folds back on top of what's above it. A broadcast station swings ±75 kHz, so its FM can't
+be undone from the counts, at any count rate. Tuning far enough off to put the whole station on
+one side of zero would need a tap passing ~150 kHz, and it's in the floor by 80. So no RDS on the
+K6, and the 104.3 MHz captures' flat spectrum is the station folded over itself.
 
 ## ACARS (asked 2026-11-09)
 
@@ -308,7 +329,11 @@ K6's 136-174 MHz filter. A longer listen at a busy hour, with the gain at maximu
 
 ## Next
 
-- The IF sweep's rerun (strong bursts dumped, out to 200 kHz).
+- Both AIS channels at once (an idea from run 5): a station Δ kHz from the tuned frequency lands
+  at |16.9 + Δ| kHz in the counts, folded at the count rate. Tuned to 162.005 MHz, channel A
+  lands at ~13 kHz and channel B at ~37 kHz, near the 42 kHz edge; with 128 reads a count the
+  edge moves to 84. It needs the tap to pass B 20 kHz above the tuned frequency, the side run 5
+  couldn't measure. Worth a try for the fuller receiver.
 - A fuller AIS receiver (Jeff, 03:35Z): ships' names, positions and courses on the screen. To be
   scoped once the clock works.
 - ACARS (Jeff, 03:54Z): a coarse clock after APRS if the K6 hears it, and then a fuller ACARS
