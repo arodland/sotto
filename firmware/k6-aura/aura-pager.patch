@@ -57,22 +57,26 @@ index 34078b1..86605f2 100644
      watch_git_dir();
  }
 diff --git a/memory.x b/memory.x
-index 4fe73cb..ce33ebe 100644
+index 4fe73cb..2f04c37 100644
 --- a/memory.x
 +++ b/memory.x
-@@ -7,7 +7,10 @@
+@@ -7,7 +7,14 @@
   */
  MEMORY
  {
 -  FLASH : ORIGIN = 0x08002000, LENGTH = 120K
 -  RAM   : ORIGIN = 0x20001028, LENGTH = 17720
 +  FLASH : ORIGIN = 0x08002000, LENGTH = 1024K
-+  RAM   : ORIGIN = 0x20001028, LENGTH = 20440
++  RAM   : ORIGIN = 0x20001028, LENGTH = 20424
  }
 +/* LENGTH was 17720 (end 0x20005560). The KD32F328's SRAM is 24 KB, to 0x20006000: sotto's
 + * ramprobe module wrote, read and held every word of 0x20005560-0x20005FFF on the radio
 + * (2026-11-07, docs/k6-modules.md), so the application has those 2720 bytes too. */
  
++/* 20440 less 16: 0x20005FF0-0x20005FFF is hal::txdog's note, kept across a reset. The stack starts
++ * below it. Neither the bootloader (its stack starts at 0x20004028 and grows down) nor Aura's
++ * startup touches it. The bootloader clears its own RAM, 0x20000000-0x20001027, at every reset:
++ * the note at 0x20000FF0 was lost there (2026-11-09). */
 diff --git a/src/app/keys.rs b/src/app/keys.rs
 index 28463f8..aebe92f 100644
 --- a/src/app/keys.rs
@@ -6801,10 +6805,10 @@ index 0000000..37404d9
 +}
 diff --git a/src/hal/txdog.rs b/src/hal/txdog.rs
 new file mode 100644
-index 0000000..2048b5b
+index 0000000..e4a4692
 --- /dev/null
 +++ b/src/hal/txdog.rs
-@@ -0,0 +1,284 @@
+@@ -0,0 +1,286 @@
 +//! Crash and stuck-transmitter backstop (2026-11-08: a module overran its stack, the report
 +//! key-up after it hung, and the K6 sent a bare carrier on 440.850 for 16 minutes).
 +//!
@@ -6817,7 +6821,7 @@ index 0000000..2048b5b
 +//! SRAM at 0. Everything the bootloader forwarded (SysTick, USART1 via UserVectors) still goes
 +//! through its own code, as before.
 +//!
-+//! - HardFault: notes the pc and lr in unused vector slots and reboots at once (the bootloader
++//! - HardFault: notes the pc and lr (at 0x2000_5FF0) and reboots at once (the bootloader
 +//!   and boot soft-reset the FD6818: transmitter off). The next boot prints the note.
 +//! - TIM14 is uptime's 10 kHz counter; it wraps every 6.5536 s and its update interrupt is the
 +//!   watchdog tick. `keyed` (radio enter_tx*) starts a key-up's clock with a limit, `limit`
@@ -6835,8 +6839,9 @@ index 0000000..2048b5b
 +//! difference left. The `txdog` feature turns it on (sotto's build: every image that transmits);
 +//! without it the key-up clock still runs (it costs nothing) but no table is installed.
 +//!
-+//! The note lives at 0x2000_0FF0, not in the vector slots: the bootloader's own RAM
-+//! (0x20000000-0x2000046F: its 200 ms count, RX buffer) is its to clear at every reset.
++//! The note lives at 0x2000_5FF0, at the top of SRAM, out of Aura's RAM and out of the
++//! bootloader's reach. It isn't in the vector slots or anywhere else below 0x2000_1028, because
++//! that is the bootloader's own RAM and it clears all of it at every reset.
 +#![cfg_attr(feature = "lean", allow(dead_code))]
 +
 +use core::ptr::{read_volatile, write_volatile};
@@ -6854,13 +6859,14 @@ index 0000000..2048b5b
 +const TIM14_SR: u32 = 0x4000_2010;
 +const TIM14_CNT: u32 = 0x4000_2024;
 +const NVIC_ISER: u32 = 0xE000_E100;
-+/// the last reboot's reason (magic, a, b), kept across the reset: 0x2000_0FF0, just below the
-+/// bootloader's UserVectors, in RAM that neither the bootloader (its data ends at 0x2000_046F,
-+/// its stack starts at 0x2000_4028) nor Aura (from 0x2000_1028) uses; sotto's loram module saw
-+/// nothing write 0x2000_0000-0x2000_0FFF while Aura runs. Not `.uninit`: that lands below the
-+/// bootloader's stack in the smaller images, and the EXPLORE image lost its note there
++/// the last reboot's reason (magic, a, b), kept across the reset: 0x2000_5FF0, the top 16 bytes of
++/// SRAM, which memory.x leaves out of Aura's RAM (the stack starts below them). The bootloader's
++/// stack starts at 0x2000_4028 and grows down, so it never reaches them. Not the bootloader's own
++/// RAM (0x2000_0000-0x2000_1027), which it clears at every reset: the note at 0x2000_0FF0 was
++/// lost there (2026-11-09 00:05Z, EXPLORE image). Not `.uninit` either: that lands below the
++/// bootloader's stack in the smaller images, and the EXPLORE image lost its note there too
 +/// (2026-11-08 23:21Z)
-+const NOTE: u32 = 0x2000_0FF0;
++const NOTE: u32 = 0x2000_5FF0;
 +fn note_addr() -> u32 {
 +    NOTE
 +}

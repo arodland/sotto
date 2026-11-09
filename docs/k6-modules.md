@@ -267,8 +267,13 @@ no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated 
   wakes it (`K6 EX beacon -25 dBm: VOICE MSG for 60 s`, 4.2 s into the ID), long enough to flash
   it with nobody at the radio. But its next boot had no `K6 FAULT last boot` line: `.uninit`
   lands lower in the smaller images, inside the bootloader's stack (it starts at 0x20004028), which
-  overwrote the note. The note now sits at 0x20000FF0, below the UserVectors, in RAM that neither
-  the bootloader (data to 0x2000046F) nor Aura (from 0x20001028) uses.
+  overwrote the note. PR #162 moved it to 0x20000FF0, below the UserVectors.
+- **EXPLORE image 0fb4d6c (2026-11-09 00:05Z):** `dogfault` again rebooted it in a second, and
+  again no `K6 FAULT last boot`: 0x20000FF0 lost the note too. Everything below 0x20001028 is the
+  bootloader's own RAM (Aura's starts right after its UserVectors), and the bootloader evidently
+  clears it at reset (its startup's zero-fill, likely; not read in its code). The note now sits at 0x20005FF0, the top 16 bytes of SRAM: memory.x leaves them out of
+  Aura's RAM, so the stack starts below them, and the bootloader's stack (from 0x20004028, growing
+  down) never gets there.
 - **txdog: faults and hung key-ups reboot the radio** (`hal::txdog` in the Aura patch). The
   `vecprobe` module showed on the K6 (2026-11-08 17:51Z, `alias=1 fault=1 back=1`) that SYSCFG
   CFGR1 MEM_MODE = 3 maps SRAM at address 0 and a fault then reaches a handler of ours. At boot
