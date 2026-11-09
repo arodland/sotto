@@ -10,7 +10,9 @@
        With a SOTDMA slot number (sync state 0 or 1, time-out 2, 4 or 6) whose second agrees,
        the burst's start flag was at slot x 60/2250 s + 32 bits into that minute: a fine fix
        (UTC to well under a millisecond, less the radio path's ~70 us at 20 km). Without one, a
-       coarse fix (the second, to within a second).
+       coarse fix (the second, to within a second). A base station sends message 4 in fixed
+       slots but names them only every other time (run 6), so each channel keeps the last named
+       slot less its second x 37.5, and a message 4 without one gets its slot from that.
      any slot number from a station on UTC (messages 1, 2, 4, 11, 18) once the clock is within
        a few seconds: the minute is the nearest one, the slot gives the rest: a fine fix.
      any other burst within SNAP_S of a fine fix: stations on UTC start on slot boundaries, so
@@ -21,10 +23,10 @@
    filter and CIC, ~0.6 bit on the model, AR_DELAY_US). A fine fix more than JUMP_MS from the
    last within 10 minutes is refused (a station off UTC) and said as such.
 
-   The clock is the UTC (100 us of day) less the module's 100 us clock, as the core clock
-   (proposed API level 8, docs/k6-aprs-clock.md) will take it from either this module or
-   aprsclk: clock_set(utc, date, w) with w the fix's interval, AIS's ~2 ms or APRS's ~1000.
-   Until that exists, both say the same clk line.
+   The clock is the UTC (100 us of day) less the module's 100 us clock. On an image with the
+   core clock (API level 8, docs/k6-aprs-clock.md), each clk line also hands it to the core:
+   clock_set(UTC ms now, the date, w), w 2 ms for a fine fix and 1000 for a coarse one, so
+   the radio keeps the time after the module returns (aprsclk does the same with its ~3 s).
 
    Lines (serial / telemetry, at most 60 characters):
      ais clk start a=161975000 b=162025000 g13=03ff
@@ -106,6 +108,8 @@ typedef struct {
   uint32_t nfine, nfr;
   uint8_t set; /* 0 not yet, 1 to the second, 2 fine */
   uint8_t day, mon, haveppm;
+  uint16_t yr;
+  uint16_t cs[2]; /* each channel's message 4 slot less its second x 37.5, plus 1 (0: none) */
   char ln[64]; /* the line being said (one buffer: the stack is small) */
 } clk_t;
 
@@ -158,8 +162,12 @@ static void rev(int8_t *a, uint32_t i, uint32_t j) {
 }
 
 static void say_clk(const k6_api_t *api, clk_t *k, ap_ck_t *ck, int32_t j) {
+  uint32_t u = mod_day((int32_t)(k->off + ap_now(api, ck)));
   char *p = put(k->ln, "clk ");
-  p = hms(p, mod_day((int32_t)(k->off + ap_now(api, ck))));
+  /* the radio's clock (level 8): UTC ms now, the date, the bound */
+  if (api->level >= 8)
+    api->clock_set(udiv(u, 10), KM_DATE(k->day, k->mon, k->yr), k->set == 2 ? 2u : 1000u);
+  p = hms(p, u);
   p = put(p, k->set == 2 ? " w=2 v=" : " w=1000 v=");
   p = dec(p, k->nfine);
   if (k->day) p = put(p, " d="), p = dec2(p, k->day), *p++ = '/', p = dec2(p, k->mon);
@@ -244,6 +252,13 @@ static void frames(const k6_api_t *api, clk_t *k, const ar_frame_t *f, int nf, c
     p = dec(p, t);
     *p = 0;
     api->say(k->ln);
+    if ((typ == 4 || typ == 11) && sec < 60) {
+      /* a base station sends message 4 in fixed slots, but names them only every other
+         time (run 6): keep its slot against its second, and fill in the slot when it's left out */
+      uint32_t s2 = (sec * 75u) >> 1;
+      if (slot != 0xFFFF) k->cs[b] = (uint16_t)(slot + 1u - s2);
+      else if (k->cs[b]) slot = (uint16_t)(s2 + k->cs[b] - 1u); /* past 2249: no agreement below */
+    }
     {
       /* the slot's time in its minute (100 us): slot x 800/3 + 32 bits; its second */
       uint32_t inmin = slot != 0xFFFF ? udiv(slot * 800u + 101u, 3) : 0;
@@ -254,7 +269,7 @@ static void frames(const k6_api_t *api, clk_t *k, const ar_frame_t *f, int nf, c
         uint32_t h = ar_uint(m, 61, 5), mi = ar_uint(m, 66, 6);
         if (y < 2020 || y > 2099 || !mo || mo > 12 || !dd || h > 23 || mi > 59 || sec > 59)
           continue;
-        k->day = (uint8_t)dd, k->mon = (uint8_t)mo;
+        k->day = (uint8_t)dd, k->mon = (uint8_t)mo, k->yr = (uint16_t)y;
         if (agree) {
           fine(api, k, (h * 60 + mi) * MIN100 + inmin, t, mmsi, ck);
           continue;
@@ -346,8 +361,7 @@ int k6_main(const k6_api_t *api) {
   wr(TIM17 + 0x2C, 0xFFFF); /* ARR */
   wr(TIM17 + 0x00, 1);      /* CEN */
   ck.last = api->ticks() & 0xFFFF, ck.t = 0;
-  k.set = 0, k.nfine = 0, k.nfr = 0, k.day = 0, k.mon = 0, k.haveppm = 0, k.ppm = 0;
-  k.off = 0, k.tfix = 0;
+  for (p = (char *)&k; p < k.ln; p++) *(volatile char *)p = 0; /* all but the line */
   p = put(line, "ais clk start a=");
   p = dec(p, CH_A_HZ);
   p = put(p, " b=");

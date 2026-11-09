@@ -419,9 +419,11 @@ when a reset is acceptable. If it holds, `memory.x` can grow by 2720 bytes: the 
 
 ## Band surfing (surf)
 
-`c/k6/mod/surf.c` (2026-11-08, level 6): a bargraph of signal strength across 64 bins, the
-listening frequency a blinking bar with a caret, the side keys jumping from peak to peak, UP/DOWN
-stepping, BAND/zoom/monitor keys. It listens first (sweeps only while the bar's channel is
+`c/k6/mod/surf.c` (2026-11-08, level 6): a bargraph of signal strength, the listening frequency
+a blinking bar with a caret, always in the middle of a lens scale (2026-11-09: 2.5 kHz bins within
++-20 kHz with the narrow filter, wider ones out to a span of +-100 kHz to +-5 MHz, an axis with
+log-paper ticks; it needs a voice image's arena), the side keys jumping from peak to
+peak, UP/DOWN stepping a channel, BAND/zoom/monitor keys. It listens first (sweeps only while the bar's channel is
 quiet) and scans the keypad matrix itself, since the API has no key identity. It marks the
 repeaters the explorer saved (read-only, from the table in SPI flash) and names the one under the
 bar. `surfauto.c` is the unattended bench build; it says its last bargraph over the telemetry.
@@ -437,6 +439,15 @@ is three bytes in a 64-byte PHY F packet sent from the module's own over (tx_on,
 an MCW ID), ACKed, and both radios work out the flight from the same integer-only rules
 (`gw_game.h`, also built for the PC as `c/k6/gw_host.c` and `modem/k6gw.py`). `gw_auto`,
 `gw_call` and `gw_answer` are the hands-free bot builds. See [k6-gw.md](k6-gw.md).
+
+## MIDI player (midi)
+
+`c/k6/mod/midi.c` (2026-11-09, level 2, screen at 6, LED at 7): plays songs through the speaker,
+receive side only. Four wavetable voices at 16 kHz on spksweep's PWM path; the songs are a table
+at the end of the code (section `.k6tail`, last in `module.ld`), which `tools/k6_midi.py patch`
+swaps for other MIDI files or text scores without a compiler. CI's build carries the
+public-domain Nokia ring tones (Tarrega's Gran Vals phrase, Fur Elise, Mozart 40, Bumblebee,
+Valkyrie) and Ode to Joy. See [k6-midi.md](k6-midi.md).
 
 ## Insights (a living list)
 
@@ -896,9 +907,15 @@ what would settle it.
       min. Bursts sit on the slot grid to 0.1 ms; the K6's own clock runs 134 ppm fast and wanders
       ±100 ppm, so aisclk now snaps to the slot grid on every burst (~2 ms between fixes). RDS
       (no pilot in 104.3's IF) and ACARS (nothing in 2 min) came up empty so far.
+    - Run 4 (04:37Z): with snapping, 54 fine fixes from 55 frames, each burst's millisecond
+      steady to ±1 ms for 14 min.
+    - Run 5: the RSSI path is ±5 kHz, but the GP0 tap passes stations 50-60 kHz below tune (the
+      host decodes message 4 from 50 kHz off). RDS stays out: the tap is one real low-IF stream.
+    - Run 6: tuned to 162.009 MHz, one capture holds both channels (host: 26 A + 15 B frames).
+      aisclk set the level 8 core clock on air (clkget inside its bound 15 min later).
 47. **A module can be a two-radio game: send moves, not state.**
-    - From: Jeff, 2026-11-09 (the GROUNDWAVE thread). Built and
-      emulator-tested (`c/k6/mod/gw.c`, docs/k6-gw.md); not on air.
+    - From: Jeff, 2026-11-09 (the GROUNDWAVE thread). Built and emulator-tested
+      (`c/k6/mod/gw.c`, docs/k6-gw.md); the bot calls went out and decoded on the bench.
     - GROUNDWAVE's rules are integer-only C with their own random generator, built both into the
       module and for the PC, so a move (angle, power, item) is all that crosses the air. Each
       MOVE carries the sender's game hash, so a desync shows at once. The same trick would fit
@@ -906,5 +923,6 @@ what would settle it.
     - The module sends with chip FSK from its own `tx_on` over (the pager's PHY F registers),
       not through the core's ARQ. Each over is the packet twice plus an MCW ID.
     - It would buy: two-way data between K6s from a RAM module, with no new firmware.
-    - Settled by: an over recorded on the IC-7100 (receive only) and decoded with `modem/k6gw.py`,
-      then a game between two K6s (or a K6 and a PC peer).
+    - Half settled 2026-11-09: a K6's HELLO overs, recorded on the IC-7100 (receive only),
+      decoded with `tools/k6_gw.py`, so chip FSK from a module's own `tx_on` works. Still to do: a
+      game between two K6s (or a K6 and a PC peer).

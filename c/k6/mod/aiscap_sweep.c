@@ -4,17 +4,19 @@
    half a second later, 12-15 dB over the floor at the centre). Each 40 s turn tunes the K6 that
    many kHz off it, so the burst lands that far from the 16.9 kHz IF; the trigger watches the
    whole band the counts carry (RAW_TRIG), and up to 2 bursts a turn are dumped. On the host,
-   each capture's spectrum shows where the burst came through and how strongly.
+   each capture's spectrum shows where the burst came through and how strongly. Run 4 (05d7555)
+   swept -60..+60 kHz and dumped only weak bursts; this list goes up the clean side (channel A is
+   50 kHz below) out to 200 kHz, and dumps only bursts 8 dB over (the 4 s local junk reaches 7).
    SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 2
 #define K6_MODULE_OPT z
 #define SWEEP_HZ 162025000u
-#define SWEEP_KHZ 0, 5, -5, 10, -10, 15, -15, 20, -20, 30, -30, 40, -40, 60, -60
+#define SWEEP_KHZ 0, 10, 20, 30, 40, 50, 60, 80, 100, 150, 200
 #define SWITCH_S 40u
-#define RUN_S 620u
+#define RUN_S 460u
 #define TRIG_X 2
-#define DUMP_DB 2
+#define DUMP_DB 8
 #define TURN_CAPS 2u
-#define MAXCAP 30u
+#define MAXCAP 22u
 #define RAW_TRIG 1
 #include "aiscap.c"

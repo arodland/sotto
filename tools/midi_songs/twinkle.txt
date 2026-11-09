@@ -1,0 +1,10 @@
+# Twinkle, Twinkle, Little Star (French traditional, "Ah! vous dirai-je, maman", 1761): public
+# domain. Our own arrangement.
+title: Twinkle Twinkle
+tempo: 112
+mel: C5:1 C5 G5 G5 | A5 A5 G5:2 | F5:1 F5 E5 E5 | D5 D5 C5:2
+mel: G5:1 G5 F5 F5 | E5 E5 D5:2 | G5:1 G5 F5 F5 | E5 E5 D5:2
+mel: C5:1 C5 G5 G5 | A5 A5 G5:2 | F5:1 F5 E5 E5 | D5 D5 C5:4
+bass: !80 C3:2 G3 | F3 C3 | F3 C3 | G3 C3
+bass: C3 F3 | C3 G3 | C3 F3 | C3 G3
+bass: C3 G3 | F3 C3 | F3 C3 | G3 C3:4

@@ -1,0 +1,10 @@
+# Minuet in G major, BWV Anh. 114 (Christian Petzold, about 1725): public domain. Our own
+# arrangement of the first part, played twice with its two endings.
+title: Minuet in G
+tempo: 120
+rh: D5:1 G4:0.5 A4 B4 C5 | D5:1 G4 G4 | E5:1 C5:0.5 D5 E5 F#5 | G5:1 G4 G4
+rh: C5:1 D5:0.5 C5 B4 A4 | B4:1 C5:0.5 B4 A4 G4 | F#4:1 G4:0.5 A4 B4 G4 | A4:3
+rh: D5:1 G4:0.5 A4 B4 C5 | D5:1 G4 G4 | E5:1 C5:0.5 D5 E5 F#5 | G5:1 G4 G4
+rh: C5:1 D5:0.5 C5 B4 A4 | B4:1 C5:0.5 B4 A4 G4 | A4:1 B4:0.5 A4 G4 F#4 | G4:3
+lh: !80 G3+B3+D4:2 A3:1 | B3:3 | C4:3 | B3:3 | A3:3 | G3:3 | D4:1 B3 G3 | D4:1 D3 C4
+lh: G3+B3+D4:2 A3:1 | B3:3 | C4:3 | B3:3 | A3:3 | G3:3 | C4:1 D4 D3 | G3:2 G2:1

@@ -1,0 +1,14 @@
+# Mozart, Symphony No. 40 in G minor K. 550, first movement theme (1788): public domain. A
+# Nokia ring tone of old. Our own arrangement.
+title: Mozart 40
+tempo: 220
+mel: r:1 Eb5:1/2 D5
+mel: D5:1 Eb5:1/2 D5 | D5:1 Eb5:1/2 D5 | D5:1 Bb5:1 | r:1 Bb5:1/2 A5
+mel: G5:1 G5:1/2 F5 | Eb5:1 Eb5:1/2 D5 | C5:1 C5:1 | r:1 D5:1/2 C5
+mel: C5:1 D5:1/2 C5 | C5:1 D5:1/2 C5 | C5:1 A5:1 | r:1 A5:1/2 G5
+mel: F#5:1 F#5:1/2 Eb5 | D5:1 D5:1/2 C5 | Bb4:1 Bb4:1 | r:2
+bass: !72 r:2
+bass: G3:2 | G3 | G3 | G3
+bass: C3 | C3 | A2 | D3
+bass: D3 | D3 | D3 | D3
+bass: D3 | G3 | G3 | r
