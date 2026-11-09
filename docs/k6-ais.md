@@ -301,8 +301,9 @@ https://claude.ai/artifact/79NkXTdhNK7d9ttUvzK3Pi). `c/k6/mod/aisships.c`, recei
   (split at 38 payload characters, so a say line stays within 60). `tools/k6_aivdm.py` takes those
   out of the serial log for OpenCPN over UDP.
 - **Screen** (level 6): `AIS n stations`, then the five nearest: name or MMSI, km, bearing.
-- **Size:** 5,438 B of code; with the ring, phases, frames and table, 11,746 B of the 11,776 B
-  arena with the upload's telemetry text kept.
+- **Size:** 5,470 B of code as CI builds it (some clangs make 5,438); with the ring (320 +
+  2,576 counts), phases, frames and table, 11,714 B of the 11,776 B arena with the upload's
+  telemetry text kept. The first CI build, with 384 counts before the trigger, was 4 B short.
 - **Time:** in the emulator a burst takes ~50 ms to decode at one place, ~100 ms at both, so a
   second burst within ~0.1 s is missed (the base station's B, 53 ms after its A).
 

@@ -445,6 +445,9 @@ def test_ship_module_lists_both_channels():
     code, entry = build([("RUN_S", "3u"), ("SWITCH_S", "5u"), ("AISCAP_EMU", "1")], SHIPS)
     radio, _ = k6mod.build(SHIPS)
     scratch = (ARENA - 16 - len(radio) - 8 - TLM) & ~3  # fits with the telemetry text kept
+    # ring (320 + 2576 counts), phases, 3 frames, the table: with 48 B to spare, since CI's and
+    # hamlet's clang build it 32 B bigger than some others (it got -8 that way once)
+    assert scratch - (2896 + 2 * ((2576 + 256) // 3 + 2) + 3 * 48 + 16 * 32 + 80) >= 48, len(radio)
     e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.6, scratch=scratch,
                level=7)
     e.poll, e.poll_fc, e.poll_k = cs, fg, 8

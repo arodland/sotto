@@ -53,7 +53,7 @@
 #define NSHIP 16
 #endif
 #define MAXF 3
-#define PRE 384u
+#define PRE 320u /* the decoder starts at most 256 before the trigger */
 #define NCAP (PRE + 2576u)
 #define TRIG_X 2
 #define RAW_TRIG 1 /* the trigger watches the whole band: channel B is outside the band-pass */
