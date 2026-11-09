@@ -98,6 +98,7 @@ class Emu:
         self.cyc = 0.0
         self.spos, self.nread, self.bp = 0.0, 0, [(0.0, 0.0)]
         self.said, self.writes, self.reg = [], {}, {}
+        self.said_cyc = []                           # the clock at each say (its call)
         self.led = []                                # level 7: (ms, on) for each api->led call
         self.lcd = {}                                # level 6: the text on each LCD line
         self.dma_on, self.dma_t0, self.dma_s0, self.made = False, 0.0, 0, 0
@@ -226,6 +227,7 @@ class Emu:
         ret, us = 0, 1
         if name == "say":
             self.said.append(bytes(uc.mem_read(r0, 128)).split(b"\0")[0].decode())
+            self.said_cyc.append(self.cyc)
             us = 5000
         elif name == "ticks":
             ret = int(self.cyc / 9600) & 0xFFFF

@@ -865,4 +865,8 @@ what would settle it.
     - Run 1 (DMA): 739 bursts in 10 min, none decoded, the best ~5 dB short; the limit is the
       1-bit tap sampled at 5.5 MS/s. aiscap v2 polls it at 22.9 MS/s (~6 dB on the model).
     - Run 2 (polled, 03:16Z): decoded a US base station's message 4 seven times in 10 min, UTC
-      matching NTP; its slot numbers agree across 100 s to ~2 ms. Next: aisclk on the M0.
+      matching NTP; its slot numbers agree across 100 s to ~2 ms.
+    - aisclk (`c/k6/mod/aisclk.c`, receiver `c/k6/aisrx.h`): decodes on the M0 (9 of run 2's 10
+      frames, flags within a count of the host's) and sets UTC from message 4 and slots; the
+      emulator puts each flag within 0.2 ms. Jeff (03:34-03:43Z): BLOWFANG needs both clocks,
+      AIS first, APRS when no AIS is heard (aisclk gives up after 2 min). Not on air yet.

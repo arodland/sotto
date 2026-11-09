@@ -5,11 +5,15 @@ APRS timestamps. Jeff asked which other signals in the K6's range (18 to 630 MHz
 chose AIS from the list. Ships and shore stations on 161.975 and 162.025 MHz send time all day,
 and the Salish Sea is 15 to 25 km from the bench.
 
-**Status: the K6 decodes AIS on the air (run 2, 2026-11-09 03:16Z).** With the polled
-capture module, a US shore base station (MMSI 003669705) came through 7 times in 10 minutes with
-its date and UTC second, each matching the bench's NTP to the second. Its slot numbers place the
-bursts consistently to about 2 ms across 100 s. Next is a module that sets the clock on the radio
-itself (`aisclk`, below). Run 1, with the DMA version, heard 739 bursts and decoded none.
+**Status: the K6 decodes AIS on the air (run 2, 2026-11-09 03:16Z), and `aisclk` decodes it on
+the radio itself (emulator, not on air yet).** With the polled capture module, a US shore base
+station (MMSI 003669705) came through 7 times in 10 minutes with its date and UTC second, each
+matching the bench's NTP to the second. Its slot numbers place the bursts consistently to about
+2 ms across 100 s. Run 1, with the DMA version, heard 739 bursts and decoded none.
+
+Jeff (2026-11-09 03:34-03:43Z): BLOWFANG needs both this and the APRS clock. AIS goes first,
+because it's the more reliable where it's heard, and the K6 listens to APRS only when no AIS
+turns up (below, "One clock from AIS and APRS").
 
 ## What AIS carries
 
@@ -148,18 +152,93 @@ Same set-up as run 1, with RF POWER 0 before and after. The log is
   floor. It never decodes, and it's probably local to the bench. The 11 dB dump threshold leaves
   it out.
 
+## aisclk: the clock on the radio
+
+`c/k6/aisrx.h` is the receiver in integers, for the M0 and the host alike: the mixer on a
+64-entry sine, CIC/3, an 11-step CORDIC for the phase and magnitude, the mean phase step over
+the samples above half the mean magnitude taken off (the carrier's offset), then at each of 8
+clock phases the sign of the phase advance over a bit, NRZI and a streaming HDLC with the CRC.
+It runs from four start points 32-256 counts before the trigger, about 20 ms of CPU a burst, in
+a 1.9 KB phase array next to the ring. On run 2's captures (`c/k6/aisrx_host.c`, ctypes) it
+decodes 9 of the host's 10 frames (the tenth comes only from the host's whole-capture grid), and
+puts each start flag within a count (12 us) of the host's.
+
+`c/k6/mod/aisclk.c` (level 2, 5.8 KB at -Oz with the 3,600-count ring, phases and frames in the
+voice images' arena; screen at 6, LED at 7) shares aiscap's polled capture (`c/k6/mod/aispoll.h`)
+and decodes every burst 11 dB or more over the floor, alternating channels B and A each minute:
+
+- A message 4 or 11 with a slot number whose second agrees with the message's second is a fine
+  fix: the start flag was at `slot x 60/2250 s + 32 bits` into the stated minute.
+- A message 4 or 11 without a slot is a coarse fix, to the second.
+- Once the clock is within a few seconds, any slot number from a station on UTC (sync state 0
+  or 1; messages 1, 2, 4, 11, 18) is a fine fix: the nearest minute, plus the slot.
+- The flag's time on the module's own clock is the capture's end (api->ticks, 100 us, read every
+  ~50 ms while listening) less the counts after the flag at the TIM17-measured count rate, less
+  the receiver's delay (60 us, the model's 0.6 bit).
+- A fine fix more than 100 ms from the clock within 10 minutes of the last one is refused (a
+  station off UTC). Two fine fixes a minute apart give the K6's clock rate in ppm.
+
+On the emulator (`tests/test_k6_ais.py`), a base station report and a ship's position 38 slots
+later each land within 0.2 ms of where the model sent them, and the second fix agrees with the
+first to 0.2 ms. The `clk` line is aprsclk's:
+
+```
+a 4 3160001 B r=20 s=1575 t=9032          type, MMSI, channel, dB, slot, flag on the module clock (100 us)
+clk 03:15:42.086 w=2 v=1 d=09/11 j=0      UTC now, interval ms, fine fixes, day/month, jump (100 us)
+ais clk none                              2 minutes with no frame: no AIS here
+```
+
+## One clock from AIS and APRS
+
+The two modules can't share one 11,776 B arena (5.8 KB and aprsclk's), so they run one after the
+other, and both feed the same clock:
+
+1. Run aisclk. Wherever a base station is in range, it has a fine fix within 20 s.
+2. If it decodes no AIS frame in GIVEUP_S (2 minutes, both channels), it says `ais clk none` and
+   returns 0. The caller then runs aprsclk, which returns its votes (2 or more means set).
+3. Both say the same `clk HH:MM:SS.mmm w=<ms> v=<n> [d=DD[/MM]]` line. aprsclk prints
+   `--:--:--` before it has two votes, so a parser skips that. aisclk adds `j=` and `p=`.
+4. With the core clock (API level 8, proposed in docs/k6-aprs-clock.md and waiting on Jeff),
+   both call `clock_set(utc, date, w)`. The core keeps the fix with the smaller w, and grows it
+   by the residual drift after the calibration record's correction. w is an ordering and an
+   upper bound on the error, not ±w/2: aprsclk's estimate isn't the centre of its interval. AIS's
+   w is 2 ms, and APRS's is 3,000 ms or more, so AIS wins wherever both are heard.
+
+Until the core clock exists, a hamlet script runs the sequence over the cable.
+
+## Where AIS works
+
+AIS needs ship traffic or a shore base station within about 20-40 km (VHF line of sight, more
+with height): the coasts, the Gulf, the Great Lakes and the St. Lawrence, and the big barge
+rivers (Mississippi, Ohio, Columbia). It's unlikely in the Plains, the Rockies, the Great Basin,
+the desert Southwest, and inland Canada and Alaska, which is where APRS has to cover. Shore base
+stations are the best source (message 4 every 10 s on each channel, with a slot number). Lynden
+hears US base station 003669705 at 12 dB or more over the floor on the big antenna.
+
+## RDS (asked 2026-11-09)
+
+Jeff asked whether FM broadcast's RDS clock (group 4A, once a minute on the 57 kHz subcarrier)
+could serve. It probably can't reach the K6. The FD6818's IF is a two-way radio's, about ±10 kHz
+around the carrier at 16.9 kHz (docs/k6-fd6818-audio.md), and a broadcast station swings ±75 kHz.
+RDS is the 57 kHz part of that swing, far outside what the chip passes. The K6 has no broadcast
+FM chip of its own. `aiscap_fm` (level 2, receive only) dumps 40 ms IF captures on 99.3 and 104.3
+MHz with the pager's AGC, to measure the passband on a real station. If RDS did come through, it
+would rank between AIS and APRS, with a vote across stations (many send a wrong clock or none).
+
 ## Bench (receive only)
 
 1. A voice image (vlrh) on the K6, the big antenna on it, cable in, at VOICE MSG.
 2. `tools/k6_upload.py mod-aiscap.bin --api-level 2 --run-s 620`, keeping the serial log.
 3. `python3 -m sim.k6if.ais cap LOG` decodes every capture. The `f` lines give each turn's rate
    and floor, the `m` lines its bursts.
+4. The clock: `tools/k6_upload.py mod-aisclk.bin --api-level 2 --run-s 920`. Compare its `clk`
+   lines with the log's NTP stamps (the line comes ~0.1 s after the UTC it states).
+5. RDS: `tools/k6_upload.py mod-aiscap_fm.bin --api-level 2 --run-s 40`, then the captures'
+   spectrum on the host.
 
 ## Next
 
-- **aisclk**: the receiver on the M0, from the polled capture. It decodes each burst 11 dB or more
-  over the floor (mixer, CIC/3 and CORDIC as aprsclk, phases and HDLC as here, a few start
-  points), takes UTC from message 4 (date and second, then the slot to the millisecond), and
-  refines it from any station's slot-numbered bursts once the minute is known.
-- The core keeping UTC between modules (API level 8, proposed in docs/k6-aprs-clock.md) serves
-  both clocks.
+- The bench run of aisclk and aiscap_fm.
+- A fuller AIS receiver (Jeff, 03:35Z): ships' names, positions and courses on the screen. To be
+  scoped once the clock works.
+- The core keeping UTC between modules (API level 8) serves both clocks.

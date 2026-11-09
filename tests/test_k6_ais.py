@@ -153,3 +153,146 @@ def test_air_run2_decodes():
     assert len(slots) >= 3
     for d in slots:
         assert int(d["comm"]["slot"] * 60 / 2250 + ais.FLAG_OFF_BITS / ais.BAUD) == d["second"], d
+
+
+# ---- the receiver on the M0 (c/k6/aisrx.h) and aisclk ----
+
+CLK = os.path.join(K6, "mod", "aisclk.c")
+
+
+def rx_lib():
+    import ctypes
+    import subprocess
+    if not shutil.which("cc"):
+        pytest.skip("no cc")
+    d = tempfile.mkdtemp()
+    so = os.path.join(d, "aisrx.so")
+    subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-I" + K6,
+                    os.path.join(K6, "aisrx_host.c"), "-o", so], check=True)
+    return ctypes.CDLL(so)
+
+
+def rx_decode(lib, c):
+    """aisrx.h's ar_decode on one capture -> [(message bits, flag in counts from its start)]"""
+    import ctypes
+    x = np.ascontiguousarray(c["x"], np.int8)
+    out = (ctypes.c_uint8 * (8 * 48))()
+    k = lib.ar_host(x.ctypes.data_as(ctypes.c_void_p), len(x), c["pre"], c["c1"], out, 8)
+    assert k >= 0
+    b = bytes(out)
+    got = []
+    for i in range(k):
+        r = b[48 * i:48 * (i + 1)]
+        nb = int.from_bytes(r[:4], "little")
+        got.append(([(v >> (7 - j)) & 1 for v in r[8:8 + nb] for j in range(8)],
+                    int.from_bytes(r[4:8], "little") / 65536))
+    return got
+
+
+def test_m0_receiver_on_air_run2():
+    """the integer receiver decodes run 2's base station frames as the host's does (9 of the 10:
+    the host's tenth comes only from its whole-capture grid) and puts their flags within a count
+    of the host's"""
+    import gzip
+    lib = rx_lib()
+    p = os.path.join(ROOT, "tests", "data", "k6", "air", "aiscap2-20261109T0315Z.log.gz")
+    with gzip.open(p, "rt", errors="replace") as fh:
+        caps = [c for c in ais.parse_caps(fh) if c["rssi"] >= 12]
+    n = 0
+    for c in caps:
+        ref = {tuple(m): i for m, i in ais.receive_cap(c)}
+        for m, i in rx_decode(lib, c):
+            assert tuple(m) in ref
+            assert abs(i - ref[tuple(m)]) < 1.5, (i, ref[tuple(m)])
+            assert ais.parse(m)["mmsi"] == 3669705
+            n += 1
+    assert n >= 9, n
+
+
+def test_m0_receiver_model():
+    """bursts through the polled GP0 model at 62 dB-Hz, 1300 Hz under the IF (run 1's offset)"""
+    lib = rx_lib()
+    rng = np.random.default_rng(7)
+    ok = 0
+    for k in range(8):
+        m = ais.msg1(316000000 + k, int(rng.integers(0, 60)), ais.sotdma(0, 2, int(rng.integers(0, 2250))))
+        b = ais.gmsk(ais.burst_bits(m), f_off=-1300.0, pre_s=0.0, post_s=0.0, t_frac=float(rng.uniform(0, 20)))
+        s = np.zeros(int(0.06 * st.FZ), complex)
+        i0 = int(0.012 * st.FZ)
+        s[i0:i0 + len(b)] += b
+        cs, fg = poll_stream(s, 62.0, seed=k + 11)
+        x = np.diff(cs[::8]) - 128                         # counts of 256 reads
+        fc = fg / 8
+        pre = int(0.0115 * fc)
+        x = x[:3600].astype(np.int8)
+        c1 = int(round(96e6 * (len(x) - pre) / fc))
+        ok += any(g[0] == m for g in rx_decode(lib, {"x": x, "pre": pre, "c1": c1}))
+    assert ok >= 6, ok
+
+
+@need_clang
+def test_clock_module_fits():
+    """code + header + tag + the ring, the phases and four frames in the voice images' arena"""
+    code, _ = k6mod.build(CLK)
+    assert len(code) + 24 + 3600 + 2 * ((3600 - 1024 + 256) // 3 + 2) + 4 * 48 + 128 <= 11776, len(code)
+
+
+@need_clang
+def test_clock_module_sets_utc():
+    """a base station's report (message 4, slot 1575: 03:15:42.0033 at its flag) and a ship's
+    position 38 slots later (slot 1613, second 43) on the polled path: aisclk decodes both on the
+    M0, puts each flag on its clock within 0.2 ms of where the model sent it, and says UTC as the
+    first fixed it, the second agreeing"""
+    pytest.importorskip("unicorn")
+    import k6_live_emu as le
+    t1 = 0.9
+    t2 = t1 + 38 * ais.SLOT_S
+    msgs = [ais.msg4(3160001, 2026, 11, 9, 3, 15, 42, comm=ais.sotdma(0, 2, 1575)),
+            ais.msg1(316012345, 43, ais.sotdma(0, 4, 1613))]
+    s = np.zeros(int(3.2 * st.FZ), complex)
+    for m, t in zip(msgs, (t1, t2)):
+        b = ais.gmsk(ais.burst_bits(m), f_off=-1300.0, pre_s=0.0, post_s=0.0)
+        i = int(t * st.FZ)
+        s[i:i + len(b)] += b
+    cs, fg = poll_stream(s, 66.0)
+    code, entry = build([("RUN_S", "3u"), ("SWITCH_S", "5u"), ("AISCAP_EMU", "1")], CLK)
+    e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.6, scratch=8192, level=7)
+    e.poll, e.poll_fc, e.poll_k = cs, fg, 8
+    r = e.run()
+    assert r is not None
+    ret, stack = r
+    txt = "\n".join(e.said)
+    print(txt)
+    assert all(len(ln) <= 60 for ln in e.said), txt
+    a = [ln.split() for ln in e.said if ln.startswith("a ")]
+    assert [(x[1], x[2]) for x in a] == [("4", "3160001"), ("1", "316012345")], txt
+    flag = [(t + ais.FLAG_OFF_BITS / ais.BAUD) * 1e4 for t in (t1, t2)]
+    for x, f in zip(a, flag):
+        assert abs(int(x[-1].split("=")[1]) - f) <= 2, (x, f)
+    utc_off = (3 * 3600 + 15 * 60 + 42) * 1e4 + 1e4 * ais.FLAG_OFF_BITS / ais.BAUD - flag[0]
+    clk = [(ln, cy) for ln, cy in zip(e.said, e.said_cyc) if ln.startswith("clk ")]
+    assert len(clk) == 2 and ret == 2, txt
+    for ln, cy in clk:
+        hh, mm, ss = ln.split()[1].split(":")
+        got = ((int(hh) * 60 + int(mm)) * 60 + float(ss)) * 1e4
+        assert abs(got - (utc_off + cy / 9600)) <= 15, (ln, got - (utc_off + cy / 9600))
+        assert " w=2 " in ln and " d=09/11" in ln
+    assert abs(int(clk[1][0].split("j=")[1].split()[0])) <= 2, clk[1][0]
+    assert e.lcd.get(0) == "AIS CLOCK" and e.lcd.get(1, "").startswith("UTC 03:15:4"), e.lcd
+    assert any(on for _, on in e.led)
+    assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0
+    assert stack < 700, stack
+
+
+@need_clang
+def test_clock_module_gives_up_without_ais():
+    """nothing on either channel for GIVEUP_S: it says so and returns 0, for aprsclk to take over"""
+    pytest.importorskip("unicorn")
+    import k6_live_emu as le
+    cs, fg = poll_stream(np.zeros(int(2.4 * st.FZ), complex), 66.0)
+    code, entry = build([("RUN_S", "60u"), ("SWITCH_S", "1u"), ("GIVEUP_S", "2u"), ("AISCAP_EMU", "1")], CLK)
+    e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.0, scratch=8192)
+    e.poll, e.poll_fc, e.poll_k = cs, fg, 8
+    r = e.run()
+    assert r is not None and r[0] == 0, e.said
+    assert "ais clk none" in e.said, e.said
