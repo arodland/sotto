@@ -101,6 +101,9 @@ class Emu:
         self.said_cyc = []                           # the clock at each say (its call)
         self.led = []                                # level 7: (ms, on) for each api->led call
         self.lcd = {}                                # level 6: the text on each LCD line
+        # level 8: each clock_set as (ms, utc_ms, date, w_ms, result), and the clock the core
+        # keeps (pager.rs mod_clock_set): (ms at the fix, utc_ms, date, w_ms), or clock= at start
+        self.clock_sets, self.clock = [], None
         self.dma_on, self.dma_t0, self.dma_s0, self.made = False, 0.0, 0, 0
         # a polled module built for the emulator (aiscap's AISCAP_EMU) reads one count a time at
         # 0x480004F0: poll is the cumulative number of ones in the 1-bit stream at poll_fc
@@ -123,7 +126,7 @@ class Emu:
         self.names = ["say", "ticks", "fd_read", "fd_write", "delay_us", "tune", "rx_hz", "ms",
                       "key_down", "scratch", "tx_on", "tx_off", "tx_pa", "key_poll", "cal_read",
                       "cal_write", "fl_read", "fl_prog", "fl_erase", "lcd_text", "lcd_bar", "lcd_wf",
-                      "lcd_flush", "led"]
+                      "lcd_flush", "led", "clock_set", "clock_get"]
         for i in range(len(self.names)):
             mu.mem_write(self.stubs + 16 * i, b"\x70\x47")
         mu.mem_write(self.stop, b"\x00\xbf" * 8)
@@ -256,6 +259,14 @@ class Emu:
             ret = -1                                 # refused: receive-only tests
         elif name == "led":
             self.led.append((self.cyc / 96000, r0))  # a GPIO write on the radio
+        elif name == "clock_set":
+            ret = self.clock_set(r0, r1, uc.reg_read(A.UC_ARM_REG_R2))
+        elif name == "clock_get":
+            now = self.clock_now()
+            ret = -1 if now is None else 0
+            for p, v in zip((r0, r1, uc.reg_read(A.UC_ARM_REG_R2)), now or ()):
+                if p:
+                    uc.mem_write(p, int(v).to_bytes(4, "little"))
         elif name == "lcd_text":
             self.lcd[r0] = bytes(uc.mem_read(r1, 32)).split(b"\0")[0].decode()
             us = 50
@@ -265,6 +276,35 @@ class Emu:
             ret = self.scr
         self.tick(us * 96)
         uc.reg_write(A.UC_ARM_REG_R0, ret & 0xFFFFFFFF)
+
+    # ---- level 8, as the core does it (pager.rs: CLK_AGE 4000, date parts kept) ----
+    def clock_now(self):
+        """-> (utc_ms, date, w_ms) now, or None"""
+        if self.clock is None:
+            return None
+        t, ms, date, w = self.clock
+        e = int(self.cyc / 96000) - t
+        ms += e
+        while ms >= 86_400_000:
+            ms -= 86_400_000
+            date = date + 1 if date & 0xFF else date  # (the tests stay inside a month)
+        return ms, date, w + e // 4000
+
+    def clock_set(self, ms, date, w):
+        now = int(self.cyc / 96000)
+        if ms >= 86_400_000:
+            r = -1
+        else:
+            old = self.clock_now()
+            if old is not None and w > old[2]:
+                r = 0
+            else:
+                for m in (0xFF, 0xFF00, 0xFFFF0000):
+                    if old is not None and date & m == 0:
+                        date |= old[1] & m
+                self.clock, r = (now, ms, date, w), 1
+        self.clock_sets.append((now, ms, date, w, r))
+        return r
 
     def run(self, prof=None):
         """-> (return value, stack bytes used), or None if it ran past max_s. prof: a Counter

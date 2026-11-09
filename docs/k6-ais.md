@@ -269,9 +269,9 @@ other, and both feed the same clock:
    returns 0. The caller then runs aprsclk, which returns its votes (2 or more means set).
 3. Both say the same `clk HH:MM:SS.mmm w=<ms> v=<n> [d=DD[/MM]]` line. aprsclk prints
    `--:--:--` before it has two votes, so a parser skips that. aisclk adds `j=` and `p=`.
-4. With the core clock (API level 8, proposed in docs/k6-aprs-clock.md and waiting on Jeff),
-   both call `clock_set(utc, date, w)`. The core keeps the fix with the smaller w, and grows it
-   by the residual drift after the calibration record's correction. w is an ordering and an
+4. With the core clock (API level 8, built 2026-11-09: docs/k6-aprs-clock.md), both call
+   `clock_set(utc_ms, date, w_ms)`. The core keeps the fix with the smaller w, and grows it by
+   250 ppm as it ages (the MCU's RC clock, not the calibrated TCXO). w is an ordering and an
    upper bound on the error, not ±w/2: aprsclk's estimate isn't the centre of its interval. AIS's
    w is 2 ms, and APRS's is 3,000 ms or more, so AIS wins wherever both are heard.
 

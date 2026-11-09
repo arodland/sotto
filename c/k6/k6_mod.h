@@ -47,7 +47,7 @@ extern "C" {
 #define KM_HDR 16
 #define KM_TAG 8
 #define KM_ABI 1
-#define KM_LEVEL 7
+#define KM_LEVEL 8
 
 typedef struct k6_api {
   uint16_t abi, level;              /* KM_ABI, KM_LEVEL */
@@ -123,7 +123,25 @@ typedef struct k6_api {
      when the module returns. Same run-time check as level 6 for a module that also runs on
      older images. */
   void (*led)(int on);                                         /* 1 lit, 0 dark */
+  /* level 8 (2026-11-09, Jeff OK'd it): the radio's UTC clock, kept by the core from one module
+     run to the next until a reboot (docs/k6-aprs-clock.md, "Making it the radio's clock").
+     A module that hears the time (aisclk, aprsclk) hands it a fix: utc_ms, UTC milliseconds of
+     day at the moment of the call (0 .. 86,399,999); date, day | month << 8 | year << 16
+     (year in full, 2026; 0 for any part not known); w_ms, a bound: UTC is within w_ms of
+     utc_ms. The core runs the fix on from its own uptime and widens the bound by 1 ms every
+     4 s (250 ppm: the MCU's clock is an RC oscillator, AIS run 3 saw it 134 ppm fast and
+     wandering +-100). A fix replaces the clock only if w_ms is no wider than the clock's
+     bound at that moment, and date parts it lacks come from the old fix. clock_set returns 1
+     taken, 0 kept the better fix it had, -1 refused (utc_ms past the day, or an image with no
+     clock: the lean ones). clock_get fills whichever pointers aren't NULL and returns 0, or -1
+     with no clock (none set since boot, the fix 59 hours old, or an image with none). Same
+     run-time check as level 6 for a module that also runs on older images. */
+  int (*clock_set)(uint32_t utc_ms, uint32_t date, uint32_t w_ms);
+  int (*clock_get)(uint32_t *utc_ms, uint32_t *date, uint32_t *w_ms);
 } k6_api_t;
+
+#define KM_DATE(day, mon, yr) ((uint32_t)(day) | (uint32_t)(mon) << 8 | (uint32_t)(yr) << 16)
+#define KM_DAY_MS 86400000u
 
 #define KM_WF_TOP 21                /* lcd_wf's first pixel row */
 #define KM_WF_ROWS 30
