@@ -215,12 +215,12 @@ SETTLE = os.path.join(K6, "mod", "settle.c")
 
 
 @need_host
-def test_loader_takes_level_7_refuses_8():
+def test_loader_takes_level_8_refuses_9():
     code = bytes(64)
-    for level in (2, 3, 4, 5, 6, 7):
+    for level in (2, 3, 4, 5, 6, 7, 8):
         rs, *_ = run_host(k6mod.packets(k6mod.image(code, 0, 1000 + level, KEY, level=level), 1, 128))
         assert rs[-1] == 3
-    rs, *_ = run_host(k6mod.packets(k6mod.image(code, 0, 1000, KEY, level=8), 1, 128))
+    rs, *_ = run_host(k6mod.packets(k6mod.image(code, 0, 1000, KEY, level=9), 1, 128))
     assert 3 not in rs
 
 

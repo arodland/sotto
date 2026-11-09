@@ -268,10 +268,10 @@ index 5f006e4..00686dd 100644
      }
 diff --git a/src/app/pager.rs b/src/app/pager.rs
 new file mode 100644
-index 0000000..cef027a
+index 0000000..55c4d31
 --- /dev/null
 +++ b/src/app/pager.rs
-@@ -0,0 +1,4126 @@
+@@ -0,0 +1,4240 @@
 +//! VOICE MSG: the sotto voice pager, receive side.
 +//!
 +//! A sotto voice message (2400 bit/s speech, 6 bytes per 20 ms) arrives as
@@ -534,6 +534,9 @@ index 0000000..cef027a
 +        pub lcd_flush: unsafe extern "C" fn() -> i32,
 +        // level 7: the green RX LED (PA3)
 +        pub led: unsafe extern "C" fn(i32),
++        // level 8: the radio's UTC clock
++        pub clock_set: unsafe extern "C" fn(u32, u32, u32) -> i32,
++        pub clock_get: unsafe extern "C" fn(*mut u32, *mut u32, *mut u32) -> i32,
 +    }
 +    #[repr(C)]
 +    pub struct KmStatus {
@@ -560,7 +563,7 @@ index 0000000..cef027a
 +/// through MOD_CTX, set only while a module runs.
 +static MOD_API: ffi::K6Api = ffi::K6Api {
 +    abi: 1,
-+    level: 7,
++    level: 8,
 +    say: mod_say,
 +    ticks: mod_ticks,
 +    fd_read: mod_fd_read,
@@ -585,7 +588,118 @@ index 0000000..cef027a
 +    lcd_wf: mod_lcd_wf,
 +    lcd_flush: mod_lcd_flush,
 +    led: mod_led,
++    clock_set: mod_clock_set,
++    clock_get: mod_clock_get,
 +};
++
++// ---- level 8: the radio's UTC clock (Jeff OK'd 2026-11-09; docs/k6-aprs-clock.md) ----
++//
++// A module that hears the time (aisclk, aprsclk) hands the core a fix: UTC ms of day now, the
++// date if it has one, and a bound w (UTC is within w ms of it). The core runs it on from
++// txdog::ticks, which never wraps, and every module after can read it, until the next reboot.
++// The fix's bound grows by CLK_AGE: the MCU runs on its own RC clock, not the radio's TCXO
++// (AIS run 3, 2026-11-09: 134 ppm fast, wandering +-100), so the RF calibration's ppb doesn't
++// apply. A new fix replaces the old one only if its bound is no wider than the old one's now;
++// date parts it lacks (0) come from the old one. Images without the TIM14 wrap interrupt (lean,
++// or the txdog table not taken) have no clock: clock_set and clock_get return -1.
++
++const DAY_MS: u32 = 86_400_000;
++/// a fix's bound grows 1 ms every CLK_AGE ms: 250 ppm
++const CLK_AGE: u32 = 4_000;
++
++/// The fix: txdog::ticks at it (wraps, CNT), UTC ms of day, the date (day | month << 8 |
++/// year << 16) and the bound (ms); w u32::MAX while there is none
++struct Clk {
++    wraps: u32,
++    cnt: u32,
++    ms: u32,
++    date: u32,
++    w: u32,
++}
++static mut CLK: Clk = Clk { wraps: 0, cnt: 0, ms: 0, date: 0, w: u32::MAX };
++
++/// The clock now: (UTC ms of day, date, bound ms); None if never set, this image has no clock,
++/// or the fix is 32,768 wraps (59.6 h) old
++fn clk_now() -> Option<(u32, u32, u32)> {
++    let (wraps, cnt) = crate::hal::txdog::ticks()?;
++    let c = unsafe { &*addr_of!(CLK) };
++    let dw = wraps.wrapping_sub(c.wraps);
++    if c.w == u32::MAX || dw >= 0x8000 {
++        return None;
++    }
++    let e = (dw << 16).wrapping_add(cnt).wrapping_sub(c.cnt) / 10;
++    let (mut ms, mut date) = (c.ms + e, c.date);
++    while ms >= DAY_MS {
++        ms -= DAY_MS;
++        date = next_day(date);
++    }
++    Some((ms, date, c.w.saturating_add(e / CLK_AGE)))
++}
++
++/// The day after `d` (day | month << 8 | year << 16, 0 for a part not known). February has 29
++/// days in a year divisible by 4 or not known (2100 is decades off), an unknown month 31.
++fn next_day(d: u32) -> u32 {
++    let (day, mon, yr) = (d & 0xFF, d >> 8 & 0xFF, d >> 16);
++    let len = match mon {
++        2 => 29 - (yr & 3 != 0) as u32,
++        _ => 30 | (mon ^ mon >> 3) & 1 | (mon == 0) as u32,
++    };
++    if day == 0 {
++        d
++    } else if day < len {
++        d + 1
++    } else if mon == 0 {
++        d & !0xFF | 1
++    } else if mon == 12 {
++        1 | 1 << 8 | (yr + (yr != 0) as u32) << 16
++    } else {
++        (d & !0xFF | 1) + 0x100
++    }
++}
++
++/// A fix: UTC `ms` of day now, `date` (day | month << 8 | year << 16, 0 for a part not known),
++/// UTC within `w` ms. 1 taken, 0 the clock already had a fix as good, -1 refused (no clock in
++/// this image, or ms past the day).
++unsafe extern "C" fn mod_clock_set(ms: u32, mut date: u32, w: u32) -> i32 {
++    let Some((wraps, cnt)) = crate::hal::txdog::ticks() else {
++        return -1;
++    };
++    if ms >= DAY_MS || w == u32::MAX {
++        return -1;
++    }
++    if let Some((_, old, ow)) = clk_now() {
++        if w > ow {
++            return 0;
++        }
++        for m in [0xFF, 0xFF00, 0xFFFF_0000] {
++            if date & m == 0 {
++                date |= old & m;
++            }
++        }
++    }
++    unsafe { *addr_of_mut!(CLK) = Clk { wraps, cnt, ms, date, w } };
++    1
++}
++
++/// The clock: UTC ms of day, date and bound (ms) into whichever pointers aren't null; 0, or -1
++/// with no clock (never set since boot, lost, or none in this image)
++unsafe extern "C" fn mod_clock_get(ms: *mut u32, date: *mut u32, w: *mut u32) -> i32 {
++    let Some((m, d, b)) = clk_now() else {
++        return -1;
++    };
++    unsafe {
++        if !ms.is_null() {
++            *ms = m;
++        }
++        if !date.is_null() {
++            *date = d;
++        }
++        if !w.is_null() {
++            *w = b;
++        }
++    }
++    0
++}
 +
 +/// Level 7: the green RX LED, for a module's own receive activity (and the coded 4FSK session's
 +/// one blink a packet). Off again when the module returns.
@@ -6805,10 +6919,10 @@ index 0000000..37404d9
 +}
 diff --git a/src/hal/txdog.rs b/src/hal/txdog.rs
 new file mode 100644
-index 0000000..e4a4692
+index 0000000..6923e0b
 --- /dev/null
 +++ b/src/hal/txdog.rs
-@@ -0,0 +1,286 @@
+@@ -0,0 +1,308 @@
 +//! Crash and stuck-transmitter backstop (2026-11-08: a module overran its stack, the report
 +//! key-up after it hung, and the K6 sent a bare carrier on 440.850 for 16 minutes).
 +//!
@@ -6826,7 +6940,8 @@ index 0000000..e4a4692
 +//! - TIM14 is uptime's 10 kHz counter; it wraps every 6.5536 s and its update interrupt is the
 +//!   watchdog tick. `keyed` (radio enter_tx*) starts a key-up's clock with a limit, `limit`
 +//!   tightens it, `unkeyed` (radio enter_rx) stops it; a key-up past its limit reboots, at
-+//!   the first wrap after it (up to 6.6 s late).
++//!   the first wrap after it (up to 6.6 s late). The wraps also make `ticks`, uptime that never
++//!   wraps, which the core clock (module API level 8) runs on.
 +//!
 +//! If the remap doesn't read back, nothing is enabled and the radio runs as before.
 +//!
@@ -6950,8 +7065,9 @@ index 0000000..e4a4692
 +    (note, cfgr1, true)
 +}
 +
++/// (wraps, CNT): uptime's TIM14 counter unwrapped
 +#[cfg(not(feature = "lean"))]
-+fn now() -> u32 {
++fn now2() -> (u32, u32) {
 +    // WRAPS and CNT read so a wrap between them is seen: read WRAPS again after CNT
 +    loop {
 +        let w = WRAPS.load(Ordering::Relaxed);
@@ -6960,9 +7076,25 @@ index 0000000..e4a4692
 +        if WRAPS.load(Ordering::Relaxed) == w {
 +            // a wrap whose interrupt hasn't run yet (interrupts off): count it
 +            let w = if pending && c < 0x8000 { w + 1 } else { w };
-+            return w.wrapping_mul(0x1_0000).wrapping_add(c);
++            return (w, c);
 +        }
 +    }
++}
++
++#[cfg(not(feature = "lean"))]
++fn now() -> u32 {
++    let (w, c) = now2();
++    w.wrapping_mul(0x1_0000).wrapping_add(c)
++}
++
++/// Uptime for the core clock (module API level 8): (wraps since boot, CNT in 100 us ticks), so
++/// it never wraps; None unless the TIM14 wrap interrupt runs (the `txdog` table installed)
++#[cfg(not(feature = "lean"))]
++pub fn ticks() -> Option<(u32, u32)> {
++    if !LIVE.load(Ordering::Relaxed) {
++        return None;
++    }
++    Some(now2())
 +}
 +
 +/// The transmitter is about to key up: start the clock, `DEFAULT_LIMIT_MS` unless `limit`
@@ -7024,6 +7156,10 @@ index 0000000..e4a4692
 +pub fn limit(_ms: u32) {}
 +#[cfg(feature = "lean")]
 +pub fn unkeyed() {}
++#[cfg(feature = "lean")]
++pub fn ticks() -> Option<(u32, u32)> {
++    None
++}
 +
 +/// The boot report's line, once the serial report works: `K6 TXDOG on|OFF cfgr1=` and the
 +/// last boot's note

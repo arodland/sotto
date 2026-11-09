@@ -263,6 +263,7 @@ aisclk         # level 2 (screen at 6, LED at 7), the K6's clock from AIS, docs/
 aprsclk        # level 2 (screen at 6, LED at 7), docs/k6-aprs-clock.md
 aprsclk_440    # level 2, aprsclk on 440.850 for the on-air loopback
 bandreg        # level 2, patched by tools/k6_hf.py
+clkget         # level 8, says the radio's clock (docs/k6-aprs-clock.md)
 ctcssprobe     # level 2, docs/k6-explore-app.md
 cwkey          # level 3
 cwlisten       # level 2
