@@ -6,11 +6,15 @@
    times a second) with a caret above it, and the scale moves with it. The scale is a lens (Jeff,
    2026-11-09): the 8 bins each side of the middle are 2.5 kHz apart (+-20 kHz, a quarter of the
    screen), and further out each bin's step grows by the same amount, so the last of the 31 each
-   side reaches the span (1 / 3: +-100 kHz to +-5 MHz). Ticks under the caret's rows mark +-20 kHz,
-   +-100 kHz and +-1 MHz. A small tick over a bar marks a peak, a dot in the top row a repeater
+   side reaches the span (1 / 3: +-100 kHz to +-5 MHz). The lens's bins read with the narrow
+   filter (Jeff: "narrow it a bit"), the rest with the wide one. Under the bars an axis line has
+   ticks as on log paper, every 5 kHz to 20 kHz, every 10 kHz to 100 kHz, every 100 kHz to 1 MHz
+   and every 1 MHz, taller at 20 kHz, 100 kHz and 1 MHz (Jeff: "axis tic marks to help understand
+   the frequency intervals"); line 5 labels it "-1M   -20k +20k   +1M" (the span at each end, the
+   lens's edges under their ticks). A small tick over a bar marks a peak, a dot in the top row a repeater
    the explorer saved (its table, c/k6/rt.h, read once at the start). Bins outside the band stay
    empty. The title line says the band and its channel step, line 1 the listening frequency and
-   its level in dBm (a settled read), line 5 the scale's edges, or with the bar on a saved
+   its level in dBm (a settled read), line 5 the axis's labels, or with the bar on a saved
    repeater its call, offset and TX tone ("N0CALL +5.0 103.5").
 
    Keys (the module scans the keypad itself: the module API has key_down but no key identity;
@@ -74,8 +78,10 @@
 #define U_HZ 2500u              /* the lens's step, and the unit of every bin's offset */
 #define ROWS 30                 /* bitmap rows (KM_WF_ROWS) */
 #define BAR0 6                  /* first bar row: caret rows 1-3, peak ticks row 4 */
-#define BARH (ROWS - BAR0)
+#define AX 27                   /* the axis: its line, then ticks in rows 28 (all) and 29 (major) */
+#define BARH (AX - BAR0)
 #define SETTLE_US 3000          /* a sweep read after its tune (Aura's spectrum, wide) */
+#define SETTLE_N_US 5000        /* the same with the narrow filter (it settles in ~20 ms, not 12) */
 #define CHECK_US 12000          /* a settled read */
 #define CHK_MS 70               /* sweeping: a check of the bar's channel this often */
 #define SUB_HZ 20000u           /* a wide bin: one quick read this far apart across it */
@@ -123,8 +129,9 @@ static const band_t BANDS[] = {
 /* the span: the last bin's offset from the middle, x 2.5 kHz (100 kHz to 5 MHz) */
 static const uint16_t SPANS[] = {40, 100, 200, 400, 1000, 2000};
 #define NSPANS 6
-/* ruler ticks, kHz from the middle */
-static const uint16_t TICKS[] = {20, 100, 1000};
+/* the axis's ticks, kHz from the middle, as on log paper; 20 (the lens's edge), 100 and 1000 major */
+static const uint16_t TICKS[] = {5,   10,  15,  20,  30,  40,  50,  60,  70,   80,   90,   100,  200,
+                                 300, 400, 500, 600, 700, 800, 900, 1000, 2000, 3000, 4000, 5000};
 
 /* Aura's KEY_TABLE: phase 0 (no row driven) side keys, then rows PB0, PB4, PB10, PB11, PB9;
    A/B = side 1/2, U/D up/down, M menu, X exit, N band, V vm, W a/b */
@@ -198,6 +205,15 @@ static char *stepn(char *p, uint32_t step) {
   return p;
 }
 
+/* a span: "100k", "2.5M" */
+static char *spanx(char *p, uint32_t hz) {
+  if (hz < 1000000u) return stepn(p, hz);
+  p = fix(p, udiv(hz, 100000), 1);
+  if (p[-1] == '0') p -= 2;
+  *p++ = 'M';
+  return p;
+}
+
 static void say_end(sf_t *s, char *p) {
   *p = 0;
   s->api->say(s->ln);
@@ -205,12 +221,14 @@ static void say_end(sf_t *s, char *p) {
 
 static int dbm(sf_t *s) { return KM_RSSI_DBM(s->api->fd_read(0x67)); }
 
-/* the level at hz in dBm, us after its tune */
-static int read_hz(sf_t *s, uint32_t hz, uint32_t us) {
-  s->api->tune(hz, WIDE);
+/* the level at hz in dBm, us after its tune (wide: the wide filter, else the narrow) */
+static int read_w(sf_t *s, uint32_t hz, uint32_t us, int wide) {
+  s->api->tune(hz, wide);
   s->api->delay_us(us);
   return dbm(s);
 }
+
+static int read_hz(sf_t *s, uint32_t hz, uint32_t us) { return read_w(s, hz, us, WIDE); }
 
 static int read_at(sf_t *s, int i, uint32_t us) { return read_hz(s, s->hz[i], us); }
 
@@ -493,17 +511,20 @@ static void sweep_bin(sf_t *s, int i) {
   uint32_t lo, hi, f, at = s->hz[i];
   int r, o = s->lvl[i], v;
   cov(s, i, &lo, &hi);
-  if (hi - lo <= SUB_HZ) {
+  if (dist(i) <= KI) {
+    r = read_w(s, at, SETTLE_N_US, 0);   /* the lens: the narrow filter (Jeff 2026-11-09) */
+  } else if (hi - lo <= SUB_HZ) {
     r = read_at(s, i, SETTLE_US);
   } else {
     for (r = -999, f = lo + SUB_HZ / 2; f < hi; f += SUB_HZ)
       if (f >= s->bd->lo && f <= s->bd->hi && (v = read_hz(s, f, SETTLE_US)) > r) r = v, at = f;
     if (r == -999) r = read_at(s, i, SETTLE_US);
   }
-  if (r + 174 >= o || !o) s->pk[i] = at;
+  if (r + 174 >= o || !o || s->stale) s->pk[i] = at;
   r += 174;
   if (r < 1) r = 1;
-  s->lvl[i] = (uint8_t)(r >= o || !o ? r : (o - r > DECAY_DB ? o - DECAY_DB : r));
+  /* (the first sweep after a move replaces the levels the old scale lent it) */
+  s->lvl[i] = (uint8_t)(r >= o || !o || s->stale ? r : (o - r > DECAY_DB ? o - DECAY_DB : r));
 }
 
 /* the quartile of the scale's known bars */
@@ -659,9 +680,9 @@ static char *rt_info(sf_t *s, int slot) {
   return p;
 }
 
-/* bin i's bar height in pixels, 1..BARH: the quick dB over the window's floor, 7/8 px each */
+/* bin i's bar height in pixels, 1..BARH: the quick dB over the window's floor, 3/4 px each */
 static int bar_h(sf_t *s, int i) {
-  int v = s->lvl[i], h = s->qfl && v > s->qfl ? ((v - s->qfl) * 7) >> 3 : 0;
+  int v = s->lvl[i], h = s->qfl && v > s->qfl ? ((v - s->qfl) * 3) >> 2 : 0;
   if (h < 1) h = 1;
   if (h > BARH) h = BARH;
   return h;
@@ -677,8 +698,9 @@ static void draw(sf_t *s) {
   for (i = 0; i < 16 * ROWS; i++) b[i] = 0;
   for (i = 0; i < NV; i++) {
     if (!s->hz[i]) continue;
-    for (r = ROWS - bar_h(s, i); r < ROWS; r++) pair(b, i, r);
+    for (r = AX - bar_h(s, i); r < AX; r++) pair(b, i, r);
     if (is_peak(s, i)) pair(b, i, BAR0 - 2);
+    pair(b, i, AX);                       /* the axis line */
   }
   for (i = 0, k = -1; i < s->nk; i++) {   /* known repeaters: a mark in row 0 */
     int j = bin_of(s, s->khz[i]);
@@ -686,19 +708,23 @@ static void draw(sf_t *s) {
     pair(b, j, 0);
     if (j == C) k = s->kslot[i];
   }
-  for (i = 0; i < (int)sizeof TICKS / 2; i++) {   /* the ruler: a 2 px tick each side */
+  x = 2 * C;
+  px(b, x, AX + 1), px(b, x + 1, AX + 1), px(b, x, AX + 2), px(b, x + 1, AX + 2);
+  for (i = 0; i < (int)sizeof TICKS / 2; i++) {   /* the axis's ticks, each side of the middle */
     uint32_t o = 1000u * TICKS[i];
-    int j, e;
+    int j, e, big = TICKS[i] == 20 || TICKS[i] == 100 || TICKS[i] == 1000;
+    if (o > U_HZ * SPANS[s->si]) break;
     for (e = -1; e <= 1; e += 2) {
       j = bin_of(s, e < 0 ? s->cen - o : s->cen + o);
-      if (j >= 0 && j != 0 && j != NV - 1) px(b, 2 * j + (e > 0), 2), px(b, 2 * j + (e > 0), 3);
+      if (j < 0) continue;
+      px(b, 2 * j + (e > 0), AX + 1);
+      if (big) px(b, 2 * j + (e > 0), AX + 2);
     }
   }
-  x = 2 * C;
   for (r = 0; r < 3; r++)
     for (i = x - 2 + r; i <= x + 3 - r; i++) px(b, i, r + 1);
   if (s->blink)
-    for (r = BAR0; r < ROWS; r++) b[16 * r + (x >> 3)] ^= (uint8_t)(0xC0 >> (x & 7));
+    for (r = BAR0; r < AX; r++) b[16 * r + (x >> 3)] ^= (uint8_t)(0xC0 >> (x & 7));
 
   p = put(s->ln, "SURF ");
   p = put(p, s->bd->name);
@@ -718,13 +744,16 @@ static void draw(sf_t *s) {
   if (k >= 0) {
     p = rt_info(s, k);
   } else {
-    char *e;
-    for (i = 0; !s->hz[i]; i++) {}
-    for (r = NV - 1; !s->hz[r]; r--) {}
-    p = mhz(s->ln, s->hz[i], 3);
-    e = s->ln + 14;
-    while (p < e) *p++ = ' ';
-    p = mhz(p, s->hz[r], 3);
+    /* the axis's labels: the span at each end, the lens's edges under their ticks
+       ("-1M   -20k +20k   +1M") */
+    char t[8], *e = t;
+    for (i = 0; i < 21; i++) s->ln[i] = ' ';
+    s->ln[0] = '-';
+    e = spanx(t, U_HZ * SPANS[s->si]);
+    for (i = 0; t + i < e; i++) s->ln[1 + i] = t[i], s->ln[21 - (e - t) + i] = t[i];
+    s->ln[20 - (e - t)] = '+';
+    put(s->ln + 6, "-20k +20k");
+    p = s->ln + 21;
   }
   *p = 0;
   api->lcd_text(5, (int32_t)(s->t_msg - s->now) > 0 ? "no peak" : s->ln);

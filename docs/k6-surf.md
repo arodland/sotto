@@ -9,8 +9,14 @@ the screen and the scale moves with it. The scale is a lens: within +-20 kHz of 
 bin is 2.5 kHz wide (16 bins, a quarter of the screen), and further out each bin's step grows by
 the same amount, so the last bin each side lands on the span (+-100 kHz to +-5 MHz, keys 1 and 3).
 Each wide bin is the loudest of quick reads 20 kHz apart across its range, so a carrier between
-two bin centres still shows. Tested on the emulator only so far; the bench runs below are of the
-earlier even 64-bin scale.
+two bin centres still shows. The lens's bins read with the narrow filter (Jeff: "narrow it a
+bit"; 5 ms after the tune, as it settles more slowly), so a carrier fills about 5 of them, not 8.
+An axis under the bars has ticks as on log paper (every 5 kHz to 20 kHz, 10 kHz to 100 kHz,
+100 kHz to 1 MHz, then every 1 MHz; taller at 20 kHz, 100 kHz and 1 MHz), so the squeeze toward
+the ends shows as ticks crowding together, and line 5 labels it: `-1M   -20k +20k   +1M`.
+The code is now 5.3 KB (surfauto 5.5 KB), so it needs a voice image's 11,776 B module arena;
+EXPLORE's 5,376 B is too small. Tested on the emulator only so far; the bench runs below are of
+the earlier even 64-bin scale.
 
 **Status: runs on the radio** (bench run 1, 2026-11-08, below). It is also tested on the emulated M0
 against a modelled receiver and the real keypad matrix. It needs API level 6 (the module screen), so
@@ -22,10 +28,9 @@ the 4 KB store, receive only.
 *Emulated screens, drawn pixel for pixel as the firmware's `draw_mod_screen` draws them
 (`tools/k6_screen.py`): sweeping with 440.600 in the middle (+-1 MHz); SIDE1 jumped to the -70 dBm
 carrier on 440.850, which moved to the middle and fills the lens's 2.5 kHz bins as wide as the
-receiver's filter, and the audio opened (RX); SIDE1 again, to 441.200, a repeater the explorer
-saved, so line 5 gives its call, offset and tone; 3 zoomed out to +-2.5 MHz (442.900 shows on the
-right). The dots in the top row mark saved repeaters, the ticks under them +-20 kHz, +-100 kHz and
-+-1 MHz.*
+narrow filter, and the audio opened (RX); SIDE1 again, to 441.200, a repeater the explorer
+saved, so line 5 gives its call, offset and tone (instead of the axis's labels); 3 zoomed out to
++-2.5 MHz (442.900 shows on the right). The dots in the top row mark saved repeaters.*
 
 ## Using it
 
@@ -47,9 +52,9 @@ starts on the band holding the pager's frequency (70 cm on the bench), centred o
 Screen: the title bar says the band and its channel step; line 1 the bar's frequency and its
 level (a settled read, dBm) and RX while the audio is open; the bargraph (63 bins x 2 pixels on
 the lens scale, the bar always in the middle under the caret, a tick over each peak, a dot in the
-top row over each repeater the explorer saved, ruler ticks at +-20 kHz, +-100 kHz and +-1 MHz,
-nothing past the band's edge); line 5 the scale's edges, or with the bar on a saved repeater its
-call, offset and TX tone (`N0CALL +5.0 103.5`), or "no peak" for 1.5 s.
+top row over each repeater the explorer saved, the axis and its ticks under the bars, nothing
+past the band's edge); line 5 the axis's labels (`-1M   -20k +20k   +1M`), or with the bar on a
+saved repeater its call, offset and TX tone (`N0CALL +5.0 103.5`), or "no peak" for 1.5 s.
 
 **The lens.** Bin C+-k sits `off[k]` x 2.5 kHz from the middle: `off[k] = k` for k up to 8, then
 `off[8+j] = 8 + j + (span - 31) * j(j+1) / (23 * 24)` for j = 1..23, so each step past the lens
@@ -94,8 +99,8 @@ knows which peaks are repeaters, and PTT could later use the offset and tone it 
 **Memory.** The 480 B bitmap, the ~1 KB state (the bins' frequencies and loudest-read places)
 and a move's copy of the old scale are on the stack (`-fstack-usage`: about 2.1 KB deepest, of the
 3 KB a module has at its call on the voice images and 6.7 KB on EXPLORE). The code is 4.8 KB
-(surfauto 5.1 KB), over the old 4 KB store but well inside the module arena (5,376 B on EXPLORE,
-11,776 B on the voice images).
+(surfauto 5.1 KB) before the axis and the narrow lens, 5.3 KB (5.5 KB) after: it needs the voice
+images' 11,776 B module arena (EXPLORE's is 5,376 B).
 
 ## Bench build (surfauto)
 
@@ -202,7 +207,7 @@ It fits, and this module is the way to try it. Points for and against:
 
 - `c/k6/mod/surf.c`: the module; `c/k6/mod/surfauto.c`: the bench build.
 - `tests/test_k6_surf.py`: the emulated runs (the lens's steps, bargraph, side keys, UP/DOWN
-  moving the scale, the ruler, band and zoom, the band's edge, monitor, squelch hang, EXIT, saved
+  moving the scale, the axis's ticks and labels, band and zoom, the band's edge, monitor, squelch hang, EXIT, saved
   repeaters from a table in the emulated flash, the bench build and its bargraph lines). `python tests/test_k6_surf.py OUT.png`
   redraws the screens above.
 - `tools/k6_screen.py`: draws any level-6 module's emulated frames as the LCD shows them, and

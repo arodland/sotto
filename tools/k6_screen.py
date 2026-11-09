@@ -204,9 +204,12 @@ def surf_frame(lines):
         lo = float(lo)
         hi = lo + (len(hs) - 1) * kstep / 1000
     wf = [bytearray(16) for _ in range(30)]
+    base = 27 if head[3:4] == ["lens"] else 30      # the lens build: bars on an axis line, row 27
     for b, h in enumerate(hs):
-        for r in range(30 - h, 30):
+        for r in range(base - h, base):
             wf[r][b >> 2] |= 0xC0 >> (2 * (b & 3))
+        if base < 30 and h:
+            wf[base][b >> 2] |= 0xC0 >> (2 * (b & 3))
     text = ["SURF bars " + step, "", "", "", "", f"{lo:.3f}".ljust(14) + f"{hi:.3f}"]
     return {"text": text, "bar": [(0, 0)] * 6, "wf": [bytes(r) for r in wf], "heights": hs,
             "lo_mhz": lo, "step_khz": kstep}

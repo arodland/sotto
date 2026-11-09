@@ -13,7 +13,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_k6_i2s import ROOT, START, need_clang, run  # noqa: E402
-from test_k6_rxmap import Receiver  # noqa: E402
+from test_k6_rxmap import FLOOR, Receiver  # noqa: E402
 
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 import k6_screen  # noqa: E402
@@ -21,7 +21,8 @@ import k6_screen  # noqa: E402
 SRC = os.path.join(ROOT, "c", "k6", "mod", "surf.c")
 AUTO = os.path.join(ROOT, "c", "k6", "mod", "surfauto.c")
 FOREVER = 10**12
-ARENA = 5376                    # the smallest module arena (the EXPLORE image): header + code + tag
+ARENA = 11776                   # the voice images' module arena: header + code + tag (EXPLORE's
+                                # 5,376 B is too small since the axis and the narrow lens)
 C, KI, NV = 31, 8, 63           # the middle bin, the lens's bins each side, the bins on screen
 SPANS = [40, 100, 200, 400, 1000, 2000]     # x 2.5 kHz: +-100 kHz .. +-5 MHz
 SEVENTY = (430_000_000, 450_000_000)
@@ -44,10 +45,15 @@ def bin_for(f, cen, span=400, band=SEVENTY):
     return min((abs(h - f), i) for i, h in enumerate(scale(cen, span, band)) if h)[1]
 
 
-def edges(cen, span=400, band=SEVENTY):
-    """line 5: the first and last bins in the band, in MHz to 3 places (truncated, as mhz())"""
-    hz = [h for h in scale(cen, span, band) if h]
-    return f"{hz[0] // 1000 / 1000:.3f}".ljust(14) + f"{hz[-1] // 1000 / 1000:.3f}"
+def labels(span=400):
+    """line 5: the axis's labels, the span at each end and the lens's edges under their ticks"""
+    k = span * 2.5
+    t = (f"{k / 1000:g}M" if k >= 1000 else f"{k:g}k")
+    line = list(" " * 21)
+    line[0:1 + len(t)] = "-" + t
+    line[20 - len(t):21] = "+" + t
+    line[6:15] = "-20k +20k"
+    return "".join(line)
 
 
 class Bumpy(Receiver):
@@ -56,17 +62,30 @@ class Bumpy(Receiver):
 
     def __init__(self, signals, bumps):
         super().__init__(signals)
-        self.bumps, self.now = bumps, 0
+        self.bumps, self.now, self.wide = bumps, 0, 1
+
+    def tune(self, hz, wide, us):
+        super().tune(hz, wide, us)
+        self.wide = wide
 
     def rssi(self, us):
+        """the narrow filter passes +-6 kHz (the wide one +-12) and settles in ~20 ms (12)"""
         self.now = us
-        return super().rssi(us)
+        if self.wide:
+            return super().rssi(us)
+        from test_k6_rxmap import ramp, rssi_reg
+        g = ramp((us - self.t) * 12 // 20)
+        return rssi_reg(round(-173 + (self.level(us) + 173) * g))
 
     def level(self, us):
         import math
-        p = 10 ** (super().level(us) / 10)
+        half = 12_000 if self.wide else 6_000
+        p = 10 ** (FLOOR / 10)
+        for hz, dbm, a, b in self.sig:
+            if abs(hz - self.f) <= half and a <= us < b:
+                p += 10 ** (dbm / 10)
         if us - self.t < 5000:
-            p += sum(10 ** (d / 10) for hz, d in self.bumps if abs(hz - self.f) <= 12_000)
+            p += sum(10 ** (d / 10) for hz, d in self.bumps if abs(hz - self.f) <= half)
         return 10 * math.log10(p)
 
 
@@ -97,16 +116,20 @@ def taps(keys, t0, gap=200_000, hold=100_000):
     return [(t0 + i * gap, t0 + i * gap + hold, k) for i, k in enumerate(keys)]
 
 
+AX = 27                         # the axis line's row; its ticks in rows 28 (all) and 29 (major)
+
+
+def lit(frame, r, x):
+    return bool(frame["wf"][r][x >> 3] & (0x80 >> (x & 7)))
+
+
 def height(frame, i):
-    x = 2 * i
-    return sum(1 for r in range(6, 30) if frame["wf"][r][x >> 3] & (0x80 >> (x & 7)))
+    return sum(1 for r in range(6, AX) if lit(frame, r, 2 * i))
 
 
-def ticks(frame):
-    """the ruler: the pixels lit in both rows 2 and 3 away from the caret (x 59-66)"""
-    r2, r3 = frame["wf"][2], frame["wf"][3]
-    return {x for x in range(128) if not 59 <= x <= 66
-            and r2[x >> 3] & (0x80 >> (x & 7)) and r3[x >> 3] & (0x80 >> (x & 7))}
+def ticks(frame, major=False):
+    """the axis's ticks (x), all or the major ones, without the middle's (x 62-63)"""
+    return {x for x in range(128) if x not in (62, 63) and lit(frame, AX + 1 + major, x)}
 
 
 def caret(frame):
@@ -168,7 +191,10 @@ def test_bench_build_surfs_by_itself_and_wraps():
     last = lcd["frames"][-1]
     same = sum(height(f, i) == height(last, i) for i in range(NV))
     assert same >= NV - 4, same                             # (the blinking bar, a last sweep)
-    assert max(f["heights"]) > 15 and sorted(f["heights"])[16] <= 1     # a station, the floor
+    # it ends hunting up to the band's top: the bins past 450 MHz say '-' and draw nothing
+    cen = float(next(ln for ln in said if ln.startswith("bar ")).split()[1]) * 1e6
+    out = [i for i, h in enumerate(scale(round(cen))) if not h]
+    assert out and all(f["heights"][i] == 0 for i in out) and all(f["heights"][i] >= 1 for i in range(C + 1))
 
 
 @need_clang
@@ -189,20 +215,22 @@ def test_bargraph_peaks_side_keys_and_audio():
     quiet = at(fr, 2_000_000)
     assert quiet["text"][0] == "SURF 70cm 25k"
     assert quiet["text"][1] == "440.6000 -137dBm"
-    assert quiet["text"][5] == edges(440_600_000) == "439.600       441.600"
+    assert quiet["text"][5] == labels(400) == "-1M   -20k +20k   +1M"
     # the three signals stand out in order of level (a carrier between two wide bins lights
     # both), the rest is floor
     hs = {i: height(quiet, i) for i in range(NV)}
     b85, b12, b05 = (bin_for(f, 440_600_000) for f in (440_850_000, 441_200_000, 440_500_000))
-    assert hs[b85] == 24 and 15 <= hs[b12] < 24 and 8 <= hs[b05]
+    assert hs[b85] == 21 and 12 <= hs[b12] < 21 and 8 <= hs[b05]
     lit = {i for i, h in hs.items() if h > 1} - {C}
     assert {b85, b12, b05} <= lit and len(lit) <= 5, lit
     assert caret(quiet) == C
     on = at(fr, 3_700_000)
     assert on["text"][1] == "440.8500 -70dBm RX" and caret(on) == C
-    assert on["text"][5] == edges(440_850_000)
-    # the lens: the carrier fills the middle bins, 2.5 kHz apart, within the wide filter
-    assert all(height(on, i) >= 20 for i in range(C - 3, C + 4) if i != C)
+    assert on["text"][5] == labels(400)
+    # the lens: the carrier fills the middle bins, 2.5 kHz apart, within the narrow filter
+    # (+-6 kHz), and no further
+    assert all(height(on, i) >= 18 for i in (C - 2, C - 1, C + 1, C + 2))
+    assert all(height(on, i) <= 2 for i in range(C - KI, C + KI + 1) if abs(i - C) >= 3)
     assert at(fr, 5_100_000)["text"][1] == "441.2000 -95dBm RX"
     # the listening bar blinks: its column flips between frames
     a, b = on, fr[fr.index(on) + 1]
@@ -238,7 +266,7 @@ def test_known_repeaters_marked_and_named():
     fr = lcd["frames"]
     quiet = at(fr, 2_000_000)
     assert marks(quiet) == {bin_for(440_850_000, 440_600_000), bin_for(441_200_000, 440_600_000)}
-    assert quiet["text"][5] == edges(440_600_000)           # bar on 440.600: not a known one
+    assert quiet["text"][5] == labels(400)                  # bar on 440.600: not a known one
     on = at(fr, 3_700_000)
     assert on["text"][5] == "AG7EW" and C in marks(on)
     assert marks(on) == {C, bin_for(441_200_000, 440_850_000)}
@@ -251,9 +279,9 @@ def test_up_down_move_the_scale_with_the_middle():
     ret, said, regs, writes, lcd = go([], keys)
     assert sels(said) == ["441.4250", "441.4000"]           # 33 channels of 25 kHz up, one down
     fr = lcd["frames"]
-    assert at(fr, 900_000)["text"][5] == edges(440_600_000)
+    assert at(fr, 900_000)["text"][1].startswith("440.6000 ")
     late = at(fr, 8_500_000)
-    assert late["text"][5] == edges(441_425_000) == "440.425       442.425"
+    assert late["text"][1].startswith("441.4250 ") and late["text"][5] == labels(400)
     assert caret(late) == C                                 # the bar stays in the middle
     # a station's bar moves with the scale at once (each bin keeps the old level nearest it)
     keys = taps("UUUU", 2_000_000) + [(3_500_000, 3_800_000, "X")]
@@ -265,28 +293,43 @@ def test_up_down_move_the_scale_with_the_middle():
 
 
 @need_clang
-def test_ruler_marks_20_khz_100_khz_and_1_mhz():
+def test_axis_ticks_show_the_frequency_intervals():
     keys = taps("3", 2_000_000) + taps("1", 3_000_000) + taps("1", 4_000_000) + [(5_000_000, 5_300_000, "X")]
     ret, said, regs, writes, lcd = go([], keys)
     fr = lcd["frames"]
+    every = [5, 10, 15, 20] + list(range(30, 100, 10)) + list(range(100, 1000, 100)) + [1000, 2000, 3000, 4000, 5000]
 
-    def want(cen, span):
+    def want(cen, span, major=False):
         xs = set()
-        for o in (20_000, 100_000, 1_000_000):
+        for v in every:
+            if major and v not in (20, 100, 1000):
+                continue
+            o = 1000 * v
+            if o > 2500 * span:
+                break
             for e in (-1, 1):
-                if o < 2500 * span:
-                    j = bin_for(cen + e * o, cen, span)
-                    if 0 < j < NV - 1:
-                        xs.add(2 * j + (e > 0))
+                d = [(abs(h - (cen + e * o)), i) for i, h in enumerate(scale(cen, span)) if h]
+                dist, j = min(d)
+                lens_ = lens(span)
+                a = abs(j - C)
+                step = 2500 * (lens_[a + 1] - lens_[a] if a < C else lens_[C] - lens_[C - 1])
+                if 2 * dist <= step:
+                    xs.add(2 * j + (e > 0))
         return xs
 
-    one = at(fr, 1_500_000)                                   # +-1 MHz: the 1 MHz ticks are the edges
-    assert ticks(one) == want(440_600_000, 400) and ticks(one) == {46, 79} | {2 * bin_for(440_500_000, 440_600_000), 2 * bin_for(440_700_000, 440_600_000) + 1}
+    one = at(fr, 1_500_000)                                   # +-1 MHz
+    assert ticks(one) == want(440_600_000, 400) and ticks(one, True) == want(440_600_000, 400, True)
+    # 2.5 kHz bins in the lens: its 5 kHz ticks every 4 pixels, then closer and closer
+    assert {67, 71, 75, 79, 58, 54, 50, 46} <= ticks(one)
+    assert {46, 79} <= ticks(one, True)                      # +-20 kHz, the lens's edges, are major
+    assert all(lit(one, AX, x) for x in range(126))          # the axis line under every bin
+    assert one["text"][5] == labels(400)
     two = at(fr, 2_500_000)                                   # 3: +-2.5 MHz
-    assert two["text"][5] == edges(440_600_000, 1000) and ticks(two) == want(440_600_000, 1000)
-    assert len(ticks(two)) == 6
+    assert two["text"][5] == labels(1000) == "-2.5M -20k +20k +2.5M"
+    assert ticks(two) == want(440_600_000, 1000) and ticks(two, True) == want(440_600_000, 1000, True)
     half = at(fr, 4_500_000)                                  # 1, 1: +-500 kHz
-    assert half["text"][5] == edges(440_600_000, 200) and ticks(half) == want(440_600_000, 200)
+    assert half["text"][5] == labels(200) == "-500k -20k +20k +500k"
+    assert ticks(half) == want(440_600_000, 200)
 
 
 @need_clang
@@ -299,10 +342,10 @@ def test_band_and_zoom_keys():
     gmrs = at(fr, 2_000_000)
     assert gmrs["text"][0] == "SURF GMRS 12.5k"
     assert gmrs["text"][1].startswith("465.1375 ")          # mid-band, on the 12.5 kHz raster
-    assert gmrs["text"][5] == edges(465_137_500, 1000, gm)  # +-2.5 MHz
-    assert at(fr, 4_000_000)["text"][5] == edges(465_137_500, 400, gm)    # 1: +-1 MHz
+    assert gmrs["text"][5] == labels(1000)                  # +-2.5 MHz
+    assert at(fr, 4_000_000)["text"][5] == labels(400)      # 1: +-1 MHz
     assert at(fr, 4_000_000)["text"][1].startswith("465.1375 ")           # the middle stays
-    assert at(fr, 6_000_000)["text"][5] == edges(465_137_500, 1000, gm)
+    assert at(fr, 6_000_000)["text"][5] == labels(1000)
     # four more: marine/WX, 2m, 1.25m, 70cm
     assert at(fr, 8_500_000)["text"][0] == "SURF 70cm 25k"
     assert at(fr, 8_500_000)["text"][1].startswith("440.0000 ")
@@ -317,7 +360,8 @@ def test_band_edge_leaves_the_bins_past_it_empty():
     assert f["text"][1].startswith("430.0000 ") and caret(f) == C
     assert all(height(f, i) == 0 for i in range(C))          # nothing below 430.000
     assert all(height(f, i) >= 1 for i in range(C + 1, NV))
-    assert f["text"][5] == "430.000       431.000"
+    assert f["text"][5] == labels(400)
+    assert not any(lit(f, AX, x) for x in range(60)) and lit(f, AX, 70)   # the axis stops there too
 
 
 @need_clang
