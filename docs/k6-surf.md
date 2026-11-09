@@ -4,6 +4,14 @@
 the orange side keys jumping from peak to peak, UP/DOWN stepping along the frequency axis, and the
 listening frequency drawn as a blinking bar with a caret above it.
 
+**The lens scale (Jeff, 2026-11-09).** The listening frequency now always sits in the middle of
+the screen and the scale moves with it. The scale is a lens: within +-20 kHz of the middle each
+bin is 2.5 kHz wide (16 bins, a quarter of the screen), and further out each bin's step grows by
+the same amount, so the last bin each side lands on the span (+-100 kHz to +-5 MHz, keys 1 and 3).
+Each wide bin is the loudest of quick reads 20 kHz apart across its range, so a carrier between
+two bin centres still shows. Tested on the emulator only so far; the bench runs below are of the
+earlier even 64-bin scale.
+
 **Status: runs on the radio** (bench run 1, 2026-11-08, below). It is also tested on the emulated M0
 against a modelled receiver and the real keypad matrix. It needs API level 6 (the module screen), so
 it runs on the image already on the K6 (ffa7dbf, level 7) with no reflash: 3.8 KB of code in
@@ -12,10 +20,12 @@ the 4 KB store, receive only.
 ![four emulated screens](img/k6-surf-screens.png)
 
 *Emulated screens, drawn pixel for pixel as the firmware's `draw_mod_screen` draws them
-(`tools/k6_screen.py`): sweeping with the bar on a quiet 440.600; the same a frame later (the bar
-blinks); SIDE1 jumped to the -70 dBm carrier on 440.850 and the audio opened (RX); SIDE1 again,
-to the next peak at 441.200, a repeater the explorer saved, so line 5 gives its call, offset and
-tone. The dots in the top row mark saved repeaters.*
+(`tools/k6_screen.py`): sweeping with 440.600 in the middle (+-1 MHz); SIDE1 jumped to the -70 dBm
+carrier on 440.850, which moved to the middle and fills the lens's 2.5 kHz bins as wide as the
+receiver's filter, and the audio opened (RX); SIDE1 again, to 441.200, a repeater the explorer
+saved, so line 5 gives its call, offset and tone; 3 zoomed out to +-2.5 MHz (442.900 shows on the
+right). The dots in the top row mark saved repeaters, the ticks under them +-20 kHz, +-100 kHz and
++-1 MHz.*
 
 ## Using it
 
@@ -25,20 +35,28 @@ starts on the band holding the pager's frequency (70 cm on the bench), centred o
 
 | key | does |
 |---|---|
-| UP / DOWN | the bar one bin up / down; held, it repeats. Past the window's edge the window pans a quarter span |
-| SIDE1 / SIDE2 (orange) | next peak above / below that a settled read confirms (10 dB over the settled floor). With none left in the window it pans half a span and looks again after the sweep, on up the band until it finds one or reaches the band's edge ("no peak") |
+| UP / DOWN | the middle one channel up / down (the band's step); held, it repeats. The scale moves with it, each bin keeping the level of the old one nearest it |
+| SIDE1 / SIDE2 (orange) | next peak above / below that a settled read confirms (10 dB over the settled floor), on the channel raster; it moves to the middle, and the moved scale is swept once before the audio opens. If the loudest bin of the lens is then another channel, it moves there once more (a wide bin far out is coarse). With none left on screen, the scale's edge becomes the middle and it looks again after the sweep, on up the band until it finds one or reaches the band's edge ("no peak") |
 | BAND or # | next band: 2m (144-148, 10 kHz), 1.25m (222-225, 10 kHz), 70cm (430-450, 25 kHz), GMRS (462.550-467.725, 12.5 kHz), MAR/WX (156.000-162.550, 25 kHz: marine and NOAA weather) |
-| 1 / 3 | zoom in / out around the bar: bins of 5, 10, 12.5, 25, 50, 100 kHz (64 bins = 0.32-6.4 MHz on screen) |
+| 1 / 3 | zoom in / out: the span +-100 kHz, 250 kHz, 500 kHz, 1 MHz, 2.5 MHz, 5 MHz (defaults: 2m and 1.25m 500 kHz, 70cm and MAR/WX 1 MHz, GMRS 2.5 MHz). The lens stays +-20 kHz |
 | * | monitor: audio open on the bar all the time, no sweeping (title says MON) |
 | 0 | hold: no refresh sweeps while a signal plays (title says HOLD) |
 | MENU | says the bar's frequency and level on the serial port |
 | EXIT | leave; the module waits for the key's release so the pager doesn't see it |
 
-Screen: the title bar says the band and bin step; line 1 the bar's frequency and its level
-(a settled read, dBm) and RX while the audio is open; the bargraph (64 bins x 2 pixels, a
-tick over each peak, a dot in the top row over each repeater the explorer saved, the caret over
-the bar); line 5 the window's edges, or with the bar on a saved repeater its call, offset and TX
-tone (`N0CALL +5.0 103.5`), or "no peak" for 1.5 s.
+Screen: the title bar says the band and its channel step; line 1 the bar's frequency and its
+level (a settled read, dBm) and RX while the audio is open; the bargraph (63 bins x 2 pixels on
+the lens scale, the bar always in the middle under the caret, a tick over each peak, a dot in the
+top row over each repeater the explorer saved, ruler ticks at +-20 kHz, +-100 kHz and +-1 MHz,
+nothing past the band's edge); line 5 the scale's edges, or with the bar on a saved repeater its
+call, offset and TX tone (`N0CALL +5.0 103.5`), or "no peak" for 1.5 s.
+
+**The lens.** Bin C+-k sits `off[k]` x 2.5 kHz from the middle: `off[k] = k` for k up to 8, then
+`off[8+j] = 8 + j + (span - 31) * j(j+1) / (23 * 24)` for j = 1..23, so each step past the lens
+is one more share than the last and bin 31 lands on the span. At +-1 MHz the steps grow from
+2.5 kHz to about 75 kHz; at +-5 MHz to about 410 kHz. A bin wider than 20 kHz takes quick reads
+20 kHz apart across its range (halfway to each neighbour) and keeps the loudest and where it was:
+a jump goes to that frequency's channel, not the bin's centre.
 
 ## How it works
 
@@ -58,9 +76,9 @@ of 8 bins' settled reads, measured when the window changes and every 30 s of swe
 quieter read of the bar lowers it. The AGC is left alone, because freezing the gain, as `dmrdet`
 does, shifts RSSI by up to 15 dB.
 
-**Speed (estimated from the emulator and Phase 0's ~0.9 ms tune).** A bin costs about 3.9 ms,
-so a 64-bin sweep plus four checks of the bar takes about 0.3 s: about 3 sweeps a second while
-nothing plays.
+**Speed (estimated from the emulator and Phase 0's ~0.9 ms tune).** A read costs about 3.9 ms.
+At +-1 MHz a sweep is about 115 reads plus a check of the bar every 70 ms, about 0.5 s; at
++-5 MHz about 520 reads, 2 s; at +-100 kHz 63 reads, 0.3 s.
 
 **Keys without a key API.** The module API has `key_down` but no key identity, so the module
 scans Aura's matrix itself. The rows are PB0/PB4/PB10/PB11/PB9 and the columns
@@ -73,16 +91,19 @@ up to 24 valid records. With the bar on one it reads that record's call, offset 
 line 5. It never writes the flash. This is the first piece of the VFO idea below: the bargraph
 knows which peaks are repeaters, and PTT could later use the offset and tone it shows.
 
-**Memory.** The 480 B bitmap and the ~400 B state are on the stack (`-fstack-usage`: about
-1.2 KB deepest of the 3.5 KB a module has at its call). The store holds only the code, so nothing
-changes when PR #142 grows the store.
+**Memory.** The 480 B bitmap, the ~1 KB state (the bins' frequencies and loudest-read places)
+and a move's copy of the old scale are on the stack (`-fstack-usage`: about 2.1 KB deepest, of the
+3 KB a module has at its call on the voice images and 6.7 KB on EXPLORE). The code is 4.8 KB
+(surfauto 5.1 KB), over the old 4 KB store but well inside the module arena (5,376 B on EXPLORE,
+11,776 B on the voice images).
 
 ## Bench build (surfauto)
 
 `mod-surfauto.bin` is the same module for unattended runs: SIDE1 presses itself every 4 s. Each
 peak it jumps to says `sel <MHz> <dBm> <floor>`: the settled read that confirmed it and the
 settled floor it beat by 10 dB (runs 1 and 2 said the bar's level 4 s later, before the jump). It wraps to the band's bottom at the top and leaves after 60 s. The keys
-still work. Before it ends it says its last bargraph: `bar <first bin MHz> <step>`, then two
+still work. Before it ends it says its last bargraph: `bar <middle MHz> <span> lens` (before the
+lens: `bar <first bin MHz> <step>`), then two
 lines of 32 letters, one a bin, `a` for 1 pixel up to `x` for 24 (about 112 bytes of the 684 the
 telemetry carries). `python tools/k6_screen.py RUN.txt OUT.png` draws it as the screen showed
 it, so a run's spectrum comes back with no serial log. With `--telemetry 12` the K6 sends those lines back over the air, so the bench needs
@@ -180,9 +201,9 @@ It fits, and this module is the way to try it. Points for and against:
 ## Files
 
 - `c/k6/mod/surf.c`: the module; `c/k6/mod/surfauto.c`: the bench build.
-- `tests/test_k6_surf.py`: the emulated runs (bargraph, side keys, UP/DOWN and panning, band
-  and zoom, monitor, squelch hang, EXIT, saved repeaters from a table in the emulated flash, the
-  bench build and its bargraph lines). `python tests/test_k6_surf.py OUT.png`
+- `tests/test_k6_surf.py`: the emulated runs (the lens's steps, bargraph, side keys, UP/DOWN
+  moving the scale, the ruler, band and zoom, the band's edge, monitor, squelch hang, EXIT, saved
+  repeaters from a table in the emulated flash, the bench build and its bargraph lines). `python tests/test_k6_surf.py OUT.png`
   redraws the screens above.
 - `tools/k6_screen.py`: draws any level-6 module's emulated frames as the LCD shows them, and
   (run as a script) the bargraph a surfauto run said.
