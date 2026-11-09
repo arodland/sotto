@@ -21,8 +21,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_k6_i2s import ROOT, START, need_clang, rssi_reg, run  # noqa: E402
 
 # Modules that key up only when a person keys them (the paddles) run the same rules in their own
-# test, with a modelled operator: morse.c in tests/test_k6_morse.py
-INTERACTIVE = {"morse.c"}
+# test, with a modelled operator: morse.c in tests/test_k6_morse.py, GROUNDWAVE's gw.c (and its bot
+# builds) in tests/test_k6_gw.py, with a modelled FSK modem and the other radio
+INTERACTIVE = {
+    "gw.c",
+    "morse.c",
+}
 # dogtx.c tests the core's stuck key-up backstop: it hangs keyed on purpose (PA off), bench only
 BACKSTOP = {"dogtx.c"}
 MODS = sorted(p for p in glob.glob(os.path.join(ROOT, "c", "k6", "mod", "*.c"))

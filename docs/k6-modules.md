@@ -427,6 +427,17 @@ repeaters the explorer saved (read-only, from the table in SPI flash) and names 
 bar. `surfauto.c` is the unattended bench build; it says its last bargraph over the telemetry.
 See [k6-surf.md](k6-surf.md).
 
+## GROUNDWAVE (gw)
+
+`c/k6/mod/gw.c` (2026-11-09, level 6, the LED at 7) is a turn-based artillery game: two stations
+on a hilly 128 x 30 field, wind, craters, a shop of radio-themed weapons (FCC Violator, 12V
+Charger, CW Strike, Beverage, The Lid and more) and two shields (Ground Rod, Faraday Cage).
+Hot seat passes one radio between two players. Radio play links two K6s on 440.850: each move
+is three bytes in a 64-byte PHY F packet sent from the module's own over (tx_on, the FSK modem,
+an MCW ID), ACKed, and both radios work out the flight from the same integer-only rules
+(`gw_game.h`, also built for the PC as `c/k6/gw_host.c` and `modem/k6gw.py`). `gw_auto`,
+`gw_call` and `gw_answer` are the hands-free bot builds. See [k6-gw.md](k6-gw.md).
+
 ## Insights (a living list)
 
 Ideas from the K6 work that might change the plan. None has been tested unless it says so.
@@ -885,3 +896,15 @@ what would settle it.
       min. Bursts sit on the slot grid to 0.1 ms; the K6's own clock runs 134 ppm fast and wanders
       ±100 ppm, so aisclk now snaps to the slot grid on every burst (~2 ms between fixes). RDS
       (no pilot in 104.3's IF) and ACARS (nothing in 2 min) came up empty so far.
+47. **A module can be a two-radio game: send moves, not state.**
+    - From: Jeff, 2026-11-09 (the GROUNDWAVE thread). Built and
+      emulator-tested (`c/k6/mod/gw.c`, docs/k6-gw.md); not on air.
+    - GROUNDWAVE's rules are integer-only C with their own random generator, built both into the
+      module and for the PC, so a move (angle, power, item) is all that crosses the air. Each
+      MOVE carries the sender's game hash, so a desync shows at once. The same trick would fit
+      any turn game, or a shared map, sent as edits.
+    - The module sends with chip FSK from its own `tx_on` over (the pager's PHY F registers),
+      not through the core's ARQ. Each over is the packet twice plus an MCW ID.
+    - It would buy: two-way data between K6s from a RAM module, with no new firmware.
+    - Settled by: an over recorded on the IC-7100 (receive only) and decoded with `modem/k6gw.py`,
+      then a game between two K6s (or a K6 and a PC peer).

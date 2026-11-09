@@ -284,6 +284,10 @@ gp0fm
 gp0raw
 gp0sweep
 gp0tone
+gw             # level 6 (LED at 7), GROUNDWAVE: hot seat and radio play on 440.850, docs/k6-gw.md
+gw_answer      # level 6, GROUNDWAVE's bot answering a radio call (bench and tests)
+gw_auto        # level 6, GROUNDWAVE's bot playing hot seat against itself (bench and tests)
+gw_call        # level 6, GROUNDWAVE's bot calling over the radio (bench and tests)
 hello
 hfprobe        # level 2, patched by tools/k6_hf.py
 i2scap
