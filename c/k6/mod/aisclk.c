@@ -13,6 +13,9 @@
        coarse fix (the second, to within a second).
      any slot number from a station on UTC (messages 1, 2, 4, 11, 18) once the clock is within
        a few seconds: the minute is the nearest one, the slot gives the rest: a fine fix.
+     any other burst within SNAP_S of a fine fix: stations on UTC start on slot boundaries, so
+       its flag snaps the clock to the nearest one (run 3: the K6's own clock wanders +-100
+       ppm, ~7 ms between 2-minute fixes; snapping on every burst keeps it within ~2 ms).
    The flag's time on the module's clock is the capture's end (api->ticks, 100 us) less the
    counts after the flag at the count rate TIM17 measured, less the receiver's delay (the chip
    filter and CIC, ~0.6 bit on the model, AR_DELAY_US). A fine fix more than JUMP_MS from the
@@ -74,6 +77,9 @@
 #ifndef JUMP_MS
 #define JUMP_MS 100
 #endif
+#ifndef SNAP_S
+#define SNAP_S 90u /* any burst within this of a fine fix snaps the clock to the slot grid */
+#endif
 #ifndef GIVEUP_S
 #define GIVEUP_S 120u /* no frame by then: no AIS here, hand over to aprsclk (0: never) */
 #endif
@@ -91,13 +97,12 @@
 
 #define DAY100 864000000u
 #define MIN100 600000u
-#define MAXF 4
+#define MAXF 3 /* frames kept from a burst (one, nearly always) */
 
 typedef struct {
   uint32_t off;   /* UTC (100 us of day) less the module's clock */
   uint32_t tfix;  /* the module's clock at the last fine fix */
-  uint32_t off0, t0; /* the first fine fix, for the rate */
-  int32_t ppm;
+  int32_t ppm;     /* the module's clock against UTC (+: fast), from the fine fixes */
   uint32_t nfine, nfr;
   uint8_t set; /* 0 not yet, 1 to the second, 2 fine */
   uint8_t day, mon, haveppm;
@@ -164,11 +169,18 @@ static void say_clk(const k6_api_t *api, clk_t *k, ap_ck_t *ck, int32_t j) {
   api->say(k->ln);
 }
 
+/* the clock's offset at module time t: the last fine fix's, run on at the rate */
+static uint32_t pred(const clk_t *k, uint32_t t) {
+  uint32_t c = ar_muldiv((uint32_t)(k->ppm < 0 ? -k->ppm : k->ppm), t - k->tfix, 1000000u);
+  if (k->set < 2) return k->off;
+  return mod_day((int32_t)(k->ppm > 0 ? k->off - c : k->off + c));
+}
+
 /* a fine fix: the flag at UTC utc (100 us of day) and at t on the module's clock */
 static void fine(const k6_api_t *api, clk_t *k, uint32_t utc, uint32_t t, uint32_t mmsi,
                  ap_ck_t *ck) {
-  uint32_t off = mod_day((int32_t)(utc - t));
-  int32_t j = k->set ? wrap_day((int32_t)(off - k->off)) : 0;
+  uint32_t off = mod_day((int32_t)(utc - t)), dt = t - k->tfix;
+  int32_t j = k->set ? wrap_day((int32_t)(off - pred(k, t))) : 0;
   char *p;
   if (k->set == 2 && (j > JUMP_MS * 10 || j < -JUMP_MS * 10) && t - k->tfix < 10 * MIN100) {
     p = put(k->ln, "x ");
@@ -180,12 +192,14 @@ static void fine(const k6_api_t *api, clk_t *k, uint32_t utc, uint32_t t, uint32
     api->say(k->ln);
     return;
   }
-  if (!k->nfine) k->off0 = off, k->t0 = t;
-  else if (t - k->t0 >= MIN100) {
-    /* (off - off0) / (t - t0) in ppm: UTC gains on the module's clock when it runs slow */
-    int32_t d = wrap_day((int32_t)(off - k->off0));
-    uint32_t u = ar_muldiv((uint32_t)(d < 0 ? -d : d), 1000000u, t - k->t0);
-    k->ppm = d < 0 ? (int32_t)u : -(int32_t)u, k->haveppm = 1;
+  if (k->set == 2 && dt >= 50000u) {
+    /* the rate since the last fix (the offset falls when the module's clock runs fast),
+       halfway into the estimate: the K6's clock wanders (run 3: 134 ppm fast, +-100) */
+    int32_t d = wrap_day((int32_t)(off - k->off));
+    int32_t u = (int32_t)ar_muldiv((uint32_t)(d < 0 ? -d : d), 1000000u, dt);
+    if (d > 0) u = -u;
+    k->ppm = k->haveppm ? (k->ppm + u) >> 1 : u;
+    k->haveppm = 1;
   }
   k->off = off, k->tfix = t, k->set = 2, k->nfine++;
   say_clk(api, k, ck, j);
@@ -243,16 +257,34 @@ static void frames(const k6_api_t *api, clk_t *k, const ar_frame_t *f, int nf, c
         k->day = (uint8_t)dd, k->mon = (uint8_t)mo;
         if (agree) {
           fine(api, k, (h * 60 + mi) * MIN100 + inmin, t, mmsi, ck);
-        } else if (k->set < 2) {
+          continue;
+        }
+        if (k->set < 2) {
           k->off = mod_day((int32_t)(((h * 60 + mi) * 60 + sec) * 10000u + 5000u - t));
           k->set = 1;
           say_clk(api, k, ck, 0);
+          continue;
         }
       } else if (slot != 0xFFFF && k->set && (sec > 59 || agree)) {
         /* the nearest minute to the clock's time for the slot's start */
-        uint32_t m0 = mod_day((int32_t)(k->off + t - inmin + MIN100 / 2));
+        uint32_t m0 = mod_day((int32_t)(pred(k, t) + t - inmin + MIN100 / 2));
         m0 = udiv(m0, MIN100) * MIN100;
         fine(api, k, mod_day((int32_t)(m0 + inmin)), t, mmsi, ck);
+        continue;
+      }
+      if (k->set == 2 && t - k->tfix < SNAP_S * 10000u) {
+        /* any burst from a station on UTC starts 32 bits after a slot boundary: snap the
+           clock's time for it to the nearest one, within 10 ms (in 1/30 ms: a slot is 800) */
+        uint32_t u = mod_day((int32_t)(pred(k, t) + t)), x, ph;
+        int32_t q;
+        x = u - udiv(u, MIN100) * MIN100;
+        x = 3 * x + 700; /* less the 32 bits (100), plus a slot */
+        ph = x - udiv(x, 800) * 800;
+        q = ph >= 400 ? (int32_t)ph - 800 : (int32_t)ph;
+        if (q < 300 && q > -300) {
+          q = q >= 0 ? (int32_t)udiv((uint32_t)q + 1, 3) : -(int32_t)udiv((uint32_t)(1 - q), 3);
+          fine(api, k, mod_day((int32_t)u - q), t, mmsi, ck);
+        }
       }
     }
   }
@@ -315,7 +347,7 @@ int k6_main(const k6_api_t *api) {
   wr(TIM17 + 0x00, 1);      /* CEN */
   ck.last = api->ticks() & 0xFFFF, ck.t = 0;
   k.set = 0, k.nfine = 0, k.nfr = 0, k.day = 0, k.mon = 0, k.haveppm = 0, k.ppm = 0;
-  k.off = 0, k.tfix = 0, k.off0 = 0, k.t0 = 0;
+  k.off = 0, k.tfix = 0;
   p = put(line, "ais clk start a=");
   p = dec(p, CH_A_HZ);
   p = put(p, " b=");

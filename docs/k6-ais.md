@@ -5,11 +5,13 @@ APRS timestamps. Jeff asked which other signals in the K6's range (18 to 630 MHz
 chose AIS from the list. Ships and shore stations on 161.975 and 162.025 MHz send time all day,
 and the Salish Sea is 15 to 25 km from the bench.
 
-**Status: the K6 decodes AIS on the air (run 2, 2026-11-09 03:16Z), and `aisclk` decodes it on
-the radio itself (emulator, not on air yet).** With the polled capture module, a US shore base
-station (MMSI 003669705) came through 7 times in 10 minutes with its date and UTC second, each
-matching the bench's NTP to the second. Its slot numbers place the bursts consistently to about
-2 ms across 100 s. Run 1, with the DMA version, heard 739 bursts and decoded none.
+**Status: the K6 sets its own clock from AIS (run 3, 2026-11-09 04:10Z).** Over 15 minutes,
+receive only, `aisclk` decoded 52 frames from a US shore base station (MMSI 003669705) on the
+radio. It had the second 10 s in and slot-locked fixes from the third minute. Every burst it timed
+sits on the AIS slot grid to about 0.1 ms. The K6's own clock is the weak part: it runs about 134
+ppm fast and wanders ±100 ppm over minutes, so the module now snaps to the slot grid on every
+burst, not only those that carry a slot number. Runs 1 and 2 recorded bursts for the host. Run 2
+decoded the same station's date and second, matching NTP.
 
 Jeff (2026-11-09 03:34-03:43Z): BLOWFANG needs both this and the APRS clock. AIS goes first,
 because it's the more reliable where it's heard, and the K6 listens to APRS only when no AIS
@@ -191,6 +193,32 @@ clk 03:15:42.086 w=2 v=1 d=09/11 j=0      UTC now, interval ms, fine fixes, day/
 ais clk none                              2 minutes with no frame: no AIS here
 ```
 
+## Run 3, 2026-11-09 04:10-04:25Z (aisclk 579f7b3, af064d6 vlrh, big antenna, receive only)
+
+The log is `tests/data/k6/air/aisclk-20261109T0358Z.log.gz`. RF POWER read 0 before and after.
+The first try (a46a5be) returned -8. With the upload's 696 B telemetry text kept at the arena's
+end, the scratch was 5,296 B, and the 3,600-count ring didn't fit. 579f7b3 uses 2,960 counts.
+
+- 52 frames in 15 minutes, all from 003669705: message 4 at :00, :20 and :40 and message 20 half
+  a second after each, on both channels, at 12-15 dB over the floor. ret = 7 fine fixes.
+- The first message 4 set the clock to the second (w=1000). The first with a slot number (1534,
+  04:12:40) made it fine, a jump of 356 ms, and six more slot fixes followed.
+- **The bursts sit on the slot grid to 0.1 ms.** Put every frame's flag time through one straight
+  line fitted to the slot fixes, and its phase within the 26.67 ms slot moves smoothly. Frames
+  0.5 s apart (message 4 then 20) agree to 0.1-0.2 ms. So the receiver's timing is good to about
+  0.1 ms, and what moves is the K6's clock.
+- **The K6's clock runs 134 ppm fast and wanders.** Against a straight line, the slot fixes scatter
+  by 4 ms rms (up to 7 ms) over 12 minutes, because its rate changes by up to ±100 ppm over a few
+  minutes. Fixes 2 minutes apart jumped -6 to -24 ms with no rate correction. (Aura's 100 us tick
+  runs from the MCU's clock, not the RF chip's 26 MHz crystal, and the calibration record's
+  -53 ppm is the RF chip's.)
+- Replayed on run 3's 52 flags, snapping to the slot grid on every burst (within 10 ms of the
+  prediction), with the rate tracked from fix to fix, predicts each slot fix to within 0.6-2.7 ms
+  instead of 6-24. That's in aisclk now: SNAP_S, and `p=` is the tracked rate.
+- Against the serial log's NTP stamps, the clk lines read 17-148 ms early. That's the line's
+  trip through the serial logger (the stamps come in batches), so NTP over the cable can't check
+  the clock below ~0.1 s. The slot grid can.
+
 ## One clock from AIS and APRS
 
 The two modules can't share one 11,776 B arena (5.8 KB and aprsclk's), so they run one after the
@@ -221,12 +249,25 @@ hears US base station 003669705 at 12 dB or more over the floor on the big anten
 ## RDS (asked 2026-11-09)
 
 Jeff asked whether FM broadcast's RDS clock (group 4A, once a minute on the 57 kHz subcarrier)
-could serve. It probably can't reach the K6. The FD6818's IF is a two-way radio's, about ±10 kHz
-around the carrier at 16.9 kHz (docs/k6-fd6818-audio.md), and a broadcast station swings ±75 kHz.
-RDS is the 57 kHz part of that swing, far outside what the chip passes. The K6 has no broadcast
-FM chip of its own. `aiscap_fm` (level 2, receive only) dumps 40 ms IF captures on 99.3 and 104.3
-MHz with the pager's AGC, to measure the passband on a real station. If RDS did come through, it
-would rank between AIS and APRS, with a vote across stations (many send a wrong clock or none).
+could serve. It needs the chip to pass the broadcast swing (±75 kHz, with the 19 kHz pilot and
+RDS as sidebands at ±19, 38 and 57 kHz), and the K6 has no broadcast FM chip of its own.
+
+Run 3 took 12 IF captures on 104.3 MHz (`aiscap_fm`, the pager's AGC on; the 12 captures all went
+to the first station, so 99.3 got none). FM-demodulated and averaged on the host, they show no 19
+kHz pilot line (3 dB over its neighbours, where controls at 15 and 21 kHz show 0.5-2.4), and
+nothing at 38 kHz or at 57 kHz's alias. Their IF spectrum is flat from 0 to 41 kHz, with twice
+AIS's spread of counts, which looks like the strong station overloading the 1-bit tap. So far,
+then, no. The decisive test, still to run: tune at steps of 10-80 kHz off a steady carrier (the
+K6's own spur at 144.000 MHz) and see how far from the IF the chip still passes it.
+
+## ACARS (asked 2026-11-09)
+
+Jeff suggested ACARS (AM, MSK 2400 bit/s, 131.550 and 130.025 MHz). The IF tap can see an AM
+channel, and its 1200/2400 Hz tones are close to the APRS tones aprsclk decodes. But ACARS has no
+clock field: the times are in the message text, mostly to the minute and stamped at the event, so
+a clock would vote across aircraft, behind APRS. Run 3's 2-minute listen (`aiscap_acars`, AGC on,
+04:08Z, a quiet hour) heard no burst 6 dB over the floor on either channel. Airband sits below the
+K6's 136-174 MHz filter. A longer listen at a busy hour, with the gain at maximum, would settle it.
 
 ## Bench (receive only)
 

@@ -869,4 +869,8 @@ what would settle it.
     - aisclk (`c/k6/mod/aisclk.c`, receiver `c/k6/aisrx.h`): decodes on the M0 (9 of run 2's 10
       frames, flags within a count of the host's) and sets UTC from message 4 and slots; the
       emulator puts each flag within 0.2 ms. Jeff (03:34-03:43Z): BLOWFANG needs both clocks,
-      AIS first, APRS when no AIS is heard (aisclk gives up after 2 min). Not on air yet.
+      AIS first, APRS when no AIS is heard (aisclk gives up after 2 min).
+    - Run 3 (04:10Z): aisclk set the K6's clock on the air, 52 frames and 7 slot fixes in 15
+      min. Bursts sit on the slot grid to 0.1 ms; the K6's own clock runs 134 ppm fast and wanders
+      ±100 ppm, so aisclk now snaps to the slot grid on every burst (~2 ms between fixes). RDS
+      (no pilot in 104.3's IF) and ACARS (nothing in 2 min) came up empty so far.

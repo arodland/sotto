@@ -241,26 +241,29 @@ def test_m0_receiver_model():
 
 @need_clang
 def test_clock_module_fits():
-    """code + header + tag + the ring, the phases and four frames in the voice images' arena, with
+    """code + header + tag + the ring, the phases and three frames in the voice images' arena, with
     the telemetry text kept at its end (the first bench run got -8 without room for it)"""
     code, _ = k6mod.build(CLK)
-    assert len(code) + 24 + TLM + 2960 + 2 * ((2576 + 256) // 3 + 2) + 4 * 48 <= ARENA, len(code)
+    assert len(code) + 24 + TLM + 2960 + 2 * ((2576 + 256) // 3 + 2) + 3 * 48 <= ARENA, len(code)
 
 
 @need_clang
 def test_clock_module_sets_utc():
-    """a base station's report (message 4, slot 1575: 03:15:42.0033 at its flag) and a ship's
-    position 38 slots later (slot 1613, second 43) on the polled path: aisclk decodes both on the
-    M0, puts each flag on its clock within 0.2 ms of where the model sent it, and says UTC as the
-    first fixed it, the second agreeing"""
+    """a base station's report (message 4, slot 1575: 03:15:42.0033 at its flag), a ship's
+    position 38 slots later (slot 1613, second 43) and another's 20 slots after that with no slot
+    number (its comm state gives the station count) on the polled path: aisclk decodes all three
+    on the M0, puts each flag on its clock within 0.2 ms of where the model sent it, says UTC as
+    the first fixed it, and the second (its slot) and third (snapped to the slot grid) agree"""
     pytest.importorskip("unicorn")
     import k6_live_emu as le
     t1 = 0.9
     t2 = t1 + 38 * ais.SLOT_S
+    t3 = t2 + 20 * ais.SLOT_S
     msgs = [ais.msg4(3160001, 2026, 11, 9, 3, 15, 42, comm=ais.sotdma(0, 2, 1575)),
-            ais.msg1(316012345, 43, ais.sotdma(0, 4, 1613))]
+            ais.msg1(316012345, 43, ais.sotdma(0, 4, 1613)),
+            ais.msg1(316054321, 43, ais.sotdma(0, 3, 17))]
     s = np.zeros(int(3.2 * st.FZ), complex)
-    for m, t in zip(msgs, (t1, t2)):
+    for m, t in zip(msgs, (t1, t2, t3)):
         b = ais.gmsk(ais.burst_bits(m), f_off=-1300.0, pre_s=0.0, post_s=0.0)
         i = int(t * st.FZ)
         s[i:i + len(b)] += b
@@ -276,19 +279,21 @@ def test_clock_module_sets_utc():
     print(txt)
     assert all(len(ln) <= 60 for ln in e.said), txt
     a = [ln.split() for ln in e.said if ln.startswith("a ")]
-    assert [(x[1], x[2]) for x in a] == [("4", "3160001"), ("1", "316012345")], txt
-    flag = [(t + ais.FLAG_OFF_BITS / ais.BAUD) * 1e4 for t in (t1, t2)]
+    assert [(x[1], x[2]) for x in a] == [("4", "3160001"), ("1", "316012345"), ("1", "316054321")], txt
+    assert "s=" not in " ".join(a[2]), a[2]
+    flag = [(t + ais.FLAG_OFF_BITS / ais.BAUD) * 1e4 for t in (t1, t2, t3)]
     for x, f in zip(a, flag):
         assert abs(int(x[-1].split("=")[1]) - f) <= 2, (x, f)
     utc_off = (3 * 3600 + 15 * 60 + 42) * 1e4 + 1e4 * ais.FLAG_OFF_BITS / ais.BAUD - flag[0]
     clk = [(ln, cy) for ln, cy in zip(e.said, e.said_cyc) if ln.startswith("clk ")]
-    assert len(clk) == 2 and ret == 2, txt
+    assert len(clk) == 3 and ret == 3, txt
     for ln, cy in clk:
         hh, mm, ss = ln.split()[1].split(":")
         got = ((int(hh) * 60 + int(mm)) * 60 + float(ss)) * 1e4
         assert abs(got - (utc_off + cy / 9600)) <= 15, (ln, got - (utc_off + cy / 9600))
         assert " w=2 " in ln and " d=09/11" in ln
-    assert abs(int(clk[1][0].split("j=")[1].split()[0])) <= 2, clk[1][0]
+    for ln, _ in clk[1:]:
+        assert abs(int(ln.split("j=")[1].split()[0])) <= 2, ln
     assert e.lcd.get(0) == "AIS CLOCK" and e.lcd.get(1, "").startswith("UTC 03:15:4"), e.lcd
     assert any(on for _, on in e.led)
     assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0
