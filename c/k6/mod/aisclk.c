@@ -77,6 +77,16 @@
 #ifndef GIVEUP_S
 #define GIVEUP_S 120u /* no frame by then: no AIS here, hand over to aprsclk (0: never) */
 #endif
+/* the ring: 384 counts before the trigger (the decoder starts at most 256 before it) and the
+   2,576 after (31.8 ms, the 27 ms burst whole), so the ring, phases and frames (5,044 B) fit the
+   voice images' arena with the module's telemetry text kept (5,296 B left; the first bench run,
+   with NCAP 3600, got -8) */
+#ifndef PRE
+#define PRE 384u
+#endif
+#ifndef NCAP
+#define NCAP (PRE + 2576u)
+#endif
 #include "aispoll.h"
 
 #define DAY100 864000000u

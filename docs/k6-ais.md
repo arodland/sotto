@@ -163,8 +163,11 @@ a 1.9 KB phase array next to the ring. On run 2's captures (`c/k6/aisrx_host.c`,
 decodes 9 of the host's 10 frames (the tenth comes only from the host's whole-capture grid), and
 puts each start flag within a count (12 us) of the host's.
 
-`c/k6/mod/aisclk.c` (level 2, 5.8 KB at -Oz with the 3,600-count ring, phases and frames in the
-voice images' arena; screen at 6, LED at 7) shares aiscap's polled capture (`c/k6/mod/aispoll.h`)
+`c/k6/mod/aisclk.c` (level 2, 5.8 KB at -Oz; screen at 6, LED at 7). Its ring is 2,960 counts:
+384 before the trigger and the burst's 2,576 after. With the phases and frames that's 5,044 B,
+which fits the voice images' arena with the 696 B telemetry text kept. The first bench try, with
+aiscap's 3,600-count ring, returned -8 (scratch too small) because the telemetry text takes the
+arena's end. It shares aiscap's polled capture (`c/k6/mod/aispoll.h`)
 and decodes every burst 11 dB or more over the floor, alternating channels B and A each minute:
 
 - A message 4 or 11 with a slot number whose second agrees with the message's second is a fine

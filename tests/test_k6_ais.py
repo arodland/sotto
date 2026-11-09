@@ -158,6 +158,15 @@ def test_air_run2_decodes():
 # ---- the receiver on the M0 (c/k6/aisrx.h) and aisclk ----
 
 CLK = os.path.join(K6, "mod", "aisclk.c")
+ARENA = 11776                   # the voice images' module arena
+TLM = 696                       # its telemetry text at the end (arena::TLM_BYTES), when asked for
+
+
+def clk_scratch():
+    """the scratch the radio gives aisclk: the arena past its header, code and tag, less the
+    telemetry text (from the radio's build: the emulator's, AISCAP_EMU, is bigger)"""
+    code, _ = k6mod.build(CLK)
+    return (ARENA - 16 - len(code) - 8 - TLM) & ~3
 
 
 def rx_lib():
@@ -232,9 +241,10 @@ def test_m0_receiver_model():
 
 @need_clang
 def test_clock_module_fits():
-    """code + header + tag + the ring, the phases and four frames in the voice images' arena"""
+    """code + header + tag + the ring, the phases and four frames in the voice images' arena, with
+    the telemetry text kept at its end (the first bench run got -8 without room for it)"""
     code, _ = k6mod.build(CLK)
-    assert len(code) + 24 + 3600 + 2 * ((3600 - 1024 + 256) // 3 + 2) + 4 * 48 + 128 <= 11776, len(code)
+    assert len(code) + 24 + TLM + 2960 + 2 * ((2576 + 256) // 3 + 2) + 4 * 48 <= ARENA, len(code)
 
 
 @need_clang
@@ -256,7 +266,8 @@ def test_clock_module_sets_utc():
         s[i:i + len(b)] += b
     cs, fg = poll_stream(s, 66.0)
     code, entry = build([("RUN_S", "3u"), ("SWITCH_S", "5u"), ("AISCAP_EMU", "1")], CLK)
-    e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.6, scratch=8192, level=7)
+    e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.6, scratch=clk_scratch(),
+               level=7)
     e.poll, e.poll_fc, e.poll_k = cs, fg, 8
     r = e.run()
     assert r is not None
@@ -291,7 +302,7 @@ def test_clock_module_gives_up_without_ais():
     import k6_live_emu as le
     cs, fg = poll_stream(np.zeros(int(2.4 * st.FZ), complex), 66.0)
     code, entry = build([("RUN_S", "60u"), ("SWITCH_S", "1u"), ("GIVEUP_S", "2u"), ("AISCAP_EMU", "1")], CLK)
-    e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.0, scratch=8192)
+    e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.0, scratch=clk_scratch())
     e.poll, e.poll_fc, e.poll_k = cs, fg, 8
     r = e.run()
     assert r is not None and r[0] == 0, e.said
