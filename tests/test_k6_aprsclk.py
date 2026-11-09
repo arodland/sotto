@@ -214,6 +214,42 @@ def test_objects_and_status_carry_time(lib):
     assert r["day"] == 8
 
 
+def mdhm(utc_s, month=11):
+    """positionless weather's MMDDHHMM (zulu) for seconds since the month's day 0"""
+    return f"{month:02d}" + aprs.ts_dhm(utc_s)[:6]
+
+
+def test_positionless_weather_votes_with_others(lib):
+    t1, t2 = 3000, 5000
+    w = aprs.frame("KC7WX", "APRS", "_" + mdhm(UTC0 + t1 / 1000 - 20) + "c180s000g000t045r000p000h82b10360")
+    g = aprs.frame("VE7ABC-9", "APRS", "/" + tod(UTC0 + t2 / 1000 - 0.6) + "4857.00N/12229.00W>")
+    r, lines = feed(lib, [(t1, w), (t2, g)])
+    assert r["nts"] == 2 and r["votes"] == 2, lines
+    assert "ts=17:51:00w" in lines
+    assert abs(r["utc0"] - truth_ms()) < 1000
+    assert (r["day"], r["mon"]) == (8, 11)
+
+
+def test_weather_stamps_alone_set_nothing(lib):
+    """two weather stations sending local time (UTC-8) agree with each other, not with UTC"""
+    items = [at(2000 + 1500 * k, call, "_" + mdhm(UTC0 + 2 + 1.5 * k - 8 * 3600) + "c...s...g...t050")
+             for k, call in enumerate(["KC7WX", "KD7WX"])]
+    items.append(at(6000, "KE7WX", "_13081752c...s...g...t050"))     # month 13
+    r, lines = feed(lib, items)
+    assert r["nts"] == 2 and r["votes"] == 1 and r["utc0"] == -1, lines
+
+
+def test_minute_stamps_alone_take_the_middle(lib):
+    """two DDHHMMz stations stamping 20 s before they key: the estimate is the region's middle,
+    within half a minute, not its low edge a minute early"""
+    t1, t2 = 3000, 5000
+    a = at(t1, "VE7DG1", "@" + aprs.ts_dhm(UTC0 + t1 / 1000 - 20) + "4857.00N/12229.00W#")
+    b = at(t2, "VE7DG2", "@" + aprs.ts_dhm(UTC0 + t2 / 1000 - 20) + "4857.00N/12229.00W#")
+    r, lines = feed(lib, [a, b])
+    assert r["votes"] == 2 and r["wid"] > 10000, lines
+    assert abs(r["utc0"] - truth_ms()) < 35000, (r, truth_ms())
+
+
 def test_midnight(lib):
     """stamps either side of 00:00 UTC agree (offsets are taken round the day)"""
     global UTC0

@@ -13,6 +13,8 @@
        -> the APRS information field's timestamps:
             '/' '@' positions, ';' objects, '>' status:  DDHHMMz (60 s resolution), HHMMSSh (1 s)
             '$GPRMC' / '$GNRMC' raw NMEA (status A):     hhmmss[.ss] and ddmmyy
+            '_' positionless weather:                    MMDDHHMM (60 s; many send local time, so
+                                                         weather stamps alone never set the clock)
           ("DDHHMM/" local time, Mic-E, '}' third party and the rest carry no usable time)
 
    Each timestamp says the true UTC at the frame's first bit was in [stamp, stamp + resolution +
@@ -22,7 +24,8 @@
    picks the offset the most stations agree on, the narrowest such interval among ties. With two
    or more stations agreeing, the clock is set: its estimate is the interval's low edge plus half
    its width, at most 0.5 s (a stamp can't be later than the send, and trackers key within a
-   second of the fix). A 1 s stamp gives the second; DDHHMMz alone gives the minute.
+   second of the fix); with minute stamps only (a region wider than 10 s) its middle, so within
+   about 30 s. A 1 s stamp gives the second; minute stamps alone give the minute.
 
    Lines (serial / telemetry):
      aprs start hz=144390000 ks=5603 n=12
@@ -71,7 +74,7 @@
 /* a station's interval: offsets (UTC ms of day less module ms) relative to the table's ref */
 typedef struct {
   uint8_t call[7];  /* address bytes as sent (SSID byte masked to its SSID) */
-  uint8_t kind;     /* 'z', 'h' or 'r' (RMC), 0 empty */
+  uint8_t kind;     /* 'z', 'h', 'r' (RMC) or 'w' (weather MMDDHHMM), 0 empty */
   int32_t lo, hi;
   uint32_t age;     /* insertion count, for replacing the oldest */
   uint32_t key;     /* the stamp (ms of day, day << 27), to spot a digipeated copy */
@@ -237,17 +240,20 @@ static void vote(st_t *s) {
   int i, j, best = 0, bw = 0, blo = 0;
   for (i = 0; i < NC; i++) {
     int32_t x = s->c[i].lo, hi = 0x7FFFFFFF;
-    int n = 0;
+    int n = 0, sn = 0;
     if (!s->c[i].kind) continue;
     for (j = 0; j < NC; j++)
       if (s->c[j].kind && s->c[j].lo <= x && x <= s->c[j].hi) {
-        n++;
+        n++, sn += s->c[j].kind != 'w';
         if (s->c[j].hi < hi) hi = s->c[j].hi;
       }
+    if (!sn && n > 1) n = 1; /* weather stations in one zone sending local time agree with each other */
     if (n > best || (n == best && hi - x < bw)) best = n, bw = hi - x, blo = x;
   }
   s->votes = best, s->wid = bw;
-  s->est = blo + (bw / 2 < 500 ? bw / 2 : 500);
+  /* a second-stamp interval: half a second in (the usual stamp-to-key lead); minute stamps only
+     (wider than 10 s): its middle, so never more than about 30 s off */
+  s->est = blo + (bw > 10000 ? bw / 2 : bw / 2 < 500 ? bw / 2 : 500);
   /* the date: the newest agreeing stamp that has one */
   for (i = 0, j = -1; i < NC; i++)
     if (s->c[i].kind && s->c[i].day && s->c[i].lo <= s->est && s->est <= s->c[i].hi &&
@@ -346,13 +352,18 @@ static void frame(const k6_api_t *api, st_t *s) {
     kind = q[7], q++;
   else if (n >= 18 && q[0] == ';' && (q[10] == '*' || q[10] == '_'))
     kind = q[17], q += 11;
-  if (kind == 'z' || kind == 'h') {
-    int32_t v = tri(q, kind == 'z' ? 32 : 24);
+  else if (n >= 9 && q[0] == '_') { /* _MMDDHHMM: the month, then a day-hour-minute */
+    mon = d2(q + 1), q += 3, kind = 'w';
+    if (mon < 1 || mon > 12) kind = mon = 0;
+  }
+  if (kind == 'z' || kind == 'h' || kind == 'w') {
+    int32_t v = tri(q, kind == 'h' ? 24 : 32);
     day = d2(q);
-    if (v < 0 || (kind == 'z' && !day)) kind = 0;
-    else if (kind == 'z') tod = (uint32_t)(v - day * 3600) * 60000u, res = 60000; /* hour < 24 */
+    if (v < 0 || (kind != 'h' && !day)) kind = 0;
+    else if (kind != 'h') tod = (uint32_t)(v - day * 3600) * 60000u, res = 60000; /* hour < 24 */
     else tod = (uint32_t)v * 1000u, res = 1000, day = 0;
-    if (kind == 'z' && tod >= DAY) kind = 0;
+    if (kind != 'h' && tod >= DAY) kind = 0;
+    if (!kind) mon = 0;
   } else if (n >= 20 && q[0] == '$' && q[1] == 'G' && q[3] == 'R' && q[4] == 'M' && q[5] == 'C' &&
              q[6] == ',') {
     /* $GPRMC,hhmmss[.ss],A,lat,N,lon,E,speed,course,ddmmyy */
