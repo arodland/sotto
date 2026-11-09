@@ -168,6 +168,13 @@ the IC-7100's discriminator), so `modem.aprs decode` now tries flat, 0.95 and 0.
 it without one. To test the clock off-bench, a tracker has to send a stamped format: a position
 with HHMMSSh or DDHHMMz, or raw $GPRMC.
 
+**Run 5** (2026-11-09 00:09-00:24Z, image 0fb4d6c, 15 min on 144.390): Jeff forced beacons and
+sent a message from his car. `ok=7 bad=670 ts=0 v=0 lost=0 pre=9`: three 62-byte Mic-E
+positions and four 49-byte frames (the message and its retries), all AG7EW-7. Two preambles did
+not end in a good frame. None carried a time, so there is no `clk`. The minute RSSI (-90 to -92
+dBm) is the minute's floor, so packets do not show in it. The receiver is proven on 2 m. What is
+left is a station that sends a stamped format.
+
 This tests the IF tap, demodulator, HDLC, parser and clock on the real radio; if it passes and
 144.390 still decodes nothing, the next step is an IC-7100 recording of 144.390 (receive only)
 run through `python -m modem.aprs decode REC.wav` to count local stamped packets.
