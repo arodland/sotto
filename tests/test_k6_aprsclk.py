@@ -305,12 +305,13 @@ def test_module_on_the_emulated_m0():
     assert e.lcd[1].startswith("UTC 17:52:0") and "stations 3 (sec)" in e.lcd[2], e.lcd
     assert any(on for _, on in e.led), "the LED blinks a good frame"
     assert e.writes.get(0x34, [None])[-1] == 0 and e.writes.get(0x33)  # GP0 put back
+    assert e.clock_sets == []                    # level 7: no radio clock to set
 
 
 @need_clang
 def test_module_sets_the_radios_clock():
     """API level 8: each clock line with two votes or more goes to the core's clock_set, UTC now
-    within the bound; a better fix already there (AIS's 2 ms) is kept"""
+    within the bound"""
     pytest.importorskip("unicorn")
     import k6_live_emu as le
     from modem import k6mod
@@ -329,14 +330,7 @@ def test_module_sets_the_radios_clock():
     assert e.clock_sets[-1][2] & 0xFF == 8, hex(e.clock_sets[-1][2])     # day 8 from the stamps
     utc, date, w = e.clock_now()
     assert abs(utc - round(((UTC0 + e.cyc / 96e6) % DAY) * 1000)) <= w
-    # a 2 ms fix from AIS already in the core: aprsclk's are wider, so the clock keeps it
-    e = le.Emu(code, entry, ib, 0, FDMA, 1.5, max_s=total + 1, level=8, scratch=11776 - 24 - len(full))
-    e.clock = (0, round((UTC0 % DAY) * 1000), 8 | 11 << 8 | 2026 << 16, 2)
-    assert e.run()[0] == 3
-    assert [r for *_, r in e.clock_sets] == [0, 0], e.clock_sets
-    # level 7 images: no call
-    e = le.Emu(code, entry, ib, 0, FDMA, 1.5, max_s=total + 1, level=7, scratch=11776 - 24 - len(full))
-    assert e.run()[0] == 3 and e.clock_sets == []
+    # (level 7 images get no call: test_module_on_the_emulated_m0)
 
 
 @need_clang
