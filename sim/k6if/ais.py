@@ -394,6 +394,16 @@ def receive_cap(c, **kw):
     return out
 
 
+CH_A, CH_B = 161975000, 162025000
+
+
+def tap_hz(d_hz, fc):
+    """where a station d_hz from the tuned frequency lands in the counts (run 5: the GP0 tap is
+    taken before the channel filter; a station below the IF's zero comes through mirrored)"""
+    f = abs(fe.FIF + d_hz) % fc
+    return fc - f if f > fc / 2 else f
+
+
 def cmd_cap(a):
     for p in a.files:
         with open(p, errors="replace") as fh:
@@ -401,10 +411,20 @@ def cmd_cap(a):
         print(f"{os.path.basename(p)}: {len(caps)} captures")
         for c in caps:
             fc = FCPU * (len(c["x"]) - c["pre"]) / c["c1"] if c.get("c1") else c["ks"] * 1000.0 / fe.L
-            got = receive_cap(c)
-            print(f"  {c['k']:3d} r={c['rssi']} fc={fc:.0f} lost={c['lost']}: {len(got)} frames")
-            for m, i in got:
-                print(f"      @{i / fc * 1e3:6.2f} ms {parse(m)}")
+            if not a.tune:
+                got = receive_cap(c)
+                print(f"  {c['k']:3d} r={c['rssi']} fc={fc:.0f} lost={c['lost']}: {len(got)} frames")
+                for m, i in got:
+                    print(f"      @{i / fc * 1e3:6.2f} ms {parse(m)}")
+                continue
+            print(f"  {c['k']:3d} r={c['rssi']} fc={fc:.0f} lost={c['lost']}")
+            for name, hz in (("A", CH_A), ("B", CH_B)):
+                f, seen = tap_hz(hz - a.tune, fc), set()
+                for df in (0.0, -750.0, 750.0, -1500.0, 1500.0):
+                    for m, i in receive_cap(c, fif=abs(f + df)):
+                        if tuple(m) not in seen:
+                            seen.add(tuple(m))
+                            print(f"    {name} at {f / 1e3:4.1f} kHz @{i / fc * 1e3:6.2f} ms {parse(m)}")
 
 
 def cmd_nmea(a):
@@ -423,6 +443,8 @@ def main():
     ap.add_argument("--dec", type=int, default=DEC)
     ap.add_argument("--off", type=float, default=500.0)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--tune", type=int, default=0,
+                    help="cap: the K6 was tuned here (Hz), off both channels: decode each at its place in the counts")
     a = ap.parse_args()
     {"pd": cmd_pd, "cap": cmd_cap, "nmea": cmd_nmea}[a.cmd](a)
 
