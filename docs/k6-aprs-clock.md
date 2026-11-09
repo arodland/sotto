@@ -150,6 +150,48 @@ noise between frames (about 40 a minute on a quiet channel), so `pre` is the lin
 serial logger sees each line about 3.3 s after its frame, which is why a `clk` line looks 3.4 s
 behind the logger's own stamp.
 
+**Run 3** (2026-11-08 23:03-23:18Z, image 61cc53a, `mod-aprsclk.bin` 5,480 B, 15 min on
+144.390): `ok=0 bad=592 ts=0 v=0 lost=0 pre=0`, `pre=0` in every minute line, so not one packet
+preamble. The minute RSSI sat at -85 to -87 dBm, flat for 15 minutes, against -115 dBm on an idle
+440.850 in run 2. Either a steady carrier or a K6 birdie (its own synth or an MCU harmonic) sits
+on 144.390 (a carrier would also quiet the discriminator, which fits `pre=0`), or the chip's RSSI
+reads about 29 dB higher on 2 m. Since the loopback decodes, the open question is the 2 m channel.
+
+**Run 4** (2026-11-08 23:31-23:47Z, image f70e79e, 15 min on 144.390, with the IC-7100
+beside it receive only, Jeff's OK): the K6 decoded Jeff's car tracker at 23:39:13Z, `f AG7EW-7
+n=62` (Mic-E, so no stamp: `ok=1 ts=0 v=0 pre=1`). The IC-7100 saw the same packet at S9+45 dB
+and nothing else in 12 minutes. Its S-meter sat near S7 on 144.390 with the K6 on 2 m and only
+3 dB lower with the K6 back on 440.850, and its audio was flat open-squelch noise, so run 3's
+-86 dBm is the band's real noise floor at the bench, not a K6 birdie, and 144.390 is simply quiet
+there. The recording decoded only through a 1-pole de-emphasis (the mobile's pre-emphasis off
+the IC-7100's discriminator), so `modem.aprs decode` now tries flat, 0.95 and 0.9. The K6 decoded
+it without one. To test the clock off-bench, a tracker has to send a stamped format: a position
+with HHMMSSh or DDHHMMz, or raw $GPRMC.
+
+**Run 5** (2026-11-09 00:09-00:24Z, image 0fb4d6c, 15 min on 144.390): Jeff forced beacons and
+sent a message from his car. `ok=7 bad=670 ts=0 v=0 lost=0 pre=9`: three 62-byte Mic-E
+positions and four 49-byte frames (the message and its retries), all AG7EW-7. Two preambles did
+not end in a good frame. None carried a time, so there is no `clk`. The minute RSSI (-90 to -92
+dBm) is the minute's floor, so packets do not show in it. The receiver is proven on 2 m. What is
+left is a station that sends a stamped format.
+
+**Who sends stamps near the bench** (APRS-IS feed, 40 km around 48.95 N 122.48 W, 00:36-00:57Z,
+2026-11-09): 13 stations heard on RF (digis, igates, trackers, Jeff's car), none with a usable
+stamp (one repeater object carries a fixed `111111z`). The stamped weather stations nearby (CWOP)
+reach APRS-IS over the internet only. Jeff's FTM-300D sends Mic-E positions only and has no
+timestamp option.
+
+**Run 6, big antenna and a stamped burst on 2 m** (2026-11-09 01:09-01:41Z, image af064d6, the
+K6 on Jeff's big antenna, two 15 min listens; the IC-7100 on a stub at RF power 0). The minute
+RSSI fell to -97 to -101 dBm (from -86 on the K6's own antenna: local pickup, not a carrier).
+With Jeff's OK the IC-7100 sent one 4 s burst on 144.390 at 01:17:19Z, no digi path (the
+loopback's three AG7EW packets). The K6 decoded all three, voted 3 stations, took the date
+(9/11), and read about +0.12 s against each frame's true end, as predicted (stamps 0.37 s early
+against the real audio start). Seven minutes later its end line was within 0.14 s of the logger.
+Listen 1 also decoded Jeff's car again. Listen 2 heard nothing in 15 min (`pre=0`). So the clock
+works end to end on 2 m. At Jeff's location it needs a stamped source of its own, such as a
+fixed station beaconing like the burst, since no local station sends one.
+
 This tests the IF tap, demodulator, HDLC, parser and clock on the real radio; if it passes and
 144.390 still decodes nothing, the next step is an IC-7100 recording of 144.390 (receive only)
 run through `python -m modem.aprs decode REC.wav` to count local stamped packets.
