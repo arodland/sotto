@@ -255,6 +255,11 @@ fi
 # one module per line, in alphabetical order, so PRs that add modules don't collide:
 K6_MODULES=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' <<'EOF'
 afsweep
+aiscap         # level 2, records AIS bursts for sim/k6if/ais.py, docs/k6-ais.md
+aiscap_acars   # level 2, aiscap on two ACARS airband channels, receive only
+aiscap_fm      # level 2, aiscap on two FM broadcast stations (can RDS reach the K6?)
+aiscap_sweep   # level 2, aiscap tuned off the AIS base station in steps: the IF's width
+aisclk         # level 2 (screen at 6, LED at 7), the K6's clock from AIS, docs/k6-ais.md
 aprsclk        # level 2 (screen at 6, LED at 7), docs/k6-aprs-clock.md
 aprsclk_440    # level 2, aprsclk on 440.850 for the on-air loopback
 bandreg        # level 2, patched by tools/k6_hf.py
