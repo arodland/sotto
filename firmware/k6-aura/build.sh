@@ -257,6 +257,7 @@ K6_MODULES=$(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' <<'EOF'
 afsweep
 aiscap         # level 2, records AIS bursts for sim/k6if/ais.py, docs/k6-ais.md
 aiscap_acars   # level 2, aiscap on two ACARS airband channels, receive only
+aiscap_census  # level 2, an hour of aiscap_dual: how many ships can the bench hear
 aiscap_dual    # level 2, aiscap tuned between the AIS channels: both in one capture
 aiscap_fm      # level 2, aiscap on two FM broadcast stations (can RDS reach the K6?)
 aiscap_sweep   # level 2, aiscap tuned off the AIS base station in steps: the IF's width
