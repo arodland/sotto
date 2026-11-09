@@ -854,3 +854,14 @@ what would settle it.
     - Next: a narrower filter before the discriminator might move the FM threshold (decodes stop
       near 51 dB-Hz on the model); an IC-7100 recording of 144.390 would count the local stamps.
     - Settled by: a few minutes on 144.390 with a voice image, the `clk` lines against NTP.
+46. **Take UTC from AIS ship traffic.**
+    - From: Jeff, 2026-11-09 (thread "Get K6 time from AIS ship traffic"), after the APRS clock
+      found no local stamps. Host receiver `sim/k6if/ais.py` and capture module
+      `c/k6/mod/aiscap.c` built and emulator-tested (docs/k6-ais.md); not on air.
+    - AIS shore stations send the date and second every 10 s (message 4), and a ship's report
+      often names the TDMA slot it was sent in. Slots are locked to the UTC minute, so a burst's
+      start flag gives UTC to well under a millisecond.
+    - It would buy: a clock far tighter than APRS's 1 s stamps, heard all day near the coast.
+    - Risk: the model needs ~55 dB-Hz, which may mean bursts near -72 dBm on the frozen-gain RSSI.
+    - Settled by: a 10-minute aiscap run on 161.975 / 162.025 with the big antenna, then
+      `python3 -m sim.k6if.ais cap LOG`.
