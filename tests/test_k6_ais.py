@@ -134,3 +134,22 @@ def test_capture_module_records_bursts():
     assert any(ln.startswith("m B") for ln in e.said), txt
     assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0, e.writes   # the AGC put back
     assert stack < 600, stack
+
+
+def test_air_run2_decodes():
+    """run 2 (2026-11-09 03:16Z, polled aiscap on the K6, receive only): the host decodes the shore
+    base station 003669705's reports from the captures 12 dB or more over the floor, and each
+    report's slot puts its burst in the same UTC second it states"""
+    import gzip
+    p = os.path.join(ROOT, "tests", "data", "k6", "air", "aiscap2-20261109T0315Z.log.gz")
+    with gzip.open(p, "rt", errors="replace") as fh:
+        caps = [c for c in ais.parse_caps(fh) if c["rssi"] >= 12]
+    frames = [ais.parse(m) for c in caps for m, _ in ais.receive_cap(c)]
+    t4 = [d for d in frames if d["type"] == 4]
+    assert len(frames) >= 9 and len(t4) >= 6, frames
+    assert all(d["mmsi"] == 3669705 and (d["year"], d["month"], d["day"], d["hour"]) == (2026, 11, 9, 3)
+               for d in t4)
+    slots = [d for d in t4 if "slot" in d["comm"]]
+    assert len(slots) >= 3
+    for d in slots:
+        assert int(d["comm"]["slot"] * 60 / 2250 + ais.FLAG_OFF_BITS / ais.BAUD) == d["second"], d

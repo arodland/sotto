@@ -5,11 +5,11 @@ APRS timestamps. Jeff asked which other signals in the K6's range (18 to 630 MHz
 chose AIS from the list. Ships and shore stations on 161.975 and 162.025 MHz send time all day,
 and the Salish Sea is 15 to 25 km from the bench.
 
-**Status: the K6 hears AIS but hasn't decoded it yet.** Bench run 1 (2026-11-09 02:48Z, below)
-heard 739 bursts in 10 minutes on both channels. The best came in about 5 dB under what the
-receiver needs, and the limit was the K6's own 1-bit IF tap as the DMA samples it, not the band's
-noise. aiscap now polls the tap at 22.9 MS/s instead, which moves the threshold about 6 dB on the
-model. Run 2 tries that.
+**Status: the K6 decodes AIS on the air (run 2, 2026-11-09 03:16Z).** With the polled
+capture module, a US shore base station (MMSI 003669705) came through 7 times in 10 minutes with
+its date and UTC second, each matching the bench's NTP to the second. Its slot numbers place the
+bursts consistently to about 2 ms across 100 s. Next is a module that sets the clock on the radio
+itself (`aisclk`, below). Run 1, with the DMA version, heard 739 bursts and decoded none.
 
 ## What AIS carries
 
@@ -124,11 +124,42 @@ POWER read 0 before and after. The log is `tests/data/k6/air/aiscap-20261109T024
   the real rate was ~5490), and the first 60 bursts, mostly weak, filled the captures in the
   first 66 s. Both are fixed in version 2.
 
+## Run 2, 2026-11-09 03:16-03:26Z (polled version 0fee6c8, af064d6 vlrh, big antenna)
+
+Same set-up as run 1, with RF POWER 0 before and after. The log is
+`tests/data/k6/air/aiscap2-20261109T0315Z.log.gz`, and `tests/test_k6_ais.py` decodes it.
+
+- The count rate was 81.85 kHz on every turn (±5 Hz), below the 89 kHz of 256 reads at 22.9
+  MS/s: the loop's own cycles and Aura's interrupts. After the trigger it ran at 80.87 kHz (c1).
+- 371 bursts over the trigger, 60 dumped by 167 s (the threshold was then 6 dB; it's 11 dB now).
+- **10 frames from 9 captures, all from MMSI 003669705** (a US base station, 00366 prefix): 7
+  message 4 base station reports and 3 message 20 (data link management). Every capture 12 dB or
+  more over the floor decoded at least once. Nothing at 10 dB or less did.
+- The reports come every 20 s on each channel, at :00, :20 and :40. Their UTC second matches the
+  NTP-stamped serial log every time. The log line comes ~0.9 s late, which is the dump.
+- **The slot numbers agree with the stamps.** Slot 784 is 20.907 s into the minute (the :20
+  report), 1534 is 40.907 s (:40), and 32 is 0.853 s (:00). Two slot-stamped bursts 100 s apart
+  put the K6's module clock at the same UTC offset within 2.3 ms. That's about 1 ms of `ms()`
+  resolution plus 23 ppm of the K6's crystal over 100 s.
+- Near the threshold, each start point gives a slightly different carrier-offset estimate and CIC
+  phase, so trying four starts just before the trigger decodes more (`ais.receive_cap`: 10 frames
+  against 6-8 for any one start).
+- Something sends a burst every 4.000 s exactly on both channels, 7 dB (B) and 9 dB (A) over the
+  floor. It never decodes, and it's probably local to the bench. The 11 dB dump threshold leaves
+  it out.
+
+## Bench (receive only)
+
+1. A voice image (vlrh) on the K6, the big antenna on it, cable in, at VOICE MSG.
+2. `tools/k6_upload.py mod-aiscap.bin --api-level 2 --run-s 620`, keeping the serial log.
+3. `python3 -m sim.k6if.ais cap LOG` decodes every capture. The `f` lines give each turn's rate
+   and floor, the `m` lines its bursts.
+
 ## Next
 
-- **aisclk**: the receiver on the M0 (CORDIC and the CIC as aprsclk, the HDLC already written
-  there), live on one channel. It would set the clock from message 4 (date and second) and refine
-  it from slot-number bursts of stations on UTC. Several stations' slot times should agree to a
-  few tenths of a millisecond.
+- **aisclk**: the receiver on the M0, from the polled capture. It decodes each burst 11 dB or more
+  over the floor (mixer, CIC/3 and CORDIC as aprsclk, phases and HDLC as here, a few start
+  points), takes UTC from message 4 (date and second, then the slot to the millisecond), and
+  refines it from any station's slot-numbered bursts once the minute is known.
 - The core keeping UTC between modules (API level 8, proposed in docs/k6-aprs-clock.md) serves
   both clocks.

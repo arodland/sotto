@@ -77,7 +77,7 @@
 #define TRIG_X 3 /* energy over the floor for a burst (4.8 dB) */
 #endif
 #ifndef DUMP_DB
-#define DUMP_DB 6 /* dump a burst only this far over the floor */
+#define DUMP_DB 11 /* dump a burst only this far over the floor (run 2: frames only at 12+) */
 #endif
 #ifndef MAXCAP
 #define MAXCAP 60u

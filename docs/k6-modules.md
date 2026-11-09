@@ -864,4 +864,5 @@ what would settle it.
     - It would buy: a clock far tighter than APRS's 1 s stamps, heard all day near the coast.
     - Run 1 (DMA): 739 bursts in 10 min, none decoded, the best ~5 dB short; the limit is the
       1-bit tap sampled at 5.5 MS/s. aiscap v2 polls it at 22.9 MS/s (~6 dB on the model).
-    - Settled by: run 2 with the polled aiscap, then `python3 -m sim.k6if.ais cap LOG`.
+    - Run 2 (polled, 03:16Z): decoded a US base station's message 4 seven times in 10 min, UTC
+      matching NTP; its slot numbers agree across 100 s to ~2 ms. Next: aisclk on the M0.

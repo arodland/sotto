@@ -369,9 +369,29 @@ def uniform(c):
     return np.interp(g, t, x), 1.0 / t1
 
 
+BACKS = (32, 64, 128, 256)   # polled captures: decode from this many counts before the trigger
+
+
 def receive_cap(c, **kw):
+    """a capture -> [(message bits, the start flag's time in counts from the capture's start)].
+    A polled capture is tried from a few starts just before the trigger, at the rate after it
+    (the burst starts within ~0.5 ms of the trigger, so the counts before it hardly matter):
+    near the threshold each start's carrier-offset estimate and CIC phase decode different bursts
+    (run 2: 10 frames from 60 captures with all four, 6-8 with any one). Then the whole capture on
+    one grid (uniform)."""
+    out, seen = [], set()
+    tries = []
+    if c.get("c1"):
+        fc1 = FCPU * (len(c["x"]) - c["pre"]) / c["c1"]
+        tries = [(np.asarray(c["x"][c["pre"] - b:], float), fc1, c["pre"] - b) for b in BACKS]
     x, fc = uniform(c)
-    return receive(x, fc=fc, **kw)
+    tries.append((x, fc, 0))
+    for xx, f, s0 in tries:
+        for m, i in receive(xx, fc=f, **kw):
+            if tuple(m) not in seen:
+                seen.add(tuple(m))
+                out.append((m, i + s0))
+    return out
 
 
 def cmd_cap(a):
@@ -380,8 +400,8 @@ def cmd_cap(a):
             caps = parse_caps(fh)
         print(f"{os.path.basename(p)}: {len(caps)} captures")
         for c in caps:
-            x, fc = uniform(c)
-            got = receive(x, fc=fc)
+            fc = FCPU * (len(c["x"]) - c["pre"]) / c["c1"] if c.get("c1") else c["ks"] * 1000.0 / fe.L
+            got = receive_cap(c)
             print(f"  {c['k']:3d} r={c['rssi']} fc={fc:.0f} lost={c['lost']}: {len(got)} frames")
             for m, i in got:
                 print(f"      @{i / fc * 1e3:6.2f} ms {parse(m)}")
