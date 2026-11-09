@@ -144,6 +144,20 @@ aisclk or aprsclk to see the clock was kept. `test_module_sets_the_radios_clock`
 Cost: about 570 B of flash and 20 B of RAM in each image with the clock (local build of the
 pager-only and hiss images). CI had the hiss image (vlrh) at 1,068 B free before it.
 
+**On the radio** (2026-11-09, image cf9516e vlrh). Right after the flash, `clkget` said `core clk
+none`, as it should. The 70 cm `aprsclk_440` loopback decoded nothing that time (rssi -130, the
+IC-7100's stub at power 0 into the K6's big 2 m antenna), so the first fix came from AIS: aisclk
+(714a454) handed the core 25 fine fixes between 05:56:21 and 06:02:02Z. Then clkget read:
+
+| clkget line | hamlet's NTP stamp on the line | bound |
+|---|---|---|
+| 06:11:55.074, d=09/11/2026 | 06:11:55.043 (31 ms) | w=150 |
+| 06:17:32.238 | 06:17:32.387 (stamp late by up to one serial read) | w=234 |
+
+Both are inside their bounds. The bound grew 84 ms in 337 s, the 250 ppm it is set to, and the
+clock carried across module runs ten and fifteen minutes after the last fix. Log:
+`tests/data/k6/air/clkget-20261109T0543Z.log.gz` (on the AIS thread's branch).
+
 Next uses: the pager screen can show UTC, and the WSPR and FT8 modules can start on their slots
 from `clock_get` instead of the bench's CW ID.
 
