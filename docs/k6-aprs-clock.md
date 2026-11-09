@@ -192,6 +192,18 @@ Listen 1 also decoded Jeff's car again. Listen 2 heard nothing in 15 min (`pre=0
 works end to end on 2 m. At Jeff's location it needs a stamped source of its own, such as a
 fixed station beaconing like the burst, since no local station sends one.
 
+**How common stamps are** (worldwide APRS-IS feed, 15 min, 2026-11-09 01:50-02:05Z, packets an
+igate heard on RF only): 17,755 RF packets (about 1,180 a minute); 8% carry a usable stamp
+(within 10 min of arrival), 95 a minute from 588 stations. About as many again carry a wrong
+one (repeater objects at `111111z`, trackers at `000000h`, digipeater clocks hours off, stale
+objects), which is why the vote needs two stations. Usable by kind (packets / stations):
+DDHHMMz positions from digis and WX3in1 boxes 515 / 295, HHMMSSh trackers 334 / 99, weather
+297 / 162, objects 232 / 53, status 39 / 29, raw $GPRMC 5 / 1. Seconds stamps arrive 2-3 s
+after their stamp, mostly internet delay; minute stamps about 50 s. Europe and North America
+are alike (about 40 usable a minute each); within 300 km of the bench only 1.2 a minute from
+12 stations, mostly minute stamps, two with seconds (41 and 98 km). Positionless weather
+(`_MMDDHHMM`, 0.6% of RF packets) carries a date and time the module does not read yet.
+
 This tests the IF tap, demodulator, HDLC, parser and clock on the real radio; if it passes and
 144.390 still decodes nothing, the next step is an IC-7100 recording of 144.390 (receive only)
 run through `python -m modem.aprs decode REC.wav` to count local stamped packets.
