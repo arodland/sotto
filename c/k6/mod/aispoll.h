@@ -116,7 +116,11 @@ typedef struct {
 
 /* one count through the band-pass into the leaky energy (x ones - 128) */
 static int32_t energy(bp_t *b, int32_t x) {
+#ifdef RAW_TRIG /* the whole band the counts carry, not just around the IF (aiscap_sweep) */
+  int32_t y = x;
+#else
   int32_t y = (BP_B0 * (x - b->x2) - BP_A1 * b->y1 - BP_A2 * b->y2) >> 14;
+#endif
   b->x2 = b->x1, b->x1 = x, b->y2 = b->y1, b->y1 = y;
   b->e += y * y - (b->e >> 6);
   return b->e;

@@ -70,6 +70,9 @@
 #ifndef MAXCAP
 #define MAXCAP 60u
 #endif
+#ifndef TURN_CAPS
+#define TURN_CAPS 0xFFFFu /* captures dumped a turn */
+#endif
 #include "aispoll.h"
 
 static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -142,6 +145,9 @@ int k6_main(const k6_api_t *api) {
   uint16_t r33, r34, r7e, r13;
   int32_t fl;
   int b = FIRST_B, quit = 0, d;
+#ifdef SWEEP_HZ
+  uint32_t turn = 0;
+#endif
   char line[64], *p;
   if (api->abi != 1 || api->level < 2) return -3;
   if (api->key_down()) return -2;
@@ -172,7 +178,21 @@ int k6_main(const k6_api_t *api) {
   api->say(line);
   bp.x1 = bp.x2 = bp.y1 = bp.y2 = bp.e = 0;
   while (!quit && api->ms() < RUN_S * 1000u) {
+#ifdef SWEEP_HZ
+    {
+      /* a sweep: each turn tunes SWEEP_HZ plus the next offset (a "t" line says which) */
+      static const int16_t OFF_KHZ[] = {SWEEP_KHZ};
+      uint32_t hz_t = SWEEP_HZ + (uint32_t)(int32_t)OFF_KHZ[turn] * 1000u;
+      if (++turn == sizeof OFF_KHZ / sizeof OFF_KHZ[0]) quit = 1;
+      api->tune(hz_t, WIDE);
+      p = put(line, "t ");
+      p = dec(p, hz_t);
+      *p = 0;
+      api->say(line);
+    }
+#else
     api->tune(b ? CH_B_HZ : CH_A_HZ, WIDE);
+#endif
     api->fd_write(0x34, (uint16_t)((r34 & 0xFFF0) | 13));
     if (GAIN13) {
       api->fd_write(0x7E, (uint16_t)((r7e & 0x0FFF) | 0x8000 | (3u << 12)));
@@ -196,7 +216,7 @@ int k6_main(const k6_api_t *api) {
       if (c.got <= 0) break;
       turn_n++, nb++;
       d = db_over(c.emax, fl);
-      if (k < MAXCAP && d >= DUMP_DB) {
+      if (k < MAXCAP && d >= DUMP_DB && turn_c < TURN_CAPS) {
         cap_lines(api, &c, b, k, hz, d);
         dump(api, buf, c.head, k);
         k++, turn_c++;
