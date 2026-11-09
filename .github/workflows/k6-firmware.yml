@@ -83,6 +83,7 @@ jobs:
             tests/test_k6_explore.py \
             tests/test_k6_ft8.py \
             tests/test_k6_ft8tx.py \
+            tests/test_k6_gw.py \
             tests/test_k6_harness.py \
             tests/test_k6_hf.py \
             tests/test_k6_hiss.py \

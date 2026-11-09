@@ -30,7 +30,7 @@ PERIOD = 400            # samples between modelled DFS edges
 
 def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spare=1024,
         mmio=(), level=2, tx=None, rx_hz=440_850_000, keys=(), cal=None, tune=None, count=200_000_000, code=None, gpiob=None,
-        flash=None, lcd=None, pb_idr=None, led=None, keypad=None):
+        flash=None, lcd=None, pb_idr=None, led=None, keypad=None, fsk=None, paint=False):
     """regs: the chip's registers at the start. GP0 drives PB1 only while REG_33 bit 8 is clear
     (else PB1's pull-up reads 1), following REG_34[3:0]: 13 (DFS) toggles every PERIOD reads of
     PB1 once i2s_en's bit is set, 15 (XTAL/2) on every read, others hold 0. gp0_gate: the image
@@ -61,6 +61,11 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     'N' band, '0'-'9', '*', '#'): the module's GPIOB row writes (BSRR/BRR) are tracked, the columns
     PC13/PC14/PF6/PB14 read low where a held key's row is driven low (side keys: always), and
     GPIOB bit 2 (the speaker amp) lands in st["odr"]; its changes are logged to keypad_log.
+    fsk: a model of the FD6818's FSK modem (tests/test_k6_gw.py): fsk.read(reg, us) gives a register
+    read (None: the usual), fsk.write(reg, value, us) sees every write, fsk.key(name, us) every
+    tx_on and tx_off (it returns the us they take, or None). With it a module may read the FIFO (REG_5F).
+    paint: fill the stack (past the scratch) with 0xCD first, and with lcd, put the most stack the
+    module used in lcd["st"]["stack"].
     Returns (ret, said lines, registers at the end, writes)."""
     unicorn = pytest.importorskip("unicorn")
     from unicorn import arm_const as A
@@ -157,12 +162,18 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
             st["us"] += 4000                       # 25 calls (6400 samples) per 100 ms window
             ret = (st["us"] // 100) & 0xFFFF
         elif name == "fd_read":
-            assert r0 != 0x5F, "read the FSK FIFO"
             st["us"] += 20
-            ret = regs.get(r0, 0)
-            ret = ret(st["us"]) if callable(ret) else ret
+            v = fsk.read(r0, st["us"]) if fsk is not None else None
+            if v is None:
+                assert r0 != 0x5F, "read the FSK FIFO"
+                ret = regs.get(r0, 0)
+                ret = ret(st["us"]) if callable(ret) else ret
+            else:
+                ret = v
         elif name == "fd_write":
             st["writes"].append((r0, r1))
+            if fsk is not None:
+                fsk.write(r0, r1, st["us"])
             if tx is not None:
                 tx.setdefault("w", []).append((r0, r1, st["us"]))
             if r0 == 0x33 and gp0_gate and not (regs.get(0x33, 0) ^ r1) & ~0x0101 & 0xFFFF:
@@ -219,6 +230,8 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
         elif name in ("tx_on", "tx_off", "tx_pa"):
             assert tx is not None, f"{name} called"
             tx.setdefault("log", []).append((name, r0, st["us"]))
+            if fsk is not None and name != "tx_pa":
+                st["us"] += fsk.key(name, st["us"]) or 0   # (tx_on takes 1.4-1.9 s on the radio)
             if name == "tx_on":
                 ret = tx.get("on_ret", 0)
             elif name == "tx_pa" and st["us"] >= tx.get("dead_us", float("inf")):
@@ -254,8 +267,14 @@ def run(regs, moder=0, i2s_en=(0x31, 1), gp0_gate=True, src=SRC, model=None, spa
     mu.reg_write(A.UC_ARM_REG_R0, api)
     mu.reg_write(A.UC_ARM_REG_SP, sp0)
     mu.reg_write(A.UC_ARM_REG_LR, stop | 1)
+    low = ram + 0x6000 + (spare + 3 & ~3)
+    if paint:
+        mu.mem_write(low, b"\xCD" * (sp0 - low))
     mu.emu_start(base + entry | 1, stop, count=count)
     r = mu.reg_read(A.UC_ARM_REG_R0)
+    if paint:
+        mem = bytes(mu.mem_read(low, sp0 - low))
+        st["stack"] = sp0 - low - next((i for i, b in enumerate(mem) if b != 0xCD), sp0 - low)
     if lcd is not None:
         lcd["st"] = st                             # the run's state: us, odr, spk, ...
     return (r - (1 << 32) if r & 0x80000000 else r), st["said"], regs, st["writes"]
