@@ -12,7 +12,7 @@
  * v3.5's hold-and-fade.
  * SPDX-License-Identifier: MIT */
 
-#define LR_DELAY 2                    /* superframes; LR_INTERP needs the one after the next */
+#define LR_DELAY (LR_INTERP ? 2 : 1)  /* superframes: B(s) needs A(s + 1); LR_INTERP the one after */
 typedef char lr_delay_matches_header[LR_DELAY == SOTTO_LR_DEC_DELAY ? 1 : -1];
 
 struct sotto_lr_dec {

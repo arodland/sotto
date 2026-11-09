@@ -139,3 +139,38 @@ def test_c_encoder_matches_python():
         bc = np.unpackbits(np.fromfile(f"{d}/b", np.uint8)).reshape(-1, 48)
     assert len(bc) == len(bp)
     assert np.mean(np.all(bc == bp, 1)) >= 0.97
+
+
+def c_encode(x, exe):
+    with tempfile.TemporaryDirectory() as d:
+        r, o = os.path.join(d, "x.raw"), os.path.join(d, "x.bit")
+        np.asarray(x, "<i2").tofile(r)
+        subprocess.run([exe, "-1200", r, o], check=True)
+        b = np.frombuffer(open(o, "rb").read(), np.uint8)
+    return np.unpackbits(b).reshape(-1, 48)
+
+
+@need_c
+def test_fixed_encoder_bit_exact_across_paths_and_follows_float():
+    """c/fixed/sotto_fx_lr_enc.c: x86, M0 and M4 (SMLAD) paths give the same bits, and the
+    bits follow the float encoder's about as closely as the v3.7 fixed core follows the float
+    core (the joint A search and B's residual are the float's, in integers)"""
+    widths = [2, 7, 5, 9, 9, 2, 3, 3, 8]
+    edges = np.cumsum([0] + widths)
+    agree, n_all = np.zeros(len(widths)), 0
+    for name in ("hts1a", "hts2a", "ve9qrp_10s"):
+        x = np.fromfile(os.path.join(ROOT, "codec", "codec2", "raw", name + ".raw"), "<i2")
+        bx = [c_encode(x, os.path.join(C, "fixed", f"sotto_enc_fx{s}")) for s in ("", "_m0", "_arm")]
+        assert np.array_equal(bx[0], bx[1]) and np.array_equal(bx[0], bx[2])
+        bf = c_encode(x, os.path.join(C, "sotto_enc"))
+        assert len(bf) == len(bx[0]) == -(-len(x) // 320)
+        for i in range(len(widths)):
+            agree[i] += np.all(bf[:, edges[i]:edges[i + 1]] == bx[0][:, edges[i]:edges[i + 1]], 1).sum()
+        n_all += len(bf)
+    agree /= n_all
+    assert agree[[0, 2, 5, 7]].min() > 0.98            # voicing and energy: the core's
+    assert agree[[1, 6]].min() > 0.97                   # pitch: the core's, B's steps exact
+    assert agree[[3, 4, 8]].min() > 0.94                # shapes: A's joint search, B's residual
+    for n in (1, 2, 3, 5):                              # short inputs: the flush codes every superframe
+        x = np.fromfile(os.path.join(ROOT, "codec", "codec2", "raw", "hts1a.raw"), "<i2")[:n * 320]
+        assert len(c_encode(x, os.path.join(C, "fixed", "sotto_enc_fx"))) == n

@@ -31,7 +31,10 @@
 #define NB 257                 /* stored bins 0..256 of the 512-point spectrum */
 #define K FX_K
 #define NC FX_NC
-#define LAG 8
+#ifndef FX_LAG
+#define FX_LAG 8               /* pitch tracker decision lag, 10 ms frames */
+#endif
+#define LAG FX_LAG
 #ifdef SOTTO_PITCH_THIRD
 #define N_MU 4                /* v3.7: also a third of frame t's own estimate */
 #else
@@ -89,6 +92,8 @@ struct sotto_enc {
   uint32_t wo_e;
   int32_t en_e;
   int16_t idx_e[5], cls_e;
+  int32_t c_e[NC];            /* even half's shape target, dB Q16 (fx_enc_frame_t.p.c) */
+  int16_t shape_only;         /* skip the shape search (sotto_enc_set_shape_only) */
   fx_enc_frame_t cur;         /* the frame being built: per-half features for v3.8 */
   int32_t peak;               /* causal loudness reference, dB Q16 (hiss_band._onsets) */
   fx_enc_frame_t q[8];
@@ -723,15 +728,14 @@ static int32_t h_limit(fx_acc worst, fx_acc rr) {
   return t > INT32_MAX ? INT32_MAX : t < INT32_MIN ? INT32_MIN : (int32_t)t;
 }
 
-/* M-best multistage search; c in dB Q16; hv: scratch for 512 values */
-static void msvq_search(const int32_t *c, int16_t *idx, int32_t *hv) {
+/* M-best multistage search over the first nst stages; c in dB Q16; hv: scratch for 512 values */
+typedef char fx_mbest_matches[FX_MBEST == MBEST ? 1 : -1];
+int fx_msvq_paths(const int32_t *c, int nst, int16_t path[MBEST][5], int32_t recon[MBEST][NC], int32_t *hv) {
   int s, p, k, v, i;
   int np = 1;
-  int16_t path[MBEST][5];
-  int32_t recon[MBEST][NC];                                  /* dB Q16 */
-  memset(recon, 0, sizeof recon);
-  memset(path, 0, sizeof path);
-  for (s = 0; s < fx_cb_stages; s++) {
+  memset(recon, 0, sizeof(int32_t) * MBEST * NC);
+  memset(path, 0, sizeof(int16_t) * MBEST * 5);
+  for (s = 0; s < nst; s++) {
     int n = 1 << fx_cb_bits[s], nk = 0;
     const int16_t *cb = fx_cb[s];
     const int32_t *e2 = fx_cb_e2[s];
@@ -813,18 +817,30 @@ static void msvq_search(const int32_t *c, int16_t *idx, int32_t *hv) {
         nrec[i][k] = recon[kp[i]][k] + (int32_t)(((fx_acc)v * sh) * 32768 + (fx_acc)v * sl);
       }
     }
-    memcpy(path, npath, sizeof path);
-    memcpy(recon, nrec, sizeof recon);
+    memcpy(path, npath, sizeof npath);
+    memcpy(recon, nrec, sizeof nrec);
     np = nk;
   }
-  int best = 0;
+  return np;
+}
+
+fx_acc fx_shape_dist(const int32_t *a, const int32_t *b) {
+  fx_acc d = 0;
+  int k;
+  for (k = 0; k < NC; k++) {
+    int32_t q = fx_rshr(a[k] - b[k], 8);
+    d += (fx_acc)q * q;
+  }
+  return d;
+}
+
+static void msvq_search(const int32_t *c, int16_t *idx, int32_t *hv) {
+  int16_t path[MBEST][5];
+  int32_t recon[MBEST][NC];                                  /* dB Q16 */
+  int p, best = 0, np = fx_msvq_paths(c, fx_cb_stages, path, recon, hv);
   fx_acc bd = 0;
   for (p = 0; p < np; p++) {
-    fx_acc d = 0;
-    for (k = 0; k < NC; k++) {
-      int32_t q = fx_rshr(c[k] - recon[p][k], 8);
-      d += (fx_acc)q * q;
-    }
+    fx_acc d = fx_shape_dist(c, recon[p]);
     if (p == 0 || d < bd) bd = d, best = p;
   }
   memcpy(idx, path[best], fx_cb_stages * sizeof(int16_t));
@@ -846,7 +862,7 @@ static int32_t power_db(int ex, fx_acc p, int xb) {
   return fx_log2_to_db_pow(fx_log2_acc((fx_uacc)p) + 2 * ((int32_t)ex * 65536 + fx_sw_l2) + (int32_t)xb * 65536);
 }
 
-static void emit(struct sotto_enc *e, int cls);
+static void emit(struct sotto_enc *e, int cls, uint32_t wo_o);
 
 static void decide(struct sotto_enc *e, int32_t t, int k) {
   int h, i, l, j;
@@ -948,7 +964,9 @@ static void decide(struct sotto_enc *e, int32_t t, int k) {
       c[j - 1] = fx_rshr(v / 20, 7);                         /* Q8 x Q15 x 20 -> dB Q16 */
     }
     FX_PROF(6, 1);
-    msvq_search(c, e->idx_e, e->re);                     /* e->re is free here */
+    memcpy(e->c_e, c, sizeof e->c_e);
+    if (e->shape_only) memset(e->idx_e, 0, sizeof e->idx_e);
+    else msvq_search(c, e->idx_e, e->re);                /* e->re is free here */
     FX_PROF(6, 0);
     e->wo_e = wo;
     /* v3.6: energy of the envelope at the harmonics */
@@ -957,21 +975,32 @@ static void decide(struct sotto_enc *e, int32_t t, int k) {
     e->en_e = fx_db_power_sum(lv, L);
     e->cls_e = (int16_t)cls;
   } else {
-    emit(e, cls);
+    emit(e, cls, wo);
   }
 }
 
-static void emit(struct sotto_enc *e, int cls) {
+static int wo_index(uint32_t wo) {
+  int wi = 0;
+  while (wi < 127 && fx_wo_thr[wi] <= wo) wi++;
+  return wi;
+}
+
+/* pack the frame: the even half's parameters and both halves' voicing classes. The low-rate
+   modes' pitch (p.wi) at an onset edge (unvoiced, then voiced half) is the voiced half's
+   (wo_o), as the float core's (sotto.c emit); the 2400 bits keep the even half's. */
+static void emit(struct sotto_enc *e, int cls, uint32_t wo_o) {
   int s;
   int a = e->cls_e, b = cls, code = a == b ? a : (a == 0 || b == 0) ? 3 : 1;
   fx_enc_frame_t *q = &e->q[(e->q_head + e->q_n++) % 8];
   unsigned char *out = q->bits;
   *q = e->cur;
-  int pos = 0, wi = 0, ei;
-  while (wi < 127 && fx_wo_thr[wi] <= e->wo_e) wi++;
+  int pos = 0, wi = wo_index(e->wo_e), ei;
   int32_t num = (e->en_e - DB(10)) * 31;                     /* rint((en - 10) / 70 x 31) */
   ei = num <= 0 ? 0 : (int)((num + 8960) / 17920);
   if (ei > 31) ei = 31;
+  q->p.code = (int16_t)code, q->p.ei = (int16_t)ei;
+  q->p.wi = (int16_t)(a == 0 && b != 0 ? wo_index(wo_o) : wi);
+  memcpy(q->p.c, e->c_e, sizeof q->p.c);
   memset(out, 0, SOTTO_BYTES_PER_FRAME);
   put_bits(out, &pos, code, 2);
   put_bits(out, &pos, wi, 7);
@@ -1003,6 +1032,7 @@ struct sotto_enc *sotto_enc_create(void) {
 }
 
 void sotto_enc_destroy(struct sotto_enc *e) { free(e); }
+void sotto_enc_set_shape_only(struct sotto_enc *e, int shape_only) { e->shape_only = (int16_t)(shape_only != 0); }
 unsigned sotto_fx_enc_bytes(void) { return (unsigned)sizeof(struct sotto_enc); }
 
 static void analyse_10ms(struct sotto_enc *e, const short *x) {
@@ -1082,7 +1112,7 @@ void sotto_enc_flush_core(struct sotto_enc *e) {
     frame_costs(e, n - 1, 0);
     viterbi_step(e, n - 1);
     while (e->n_dec < n) decide_from(e, e->n_dec++, n - 1);
-    if (n % 2) emit(e, e->cls_e);                            /* odd frame count: the last half repeated */
+    if (n % 2) emit(e, e->cls_e, e->wo_e);                   /* odd frame count: the last half repeated */
     e->flushed = 1;
   }
 }

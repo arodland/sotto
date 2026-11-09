@@ -144,7 +144,9 @@ SOTTO_API extern int sotto_hiss_mute;
  * silence), so that a lost superframe between two good ones can be rebuilt from both; call sotto_lr_dec_flush until it returns 0 for the last ones. */
 #define SOTTO_LR_SAMPLES_PER_FRAME 320
 #define SOTTO_LR_BITS_PER_FRAME 48
-#define SOTTO_LR_DEC_DELAY 2     /* superframes */
+#ifndef SOTTO_LR_DEC_DELAY
+#define SOTTO_LR_DEC_DELAY 2     /* superframes; 1 in a build with LR_INTERP=0 (no rebuilding a lost one) */
+#endif
 
 struct sotto_lr_enc;
 struct sotto_lr_dec;

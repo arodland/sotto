@@ -97,8 +97,7 @@ mean PESQ-NB / ESTOI and the whole-utterance tracker. Every row except the 49-bi
   decoders agree to ≥ 99.7 dB SNR, and ≥ 98.2 dB with 10% superframe loss
   (`docs/results/lr_c_port_check.json`, `docs/results/lr_c_port_check_loss10.json`,
   `tools/check_lr.py`).
-- **Fixed point** (`c/fixed/sotto_fx_lr.c`): decoder only. `sotto_lr_enc_create` returns NULL
-  in the fixed build, because the K6 only receives. It sits on the v3.7 fixed-point decoder
+- **Fixed-point decoder** (`c/fixed/sotto_fx_lr.c`). It sits on the v3.7 fixed-point decoder
   core, which now takes per-frame fields (`sotto_dec_frame`). v3.7 and v3.8 outputs are
   unchanged on x86, M4 and M0. The fixed decoder follows the float one as v3.7's does: about
   60 dB SNR, the same PESQ.
@@ -117,11 +116,78 @@ mean PESQ-NB / ESTOI and the whole-utterance tracker. Every row except the 49-bi
     `-DLR_INTERP=0`), before the pager's own changes. 988 bytes are free.
   - RAM: `struct sotto_lr_dec` is 300 bytes on the M0, besides the v3.7 core's state.
 
+## Fixed-point encoder
+
+`c/fixed/sotto_fx_lr_enc.c` (`c/fixed/sotto_enc_fx -1200`), for radios that transmit, such as
+the Radtel RT-950 Pro (AT32F403A, Cortex-M4F).
+
+- **What it is.** The float encoder's layer in integers, on the v3.7 fixed-point core:
+  - The core runs in shape-only mode (`sotto_enc_set_shape_only`). It skips its own 4-stage
+    shape search and hands over each frame's fields with the shape target
+    (`fx_enc_frame_t.p`, as the float core's `sotto_enc_frame_t.p`).
+  - A's paths come from the core's M-best search, factored out as `fx_msvq_paths`.
+  - B's stage-3 residual is searched exactly in codebook steps, d = rr + 192 (48 |y|² - r.y),
+    the core's identity with the 1.5 folded in.
+  - All joint costs are in the core's final-pick units (dB Q8 squared), with weights 10 and 1
+    for the float's 1.0 and 0.1.
+  - Reconstructions are the fixed decoder's, so the encoder models B as the decoder builds it.
+  - Each A frame's search runs once and is cached; the float runs it up to three times per
+    superframe.
+- **Core change.** The fixed core now applies the float core's onset-edge rule to `p.wi` (an
+  unvoiced-then-voiced frame takes the voiced half's pitch). v3.7's 2400 bit/s bits are
+  unchanged.
+- **Agreement with the float encoder**, 3 voices (`docs/samples/*__original.flac`), 1,098
+  superframes (`tools/check_fx_lr_enc.py --score`):
+
+  | | Float encoder | Fixed encoder |
+  |---|---:|---:|
+  | Superframes bit-identical | | 97.3% |
+  | Fields identical: voicing, energy / pitch A, B / shape A1, A2, B | | ≥ 99.9% / 99.6%, 100% / 99.0%, 98.5%, 97.9% |
+  | PESQ / ESTOI (same fixed decoder, one shared delay) | 2.833 / 0.776 | 2.814 / 0.775 |
+
+  For scale, the v3.7 fixed encoder scores 3.155 / 0.823 against the float's 3.129 / 0.823 on the
+  same clips, and the two v3.7 cores agree on 98.8-99.7% of each field.
+- **Bit-exact** across the x86, M0 and M4 (SMLAD) code paths (`tests/test_lr.py`).
+- **Measured on an AT32F403A at 240 MHz** (Cortex-M4F, zero-wait flash, clang 18 -O2, 4 s of
+  speech, DWT cycles), bitstream identical to x86:
+
+  | Per 40 ms superframe | Mean | Worst |
+  |---|---:|---:|
+  | Encode (fixed sotto 1200) | 86.5 MHz | 122 MHz |
+  | Decode (fixed sotto 1200) | 13.5 MHz | 23.4 MHz |
+  | For comparison: v3.7 encode, per 20 ms | 88.4 MHz | 97.3 MHz |
+
+  The worst case comes from the pitch tracker deciding frames in bursts; the encoder's 80 ms of
+  look-ahead absorbs it. Heap for encoder and decoder together: 41.5 KB (v3.7's: 35.3 KB).
+
+## Lower delay
+
+Build options for a push-to-talk link where delay matters more than the last 0.05 PESQ. The
+defaults are unchanged and stay bit-exact with the float encoder.
+
+| Option | Saves | Cost (PESQ-NB / ESTOI, 3 sample clips, fixed enc + dec) |
+|---|---:|---|
+| Default | - | 2.823 / 0.775 |
+| `-DFX_LAG=4`: pitch tracker decides 40 ms behind instead of 80 | 40 ms | 2.853 / 0.777 (no loss) |
+| `-DFX_LAG=4 -DLR_AHEAD=0`: A(n+1)'s shape search ignores B(n+1) and A(n+2) | 80 ms | 2.804 / 0.772 |
+| `-DFX_LAG=2 -DLR_AHEAD=0` | 100 ms | 2.760 / 0.773 |
+| `-DFX_LAG=1 -DLR_AHEAD=0` | 110 ms | 2.715 / 0.772 |
+| Decoder `-DLR_INTERP=0 -DSOTTO_LR_DEC_DELAY=1` | 40 ms | none when superframes are lost in pairs or not at all; no rebuilding of a single lost one |
+
+- `FX_LAG` is the fixed encoder's pitch tracker lag in 10 ms frames.
+- `LR_AHEAD=0` codes superframe n once A(n+1) is analysed, not A(n+2).
+- `sotto_lr_enc_pop` (fixed build too, as the float build) returns the next ready superframe after
+  `sotto_lr_encode_part`. Feeding 80 samples at a time this way removes up to 30 ms of waiting
+  on the 320-sample call.
+- On an RT-950 Pro (AT32F403A, 240 MHz) with `FX_LAG=4 LR_AHEAD=0`, every superframe comes out
+  70 ms after the end of its audio, and encoding takes 1.0 M cycles per 10 ms on average.
+
 ## Use
 
 ```sh
 make -C c VARIANT=v3.7 all fixed
 c/sotto_enc -1200 in.raw out.sot          # 8 kHz 16-bit mono in, 6 bytes per 40 ms out
+c/fixed/sotto_enc_fx -1200 in.raw out.sot # the same, fixed point
 c/fixed/sotto_dec_fx -1200 out.sot y.raw [good.u8]
 python tools/check_lr.py CLIP.flac ... [--loss 0.1] [--dec c/fixed/sotto_dec_fx]
 ```

@@ -4,8 +4,8 @@
  * each 48-bit superframe's fields become two 20 ms frames' fields (A as sent; B halfway
  * between this A and the next plus 1.5 x a stage-3 codeword, with its pitch and energy
  * stepped from the interpolated indices), which the v3.7 fixed-point decoder core
- * (sotto_fx_dec.c) synthesises. No tables beyond v3.7's. There is no fixed-point sotto 1200
- * encoder: sotto_lr_enc_create returns NULL in this build (the K6 only receives).
+ * (sotto_fx_dec.c) synthesises. No tables beyond v3.7's. The fixed-point sotto 1200 encoder
+ * is sotto_fx_lr_enc.c.
  * SPDX-License-Identifier: MIT */
 #define SOTTO_BUILD
 #include <stdlib.h>
