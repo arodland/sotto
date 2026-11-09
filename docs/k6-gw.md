@@ -144,7 +144,8 @@ nothing is sent or received while a shot flies.
 The code leaves less scratch than the state needs, so `k6_main` puts the state on the stack.
 The emulator measures 1.8 KB of stack at the deepest point. The voice SPI images give a module
 about 3.1 KB (the vlrh image's 3,112 B, docs/k6-modules.md), which leaves about 1.3 KB for
-Aura's own calls. The tests fail above 2,000 B.
+Aura's own calls. The tests fail above 2,000 B. On the bench, cf9516e vlrh gave the module 3,044 B and
+684 B were never touched: Aura's calls under the module took about 580 B.
 
 The game needs a voice SPI image (its 11,776-byte block). The EXPLORE and lean images' 5,376 B
 are too small.
@@ -169,17 +170,37 @@ are too small.
 
 ## On the bench
 
-Not on air yet. Use a RAM module first (no flash): the image must be a voice SPI image (vlrh or
-similar) at level 6 or above.
+Use RAM modules (no flash) on a voice SPI image (vlrh or similar) at level 6 or above. Upload
+with `tools/k6_upload.py mod-gw_auto.bin --api-level 6 --telemetry 0 --run-s 150`. Telemetry
+has to be 0: its 696 B at the top of the block don't fit beside the code.
 
 1. **Hot seat, no TX**: `mod-gw_auto.bin` plays itself and returns. Check the screen, the
    `gw shot` and `gw end` lines, and `stack_free=` in `K6 MOD ret` (it should be over 512 B).
 2. **Hot seat by hand**: `mod-gw.bin`, key 1, play a round.
 3. **A few overs on the air**: `mod-gw_call.bin` on 440.850 calls with up to 4 HELLO overs,
-   about 12-14 s apart, and quits when nothing answers (EXIT stops it sooner).
-   `python3 tools/k6_gw.py decode RUN.raw` reads the overs back from the IC-7100's recording
-   (`k6_upload.py --keep RUN.raw`). Record them on the IC-7100 (receive only): two FSK packets and
-   then AG7EW in MCW each time. This checks that chip FSK goes out with `tx_on`'s TX state (the
-   core's ARQ sends it from Aura's own TX setup).
+   about 12-14 s apart, and quits when nothing answers (EXIT stops it sooner). A busy channel
+   doesn't count as a try. Record the overs on the IC-7100 (receive only) with
+   `k6_upload.py --keep RUN.raw`; each over is two FSK packets, then AG7EW in MCW.
+   `python3 tools/k6_gw.py decode RUN.raw` reads the packets back.
 4. **Two radios**: a second K6, or a PC peer on the IC-7100 (`modem/k6gw.py`'s `Peer` with the
    FSK modem of modem/fsk.py; not written yet), once the IC-7100 has an antenna back.
+
+**Bench run 1** (2026-11-09 ~06:50Z, image cf9516e vlrh, CI modules from e82a129, IC-7100 at RF
+POWER 0 receiving only):
+
+- **gw_auto**: 91 chunks on the first send. `code=10971 B stack=3044 B scratch=780 B`, which
+  means CI's clang builds about 330 B smaller than clang 18 here. It played a 3-round game, 26
+  shots about 3 s apart, P1 winning 2-0 (`gw end 0`). `ret=2 in 71214 ms stack_free=684 B`.
+  There was no fault and no TXDOG line, and the K6 never keyed.
+- **gw_call**: the first two HELLOs said `r=-2`. The module started while the upload's second
+  copy was still on the air, so its clear-channel wait held off, as it should, but each wait
+  counted as a try. Only 2 of the 4 tries reached the air, keyed 3.81 s and 4.01 s, 13 s apart,
+  on 440.850 (`tx on hz=440850000 max=8000 ms`). `ret=0 stack_free=684 B`, then the core's
+  report as usual.
+- **Chip FSK from a module's own `tx_on` works**: `k6_gw.py decode` read the HELLO (gid bfdd,
+  seed and rounds intact, call AG7EW) from both overs. Over 3 gave 1 of its 2 copies and over 4
+  gave both.
+- **Fixed since**: a busy channel no longer counts as a try, and the lead before the first
+  packet is now 500 ms instead of 300 ms (300 ms may have clipped over 3's first copy).
+- **Still to see**: a bot that varies its angle. The bots aim at 45° and 135° and learn only
+  the power.

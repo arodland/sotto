@@ -64,7 +64,7 @@
 #define RF_CLEAR_MS 500
 #define RF_CLEAR_WAIT_MS 15000
 #define RF_OVER_MS 8000         /* tx_on's limit: lead, 2 packets, the ID (about 3.7 s) */
-#define RF_LEAD_MS 300
+#define RF_LEAD_MS 500          /* (300 lost an over's first copy on the bench) */
 #define RF_ACK_MS 7000
 #define RF_TRIES 4
 #define RF_WAIT_MS 300000       /* the caller's wait for an answer, and for the other's turn */
@@ -677,7 +677,7 @@ static void status(gc_t *c, const char *s) {
 /* send c->tx (built with rf_new) until it is acknowledged: 1, or 0 after RF_TRIES overs */
 static int rf_reliable(gc_t *c) {
   uint8_t keep[64];
-  int i, t;
+  int i, t, busy = 0, r;
   for (i = 0; i < 64; i++) keep[i] = c->tx[i];
   c->await_seq = keep[4];
   for (t = 0; t < RF_TRIES; t++) {
@@ -685,7 +685,12 @@ static int rf_reliable(gc_t *c) {
     for (i = 0; i < 64; i++) c->tx[i] = keep[i];
     c->acked = 0;
     status(c, t ? "TX again..." : "TX...");
-    if (rf_over(c) == -4) break;
+    r = rf_over(c);
+    if (r == -4) break;
+    if (r == -2 && busy++ < RF_TRIES) {   /* a busy channel isn't a try (it waited 15 s) */
+      t--;
+      continue;
+    }
     status(c, "waiting for ACK");
     t0 = c->api->ms();
     while (c->api->ms() - t0 < RF_ACK_MS) {

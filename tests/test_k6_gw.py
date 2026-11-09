@@ -437,12 +437,13 @@ def test_radio_needs_440_850():
 
 @need_clang
 def test_never_keys_up_on_a_busy_channel():
-    # the channel busy for the first 40 s: the caller's HELLO waits, then gives up (15 s a try)
+    # the channel busy for the first 40 s: the caller's HELLO waits (15 s a wait, which doesn't
+    # count as a try), then goes out once the channel clears
     air = Air(busy=[(0, 40_000_000)])
     ret, said, regs, tx, lcd = play("gw_call", air, count=150_000_000, GW_ROUNDS=1)
-    for t_on, _ in overs(tx):
-        assert t_on >= 40_000_000
-    assert any(ln.endswith("r=-2") for ln in said)
+    ov = overs(tx)
+    assert ov and all(t_on >= 40_000_000 for t_on, _ in ov)
+    assert said.count("gw tx H seq=1 r=-2") >= 2 and "gw tx H seq=1 r=0" in said
 
 
 @need_clang
