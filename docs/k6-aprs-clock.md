@@ -107,14 +107,45 @@ it keys, a weather station's `DDHHMMz` through a digipeater, and a `$GPRMC` 0.7 
 
 ## Making it the radio's clock
 
-A module's clock dies with the module: `ms()` counts from its own start, and the core's uptime
-is TIM14's 16-bit 100 µs counter, which wraps every 6.5 s. Proposed API level 8, a few dozen
-bytes of core: the main loop keeps a UTC ms-of-day and date running from TIM14's deltas (it polls
-far more often than 6.5 s; a module's run adds its `ms()` when it returns), corrected by the
-calibration record's ppb (`k6_cal.h`: Jeff's K6 is -53 ppm, 0.2 s an hour), with `clock_set(utc_ms,
-date, quality)` and `clock_get(&utc_ms, &date)`. Then the pager screen can show UTC, and the WSPR
-and FT8 modules can start on their slots from the clock instead of the bench's CW ID. Not built:
-it changes the core image, so it waits for Jeff's go.
+A module's clock dies with the module: `ms()` counts from its own start. Module API level 8
+(Jeff's OK 2026-11-09 04:49Z) gives the radio one UTC clock that lives in the core from one
+module run to the next, until a reboot, fed by whichever module hears the time first (AIS
+first, APRS if no AIS: Jeff 03:43Z):
+
+    int clock_set(uint32_t utc_ms, uint32_t date, uint32_t w_ms);   /* 1 taken, 0 kept, -1 refused */
+    int clock_get(uint32_t *utc_ms, uint32_t *date, uint32_t *w_ms); /* 0, or -1: no clock */
+
+- `utc_ms`: UTC milliseconds of day at the moment of the call (0 to 86,399,999).
+- `date`: `day | month << 8 | year << 16`, the year in full (2026), 0 for any part not known
+  (`KM_DATE(d, m, y)` in `k6_mod.h`). APRS gives a day from `DDHHMMz`, the whole date from
+  `$GPRMC`; AIS message 4 gives the whole date.
+- `w_ms`: a bound. UTC is within `w_ms` of `utc_ms`. aisclk's slot fixes are about 2 ms, a
+  coarse AIS fix 1,000; aprsclk passes the far end of its Marzullo interval from its estimate
+  (about 1.5 s with second stamps heard direct, about 30 s with minute stamps only).
+
+The core runs the fix on from uptime that never wraps (`hal::txdog::ticks`: TIM14's count and
+its wrap interrupt, in every image that has the `txdog` table) and widens the bound by 1 ms
+every 4 s (250 ppm). The MCU runs on its own RC oscillator, not the radio's TCXO: AIS run 3
+measured it 134 ppm fast, wandering ±100, so the calibration record's -53 ppm (the RF crystal)
+doesn't apply and the bound is set wide enough for both. A new fix replaces the clock only if
+its bound is no wider than the clock's bound at that moment, so a 2 ms AIS fix outranks APRS for
+the next 6 hours or so (until 2 ms + 250 ppm passes APRS's 1.5 s), and date parts a fix lacks come
+from the fix before. Past midnight the date steps on (month lengths, leap years by 4). After
+59.6 hours without a fix the clock is dropped, and `clock_get` says -1. The lean images
+(codebook install, table images) have no clock: both calls return -1.
+
+`aprsclk` calls `clock_set` with each `clk` line that has two votes or more (on level 8 images;
+on older images it runs as before). `clkget` (level 8) says the core's clock, `core clk
+04:52:10.123 w=14 d=09/11/2026` or `core clk none`, and shows it on screen: run it minutes after
+aisclk or aprsclk to see the clock was kept. `test_module_sets_the_radios_clock` and
+`test_clkget_says_the_core_clock` check both against the emulator's model of the core
+(`tests/k6_live_emu.py`).
+
+Cost: about 570 B of flash and 20 B of RAM in each image with the clock (local build of the
+pager-only and hiss images). CI had the hiss image (vlrh) at 1,068 B free before it.
+
+Next uses: the pager screen can show UTC, and the WSPR and FT8 modules can start on their slots
+from `clock_get` instead of the bench's CW ID.
 
 ## Bench
 

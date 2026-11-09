@@ -32,6 +32,8 @@
      f VE7ABC-9 n=58 h=1 ts=175201h                        (a good frame: source, bytes, hops, stamp)
      clk 17:52:04.250 w=1000 v=2 d=08                      (the clock: UTC, interval ms, votes, day)
      aprs end ok=12 bad=3 ts=5 v=2 utc=17:59:59.120 lost=0
+   Each clock line with two or more votes also goes to the radio's clock (level 8, clock_set):
+   UTC now, the date it has, and a bound of the interval's far end from the estimate.
    Screen (level 6) once a second when no frame is coming, LED blink a good frame (level 7). A key ends it (else RUN_MS). Writes REG_34[3:0]
    and REG_33 bit 8 (GP0), the MCU's TIM17, DMA channel 1 and their clock enables, all put back.
    Returns the votes behind the clock (0: none), or -2 (a key before any frame), -3 (old image),
@@ -330,6 +332,12 @@ static void add(const k6_api_t *api, st_t *s, const uint8_t *src, int kind, uint
   p = kv(p, " v=", (uint32_t)s->votes);
   if (s->day) p = dec(put(p, " d="), s->day, 2), p = s->mon ? dec(put(p, "/"), s->mon, 2) : p;
   say(api, s, p);
+  /* the radio's clock (API level 8): UTC now, within the interval's far end of the estimate */
+  if (s->votes >= 2 && api->level >= 8) {
+    uint32_t off = s->wid > 10000 || s->wid / 2 < 500 ? (uint32_t)s->wid / 2 : 500u;
+    api->clock_set(utc(s, s->now_ms), KM_DATE(s->day, s->mon, s->yr ? 2000 + s->yr : 0),
+                   (uint32_t)s->wid - off);
+  }
 }
 
 /* a good frame: its source, and a timestamp if it has one */

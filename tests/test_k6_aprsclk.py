@@ -307,6 +307,56 @@ def test_module_on_the_emulated_m0():
     assert e.writes.get(0x34, [None])[-1] == 0 and e.writes.get(0x33)  # GP0 put back
 
 
+@need_clang
+def test_module_sets_the_radios_clock():
+    """API level 8: each clock line with two votes or more goes to the core's clock_set, UTC now
+    within the bound; a better fix already there (AIS's 2 ms) is kept"""
+    pytest.importorskip("unicorn")
+    import k6_live_emu as le
+    from modem import k6mod
+    total = 6.5
+    code, entry = le.build("x", [("RUN_MS", f"{int(total * 1000)}u")], SRC)
+    full, _ = k6mod.build(SRC)
+    ib = scene(total=total)
+    e = le.Emu(code, entry, ib, 0, FDMA, 1.5, max_s=total + 1, level=8, scratch=11776 - 24 - len(full))
+    assert e.run()[0] == 3, e.said
+    assert len(e.clock_sets) == 2, e.clock_sets          # at the second stamp and the third
+    for ms, utc, date, w, r in e.clock_sets:
+        assert r == 1
+        true = round(((UTC0 + ms / 1000) % DAY) * 1000)
+        assert abs(utc - true) <= w, (utc, true, w)
+        assert w < 9000
+    assert e.clock_sets[-1][2] & 0xFF == 8, hex(e.clock_sets[-1][2])     # day 8 from the stamps
+    utc, date, w = e.clock_now()
+    assert abs(utc - round(((UTC0 + e.cyc / 96e6) % DAY) * 1000)) <= w
+    # a 2 ms fix from AIS already in the core: aprsclk's are wider, so the clock keeps it
+    e = le.Emu(code, entry, ib, 0, FDMA, 1.5, max_s=total + 1, level=8, scratch=11776 - 24 - len(full))
+    e.clock = (0, round((UTC0 % DAY) * 1000), 8 | 11 << 8 | 2026 << 16, 2)
+    assert e.run()[0] == 3
+    assert [r for *_, r in e.clock_sets] == [0, 0], e.clock_sets
+    # level 7 images: no call
+    e = le.Emu(code, entry, ib, 0, FDMA, 1.5, max_s=total + 1, level=7, scratch=11776 - 24 - len(full))
+    assert e.run()[0] == 3 and e.clock_sets == []
+
+
+@need_clang
+def test_clkget_says_the_core_clock():
+    """clkget (level 8): the core's clock as a line and on screen, or none"""
+    pytest.importorskip("unicorn")
+    import k6_live_emu as le
+    from modem import k6mod
+    code, entry = k6mod.build(os.path.join(K6, "mod", "clkget.c"))
+    e = le.Emu(code, entry, np.zeros(1000, np.uint8), 0, FDMA, 1.5, max_s=1, level=8)
+    assert e.run()[0] == 0xFFFFFFFF and e.said == ["core clk none"], e.said
+    e = le.Emu(code, entry, np.zeros(1000, np.uint8), 0, FDMA, 1.5, max_s=1, level=8)
+    e.clock = (0, 4 * 3600000 + 52 * 60000 + 10123, 9 | 11 << 8 | 2026 << 16, 14)
+    assert e.run()[0] == 14
+    assert e.said == ["core clk 04:52:10.123 w=14 d=09/11/2026"], e.said
+    assert e.lcd[2] == "clk 04:52:10.123 w=14 d=09/11/2026"[:len(e.lcd[2])], e.lcd
+    e = le.Emu(code, entry, np.zeros(1000, np.uint8), 0, FDMA, 1.5, max_s=1, level=7)
+    assert e.run()[0] == 0xFFFFFFFD and e.said == []
+
+
 def test_float_decoder_takes_preemphasised_audio():
     """a receiver's audio of a pre-emphasised mobile: decode_any tries de-emphasis too"""
     from scipy.signal import lfilter
