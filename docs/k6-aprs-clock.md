@@ -30,9 +30,16 @@ GP0 code 13 on PB1 -> DMA ch1 ring (1 KB, ~5.5 MS/s)                       (gp0r
 
 **Timestamps it reads.** `/` and `@` positions, `;` objects and `>` status reports with
 `DDHHMMz` (zulu, one-minute resolution) or `HHMMSSh` (zulu, one second); raw NMEA
-`$GPRMC`/`$GNRMC` with status `A` (`hhmmss[.ss]` and the date `ddmmyy`). It ignores `DDHHMM/`
+`$GPRMC`/`$GNRMC` with status `A` (`hhmmss[.ss]` and the date `ddmmyy`); positionless weather
+reports `_MMDDHHMM` (zulu by the spec, one minute, with the month). It ignores `DDHHMM/`
 (local time, zone unknown), Mic-E (no time), `}` third-party traffic (internet delays) and
 everything else.
+
+Positionless weather was added after the 2026-11-09 survey of the worldwide feed: 0.6% of the
+packets heard on the air are `_MMDDHHMM`, but only 18 of 102 were within 10 minutes of UTC; most
+sent local time or a stale stamp. Stations in one time zone sending local time would agree with
+each other, so weather stamps count in the vote only beside another kind: agreement among weather
+stamps alone is one vote, never a clock (`test_weather_stamps_alone_set_nothing`).
 
 **The vote.** A stamp says the true UTC at the frame's first bit (the frame's end, less its bits
 at 1200 baud) was between the stamp and the stamp plus its resolution plus a delay: 3 s heard
@@ -42,7 +49,8 @@ newest; a digipeated copy of the same stamp is not a second vote. Marzullo's alg
 finds the offset the most stations agree on, the narrowest region among ties, so a station with
 a wrong clock is outvoted. With two or more agreeing the clock is set: the estimate is the
 region's low edge plus half its width, at most 0.5 s, because a stamp can't be later than the
-send and GPS trackers key within a second of their fix. A seconds stamp in the vote gives the
+send and GPS trackers key within a second of their fix. With minute stamps only (a region wider
+than 10 s) it is the region's middle instead, within about 30 s. A seconds stamp in the vote gives the
 second ("(sec)" on the screen); `DDHHMMz` alone gives the minute. The date comes from the newest
 agreeing stamp that has one (`$GPRMC` gives day/month/year, `DDHHMMz` the day).
 
@@ -191,6 +199,18 @@ against the real audio start). Seven minutes later its end line was within 0.14 
 Listen 1 also decoded Jeff's car again. Listen 2 heard nothing in 15 min (`pre=0`). So the clock
 works end to end on 2 m. At Jeff's location it needs a stamped source of its own, such as a
 fixed station beaconing like the burst, since no local station sends one.
+
+**How common stamps are** (worldwide APRS-IS feed, 15 min, 2026-11-09 01:50-02:05Z, packets an
+igate heard on RF only): 17,755 RF packets (about 1,180 a minute); 8% carry a usable stamp
+(within 10 min of arrival), 95 a minute from 588 stations. About as many again carry a wrong
+one (repeater objects at `111111z`, trackers at `000000h`, digipeater clocks hours off, stale
+objects), which is why the vote needs two stations. Usable by kind (packets / stations):
+DDHHMMz positions from digis and WX3in1 boxes 515 / 295, HHMMSSh trackers 334 / 99, weather
+297 / 162, objects 232 / 53, status 39 / 29, raw $GPRMC 5 / 1. Seconds stamps arrive 2-3 s
+after their stamp, mostly internet delay; minute stamps about 50 s. Europe and North America
+are alike (about 40 usable a minute each); within 300 km of the bench only 1.2 a minute from
+12 stations, mostly minute stamps, two with seconds (41 and 98 km). Positionless weather
+(`_MMDDHHMM`, 0.6% of RF packets) carries a date and time the module does not read yet.
 
 This tests the IF tap, demodulator, HDLC, parser and clock on the real radio; if it passes and
 144.390 still decodes nothing, the next step is an IC-7100 recording of 144.390 (receive only)
