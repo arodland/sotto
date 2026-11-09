@@ -227,9 +227,23 @@ def main(argv=None):
     x, fs = sf.read(a.wav)
     if x.ndim > 1:
         x = x[:, 0]
-    for f, i in demod(x, fs):
-        print(f"{i / fs:9.3f} {describe(f)}")
+    for t, f in decode_any(x, fs):
+        print(f"{t:9.3f} {describe(f)}")
     return 0
+
+
+def decode_any(x, fs, deemph=(0.95, 0.9)):
+    """a radio's audio: flat, and through a 1-pole de-emphasis (pole per sample at fs), since
+    pre-emphasised AFSK off a receiver's discriminator decodes only after it (the bench's 144.390
+    recording, 2026-11-08). -> [(end s, frame)], each frame once"""
+    from scipy.signal import lfilter
+    got = []
+    for p in (None,) + tuple(deemph):
+        y = x if p is None else lfilter([1 - p], [1, -p], x)
+        for f, i in demod(y, fs):
+            if not any(f == g and abs(i / fs - t) < 0.2 for t, g in got):
+                got.append((i / fs, f))
+    return sorted(got, key=lambda tf: tf[0])
 
 
 if __name__ == "__main__":

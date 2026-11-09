@@ -269,3 +269,13 @@ def test_module_on_the_emulated_m0():
     assert e.lcd[1].startswith("UTC 17:52:0") and "stations 3 (sec)" in e.lcd[2], e.lcd
     assert any(on for _, on in e.led), "the LED blinks a good frame"
     assert e.writes.get(0x34, [None])[-1] == 0 and e.writes.get(0x33)  # GP0 put back
+
+
+def test_float_decoder_takes_preemphasised_audio():
+    """a receiver's audio of a pre-emphasised mobile: decode_any tries de-emphasis too"""
+    from scipy.signal import lfilter
+    x, sent = aprs.bench_wav(UTC0, gap=0.3)
+    y = lfilter([1, -0.95], [0.05], x)  # the sender's pre-emphasis, as the run 4 recording
+    y = y / np.max(np.abs(y))
+    got = [aprs.describe(f) for _, f in aprs.decode_any(y, aprs.FS)]
+    assert [g.split(">")[0] for g in got] == ["AG7EW-1", "AG7EW-2", "AG7EW-3"], got

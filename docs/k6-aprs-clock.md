@@ -157,6 +157,17 @@ preamble. The minute RSSI sat at -85 to -87 dBm, flat for 15 minutes, against -1
 on 144.390 (a carrier would also quiet the discriminator, which fits `pre=0`), or the chip's RSSI
 reads about 29 dB higher on 2 m. Since the loopback decodes, the open question is the 2 m channel.
 
+**Run 4** (2026-11-08 23:31-23:47Z, image f70e79e, 15 min on 144.390, with the IC-7100
+beside it receive only, Jeff's OK): the K6 decoded Jeff's car tracker at 23:39:13Z, `f AG7EW-7
+n=62` (Mic-E, so no stamp: `ok=1 ts=0 v=0 pre=1`). The IC-7100 saw the same packet at S9+45 dB
+and nothing else in 12 minutes. Its S-meter sat near S7 on 144.390 with the K6 on 2 m and only
+3 dB lower with the K6 back on 440.850, and its audio was flat open-squelch noise, so run 3's
+-86 dBm is the band's real noise floor at the bench, not a K6 birdie, and 144.390 is simply quiet
+there. The recording decoded only through a 1-pole de-emphasis (the mobile's pre-emphasis off
+the IC-7100's discriminator), so `modem.aprs decode` now tries flat, 0.95 and 0.9. The K6 decoded
+it without one. To test the clock off-bench, a tracker has to send a stamped format: a position
+with HHMMSSh or DDHHMMz, or raw $GPRMC.
+
 This tests the IF tap, demodulator, HDLC, parser and clock on the real radio; if it passes and
 144.390 still decodes nothing, the next step is an IC-7100 recording of 144.390 (receive only)
 run through `python -m modem.aprs decode REC.wav` to count local stamped packets.
