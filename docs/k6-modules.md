@@ -902,3 +902,5 @@ what would settle it.
       host decodes message 4 from 50 kHz off). RDS stays out: the tap is one real low-IF stream.
     - Run 6: tuned to 162.009 MHz, one capture holds both channels (host: 26 A + 15 B frames).
       aisclk set the level 8 core clock on air (clkget inside its bound 15 min later).
+    - aisships (Jeff chose to build it, 07:54Z): tuned between the channels, each burst decoded
+      at both places; 16 stations, distance and bearing from the first base station, NMEA out.

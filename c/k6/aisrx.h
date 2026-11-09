@@ -184,14 +184,17 @@ static uint16_t ar_at(const uint16_t *ph, uint32_t t) {
 
 static const uint16_t AR_BACKS[4] = {32, 64, 128, 256};
 
-static int ar_decode(const int8_t *x, uint32_t n, uint32_t pre, uint32_t c1, uint16_t *ph,
-                     ar_frame_t *f, int maxf) {
+/* if_q32: where the burst sits in the counts, 2^32 x Hz / 96 MHz (AR_IF_Q32 when tuned to the
+   channel; a station D Hz off the tuned frequency lands at |16927 + D| Hz, folded at the count
+   rate, mirrored when below zero, which NRZI doesn't mind: docs/k6-ais.md run 5) */
+static int ar_decode_if(const int8_t *x, uint32_t n, uint32_t pre, uint32_t c1, uint32_t if_q32,
+                        uint16_t *ph, ar_frame_t *f, int maxf) {
   uint32_t dph, bl, si, ns, non, msum, j, t, mean, corr;
   int32_t sum;
   int nf = 0;
   ar_hd_t h;
   if (n <= pre + 256 || !c1) return 0;
-  dph = ar_muldiv(c1, AR_IF_Q32, n - pre);
+  dph = ar_muldiv(c1, if_q32, n - pre);
   /* samples a bit, Q16: 96 MHz (n - pre) / c1 / 3 / 9600 */
   bl = ar_muldiv(10000u * (n - pre), 65536u, 3u * c1);
   for (si = 0; si < 4; si++) {
@@ -222,6 +225,8 @@ static int ar_decode(const int8_t *x, uint32_t n, uint32_t pre, uint32_t c1, uin
   }
   return nf;
 }
+
+#define ar_decode(x, n, pre, c1, ph, f, maxf) ar_decode_if(x, n, pre, c1, AR_IF_Q32, ph, f, maxf)
 
 /* bits a..a+n-1 of a message (MSB first), n <= 32 */
 __attribute__((unused)) static uint32_t ar_uint(const uint8_t *b, uint32_t a, uint32_t n) {

@@ -282,6 +282,33 @@ upload. Logs: `tests/data/k6/air/dual-20261109T0543Z.log.gz`, `aisclk3-20261109T
   keeps each channel's slot less its second x 37.5 and fills in the slot of a message 4 that
   leaves it out (+36 B of code, 2 B spare in the arena with telemetry).
 
+## aisships: the ships around the K6
+
+Jeff chose to build the fuller receiver straight away (2026-11-09 07:54Z; the scope:
+https://claude.ai/artifact/79NkXTdhNK7d9ttUvzK3Pi). `c/k6/mod/aisships.c`, receive only:
+
+- **Both channels, no switching.** It tunes 162.009 MHz once. Every burst over DEC_DB (8 dB on
+  the whole band) is decoded twice, by `ar_decode_if` with channel A at 17,073 Hz and B at 32,927
+  Hz. On run 6's captures, one burst a window as the module holds them, the M0 receiver decodes A
+  in 11-13 of 30 and B in 19-20 (`test_m0_receiver_both_channels_run6`). A's place in the counts
+  wanders by a few kHz from capture to capture; a second try at ~21 kHz would catch about 4 more.
+- **Messages kept:** 1, 2, 3 and 18 (positions), 4 and 11 (base stations), 24 part A (class B
+  names), for 16 stations, the oldest dropped when full. Messages 5, 19 and 21 run two slots,
+  longer than the 31 ms ring.
+- **Home** is the first base station heard, until there's a way to set it. Distance and bearing
+  are flat-earth from there, the bearing by aisrx.h's CORDIC.
+- **Says** an `a` line a frame (type, MMSI, channel, dB, km, degrees), then the frame as `!AIVDM`
+  (split at 38 payload characters, so a say line stays within 60). `tools/k6_aivdm.py` takes those
+  out of the serial log for OpenCPN over UDP.
+- **Screen** (level 6): `AIS n stations`, then the five nearest: name or MMSI, km, bearing.
+- **Size:** 5,438 B of code; with the ring, phases, frames and table, 11,746 B of the 11,776 B
+  arena with the upload's telemetry text kept.
+- **Time:** in the emulator a burst takes ~50 ms to decode at one place, ~100 ms at both, so a
+  second burst within ~0.1 s is missed (the base station's B, 53 ms after its A).
+
+Bench: `tools/k6_upload.py mod-aisships.bin --api-level 2 --run-s 920`, keeping the serial log,
+and `python3 tools/k6_aivdm.py LOG` for the sentences.
+
 ## One clock from AIS and APRS
 
 The two modules can't share one 11,776 B arena (5.8 KB and aprsclk's), so they run one after the
@@ -353,14 +380,13 @@ K6's 136-174 MHz filter. A longer listen at a busy hour, with the gain at maximu
    lines with the log's NTP stamps (the line comes ~0.1 s after the UTC it states).
 5. RDS: `tools/k6_upload.py mod-aiscap_fm.bin --api-level 2 --run-s 40`, then the captures'
    spectrum on the host.
+6. Both channels: `mod-aiscap_dual.bin --run-s 620`, then `python3 -m sim.k6if.ais cap LOG
+   --tune 162009000`. The ship list: `mod-aisships.bin --run-s 920`, then `tools/k6_aivdm.py LOG`.
 
 ## Next
 
-- Both AIS channels at once works on the host (run 6). For the radio: aisrx.h with the IF as a
-  parameter, both channels decoded from each capture, so the clock and the fuller receiver stop
-  switching channels every minute.
-- A fuller AIS receiver (Jeff, 03:35Z): ships' names, positions and courses on the screen. To be
-  scoped once the clock works.
+- aisships on the bench. Then: a second try for channel A's wandering place, a way to set home,
+  and two-slot messages (5's ship names) if a streaming decoder can make room.
 - ACARS (Jeff, 03:54Z): a coarse clock after APRS if the K6 hears it, and then a fuller ACARS
   receiver (flights, positions, messages) too (Jeff, 03:55Z).
 - The core keeping UTC between modules (API level 8) serves both clocks.
