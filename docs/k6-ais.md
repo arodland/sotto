@@ -241,4 +241,6 @@ would rank between AIS and APRS, with a vote across stations (many send a wrong 
 - The bench run of aisclk and aiscap_fm.
 - A fuller AIS receiver (Jeff, 03:35Z): ships' names, positions and courses on the screen. To be
   scoped once the clock works.
+- ACARS (Jeff, 03:54Z): a coarse clock after APRS if the K6 hears it, and then a fuller ACARS
+  receiver (flights, positions, messages) too (Jeff, 03:55Z).
 - The core keeping UTC between modules (API level 8) serves both clocks.
