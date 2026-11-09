@@ -889,3 +889,5 @@ what would settle it.
       steady to ±1 ms for 14 min.
     - Run 5: the RSSI path is ±5 kHz, but the GP0 tap passes stations 50-60 kHz below tune (the
       host decodes message 4 from 50 kHz off). RDS stays out: the tap is one real low-IF stream.
+    - Run 6: tuned to 162.009 MHz, one capture holds both channels (host: 26 A + 15 B frames).
+      aisclk set the level 8 core clock on air (clkget inside its bound 15 min later).

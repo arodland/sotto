@@ -10,7 +10,9 @@
        With a SOTDMA slot number (sync state 0 or 1, time-out 2, 4 or 6) whose second agrees,
        the burst's start flag was at slot x 60/2250 s + 32 bits into that minute: a fine fix
        (UTC to well under a millisecond, less the radio path's ~70 us at 20 km). Without one, a
-       coarse fix (the second, to within a second).
+       coarse fix (the second, to within a second). A base station sends message 4 in fixed
+       slots but names them only every other time (run 6), so each channel keeps the last named
+       slot less its second x 37.5, and a message 4 without one gets its slot from that.
      any slot number from a station on UTC (messages 1, 2, 4, 11, 18) once the clock is within
        a few seconds: the minute is the nearest one, the slot gives the rest: a fine fix.
      any other burst within SNAP_S of a fine fix: stations on UTC start on slot boundaries, so
@@ -107,6 +109,7 @@ typedef struct {
   uint8_t set; /* 0 not yet, 1 to the second, 2 fine */
   uint8_t day, mon, haveppm;
   uint16_t yr;
+  uint16_t cs[2]; /* each channel's message 4 slot less its second x 37.5, plus 1 (0: none) */
   char ln[64]; /* the line being said (one buffer: the stack is small) */
 } clk_t;
 
@@ -249,6 +252,13 @@ static void frames(const k6_api_t *api, clk_t *k, const ar_frame_t *f, int nf, c
     p = dec(p, t);
     *p = 0;
     api->say(k->ln);
+    if ((typ == 4 || typ == 11) && sec < 60) {
+      /* a base station sends message 4 in fixed slots, but names them only every other
+         time (run 6): keep its slot against its second, and fill in the slot when it's left out */
+      uint32_t s2 = (sec * 75u) >> 1;
+      if (slot != 0xFFFF) k->cs[b] = (uint16_t)(slot + 1u - s2);
+      else if (k->cs[b]) slot = (uint16_t)(s2 + k->cs[b] - 1u); /* past 2249: no agreement below */
+    }
     {
       /* the slot's time in its minute (100 us): slot x 800/3 + 32 bits; its second */
       uint32_t inmin = slot != 0xFFFF ? udiv(slot * 800u + 101u, 3) : 0;
@@ -351,8 +361,7 @@ int k6_main(const k6_api_t *api) {
   wr(TIM17 + 0x2C, 0xFFFF); /* ARR */
   wr(TIM17 + 0x00, 1);      /* CEN */
   ck.last = api->ticks() & 0xFFFF, ck.t = 0;
-  k.set = 0, k.nfine = 0, k.nfr = 0, k.day = 0, k.mon = 0, k.yr = 0, k.haveppm = 0, k.ppm = 0;
-  k.off = 0, k.tfix = 0;
+  for (p = (char *)&k; p < k.ln; p++) *(volatile char *)p = 0; /* all but the line */
   p = put(line, "ais clk start a=");
   p = dec(p, CH_A_HZ);
   p = put(p, " b=");

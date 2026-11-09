@@ -259,6 +259,29 @@ Both receive only, RF POWER 0 before and after.
   below zero comes through mirrored, which NRZI doesn't mind). So the tap is taken before the
   channel filter, and the counts carry 0-42 kHz of it at 256 reads a count.
 
+## Run 6, 2026-11-09 05:44-06:18Z (both channels at once; aisclk into the core clock)
+
+On cf9516e vlrh (main with #167: API level 8), receive only, RF POWER 0 before and after each
+upload. Logs: `tests/data/k6/air/dual-20261109T0543Z.log.gz`, `aisclk3-20261109T0543Z.log.gz`,
+`clkget-20261109T0543Z.log.gz`.
+
+- **Both channels from one tuning** (`aiscap_dual`, 162.009 MHz, 10 min): 32 bursts dumped, every
+  20.00 s on the base station's cadence. The host (`--tune 162009000`) decodes 26 frames on
+  channel A at 17.1 kHz in the counts and 15 on channel B at 32.9 kHz, often both in one capture,
+  B 53.3 ms after A. Two strong bursts off the cadence (r = 19-20) decoded on neither.
+- **aisclk into the core clock** (714a454, 15 min): 35 frames, 25 fine fixes, each handed to the
+  core with `clock_set`. clkget then read 06:11:55.074 w=150 (the serial stamp 06:11:55.043) and,
+  5.6 minutes later, 06:17:32.238 w=234 (a batched stamp, late by up to one read): both inside
+  their bounds, and the bound grew 84 ms in 337 s, the core's 250 ppm. The first on-air proof of
+  the level 8 clock.
+- **A gap stranded the clock.** About 6 minutes in, the floor rose (244-335 to 477-582, cause
+  unknown, nothing at hamlet transmitted) and frames fell from 5 a minute to 0-2. The next frame
+  came 100 s after the last fine fix, past SNAP_S, and none of the 10 frames after carried a slot
+  number, so none re-anchored the clock. The station names its message 4 slot only every other
+  time, but the slots never change (B: 34/784/1534 at :00/:20/:40, A: 32/782/1532). aisclk now
+  keeps each channel's slot less its second x 37.5 and fills in the slot of a message 4 that
+  leaves it out (+36 B of code, 2 B spare in the arena with telemetry).
+
 ## One clock from AIS and APRS
 
 The two modules can't share one 11,776 B arena (5.8 KB and aprsclk's), so they run one after the
@@ -277,9 +300,9 @@ other, and both feed the same clock:
 
 The core clock is in (PR #167). On a level 8 image, aisclk hands every clk line to it: the UTC
 of that moment, the date with the full year from message 4, and w = 2 ms once slot-locked, or
-1,000 ms from a message 4 second alone. It costs 44 B of code (6,022 B; 38 B spare in the arena
-with the upload's telemetry). A hamlet script still runs the AIS-then-APRS sequence over the
-cable until a firmware sequencer does.
+1,000 ms from a message 4 second alone. Run 6 showed it on air: the core still read UTC inside
+its bound 15 minutes later. A hamlet script still runs the AIS-then-APRS sequence over the cable
+until a firmware sequencer does.
 
 ## Where AIS works
 
@@ -333,11 +356,9 @@ K6's 136-174 MHz filter. A longer listen at a busy hour, with the gain at maximu
 
 ## Next
 
-- Both AIS channels at once (an idea from run 5): a station Δ kHz from the tuned frequency lands
-  at |16.9 + Δ| kHz in the counts, folded at the count rate. Tuned to 162.005 MHz, channel A
-  lands at ~13 kHz and channel B at ~37 kHz, near the 42 kHz edge; with 128 reads a count the
-  edge moves to 84. It needs the tap to pass B 20 kHz above the tuned frequency, the side run 5
-  couldn't measure. Worth a try for the fuller receiver.
+- Both AIS channels at once works on the host (run 6). For the radio: aisrx.h with the IF as a
+  parameter, both channels decoded from each capture, so the clock and the fuller receiver stop
+  switching channels every minute.
 - A fuller AIS receiver (Jeff, 03:35Z): ships' names, positions and courses on the screen. To be
   scoped once the clock works.
 - ACARS (Jeff, 03:54Z): a coarse clock after APRS if the K6 hears it, and then a fuller ACARS

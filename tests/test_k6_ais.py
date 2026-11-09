@@ -305,6 +305,39 @@ def test_clock_module_sets_utc():
 
 
 @need_clang
+def test_clock_module_fills_in_base_station_slot():
+    """run 6: a base station names its message 4 slot only every other time, and after a gap
+    longer than SNAP_S nothing re-anchored the clock. With snapping off, a message 4 that leaves
+    its slot out (2 s and 75 slots after one that named slot 1575) still gives a fine fix: the
+    station's slot less its second x 37.5 is kept per channel"""
+    pytest.importorskip("unicorn")
+    import k6_live_emu as le
+    t1 = 0.9
+    t2 = t1 + 75 * ais.SLOT_S
+    msgs = [ais.msg4(3160001, 2026, 11, 9, 3, 15, 42, comm=ais.sotdma(0, 2, 1575)),
+            ais.msg4(3160001, 2026, 11, 9, 3, 15, 44, comm=ais.sotdma(0, 3, 17))]
+    s = np.zeros(int(3.2 * st.FZ), complex)
+    for m, t in zip(msgs, (t1, t2)):
+        b = ais.gmsk(ais.burst_bits(m), f_off=-1300.0, pre_s=0.0, post_s=0.0)
+        i = int(t * st.FZ)
+        s[i:i + len(b)] += b
+    cs, fg = poll_stream(s, 66.0)
+    code, entry = build([("RUN_S", "3u"), ("SWITCH_S", "5u"), ("SNAP_S", "0u"), ("AISCAP_EMU", "1")], CLK)
+    e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.6, scratch=clk_scratch(),
+               level=8)
+    e.poll, e.poll_fc, e.poll_k = cs, fg, 8
+    r = e.run()
+    assert r is not None
+    txt = "\n".join(e.said)
+    print(txt)
+    a = [ln.split() for ln in e.said if ln.startswith("a ")]
+    assert len(a) == 2 and "s=" not in " ".join(a[1]), txt
+    clk = [ln for ln in e.said if ln.startswith("clk ")]
+    assert r[0] == 2 and len(clk) == 2 and all(" w=2 " in ln for ln in clk), txt
+    assert abs(int(clk[1].split("j=")[1].split()[0])) <= 2, clk[1]
+
+
+@need_clang
 def test_clock_module_gives_up_without_ais():
     """nothing on either channel for GIVEUP_S: it says so and returns 0, for aprsclk to take over"""
     pytest.importorskip("unicorn")
