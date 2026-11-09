@@ -9,8 +9,9 @@ and the Salish Sea is 15 to 25 km from the bench.
 receive only, `aisclk` decoded 52 frames from a US shore base station (MMSI 003669705) on the
 radio. It had the second 10 s in and slot-locked fixes from the third minute. Every burst it timed
 sits on the AIS slot grid to about 0.1 ms. The K6's own clock is the weak part: it runs about 134
-ppm fast and wanders ±100 ppm over minutes, so the module now snaps to the slot grid on every
-burst, not only those that carry a slot number. Runs 1 and 2 recorded bursts for the host. Run 2
+ppm fast and wanders ±100 ppm over minutes, so the module snaps to the slot grid on every burst,
+not only those that carry a slot number. With that, run 4 held each burst's millisecond to ±1 ms
+for 14 minutes (54 fine fixes from 55 frames). Runs 1 and 2 recorded bursts for the host. Run 2
 decoded the same station's date and second, matching NTP.
 
 Jeff (2026-11-09 03:34-03:43Z): BLOWFANG needs both this and the APRS clock. AIS goes first,
@@ -219,6 +220,26 @@ end, the scratch was 5,296 B, and the 3,600-count ring didn't fit. 579f7b3 uses 
   trip through the serial logger (the stamps come in batches), so NTP over the cable can't check
   the clock below ~0.1 s. The slot grid can.
 
+## Run 4, 2026-11-09 04:37-04:52Z (aisclk 05d7555 with snapping, then the IF sweep)
+
+The logs are `tests/data/k6/air/aisclk2-20261109T0435Z.log.gz` and `sweep-20261109T0435Z.log.gz`.
+RF POWER read 0 before each upload.
+
+- **aisclk: ret = 54 fine fixes from 55 frames in 15 minutes.** The first message 4 set the second;
+  the next, with a slot number, made it fine, and from then on every burst snapped the clock to
+  the slot grid. Each kind of line kept its millisecond to ±1 ms for 14 minutes: channel B's
+  message 4 at xx:x0.992-.993, channel A's message 4 at x0.939-.940 and message 20 at x1.686-.687.
+  The jump against the prediction (`j=`) was ±1-3 ticks (100 us) between bursts 0.75 s apart and
+  up to ±4.7 ms after a 40 s gap on the other channel. The tracked rate (`p=`) went 15-179 ppm.
+- **The sweep** (`aiscap_sweep`, 05d7555): 40 s on each of 162.025 MHz ±0, 5, 10, 15, 20, 30, 40
+  and 60 kHz, the trigger on the whole band of the counts. Its strongest bursts each turn fall on
+  the base station's 20 s cycle, so they are the station seen off tune. On the plus side (clean:
+  nothing above 162.025 here) they read 10 dB over the floor at 0 and +5 kHz, 11-12 at +10 to +30,
+  10 at +40 and 7 at +60. The minus side heard channel A's bursts instead (161.975 is 50 kHz
+  below), so it says nothing about B. The turn's 2 captures caught the first bursts over 2 dB,
+  mostly the 4 s local junk, but the few with signal put it at |16.9 kHz - offset| (3.6 kHz at
+  +20, 13.5 at +30, 23.4 at +40), as a real signal tuned off would land.
+
 ## One clock from AIS and APRS
 
 The two modules can't share one 11,776 B arena (5.8 KB and aprsclk's), so they run one after the
@@ -256,9 +277,14 @@ Run 3 took 12 IF captures on 104.3 MHz (`aiscap_fm`, the pager's AGC on; the 12 
 to the first station, so 99.3 got none). FM-demodulated and averaged on the host, they show no 19
 kHz pilot line (3 dB over its neighbours, where controls at 15 and 21 kHz show 0.5-2.4), and
 nothing at 38 kHz or at 57 kHz's alias. Their IF spectrum is flat from 0 to 41 kHz, with twice
-AIS's spread of counts, which looks like the strong station overloading the 1-bit tap. So far,
-then, no. The decisive test, still to run: tune at steps of 10-80 kHz off a steady carrier (the
-K6's own spur at 144.000 MHz) and see how far from the IF the chip still passes it.
+AIS's spread of counts, which looks like the strong station overloading the 1-bit tap.
+
+Run 4's sweep (above) tuned off the AIS base station instead of a carrier, and the station still
+came through 10-12 dB over the floor 10 to 40 kHz off, and 7 dB at 60 kHz. So the 1-bit tap looks
+much wider than a voice channel filter, perhaps taken before it. That doesn't open RDS by itself:
+256 reads a count give ~82,000 counts a second, so the counts carry only 0-41 kHz and fold
+everything else into it, and a broadcast station swings ±75 kHz. A rerun dumps the strong bursts
+and goes out to 200 kHz on the clean side, to see where the tap stops.
 
 ## ACARS (asked 2026-11-09)
 
@@ -282,7 +308,7 @@ K6's 136-174 MHz filter. A longer listen at a busy hour, with the gain at maximu
 
 ## Next
 
-- The bench run of aisclk and aiscap_fm.
+- The IF sweep's rerun (strong bursts dumped, out to 200 kHz).
 - A fuller AIS receiver (Jeff, 03:35Z): ships' names, positions and courses on the screen. To be
   scoped once the clock works.
 - ACARS (Jeff, 03:54Z): a coarse clock after APRS if the K6 hears it, and then a fuller ACARS

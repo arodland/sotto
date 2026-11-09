@@ -874,3 +874,5 @@ what would settle it.
       min. Bursts sit on the slot grid to 0.1 ms; the K6's own clock runs 134 ppm fast and wanders
       ±100 ppm, so aisclk now snaps to the slot grid on every burst (~2 ms between fixes). RDS
       (no pilot in 104.3's IF) and ACARS (nothing in 2 min) came up empty so far.
+    - Run 4 (04:37Z): with snapping, 54 fine fixes from 55 frames, each burst's millisecond
+      steady to ±1 ms for 14 min. An IF sweep still saw the station 10-12 dB up 10-40 kHz off tune.
