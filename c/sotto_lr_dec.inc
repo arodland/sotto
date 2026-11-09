@@ -180,10 +180,15 @@ void sotto_lr_dec_destroy(struct sotto_lr_dec *d) {
   free(d);
 }
 
+/* good: 0 lost (hold-and-fade), 1 received, 2 only its voicing / pitch / energy are trusted
+   (a link with unequal error protection): the shape fields are held from the last good one */
 static void put_in(struct sotto_lr_dec *d, const unsigned char *in, int good) {
   lr_fields_t *f = &d->in[d->n_in & 3];
-  if (good) unpack(in, f), d->last = *f;
-  else *f = d->last;
+  if (good) {
+    unpack(in, f);
+    if (good == 2) { memcpy(f->sa, d->last.sa, sizeof f->sa); f->sb = d->last.sb; }
+    d->last = *f;
+  } else *f = d->last;
   d->good[d->n_in++ & 3] = (unsigned char)(good != 0);
 }
 
