@@ -30,9 +30,16 @@ GP0 code 13 on PB1 -> DMA ch1 ring (1 KB, ~5.5 MS/s)                       (gp0r
 
 **Timestamps it reads.** `/` and `@` positions, `;` objects and `>` status reports with
 `DDHHMMz` (zulu, one-minute resolution) or `HHMMSSh` (zulu, one second); raw NMEA
-`$GPRMC`/`$GNRMC` with status `A` (`hhmmss[.ss]` and the date `ddmmyy`). It ignores `DDHHMM/`
+`$GPRMC`/`$GNRMC` with status `A` (`hhmmss[.ss]` and the date `ddmmyy`); positionless weather
+reports `_MMDDHHMM` (zulu by the spec, one minute, with the month). It ignores `DDHHMM/`
 (local time, zone unknown), Mic-E (no time), `}` third-party traffic (internet delays) and
 everything else.
+
+Positionless weather was added after the 2026-11-09 survey of the worldwide feed: 0.6% of the
+packets heard on the air are `_MMDDHHMM`, but only 18 of 102 were within 10 minutes of UTC; most
+sent local time or a stale stamp. Stations in one time zone sending local time would agree with
+each other, so weather stamps count in the vote only beside another kind: agreement among weather
+stamps alone is one vote, never a clock (`test_weather_stamps_alone_set_nothing`).
 
 **The vote.** A stamp says the true UTC at the frame's first bit (the frame's end, less its bits
 at 1200 baud) was between the stamp and the stamp plus its resolution plus a delay: 3 s heard
