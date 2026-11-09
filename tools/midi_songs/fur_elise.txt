@@ -1,0 +1,17 @@
+# Beethoven, Bagatelle in A minor WoO 59, "Fur Elise" (1810): public domain. The A section
+# twice, our own transcription. Left hand notes ring through the bar (the pedal).
+title: Fur Elise
+tempo: 72
+rh: r:1/2 E5:1/4 D#5
+rh: E5 D#5 E5 B4 D5 C5 | A4:1/2 r:1/4 C4 E4 A4 | B4:1/2 r:1/4 E4 G#4 B4 | C5:1/2 r:1/4 E4 E5 D#5
+rh: E5 D#5 E5 B4 D5 C5 | A4:1/2 r:1/4 C4 E4 A4 | B4:1/2 r:1/4 E4 C5 B4 | A4:1/2 r:1/2 E5:1/4 D#5
+rh: E5 D#5 E5 B4 D5 C5 | A4:1/2 r:1/4 C4 E4 A4 | B4:1/2 r:1/4 E4 G#4 B4 | C5:1/2 r:1/4 E4 E5 D#5
+rh: E5 D#5 E5 B4 D5 C5 | A4:1/2 r:1/4 C4 E4 A4 | B4:1/2 r:1/4 E4 C5 B4 | A4:3/2
+lh: r:1 | r:3/2
+lh: A2:1/4~5/4 E3:1/4~1 A3:1/4~3/4 r:3/4 | E2:1/4~5/4 E3:1/4~1 G#3:1/4~3/4 r:3/4 | A2:1/4~5/4 E3:1/4~1 A3:1/4~3/4 r:3/4
+lh: r:3/2
+lh: A2:1/4~5/4 E3:1/4~1 A3:1/4~3/4 r:3/4 | E2:1/4~5/4 E3:1/4~1 G#3:1/4~3/4 r:3/4 | A2:1/4~5/4 E3:1/4~1 A3:1/4~3/4 r:3/4
+lh: r:3/2
+lh: A2:1/4~5/4 E3:1/4~1 A3:1/4~3/4 r:3/4 | E2:1/4~5/4 E3:1/4~1 G#3:1/4~3/4 r:3/4 | A2:1/4~5/4 E3:1/4~1 A3:1/4~3/4 r:3/4
+lh: r:3/2
+lh: A2:1/4~5/4 E3:1/4~1 A3:1/4~3/4 r:3/4 | E2:1/4~5/4 E3:1/4~1 G#3:1/4~3/4 r:3/4 | A2:1/4~3/2 E3:1/4~5/4 A3:1~1

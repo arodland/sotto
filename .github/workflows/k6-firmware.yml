@@ -23,6 +23,7 @@ on:
       - "tests/test_k6_*.py"
       - "tests/test_psk31.py"
       - "tools/k6_*"
+      - "tools/midi_songs/**"
       - ".github/workflows/k6-firmware.yml"
   pull_request:
     paths:
@@ -43,6 +44,7 @@ on:
       - "tests/test_k6_*.py"
       - "tests/test_psk31.py"
       - "tools/k6_*"
+      - "tools/midi_songs/**"
       - ".github/workflows/k6-firmware.yml"
 
 jobs:
@@ -89,6 +91,7 @@ jobs:
             tests/test_k6_ifcap.py \
             tests/test_k6_ifpager.py \
             tests/test_k6_ifrx.py \
+            tests/test_k6_midi.py \
             tests/test_k6_mod.py \
             tests/test_k6_morse.py \
             tests/test_k6_pager.py \

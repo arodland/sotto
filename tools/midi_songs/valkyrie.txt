@@ -1,0 +1,9 @@
+# Wagner, Die Walkure, "Ride of the Valkyries" (1856): public domain. Its horn call, a Nokia
+# ring tone of old. Our own transcription.
+title: Valkyrie
+tempo: 160
+mel: B4:3/4 F#4:1/4 B4:1/2 D5:3/2 B4:3/2 | D5:3/4 B4:1/4 D5:1/2 F#5:3/2 D5:3/2
+mel: F#5:3/4 D5:1/4 F#5:1/2 A5:3/2 A4:3/2 | D5:3/4 A4:1/4 D5:1/2 F#5:3
+mel: B4:3/4 F#4:1/4 B4:1/2 D5:3/2 B4:3/2 | D5:3/4 B4:1/4 D5:1/2 F#5:3/2 D5:3/2
+mel: F#5:3/4 D5:1/4 F#5:1/2 A5:3/2 F#5:3/2 | B5:9/2
+bass: !72 B2:9/2 | B2 | D3 | D3 | B2 | B2 | D3 | B2

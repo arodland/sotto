@@ -301,6 +301,7 @@ iflive_h1600
 iflive_k6t
 iflive_tsweep
 loram          # level 1, does anything write 0x20000000-0x20000FFF (hal::txdog)
+midi           # level 2 (screen at 6, LED at 7), songs patched by tools/k6_midi.py, docs/k6-midi.md
 morse          # level 6, docs/k6-morse.md
 ramprobe
 remapsoak      # level 1, 10 s on the SRAM vector table (hal::txdog)

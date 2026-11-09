@@ -1,0 +1,8 @@
+# Francisco Tarrega, Gran Vals (1902), bars 13-16: public domain. The phrase Nokia phones made
+# famous as their ring tone. Our own transcription; played twice.
+title: Nokia Tune (Tarrega)
+tempo: 180
+mel: E6:1/2 D6 F#5:1 G#5 | C#6:1/2 B5 D5:1 E5 | B5:1/2 A5 C#5:1 E5 | A5:3 | r:3
+mel: E6:1/2 D6 F#5:1 G#5 | C#6:1/2 B5 D5:1 E5 | B5:1/2 A5 C#5:1 E5 | A5:3
+bass: !72 A3:3 | E3 | A3 | A3+C#4+E4:3 | r:3
+bass: A3:3 | E3 | A3 | A3+C#4+E4:3
