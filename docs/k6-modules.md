@@ -885,3 +885,9 @@ what would settle it.
       min. Bursts sit on the slot grid to 0.1 ms; the K6's own clock runs 134 ppm fast and wanders
       ±100 ppm, so aisclk now snaps to the slot grid on every burst (~2 ms between fixes). RDS
       (no pilot in 104.3's IF) and ACARS (nothing in 2 min) came up empty so far.
+    - Run 4 (04:37Z): with snapping, 54 fine fixes from 55 frames, each burst's millisecond
+      steady to ±1 ms for 14 min.
+    - Run 5: the RSSI path is ±5 kHz, but the GP0 tap passes stations 50-60 kHz below tune (the
+      host decodes message 4 from 50 kHz off). RDS stays out: the tap is one real low-IF stream.
+    - Run 6: tuned to 162.009 MHz, one capture holds both channels (host: 26 A + 15 B frames).
+      aisclk set the level 8 core clock on air (clkget inside its bound 15 min later).
