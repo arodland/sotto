@@ -1,0 +1,18 @@
+# Greensleeves, English traditional (16th century): public domain. Our own arrangement.
+title: Greensleeves
+tempo: 132
+mel: r:2 A4:1
+mel: C5:2 D5:1 | E5:1.5 F#5:0.5 E5:1 | D5:2 B4:1 | G4:1.5 A4:0.5 B4:1 | C5:2 A4:1 | A4:1.5 G#4:0.5 A4:1 | B4:2 G#4:1 | E4:2 A4:1
+mel: C5:2 D5:1 | E5:1.5 F#5:0.5 E5:1 | D5:2 B4:1 | G4:1.5 A4:0.5 B4:1 | C5:1.5 B4:0.5 A4:1 | G#4:1.5 F#4:0.5 G#4:1 | A4:6
+mel: G5:3 | G5:1.5 F#5:0.5 E5:1 | D5:2 B4:1 | G4:1.5 A4:0.5 B4:1 | C5:2 A4:1 | A4:1.5 G#4:0.5 A4:1 | B4:2 G#4:1 | E4:3
+mel: G5:3 | G5:1.5 F#5:0.5 E5:1 | D5:2 B4:1 | G4:1.5 A4:0.5 B4:1 | C5:1.5 B4:0.5 A4:1 | G#4:1.5 F#4:0.5 G#4:1 | A4:6
+bass: !72 r:3
+bass: A2:3 | C3 | G2 | E2 | A2 | A2 | E2 | E2
+bass: A2 | C3 | G2 | E2 | A2 | E2 | A2 | A2
+bass: C3 | C3 | G2 | E2 | A2 | A2 | E2 | E2
+bass: C3 | C3 | G2 | E2 | A2 | E2 | A2 | A2
+chord: !64 r:3
+chord: r:1 C4+E4:2 | r:1 E4+G4:2 | r:1 B3+D4:2 | r:1 G3+B3:2 | r:1 C4+E4:2 | r:1 C4+E4:2 | r:1 B3+D4:2 | r:1 G#3+B3:2
+chord: r:1 C4+E4:2 | r:1 E4+G4:2 | r:1 B3+D4:2 | r:1 G3+B3:2 | r:1 C4+E4:2 | r:1 G#3+B3:2 | r:1 C4+E4:2 | r:3
+chord: r:1 E4+G4:2 | r:1 E4+G4:2 | r:1 B3+D4:2 | r:1 G3+B3:2 | r:1 C4+E4:2 | r:1 C4+E4:2 | r:1 B3+D4:2 | r:1 G#3+B3:2
+chord: r:1 E4+G4:2 | r:1 E4+G4:2 | r:1 B3+D4:2 | r:1 G3+B3:2 | r:1 C4+E4:2 | r:1 G#3+B3:2 | r:1 C4+E4:2 | r:3

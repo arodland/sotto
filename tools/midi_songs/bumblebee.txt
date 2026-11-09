@@ -1,0 +1,9 @@
+# Rimsky-Korsakov, The Tale of Tsar Saltan, "Flight of the Bumblebee" (1900): public domain.
+# Its opening run, a Nokia ring tone of old. Our own transcription.
+title: Bumblebee
+tempo: 120
+mel: E6:1/4 D#6 D6 C#6 D6 C#6 C6 B5 | C6 B5 Bb5 A5 G#5 G5 F#5 F5
+mel: E5 D#5 D5 C#5 C5 F5 E5 D#5 | E5 D#5 D5 C#5 C5 C#5 D5 D#5
+mel: E5 D#5 D5 C#5 D5 C#5 C5 B4 | C5 B4 Bb4 A4 G#4 G4 F#4 F4
+mel: E4 F4 F#4 G4 G#4 A4 Bb4 B4 | C5 C#5 D5 D#5 E5:1/2 r:3/2
+bass: !64 A3:2 | A3 | A3 | A3 | A3 | A3 | A3:1 A3:1/2

@@ -427,6 +427,15 @@ repeaters the explorer saved (read-only, from the table in SPI flash) and names 
 bar. `surfauto.c` is the unattended bench build; it says its last bargraph over the telemetry.
 See [k6-surf.md](k6-surf.md).
 
+## MIDI player (midi)
+
+`c/k6/mod/midi.c` (2026-11-09, level 2, screen at 6, LED at 7): plays songs through the speaker,
+receive side only. Four wavetable voices at 16 kHz on spksweep's PWM path; the songs are a table
+at the end of the code (section `.k6tail`, last in `module.ld`), which `tools/k6_midi.py patch`
+swaps for other MIDI files or text scores without a compiler. CI's build carries the
+public-domain Nokia ring tones (Tarrega's Gran Vals phrase, Fur Elise, Mozart 40, Bumblebee,
+Valkyrie) and Ode to Joy. See [k6-midi.md](k6-midi.md).
+
 ## Insights (a living list)
 
 Ideas from the K6 work that might change the plan. None has been tested unless it says so.
