@@ -5,10 +5,11 @@ APRS timestamps. Jeff asked which other signals in the K6's range (18 to 630 MHz
 chose AIS from the list. Ships and shore stations on 161.975 and 162.025 MHz send time all day,
 and the Salish Sea is 15 to 25 km from the bench.
 
-**Status: model and capture module built, emulator-tested, not yet on air.** The host receiver
-(`sim/k6if/ais.py`) decodes AIS from modelled K6 IF counts at about 55 dB-Hz and up. The capture
-module (`c/k6/mod/aiscap.c`) records each burst whole on the emulated M0. The open question is
-the bench: are ships and base stations loud enough at the K6?
+**Status: the K6 hears AIS but hasn't decoded it yet.** Bench run 1 (2026-11-09 02:48Z, below)
+heard 739 bursts in 10 minutes on both channels. The best came in about 5 dB under what the
+receiver needs, and the limit was the K6's own 1-bit IF tap as the DMA samples it, not the band's
+noise. aiscap now polls the tap at 22.9 MS/s instead, which moves the threshold about 6 dB on the
+model. Run 2 tries that.
 
 ## What AIS carries
 
@@ -58,7 +59,8 @@ figure is 60 dB-Hz. The K6's GP0 path loses more. On DMR, a carrier the frozen-g
 needs bursts at about -72 dBm on that RSSI. That's an estimate from one other signal; aiscap
 measures it.
 
-Things tried that didn't help on the model: a 4-6 kHz FIR after the CIC (the chip's filter and
+Things tried that didn't help on the model: one-bit differential detection in place of the
+discriminator (the same within a burst or two in 16), a 4-6 kHz FIR after the CIC (the chip's filter and
 GMSK's own spectrum leave nothing to gain), decimating by 2 (too much of the sigma-delta's noise)
 or by 4. Two that might: flipping the one or two least certain bits when the CRC fails (about 1
 dB in other AIS receivers), and a coherent GMSK receiver on the complex baseband.
@@ -68,31 +70,59 @@ and the CIC's delay. That's a constant, to be calibrated once.
 
 ## aiscap: recording what the K6 hears
 
-`c/k6/mod/aiscap.c` (level 2, receive only) needs a voice image's 11,776-byte arena: its 1 KB DMA
-ring and 3,456-count ring (40 ms) live in the scratch, so the stack stays under 600 B. It
-freezes the gain at REG_13 = 0x03FF (what DMR needed), alternates channel B and A each minute,
-and reads the RSSI every 64 counts while the count ring runs. When the RSSI rises 8 dB over the
-channel's floor, it records 28 ms more and stops, so each capture holds 12 ms from before the
-RSSI saw the carrier and the whole burst after. The dumps are in gp0cap's format, so
-`sim/k6if/dmr.py`'s parser reads them. A burst past the 60th is only counted (`b` lines).
+`c/k6/mod/aiscap.c` (level 2, receive only, about 2.7 KB of code plus a 3,600-count ring in the
+scratch, so it needs a voice image's 11,776-byte arena; under 600 B of stack) freezes the gain at
+REG_13 = 0x03FF (the maximum), alternates channel B and A each minute, and records a burst whole:
+12 ms from before it was noticed, and the 27 ms burst after. The dumps are in gp0cap's format
+plus an `e` line, and `python3 -m sim.k6if.ais cap LOG` decodes them.
 
-On the emulated M0, two bursts 0.9 s apart are both recorded whole and decoded by the host. A dump
-takes about 0.5 s on the cable, so bursts in that time are missed.
+**Version 2 (after run 1) polls the IF.** The MCU reads PB1 256 times a count in straight-line
+Thumb, as `gp0fm` does (22.9 M samples/s, a count every ~11.5 us). Sampling the 6.5 MHz 1-bit
+stream 4x faster than the DMA's 5.5 MS/s folds far less of its noise into the IF band: run 6 of
+docs/k6-fd6818-audio.md measured 60 Hz rms of FM noise on a carrier against 166. On the model
+with run 1's levels (receiver noise under the 1-bit path's, floor 0.01), message 4 decodes 12
+to 14 times in 16 at 60 dB-Hz polled, and never at 5.5 MS/s.
 
-## Bench (receive only)
+The CPU is busy polling, so it can't read the RSSI while listening: an FD6818 read stalls the
+polling ~50 us, a hole in the burst. Instead each count goes through a band-pass around the IF
+into a leaky energy, and a burst is the energy 4.8 dB over the floor. Each turn starts with 0.37
+s on the channel to measure the count rate and the floor (the quietest of 32 blocks). Only bursts
+6 dB over the floor are dumped, so the 60 captures aren't spent on the weakest. The counts
+before and after the trigger come at rates 0.3-0.4% apart (two paths through the loop), so
+TIM17 counts the cycles of each and the host puts them on one grid (`ais.uniform`). The
+emulator can't poll 23 M reads a second, so the test build (`AISCAP_EMU`) reads one count a
+time, with the polling's time charged per read.
 
-1. A voice image (vlrh) on the K6, the big antenna on it, cable in, at VOICE MSG.
-2. `tools/k6_upload.py mod-aiscap.bin --api-level 2 --run-s 620`, keeping the serial log.
-3. `python3 -m sim.k6if.ais cap LOG` decodes every capture. The `m` lines give each channel's
-   floor and how many bursts went over it.
+## Run 1, 2026-11-09 02:48-02:58Z (DMA version, af064d6 vlrh, big antenna, receive only)
 
-What would change the plan:
+The explorer thread handed over the bench. The upload went through on the first send, and RF
+POWER read 0 before and after. The log is `tests/data/k6/air/aiscap-20261109T0247Z.log.gz`.
 
-- No `c` lines at all: nothing reaches floor + 8 dB. Try a better spot for the antenna, or
-  `SQ_DB` lower.
-- Captures but no frames: look at their RSSI. Below about -75 dBm the model says too weak.
-  Above that, the receiver needs work on real data.
-- Frames: the clock module comes next (below).
+| minute | ch | floor dBm | bursts over floor + 8 dB |
+|---|---|---|---|
+| 1 | B | -105 | 54 |
+| 2 | A | -103 | 50 |
+| 3 | B | -106 | 127 |
+| 4 | A | -106 | 110 |
+| 5 | B | -104 | 62 |
+| 6 | A | -103 | 54 |
+| 7 | B | -106 | 123 |
+| 8 | A | -103 | 53 |
+| 9 | B | -104 | 48 |
+| 10 | A | -103 | 58 |
+
+- **AIS is there.** The captures show bursts 24-28 ms long, centred 1.3 kHz under the nominal
+  IF (the K6's crystal at 162 MHz), with 90% of their power in ~8 kHz: GMSK 9600. The strongest
+  peaked at -78 to -80 dBm, about one every 17 s on B.
+- **None decoded.** The best bursts stand 6-8 dB over the noise in a 20 kHz band, about 50
+  dB-Hz. The receiver needs 55 or more.
+- **The noise is the tap's, not the band's.** The counts' spectrum is flat from 0 to 43 kHz
+  with no carrier, with no hump at the IF: the receiver's own noise, at maximum gain, sits under
+  the 1-bit path's. So a quieter spot wouldn't help, but more signal (antenna height) or less
+  tap noise (polling) would.
+- **Two bugs.** The `ks` rate overflowed 32 bits over a minute-long listen (it read ~3930;
+  the real rate was ~5490), and the first 60 bursts, mostly weak, filled the captures in the
+  first 66 s. Both are fixed in version 2.
 
 ## Next
 

@@ -332,16 +332,57 @@ def cmd_pd(a):
         print(f"  {cn0:5.1f} dB-Hz: {ok}/{a.n}")
 
 
+FCPU = 96e6
+
+
+def parse_caps(lines):
+    """aiscap's serial lines -> dmr.parse_caps's captures, each with its e line's pre, c0, c1
+    (CPU cycles of the 1024 counts before the trigger and the counts after it) when there is one"""
+    import re
+    from .dmr import parse_caps as pc
+    lines = list(lines)
+    caps = pc(lines)
+    ex = {}
+    for ln in lines:
+        m = re.search(r"(?:^|say )e (\d+) pre=(\d+) c0=(\d+) c1=(\d+)", ln)
+        if m:
+            ex[int(m.group(1))] = tuple(map(int, m.groups()[1:]))
+    for c in caps:
+        if c["k"] in ex:
+            c["pre"], c["c0"], c["c1"] = ex[c["k"]]
+    return caps
+
+
+def uniform(c):
+    """a capture's counts on one time grid -> (counts, fc). The polled aiscap's counts come at
+    one rate before the trigger and a slightly different one after (the loop's two paths): put
+    the ones before onto the after's grid. The DMA's captures (no c1) are uniform already at ks."""
+    x = np.asarray(c["x"], float)
+    if not c.get("c1"):
+        return x, c["ks"] * 1000.0 / fe.L
+    pre = c["pre"]
+    t1 = c["c1"] / (len(x) - pre) / FCPU
+    t0 = c["c0"] / 1024 / FCPU if c.get("c0") else t1
+    i = np.arange(len(x))
+    t = np.where(i < pre, (i - pre) * t0, (i - pre) * t1)
+    g = np.arange(t[0], t[-1], t1)
+    return np.interp(g, t, x), 1.0 / t1
+
+
+def receive_cap(c, **kw):
+    x, fc = uniform(c)
+    return receive(x, fc=fc, **kw)
+
+
 def cmd_cap(a):
-    from .dmr import parse_caps
     for p in a.files:
         with open(p, errors="replace") as fh:
             caps = parse_caps(fh)
         print(f"{os.path.basename(p)}: {len(caps)} captures")
         for c in caps:
-            fc = c["ks"] * 1000.0 / fe.L
-            got = receive(c["x"], fc=fc)
-            print(f"  {c['k']:3d} r={c['rssi']} ks={c['ks']} lost={c['lost']}: {len(got)} frames")
+            x, fc = uniform(c)
+            got = receive(x, fc=fc)
+            print(f"  {c['k']:3d} r={c['rssi']} fc={fc:.0f} lost={c['lost']}: {len(got)} frames")
             for m, i in got:
                 print(f"      @{i / fc * 1e3:6.2f} ms {parse(m)}")
 

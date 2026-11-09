@@ -2,35 +2,51 @@
    docs/k6-ais.md). Receive only.
 
    The K6 sits on AIS channel A (161.975 MHz) or B (162.025 MHz), switching every SWITCH_S, with
-   the FD6818's low IF on PB1 (GP0 code 13) read by DMA as in dmrcap.c. The counts (2 * ones -
-   64 per 64 DMA samples, ~85.8 kHz) run round a ring of NCAP in the scratch all the time, and
-   the RSSI is read every CHECK counts. When it rises SQ_DB over the channel's floor, the ring
-   keeps going for NCAP - PRE counts more and then stops, so it holds PRE counts (~12 ms) from
-   before the RSSI saw the carrier and the whole 27 ms burst after. An AIS burst is far shorter
-   than the RSSI's settling plus a start-up, so dmrcap's start-on-the-carrier would miss its
-   head, where the message type and the station are.
+   the FD6818's low IF on PB1 (GP0 code 13). The MCU polls PB1 itself, 256 reads a count in
+   straight-line Thumb as gp0fm.c does (~22.9 M samples/s, a count every ~11.2 us, ~89 kHz), not
+   by DMA: the DMA's ~5.5 MS/s sampling of the 6.5 MHz 1-bit stream folds its noise into the IF
+   band (docs/k6-fd6818-audio.md run 6: 166 Hz rms of FM noise on a carrier against 60 at 22.9
+   MS/s), and the first bench run (2026-11-09 02:48Z, DMA) heard 739 bursts at about 5 dB too
+   little for the receiver. On the model, polling moves the threshold about 6 dB.
+
+   The counts (ones - 128, int8) run round a ring of NCAP in the scratch. Each also goes through
+   a band-pass around the IF (11-23 kHz, a Q14 biquad) into a leaky energy (1/64 a count, ~0.7
+   ms). Each channel's turn starts with NCAL counts on the empty channel: their time gives the
+   count rate and the quietest of their 1024-count blocks the floor. A burst is the energy over
+   TRIG_X times the floor; the ring keeps going for NCAP - PRE counts more and stops, so it holds
+   PRE counts from before the trigger and the whole 27 ms burst after. The RSSI isn't read while
+   listening: an FD6818 read stalls the polling ~50 us, a hole in the burst. The keys are read
+   about every 0.37 s (60 us), the turn's clock every 46 ms (a counter read).
 
    The gain is frozen (REG_7E bit 15, index 3) at REG_13 = GAIN13 for the run (0: the pager's
-   AGC): on DMR the AGC turned the IF down to 4-5 dB over the 1-bit path's noise, full gain gave
-   +10 dB (docs/k6-dmr.md). The floor is read under that gain.
+   AGC); 0x03FF is the chip's maximum, and at 162 MHz the receiver's noise still sits under the
+   1-bit path's.
 
-   Lines (the c and y lines in gp0cap's format, so sim/k6if/dmr.py's parse_caps reads them):
-     acap start a=161975000 b=162025000 g13=03ff ncap=3456 pre=1024
-     m B floor=-117 n=4 caps=3 ms=60123          a channel's turn: its floor, bursts, captures
-     c 1 1 7 ks=5490 r=-80 t=1234 lost=0 ch=B rmax=-77 trig=1031 ms=61234
-                                                 capture 7: kS/s, RSSI at the trigger and its
-                                                 peak, 100 us ticks, overruns, the trigger's
-                                                 count in the capture, module ms at the end
-     y 7 0000 <48 base64 chars>                  its counts (int8)
-     b B r=-95 ms=..                             a burst past MAXCAP (counted, not dumped)
-     acap done n=31 caps=31
+   Lines (the c and y lines in gp0cap's format, so sim/k6if/dmr.py's parse_caps reads them; ks is
+   the count rate x 64 / 1000, so fc = ks * 1000 / 64 there as for the DMA modules; a line is at
+   most 60 characters):
+     acap start a=161975000 b=162025000 g13=03ff ncap=3600
+     f B hz=89421 fl=1234                         a turn: count rate, floor (energy units)
+     c 1 1 7 ks=5723 r=14 t=1234 lost=0 ch=B      capture 7: r = the burst's peak energy, dB
+                                                  over the floor
+     e 7 pre=1024 c0=1101234 c1=2770321 ms=61234  the trigger's count in it; CPU cycles of the
+                                                  1024 counts before it and the NCAP - PRE after
+                                                  (TIM17); module ms at the end
+     y 7 0000 <48 base64 chars>                   its counts (int8)
+     b B r=9 ms=..                                a burst not dumped (under DUMP_DB, or past MAXCAP)
+     m B n=54 caps=12 ms=60105                    the turn's bursts and captures
+     acap done n=739 caps=60
    The dumps are too long for telemetry: the cable is needed. Writes REG_34[3:0], REG_33 bit 8,
-   REG_7E, REG_13, the MCU's TIM17, DMA channel 1 and their clock enables, all put back; the
-   firmware retunes after. Everything big is in the scratch (1 KB DMA ring and the NCAP ring), so
-   the stack stays small. Returns the captures, or -2 (a key held at the start), -3 (old image),
-   -4 (PB1 not an input), -5 (REG_33 refused), -7 (TIM17 or DMA busy), -8 (scratch too small).
+   REG_7E and REG_13, the MCU's TIM17 and its clock enable (a cycle counter), all put back; the
+   firmware retunes after. Everything big is in the scratch,
+   so the stack stays small. Returns the captures, or -2 (a key held at the start), -3 (old
+   image), -4 (PB1 not an input), -5 (REG_33 refused), -7 (TIM17 in use), -8 (scratch too small).
+
+   Built with AISCAP_EMU, a count is one read of 0x480004F0 instead (tests/test_k6_ais.py: the
+   emulator can't poll 23 M reads a second, so it hands over each count and its time).
    SPDX-License-Identifier: MIT */
 #define K6_MODULE_LEVEL 2
+#define K6_MODULE_OPT z
 #include "../k6_mod.h"
 
 #ifndef CH_A_HZ
@@ -48,17 +64,20 @@
 #ifndef RUN_S
 #define RUN_S 600u
 #endif
-#ifndef SQ_DB
-#define SQ_DB 8
-#endif
 #ifndef NCAP
-#define NCAP 3456u /* ~40 ms */
+#define NCAP 3600u /* ~40 ms, 100 y lines */
 #endif
 #ifndef PRE
-#define PRE 1024u /* ~12 ms kept from before the trigger */
+#define PRE 1024u /* ~11 ms kept from before the trigger */
 #endif
-#ifndef CHECK
-#define CHECK 64u /* counts between RSSI reads (~0.75 ms) */
+#ifndef NCAL
+#define NCAL 32768u /* ~0.37 s, 32 floor blocks; calibrate() divides by it as >> 11 x 16 */
+#endif
+#ifndef TRIG_X
+#define TRIG_X 3 /* energy over the floor for a burst (4.8 dB) */
+#endif
+#ifndef DUMP_DB
+#define DUMP_DB 6 /* dump a burst only this far over the floor */
 #endif
 #ifndef MAXCAP
 #define MAXCAP 60u
@@ -70,19 +89,15 @@
 #define WIDE 1
 #endif
 
+/* the band-pass: butter(1, [11000, 23000], 'band', fs=89500), Q14 */
+#define BP_B0 5069
+#define BP_A1 (-9136)
+#define BP_A2 6245
+
 #define GPIOB 0x48000400u
-#define RCC_AHBENR 0x40021014u
 #define RCC_APB2ENR 0x40021018u
 #define TIM17 0x40014800u
-#define TIM17_CNT (TIM17 + 0x24)
-#define DMA 0x40020000u
-#define DMA_CCR1 (DMA + 0x08)
-#define DMA_CNDTR1 (DMA + 0x0C)
-#define DMA_CPAR1 (DMA + 0x10)
-#define DMA_CMAR1 (DMA + 0x14)
 #define TIM17EN (1u << 18)
-#define RSZ 1024u
-#define L 64u
 
 #define NOINLINE __attribute__((noinline))
 
@@ -106,11 +121,6 @@ static char *dec(char *p, uint32_t v) {
   return p;
 }
 
-static char *sdec(char *p, int v) {
-  if (v < 0) *p++ = '-', v = -v;
-  return dec(p, (uint32_t)v);
-}
-
 static char *hex4(char *p, uint32_t v) {
   int s;
   for (s = 12; s >= 0; s -= 4) {
@@ -131,103 +141,131 @@ static uint32_t udiv(uint32_t n, uint32_t d) {
   return q;
 }
 
-static int rssi(const k6_api_t *api) { return KM_RSSI_DBM(api->fd_read(0x67)); }
-
-static void stop(void) {
-  wr(TIM17 + 0x00, 0);
-  wr(TIM17 + 0x0C, 0);
-  wr(DMA_CCR1, 0);
-  wr(DMA + 0x04, 0xF);
+#ifdef AISCAP_EMU
+static uint32_t count256(void) { return rd(0x480004F0u); }
+#else
+/* the number of high samples on PB1 in 256 reads of GPIOB IDR (gp0fm.c's loop) */
+NOINLINE static uint32_t count256(void) {
+  volatile const uint32_t *idr = (volatile const uint32_t *)(GPIOB + 0x10);
+  uint32_t zero = 0, c;
+  __asm__ volatile(
+      "movs %[c], #0\n"
+      "movs r4, #8\n"
+      "1:\n"
+      ".rept 32\n"
+      "ldr r3, [%[idr]]\n"
+      "lsrs r3, r3, #2\n"
+      "adcs %[c], %[z]\n"
+      ".endr\n"
+      "subs r4, #1\n"
+      "bne 1b\n"
+      : [c] "=&l"(c)
+      : [idr] "l"(idr), [z] "l"(zero)
+      : "r3", "r4", "cc");
+  return c;
 }
-
-/* L samples at ring offset r: the ones on PB1 (bit 1 of each byte) */
-static int ones(const uint8_t *ring, uint32_t r) {
-  const uint32_t *p = (const uint32_t *)(ring + r);
-  uint32_t acc = 0, i;
-  for (i = 0; i < L / 4; i += 4)
-    acc += (p[i] & 0x02020202u) + (p[i + 1] & 0x02020202u) + (p[i + 2] & 0x02020202u) +
-           (p[i + 3] & 0x02020202u);
-  acc >>= 1;
-  acc = (acc & 0x00FF00FFu) + ((acc >> 8) & 0x00FF00FFu);
-  return (int)((acc & 0xFFFF) + (acc >> 16));
-}
+#endif
 
 typedef struct {
-  uint32_t ks, lost, head, trig, end_ms;
-  int r, rmax, got; /* got: 1 a burst recorded, 0 the turn ended, -1 a key */
+  int32_t x1, x2, y1, y2, e;
+} bp_t;
+
+/* one count through the band-pass into the leaky energy (x ones - 128) */
+static int32_t energy(bp_t *b, int32_t x) {
+  int32_t y = (BP_B0 * (x - b->x2) - BP_A1 * b->y1 - BP_A2 * b->y2) >> 14;
+  b->x2 = b->x1, b->x1 = x, b->y2 = b->y1, b->y1 = y;
+  b->e += y * y - (b->e >> 6);
+  return b->e;
+}
+
+static int8_t clamp8(int32_t x) { return (int8_t)(x > 127 ? 127 : x); }
+
+typedef struct {
+  uint32_t head, end_ms, c0, c1;
+  int32_t emax;
+  int got; /* 1 a burst recorded, 0 the turn ended, -1 a key */
 } cap_t;
 
-/* run the DMA and the count ring until a burst has been recorded (or the turn's end at
-   until_ms, or a key) */
-NOINLINE static void listen(const k6_api_t *api, uint8_t *ring, int8_t *buf, int thr,
+#define TIM17_CNT (TIM17 + 0x24)
+
+/* count into the ring until a burst has been recorded (or the turn's end, or a key). TIM17
+   counts the CPU's cycles: c0 is the cycles of the last 1024 counts before the trigger, c1 of
+   the NCAP - PRE after it (the two paths differ by a few cycles a count, so the host puts the
+   counts on one time grid) */
+NOINLINE static void listen(const k6_api_t *api, int8_t *buf, bp_t *b, int32_t thr,
                             uint32_t until_ms, cap_t *c) {
-  uint32_t laps = 0, lastw = 0, consumed = 0, produced, w, cyc = 0, c0, cn, avail;
-  uint32_t n = 0, head = 0, since = 0, post = 0, checks = 0;
-  int trig = 0, r;
-  c->lost = 0, c->got = 0, c->rmax = -200, c->r = -200, c->trig = 0;
-  wr(DMA_CCR1, 0);
-  wr(DMA + 0x04, 0xF);
-  wr(DMA_CPAR1, GPIOB + 0x10);
-  wr(DMA_CMAR1, (uint32_t)ring);
-  wr(DMA_CNDTR1, RSZ);
-  wr(TIM17 + 0x00, 0);
-  wr(TIM17 + 0x28, 0);
-  wr(TIM17 + 0x2C, 0xFFFF);
-  wr(TIM17 + 0x14, 1);
-  wr(TIM17 + 0x10, 0);
-  wr(TIM17 + 0x0C, 1u << 8);
-  wr(TIM17 + 0x00, 1);
-  wr(DMA_CCR1, (3u << 12) | (1u << 7) | (1u << 5) | 1u); /* PL very high, MINC, CIRC, EN */
-  c0 = rd(TIM17_CNT) & 0xFFFF;
+  uint32_t head = 0, n = 0, post = 0, t, tl, cyc = 0;
+  int32_t x, e;
+  c->got = 0, c->emax = 0, c->c0 = 0, c->c1 = 0;
+  tl = rd(TIM17_CNT);
   for (;;) {
-    w = RSZ - (rd(DMA_CNDTR1) & 0xFFFF);
-    if (w < lastw) laps++;
-    lastw = w;
-    produced = laps * RSZ + w;
-    cn = rd(TIM17_CNT) & 0xFFFF;
-    cyc += (cn - c0) & 0xFFFF;
-    c0 = cn;
-    avail = produced - consumed;
-    if (avail > RSZ - L) {
-      c->lost++;
-      consumed = produced & ~(L - 1);
-      continue;
-    }
-    if (avail < L) continue;
-    buf[head] = (int8_t)(2 * ones(ring, consumed & (RSZ - 1)) - (int)L);
-    consumed += L;
+    x = (int32_t)count256() - 128;
+    t = rd(TIM17_CNT);
+    cyc += (t - tl) & 0xFFFF;
+    tl = t;
+    buf[head] = clamp8(x);
     if (++head == NCAP) head = 0;
+    e = energy(b, x);
     n++;
-    if (trig) {
+    if (post) {
+      if (e > c->emax) c->emax = e;
       if (!--post) break;
-    }
-    if (++since < CHECK) continue;
-    since = 0;
-    r = rssi(api);
-    if (trig) {
-      if (r > c->rmax) c->rmax = r;
       continue;
     }
-    if (r >= thr && n > PRE) {
-      trig = 1, post = NCAP - PRE, c->r = c->rmax = r;
+    if (!(n & 1023)) c->c0 = cyc, cyc = 0;
+    if (e > thr && n > PRE + 1024) {
+      post = NCAP - PRE, c->emax = e, cyc = 0;
       continue;
     }
-    if (++checks >= 64) { /* ~50 ms: the turn and the keys */
-      checks = 0;
+    if (!(n & 4095)) {
       if (api->ms() >= until_ms) break;
-      if (api->key_down()) {
+      if (!(n & 32767) && api->key_down()) {
         c->got = -1;
         break;
       }
+      tl = rd(TIM17_CNT); /* not the call's time */
     }
   }
-  stop();
   c->head = head; /* the oldest count */
-  c->trig = PRE;
+  c->c1 = cyc;
   c->end_ms = api->ms();
-  /* kS/s = counts * L / (cycles / 96 MHz) / 1000 */
-  c->ks = udiv(n * L * 96, udiv(cyc, 1000) ? udiv(cyc, 1000) : 1);
-  if (trig && !post) c->got = 1;
+  if (post == 0 && c->emax) c->got = 1;
+}
+
+/* NCAL counts on the empty channel: the count rate (Hz) and the floor (the quietest 1024-count
+   block's mean energy) */
+NOINLINE static uint32_t calibrate(bp_t *b, int32_t *floor) {
+  uint32_t i, t, tl, cyc = 0;
+  int32_t sum = 0, lo = 0x7FFFFFFF;
+  for (i = 0; i < 256; i++) energy(b, (int32_t)count256() - 128); /* the filter settles */
+  tl = rd(TIM17_CNT);
+  for (i = 1; i <= NCAL; i++) {
+    sum += energy(b, (int32_t)count256() - 128) >> 4;
+    t = rd(TIM17_CNT);
+    cyc += (t - tl) & 0xFFFF;
+    tl = t;
+    if (!(i & 1023)) {
+      if (sum < lo) lo = sum;
+      sum = 0;
+    }
+  }
+  *floor = (lo >> 6) + 1; /* sum of e / 16 over 1024 counts / 64: the block's mean e */
+  /* hz = 96 MHz / (cyc / NCAL): 16 x the cycles a count over 16 x 96 MHz */
+  return udiv(1536000000u, cyc >> 11);
+}
+
+/* dB of e over fl (0..40) */
+static int db_over(int32_t e, int32_t fl) {
+  /* 10^(d/10) in Q4 for d = 0..40, steps of 1 dB */
+  static const uint32_t P[41] = {16,    20,    25,    32,    40,    51,    64,    80,    101,
+                                 127,   160,   201,   254,   319,   402,   506,   637,   802,
+                                 1010,  1271,  1600,  2014,  2536,  3193,  4019,  5060,  6370,
+                                 8020,  10096, 12710, 16000, 20143, 25358, 31924, 40190, 50596,
+                                 63696, 80188, 100950, 127088, 160000};
+  int d = 0;
+  uint32_t ue = (uint32_t)e << 4;
+  while (d < 40 && (uint32_t)fl * P[d + 1] <= ue) d++;
+  return d;
 }
 
 static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -261,71 +299,62 @@ NOINLINE static void dump(const k6_api_t *api, const int8_t *buf, uint32_t head,
   }
 }
 
-NOINLINE static void cap_line(const k6_api_t *api, const cap_t *c, int b, uint32_t k) {
-  char line[96], *p;
+NOINLINE static void cap_lines(const k6_api_t *api, const cap_t *c, int b, uint32_t k,
+                               uint32_t hz, int d) {
+  char line[64], *p;
   p = put(line, "c 1 ");
   p = dec(p, GAIN13 ? 1u : 0u);
   *p++ = ' ';
   p = dec(p, k);
   p = put(p, " ks=");
-  p = dec(p, c->ks);
+  p = dec(p, udiv(hz * 8u + 62, 125)); /* hz * 64 / 1000, rounded */
   p = put(p, " r=");
-  p = sdec(p, c->r);
+  p = dec(p, (uint32_t)d);
   p = put(p, " t=");
   p = dec(p, api->ticks() & 0xFFFF);
-  p = put(p, " lost=");
-  p = dec(p, c->lost);
-  p = put(p, b ? " ch=B rmax=" : " ch=A rmax=");
-  p = sdec(p, c->rmax);
-  p = put(p, " trig=");
-  p = dec(p, c->trig);
+  p = put(p, b ? " lost=0 ch=B" : " lost=0 ch=A");
+  *p = 0;
+  api->say(line);
+  p = put(line, "e ");
+  p = dec(p, k);
+  p = put(p, " pre=");
+  p = dec(p, PRE);
+  p = put(p, " c0=");
+  p = dec(p, c->c0);
+  p = put(p, " c1=");
+  p = dec(p, c->c1);
   p = put(p, " ms=");
   p = dec(p, c->end_ms);
   *p = 0;
   api->say(line);
 }
 
-/* the channel's floor: the lowest of 16 reads 3 ms apart, + 1 (the reads move +-1-2 dB) */
-static int floor_of(const k6_api_t *api) {
-  int i, r, lo = 0;
-  for (i = 0; i < 16; i++) {
-    r = rssi(api);
-    if (!i || r < lo) lo = r;
-    api->delay_us(3000);
-  }
-  return lo + 1;
-}
-
 int k6_main(const k6_api_t *api) {
-  uint8_t *ring;
   int8_t *buf;
+  bp_t bp;
   cap_t c;
-  uint32_t room, ahb, apb2, k = 0, nb = 0, turn_b, turn_n, turn_c, until;
+  uint32_t room, k = 0, nb = 0, turn_n, turn_c, until, hz, apb2;
   uint16_t r33, r34, r7e, r13;
-  int fl, b = FIRST_B, quit = 0;
+  int32_t fl;
+  int b = FIRST_B, quit = 0, d;
   char line[64], *p;
   if (api->abi != 1 || api->level < 2) return -3;
   if (api->key_down()) return -2;
-  ring = (uint8_t *)(((uint32_t)api->scratch(&room) + 3) & ~3u);
-  if (room < RSZ + NCAP + 4) return -8;
-  buf = (int8_t *)(ring + RSZ);
+  buf = (int8_t *)api->scratch(&room);
+  if (room < NCAP) return -8;
   if (rd(GPIOB) & (3u << 2)) return -4;
   apb2 = rd(RCC_APB2ENR);
-  ahb = rd(RCC_AHBENR);
-  wr(RCC_AHBENR, ahb | 1u); /* the DMA's registers read junk with its clock off */
-  if ((apb2 & TIM17EN) || (rd(DMA_CCR1) & 1)) {
-    wr(RCC_AHBENR, ahb);
-    return -7;
-  }
+  if (apb2 & TIM17EN) return -7;
   r33 = api->fd_read(0x33);
   r34 = api->fd_read(0x34);
   r7e = api->fd_read(0x7E);
   r13 = api->fd_read(0x13);
-  if ((r33 & 0x0100) && api->fd_write(0x33, (uint16_t)(r33 & ~0x0100)) != 0) {
-    wr(RCC_AHBENR, ahb);
-    return -5;
-  }
+  if ((r33 & 0x0100) && api->fd_write(0x33, (uint16_t)(r33 & ~0x0100)) != 0) return -5;
   wr(RCC_APB2ENR, apb2 | TIM17EN);
+  wr(TIM17 + 0x00, 0);
+  wr(TIM17 + 0x28, 0);      /* PSC: 96 MHz */
+  wr(TIM17 + 0x2C, 0xFFFF); /* ARR */
+  wr(TIM17 + 0x00, 1);      /* CEN */
   p = put(line, "acap start a=");
   p = dec(p, CH_A_HZ);
   p = put(p, " b=");
@@ -334,10 +363,9 @@ int k6_main(const k6_api_t *api) {
   p = hex4(p, GAIN13);
   p = put(p, " ncap=");
   p = dec(p, NCAP);
-  p = put(p, " pre=");
-  p = dec(p, PRE);
   *p = 0;
   api->say(line);
+  bp.x1 = bp.x2 = bp.y1 = bp.y2 = bp.e = 0;
   while (!quit && api->ms() < RUN_S * 1000u) {
     api->tune(b ? CH_B_HZ : CH_A_HZ, WIDE);
     api->fd_write(0x34, (uint16_t)((r34 & 0xFFF0) | 13));
@@ -346,34 +374,38 @@ int k6_main(const k6_api_t *api) {
       api->fd_write(0x13, GAIN13);
     }
     api->delay_us(30000);
-    fl = floor_of(api);
-    turn_b = (uint32_t)b, turn_n = 0, turn_c = 0;
+    hz = calibrate(&bp, &fl);
+    p = put(line, b ? "f B hz=" : "f A hz=");
+    p = dec(p, hz);
+    p = put(p, " fl=");
+    p = dec(p, (uint32_t)fl);
+    *p = 0;
+    api->say(line);
+    turn_n = 0, turn_c = 0;
     until = api->ms() + SWITCH_S * 1000u;
     if (until > RUN_S * 1000u) until = RUN_S * 1000u;
     for (;;) {
-      listen(api, ring, buf, fl + SQ_DB, until, &c);
+      bp.e = fl; /* the energy at the floor again after a dump or a turn */
+      listen(api, buf, &bp, fl * TRIG_X, until, &c);
       if (c.got < 0) quit = 1;
       if (c.got <= 0) break;
       turn_n++, nb++;
-      if (k < MAXCAP) {
-        cap_line(api, &c, b, k);
+      d = db_over(c.emax, fl);
+      if (k < MAXCAP && d >= DUMP_DB) {
+        cap_lines(api, &c, b, k, hz, d);
         dump(api, buf, c.head, k);
         k++, turn_c++;
       } else {
         p = put(line, b ? "b B r=" : "b A r=");
-        p = sdec(p, c.rmax);
+        p = dec(p, (uint32_t)d);
         p = put(p, " ms=");
         p = dec(p, c.end_ms);
         *p = 0;
         api->say(line);
       }
-      /* a long carrier is not AIS: let it go (2 s at most) before listening again */
-      while (rssi(api) >= fl + SQ_DB && api->ms() < c.end_ms + 2000u) api->delay_us(2000);
       if (api->ms() >= until) break;
     }
-    p = put(line, turn_b ? "m B floor=" : "m A floor=");
-    p = sdec(p, fl);
-    p = put(p, " n=");
+    p = put(line, b ? "m B n=" : "m A n=");
     p = dec(p, turn_n);
     p = put(p, " caps=");
     p = dec(p, turn_c);
@@ -383,13 +415,8 @@ int k6_main(const k6_api_t *api) {
     api->say(line);
     b = !b;
   }
-  stop();
-  wr(TIM17 + 0x2C, 0xFFFF);
-  wr(DMA_CNDTR1, 0);
-  wr(DMA_CPAR1, 0);
-  wr(DMA_CMAR1, 0);
+  wr(TIM17 + 0x00, 0);
   wr(RCC_APB2ENR, apb2);
-  wr(RCC_AHBENR, ahb);
   api->fd_write(0x13, r13);
   api->fd_write(0x7E, r7e);
   api->fd_write(0x34, r34);

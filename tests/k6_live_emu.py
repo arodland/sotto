@@ -101,6 +101,11 @@ class Emu:
         self.led = []                                # level 7: (ms, on) for each api->led call
         self.lcd = {}                                # level 6: the text on each LCD line
         self.dma_on, self.dma_t0, self.dma_s0, self.made = False, 0.0, 0, 0
+        # a polled module built for the emulator (aiscap's AISCAP_EMU) reads one count a time at
+        # 0x480004F0: poll is the cumulative number of ones in the 1-bit stream at poll_fc
+        # samples of poll_k a count (a count is poll_k of them), and each read takes the time
+        # of its samples, so the module's own cycles between counts are gaps, as on the radio
+        self.poll, self.poll_fc, self.poll_k = None, None, 8
         mu = self.mu = unicorn.Uc(unicorn.UC_ARCH_ARM, unicorn.UC_MODE_THUMB | unicorn.UC_MODE_MCLASS)
         mu.ctl_set_cpu_model(A.UC_CPU_ARM_CORTEX_M0)
         ram = self.ram = 0x20000000
@@ -194,6 +199,12 @@ class Emu:
             return int(self.cyc / 9600) & 0xFFFF
         if a == 0x48000400:                          # GPIOB_MODER: PB1 an input
             return 0
+        if a == 0x480004F0 and self.poll is not None:  # a polled count (AISCAP_EMU)
+            j = int(self.cyc / FCPU * self.poll_fc)
+            self.tick(self.poll_k / self.poll_fc * FCPU)
+            if j + self.poll_k >= len(self.poll):
+                return 128
+            return int(self.poll[j + self.poll_k] - self.poll[j])
         return self.reg.get(a, 0)
 
     def mmio_w(self, uc, off, size, value, page):

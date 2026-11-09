@@ -862,6 +862,6 @@ what would settle it.
       often names the TDMA slot it was sent in. Slots are locked to the UTC minute, so a burst's
       start flag gives UTC to well under a millisecond.
     - It would buy: a clock far tighter than APRS's 1 s stamps, heard all day near the coast.
-    - Risk: the model needs ~55 dB-Hz, which may mean bursts near -72 dBm on the frozen-gain RSSI.
-    - Settled by: a 10-minute aiscap run on 161.975 / 162.025 with the big antenna, then
-      `python3 -m sim.k6if.ais cap LOG`.
+    - Run 1 (DMA): 739 bursts in 10 min, none decoded, the best ~5 dB short; the limit is the
+      1-bit tap sampled at 5.5 MS/s. aiscap v2 polls it at 22.9 MS/s (~6 dB on the model).
+    - Settled by: run 2 with the polled aiscap, then `python3 -m sim.k6if.ais cap LOG`.

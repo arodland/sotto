@@ -17,7 +17,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tools"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from modem import k6mod  # noqa: E402
-from sim.k6if import ais, dmr, frontend as fe, study as st  # noqa: E402
+from sim.k6if import ais, frontend as fe, study as st  # noqa: E402
 
 need_clang = pytest.mark.skipif(not (shutil.which("clang") and shutil.which("ld.lld")),
                                 reason="needs clang and ld.lld")
@@ -85,45 +85,52 @@ def build(defs, src=CAP):
 
 @need_clang
 def test_module_fits():
+    """code + header + tag + the 3,600-count ring in the voice images' 11,776-byte arena"""
     code, _ = k6mod.build(CAP)
-    assert len(code) + 24 + 1024 + 3456 + 8 <= 11776, len(code)   # the voice images' arena
+    assert len(code) + 24 + 3600 + 128 <= 11776, len(code)
+
+
+def poll_stream(s, cn0, seed=3, fdma=22.9e6, g=32):
+    """the 1-bit stream the polling loop reads (at fdma) for complex baseband s, as cumulative
+    ones at every g-th sample (the emulator's poll) and that grid's rate"""
+    c = fe.receive(s, st.FZ, cn0, seed=seed, fdma=fdma, L=g, floor=0.01)
+    return np.concatenate([[0], np.cumsum((c + g) // 2)]), fdma / g
 
 
 @need_clang
 def test_capture_module_records_bursts():
-    """two bursts 0.9 s apart (a dump takes ~0.5 s on the cable): aiscap records each whole (its head from before the RSSI rose)
-    and the host decodes both; nothing big on the stack"""
+    """two bursts 1.0 s apart on the polled path: aiscap calibrates on the empty channel, records
+    each burst whole (its head from before the energy rose) and the host decodes both, at the
+    count rate the module measured. Nothing big on the stack. The model's floor 0.01 is the bench's: the 1-bit path's noise over the
+    receiver's (docs/k6-ais.md, run 1)"""
     pytest.importorskip("unicorn")
     import k6_live_emu as le
     msgs = [ais.msg4(3160001, 2026, 11, 9, 3, 15, 42),
             ais.msg1(316012345, 43, ais.sotdma(0, 2, 1712))]
-    gap = np.zeros(int(0.9 * st.FZ), complex)
-    parts, spans, pos = [np.zeros(int(0.6 * st.FZ), complex)], [], int(0.6 * st.FZ)
-    for m in msgs:
-        b = ais.gmsk(ais.burst_bits(m), f_off=300.0, pre_s=0.0, post_s=0.0)
-        spans.append((pos, pos + len(b)))
-        parts += [b, gap]
-        pos += len(b) + len(gap)
-    s = np.concatenate(parts)
-    bits = fe.receive(s, st.FZ, 62.0, seed=3, L=0, fdma=fe.FDMA)
-    ib = bits.astype(np.uint8) * 2
-    on = [(int(a / st.FZ * fe.FDMA), int(b / st.FZ * fe.FDMA)) for a, b in spans]
-    code, entry = build([("RUN_S", "3u"), ("SWITCH_S", "1u")])
-    e = le.Emu(code, entry, ib, 0, fe.FDMA, 1.5, max_s=3.5, scratch=8192)
-    # the RSSI rises 1.5 ms into the burst (the chip's settling) and falls at its end
-    e.rssi = lambda: -70 if any(a + 8000 <= e.sample_now() < b for a, b in on) else -118
+    s = np.zeros(int(3.2 * st.FZ), complex)
+    for m, t in zip(msgs, (0.9, 1.9)):
+        b = ais.gmsk(ais.burst_bits(m), f_off=-1300.0, pre_s=0.0, post_s=0.0)
+        i = int(t * st.FZ)
+        s[i:i + len(b)] += b
+    cs, fg = poll_stream(s, 66.0)
+    code, entry = build([("RUN_S", "3u"), ("SWITCH_S", "5u"), ("AISCAP_EMU", "1")])
+    e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.4, scratch=4096)
+    e.poll, e.poll_fc, e.poll_k = cs, fg, 8
+    fc = fg / 8
     r = e.run()
     assert r is not None
     ret, stack = r
     txt = "\n".join(ln for ln in e.said if not ln.startswith("y "))
     print(txt)
-    caps = dmr.parse_caps(e.said)
+    caps = ais.parse_caps(e.said)
     assert ret == len(caps) == 2, txt
+    f_line = next(ln for ln in e.said if ln.startswith("f B hz="))
+    assert 0.9 < int(f_line.split("hz=")[1].split()[0]) / fc < 1.0, f_line   # its cycles between counts
     got = []
     for c in caps:
-        assert len(c["x"]) == 3456 and c["lost"] == 0, txt
-        got += [g[0] for g in ais.receive(c["x"], fc=c["ks"] * 1000.0 / fe.L)]
+        assert len(c["x"]) == 3600, txt
+        got += [g[0] for g in ais.receive_cap(c)]
     assert got == msgs
-    assert any(ln.startswith("m ") for ln in e.said), txt
+    assert any(ln.startswith("m B") for ln in e.said), txt
     assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0, e.writes   # the AGC put back
     assert stack < 600, stack
