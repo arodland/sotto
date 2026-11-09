@@ -270,7 +270,7 @@ def test_clock_module_sets_utc():
     cs, fg = poll_stream(s, 66.0)
     code, entry = build([("RUN_S", "3u"), ("SWITCH_S", "5u"), ("AISCAP_EMU", "1")], CLK)
     e = le.Emu(code, entry, np.zeros(16, np.uint8), 0, fe.FDMA, 1.5, max_s=3.6, scratch=clk_scratch(),
-               level=7)
+               level=8)
     e.poll, e.poll_fc, e.poll_k = cs, fg, 8
     r = e.run()
     assert r is not None
@@ -294,6 +294,10 @@ def test_clock_module_sets_utc():
         assert " w=2 " in ln and " d=09/11" in ln
     for ln, _ in clk[1:]:
         assert abs(int(ln.split("j=")[1].split()[0])) <= 2, ln
+    # each clk line hands the fix to the core clock (level 8): UTC ms now, the date, w = 2 ms
+    assert [(d, w, r) for _, _, d, w, r in e.clock_sets] == [(9 | 11 << 8 | 2026 << 16, 2, 1)] * 3, e.clock_sets
+    for now, ms, _, _, _ in e.clock_sets:
+        assert abs(ms - (utc_off / 10 + now)) <= 2, (ms, utc_off / 10 + now)
     assert e.lcd.get(0) == "AIS CLOCK" and e.lcd.get(1, "").startswith("UTC 03:15:4"), e.lcd
     assert any(on for _, on in e.led)
     assert e.writes[0x13][-1] == 0 and e.writes[0x7E][-1] == 0

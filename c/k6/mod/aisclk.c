@@ -21,10 +21,10 @@
    filter and CIC, ~0.6 bit on the model, AR_DELAY_US). A fine fix more than JUMP_MS from the
    last within 10 minutes is refused (a station off UTC) and said as such.
 
-   The clock is the UTC (100 us of day) less the module's 100 us clock, as the core clock
-   (proposed API level 8, docs/k6-aprs-clock.md) will take it from either this module or
-   aprsclk: clock_set(utc, date, w) with w the fix's interval, AIS's ~2 ms or APRS's ~1000.
-   Until that exists, both say the same clk line.
+   The clock is the UTC (100 us of day) less the module's 100 us clock. On an image with the
+   core clock (API level 8, docs/k6-aprs-clock.md), each clk line also hands it to the core:
+   clock_set(UTC ms now, the date, w), w 2 ms for a fine fix and 1000 for a coarse one, so
+   the radio keeps the time after the module returns (aprsclk does the same with its ~3 s).
 
    Lines (serial / telemetry, at most 60 characters):
      ais clk start a=161975000 b=162025000 g13=03ff
@@ -106,6 +106,7 @@ typedef struct {
   uint32_t nfine, nfr;
   uint8_t set; /* 0 not yet, 1 to the second, 2 fine */
   uint8_t day, mon, haveppm;
+  uint16_t yr;
   char ln[64]; /* the line being said (one buffer: the stack is small) */
 } clk_t;
 
@@ -158,8 +159,12 @@ static void rev(int8_t *a, uint32_t i, uint32_t j) {
 }
 
 static void say_clk(const k6_api_t *api, clk_t *k, ap_ck_t *ck, int32_t j) {
+  uint32_t u = mod_day((int32_t)(k->off + ap_now(api, ck)));
   char *p = put(k->ln, "clk ");
-  p = hms(p, mod_day((int32_t)(k->off + ap_now(api, ck))));
+  /* the radio's clock (level 8): UTC ms now, the date, the bound */
+  if (api->level >= 8)
+    api->clock_set(udiv(u, 10), KM_DATE(k->day, k->mon, k->yr), k->set == 2 ? 2u : 1000u);
+  p = hms(p, u);
   p = put(p, k->set == 2 ? " w=2 v=" : " w=1000 v=");
   p = dec(p, k->nfine);
   if (k->day) p = put(p, " d="), p = dec2(p, k->day), *p++ = '/', p = dec2(p, k->mon);
@@ -254,7 +259,7 @@ static void frames(const k6_api_t *api, clk_t *k, const ar_frame_t *f, int nf, c
         uint32_t h = ar_uint(m, 61, 5), mi = ar_uint(m, 66, 6);
         if (y < 2020 || y > 2099 || !mo || mo > 12 || !dd || h > 23 || mi > 59 || sec > 59)
           continue;
-        k->day = (uint8_t)dd, k->mon = (uint8_t)mo;
+        k->day = (uint8_t)dd, k->mon = (uint8_t)mo, k->yr = (uint16_t)y;
         if (agree) {
           fine(api, k, (h * 60 + mi) * MIN100 + inmin, t, mmsi, ck);
           continue;
@@ -346,7 +351,7 @@ int k6_main(const k6_api_t *api) {
   wr(TIM17 + 0x2C, 0xFFFF); /* ARR */
   wr(TIM17 + 0x00, 1);      /* CEN */
   ck.last = api->ticks() & 0xFFFF, ck.t = 0;
-  k.set = 0, k.nfine = 0, k.nfr = 0, k.day = 0, k.mon = 0, k.haveppm = 0, k.ppm = 0;
+  k.set = 0, k.nfine = 0, k.nfr = 0, k.day = 0, k.mon = 0, k.yr = 0, k.haveppm = 0, k.ppm = 0;
   k.off = 0, k.tfix = 0;
   p = put(line, "ais clk start a=");
   p = dec(p, CH_A_HZ);

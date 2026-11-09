@@ -275,7 +275,11 @@ other, and both feed the same clock:
    upper bound on the error, not ±w/2: aprsclk's estimate isn't the centre of its interval. AIS's
    w is 2 ms, and APRS's is 3,000 ms or more, so AIS wins wherever both are heard.
 
-Until the core clock exists, a hamlet script runs the sequence over the cable.
+The core clock is in (PR #167). On a level 8 image, aisclk hands every clk line to it: the UTC
+of that moment, the date with the full year from message 4, and w = 2 ms once slot-locked, or
+1,000 ms from a message 4 second alone. It costs 44 B of code (6,022 B; 38 B spare in the arena
+with the upload's telemetry). A hamlet script still runs the AIS-then-APRS sequence over the
+cable until a firmware sequencer does.
 
 ## Where AIS works
 
