@@ -175,6 +175,23 @@ not end in a good frame. None carried a time, so there is no `clk`. The minute R
 dBm) is the minute's floor, so packets do not show in it. The receiver is proven on 2 m. What is
 left is a station that sends a stamped format.
 
+**Who sends stamps near the bench** (APRS-IS feed, 40 km around 48.95 N 122.48 W, 00:36-00:57Z,
+2026-11-09): 13 stations heard on RF (digis, igates, trackers, Jeff's car), none with a usable
+stamp (one repeater object carries a fixed `111111z`). The stamped weather stations nearby (CWOP)
+reach APRS-IS over the internet only. Jeff's FTM-300D sends Mic-E positions only and has no
+timestamp option.
+
+**Run 6, big antenna and a stamped burst on 2 m** (2026-11-09 01:09-01:41Z, image af064d6, the
+K6 on Jeff's big antenna, two 15 min listens; the IC-7100 on a stub at RF power 0). The minute
+RSSI fell to -97 to -101 dBm (from -86 on the K6's own antenna: local pickup, not a carrier).
+With Jeff's OK the IC-7100 sent one 4 s burst on 144.390 at 01:17:19Z, no digi path (the
+loopback's three AG7EW packets). The K6 decoded all three, voted 3 stations, took the date
+(9/11), and read about +0.12 s against each frame's true end, as predicted (stamps 0.37 s early
+against the real audio start). Seven minutes later its end line was within 0.14 s of the logger.
+Listen 1 also decoded Jeff's car again. Listen 2 heard nothing in 15 min (`pre=0`). So the clock
+works end to end on 2 m. At Jeff's location it needs a stamped source of its own, such as a
+fixed station beaconing like the burst, since no local station sends one.
+
 This tests the IF tap, demodulator, HDLC, parser and clock on the real radio; if it passes and
 144.390 still decodes nothing, the next step is an IC-7100 recording of 144.390 (receive only)
 run through `python -m modem.aprs decode REC.wav` to count local stamped packets.
