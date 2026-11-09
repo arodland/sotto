@@ -260,7 +260,7 @@ static int play(run_t *r, const uint8_t *song, const int16_t *wt) {
     wait -= BLK;
     r->blocks++;
     if (r->led && !--r->led && r->level >= 7) r->api->led(0);
-    if (!(r->blocks & 1023)) r->api->ticks();   /* the core's ms count wraps unseen in 6.5 s */
+    if (!(r->blocks & 1023)) r->api->ms();   /* the core sums its run time only in ms() and delay_us() */
     if (end && !v[0].stage && !v[1].stage && !v[2].stage && !v[3].stage) return 0;
   }
 }
@@ -273,7 +273,7 @@ static int quiet(run_t *r, uint32_t n) {
     if (r->key) return r->key;
     for (k = 0; k < BLK; k++) out(MID);
     r->blocks++;
-    if (!(r->blocks & 1023)) r->api->ticks();
+    if (!(r->blocks & 1023)) r->api->ms();
   }
   return 0;
 }

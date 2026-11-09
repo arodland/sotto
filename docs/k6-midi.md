@@ -57,8 +57,8 @@ Nokia's own compositions (Ring Ring, Hurdy Gurdy and the rest) are under copyrig
 here. The other scores in `tools/midi_songs/` (Greensleeves, Minuet in G, Twinkle Twinkle) are
 left out of the default build so that it fits the EXPLORE image too; `patch` puts them in.
 
-**Fit.** The module is about 2.5 KB of code plus the table (1.5 KB by default: 4,043 bytes in
-all). It needs 512 bytes of scratch for the wavetable, and an upload with `--telemetry` keeps 696
+**Fit.** The module is about 2.5 KB of code plus the table (1.5 KB by default: 4,011 bytes in
+all in CI, 2,472 of them code; clang here makes it a little bigger). It needs 512 bytes of scratch for the wavetable, and an upload with `--telemetry` keeps 696
 bytes at the top of the block, so the default build fits the EXPLORE and lean images' 5,376-byte
 block. The SPI voice images (pager-only, lr, vlr, vlrh) take about 8 KB of songs.
 
@@ -68,7 +68,7 @@ block. The SPI voice images (pager-only, lr, vlr, vlrh) take about 8 KB of songs
 python3 tools/k6_midi.py info song.mid                 # notes, length, bytes
 python3 tools/k6_midi.py patch mod-midi.bin my-midi.bin song.mid tools/midi_songs/greensleeves.txt
 python3 tools/k6_midi.py wav preview.wav song.mid      # what the K6 will play
-python3 tools/k6_upload.py my-midi.bin --api-level 2 --telemetry 2 --run-s 120 --key-file ~/.config/sotto/k6-mod.key
+python3 tools/k6_upload.py my-midi.bin --api-level 2 --telemetry 3 --run-s 120 --key-file ~/.config/sotto/k6-mod.key
 ```
 
 `patch` needs no compiler (hamlet has none): the table is the last thing in the module's code,
@@ -128,7 +128,11 @@ the emulator is about 1,300 instructions (under 25 us at 96 MHz, against 62.5 us
 
 ## Bench
 
-Not yet on the radio. On any image with modules (level 2 or later), at a free bench slot:
-upload CI's `mod-midi.bin` with `k6_upload.py ... --api-level 2 --telemetry 2 --run-s 110`, and
-listen or record the K6's speaker with a phone. The run takes about 100 s for the six songs; a
-key press on the radio skips, a hold stops.
+**On the K6, 2026-11-09 06:22-06:25Z** (image cf9516e aura-pager-vlrh, CI's `mod-midi.bin` of
+0681507, 4,011 B, uploaded with `k6_upload.py ... --api-level 2 --telemetry 2 --run-s 110`): all
+34 XL chunks arrived on the first send (44 s on air); the K6 ran it and returned 6 (all six
+songs), `stack_free` 1,812 B, `midi done songs=6 notes=405 late=6`: six samples of about 1.5
+million missed their 62.5 us slot. The report said it ran 4,779 ms: the module called `ticks()`
+once a second to keep the core's count, but the core sums the run time only in `ms()` and
+`delay_us()`, so 96 s wrapped. It calls `ms()` now. Two telemetry parts held only the last say
+lines; use `--telemetry 3`. Nothing on hamlet hears the K6's speaker, so there is no recording.
