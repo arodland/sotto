@@ -176,7 +176,9 @@ similar) at level 6 or above.
    `gw shot` and `gw end` lines, and `stack_free=` in `K6 MOD ret` (it should be over 512 B).
 2. **Hot seat by hand**: `mod-gw.bin`, key 1, play a round.
 3. **A few overs on the air**: `mod-gw_call.bin` on 440.850 calls with up to 4 HELLO overs,
-   about 12-14 s apart, and quits when nothing answers (EXIT stops it sooner). Record them on the IC-7100 (receive only): two FSK packets and
+   about 12-14 s apart, and quits when nothing answers (EXIT stops it sooner).
+   `python3 tools/k6_gw.py decode RUN.raw` reads the overs back from the IC-7100's recording
+   (`k6_upload.py --keep RUN.raw`). Record them on the IC-7100 (receive only): two FSK packets and
    then AG7EW in MCW each time. This checks that chip FSK goes out with `tx_on`'s TX state (the
    core's ARQ sends it from Aura's own TX setup).
 4. **Two radios**: a second K6, or a PC peer on the IC-7100 (`modem/k6gw.py`'s `Peer` with the
