@@ -24,7 +24,8 @@
    picks the offset the most stations agree on, the narrowest such interval among ties. With two
    or more stations agreeing, the clock is set: its estimate is the interval's low edge plus half
    its width, at most 0.5 s (a stamp can't be later than the send, and trackers key within a
-   second of the fix). A 1 s stamp gives the second; DDHHMMz alone gives the minute.
+   second of the fix); with minute stamps only (a region wider than 10 s) its middle, so within
+   about 30 s. A 1 s stamp gives the second; minute stamps alone give the minute.
 
    Lines (serial / telemetry):
      aprs start hz=144390000 ks=5603 n=12
@@ -250,7 +251,9 @@ static void vote(st_t *s) {
     if (n > best || (n == best && hi - x < bw)) best = n, bw = hi - x, blo = x;
   }
   s->votes = best, s->wid = bw;
-  s->est = blo + (bw / 2 < 500 ? bw / 2 : 500);
+  /* a second-stamp interval: half a second in (the usual stamp-to-key lead); minute stamps only
+     (wider than 10 s): its middle, so never more than about 30 s off */
+  s->est = blo + (bw > 10000 ? bw / 2 : bw / 2 < 500 ? bw / 2 : 500);
   /* the date: the newest agreeing stamp that has one */
   for (i = 0, j = -1; i < NC; i++)
     if (s->c[i].kind && s->c[i].day && s->c[i].lo <= s->est && s->est <= s->c[i].hi &&

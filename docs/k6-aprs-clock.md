@@ -49,7 +49,8 @@ newest; a digipeated copy of the same stamp is not a second vote. Marzullo's alg
 finds the offset the most stations agree on, the narrowest region among ties, so a station with
 a wrong clock is outvoted. With two or more agreeing the clock is set: the estimate is the
 region's low edge plus half its width, at most 0.5 s, because a stamp can't be later than the
-send and GPS trackers key within a second of their fix. A seconds stamp in the vote gives the
+send and GPS trackers key within a second of their fix. With minute stamps only (a region wider
+than 10 s) it is the region's middle instead, within about 30 s. A seconds stamp in the vote gives the
 second ("(sec)" on the screen); `DDHHMMz` alone gives the minute. The date comes from the newest
 agreeing stamp that has one (`$GPRMC` gives day/month/year, `DDHHMMz` the day).
 

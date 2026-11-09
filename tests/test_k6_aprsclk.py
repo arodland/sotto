@@ -239,6 +239,17 @@ def test_weather_stamps_alone_set_nothing(lib):
     assert r["nts"] == 2 and r["votes"] == 1 and r["utc0"] == -1, lines
 
 
+def test_minute_stamps_alone_take_the_middle(lib):
+    """two DDHHMMz stations stamping 20 s before they key: the estimate is the region's middle,
+    within half a minute, not its low edge a minute early"""
+    t1, t2 = 3000, 5000
+    a = at(t1, "VE7DG1", "@" + aprs.ts_dhm(UTC0 + t1 / 1000 - 20) + "4857.00N/12229.00W#")
+    b = at(t2, "VE7DG2", "@" + aprs.ts_dhm(UTC0 + t2 / 1000 - 20) + "4857.00N/12229.00W#")
+    r, lines = feed(lib, [a, b])
+    assert r["votes"] == 2 and r["wid"] > 10000, lines
+    assert abs(r["utc0"] - truth_ms()) < 35000, (r, truth_ms())
+
+
 def test_midnight(lib):
     """stamps either side of 00:00 UTC agree (offsets are taken round the day)"""
     global UTC0
