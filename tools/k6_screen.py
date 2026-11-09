@@ -178,30 +178,41 @@ def ascii_art(frame):
 
 
 def surf_frame(lines):
-    """The last bargraph a surfauto run says ("bar <MHz> <step>", then lines of a letter a bin:
-    a = 1 px .. x = 24 px; c/k6/mod/surf.c) as a frame for render() and png(): the bars as the
-    radio drew them, with the window's edges. lines: the run's say lines (with or without the
-    "K6 MOD say " prefix); returns None if it says no bargraph."""
+    """The last bargraph a surfauto run says as a frame for render() and png(): the bars as the
+    radio drew them, with the scale's edges. c/k6/mod/surf.c says "bar <middle MHz> <span> lens"
+    (the lens scale, 2026-11-09: the edges are the middle +- the span) or, before that, "bar <first
+    bin MHz> <step>" (64 even bins), then lines of a letter a bin: a = 1 px .. x = 24 px, '-' a bin
+    outside the band. lines: the run's say lines (with or without the "K6 MOD say " prefix);
+    returns None if it says no bargraph."""
     lines = [ln.split("K6 MOD say ", 1)[-1].strip() for ln in lines]
     try:
         i = max(n for n, ln in enumerate(lines) if ln.startswith("bar "))
     except ValueError:
         return None
-    _, lo, step = lines[i].split()[:3]
+    head = lines[i].split()
+    lo, step = head[1], head[2]
     hs = []
     for ln in lines[i + 1:]:
-        if not ln or not all("a" <= c <= "x" for c in ln):
+        if not ln or not all("a" <= c <= "x" or c == "-" for c in ln):
             break
-        hs += [ord(c) - ord("a") + 1 for c in ln]
+        hs += [0 if c == "-" else ord(c) - ord("a") + 1 for c in ln]
     kstep = float(step.rstrip("k"))
-    hi = float(lo) + (len(hs) - 1) * kstep / 1000
+    if head[3:4] == ["lens"]:
+        mid = float(lo)
+        lo, hi = mid - kstep / 1000, mid + kstep / 1000
+    else:
+        lo = float(lo)
+        hi = lo + (len(hs) - 1) * kstep / 1000
     wf = [bytearray(16) for _ in range(30)]
+    base = 27 if head[3:4] == ["lens"] else 30      # the lens build: bars on an axis line, row 27
     for b, h in enumerate(hs):
-        for r in range(30 - h, 30):
+        for r in range(base - h, base):
             wf[r][b >> 2] |= 0xC0 >> (2 * (b & 3))
-    text = ["SURF bars " + step, "", "", "", "", f"{float(lo):.3f}".ljust(14) + f"{hi:.3f}"]
+        if base < 30 and h:
+            wf[base][b >> 2] |= 0xC0 >> (2 * (b & 3))
+    text = ["SURF bars " + step, "", "", "", "", f"{lo:.3f}".ljust(14) + f"{hi:.3f}"]
     return {"text": text, "bar": [(0, 0)] * 6, "wf": [bytes(r) for r in wf], "heights": hs,
-            "lo_mhz": float(lo), "step_khz": kstep}
+            "lo_mhz": lo, "step_khz": kstep}
 
 
 if __name__ == "__main__":
@@ -211,5 +222,5 @@ if __name__ == "__main__":
     if f is None:
         sys.exit(f"{sys.argv[1]}: no 'bar' lines")
     if len(sys.argv) > 2:
-        png([f], sys.argv[2], captions=[f"{f['lo_mhz']:.4f} MHz, {f['step_khz']:g} kHz bins"])
+        png([f], sys.argv[2], captions=[f"from {f['lo_mhz']:.4f} MHz ({f['step_khz']:g} kHz)"])
     print(ascii_art(f))
