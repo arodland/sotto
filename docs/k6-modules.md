@@ -274,6 +274,9 @@ no-op: cbi had 96 B of flash to spare and the LED took 184 (CI, 07bb380). Gated 
   clears it at reset (its startup's zero-fill, likely; not read in its code). The note now sits
   at 0x20005FF0, the top 16 bytes of SRAM: memory.x leaves them out of Aura's RAM, so the stack
   starts below them, and the bootloader's stack (from 0x20004028, growing down) never gets there.
+- **Note at 0x20005FF0 on the K6 (af064d6, 2026-11-09 00:26-00:28Z):** `dogfault` on the EXPLORE
+  image and then on vlrh: each rebooted in a second and its next boot printed `K6 FAULT last boot
+  pc=20001eac lr=0800e289` (EXPLORE) and `pc=20001d38 lr=0800c481` (vlrh), the module's UDF.
 - **txdog: faults and hung key-ups reboot the radio** (`hal::txdog` in the Aura patch). The
   `vecprobe` module showed on the K6 (2026-11-08 17:51Z, `alias=1 fault=1 back=1`) that SYSCFG
   CFGR1 MEM_MODE = 3 maps SRAM at address 0 and a fault then reaches a handler of ours. At boot
