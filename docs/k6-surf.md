@@ -180,6 +180,28 @@ What it showed:
   floor at the jump, and drops the line for the starting bar, which caught the upload carrier.
   Run 3 can then tell whether the -108 to -116 stops are short signals or a floor read too low.
 
+## Bench run 3: the lens scale (2026-11-09 06:40Z, hamlet, receive only)
+
+`mod-surfauto.bin` from ac68a40 (PR #170, 5,466 B) went up without ARQ (so the K6 never keyed) on
+image cf9516e vlrh: 45 XL chunks. It ran 60,060 ms, returned 46 sweeps of the +-1 MHz scale
+(about 0.8 s each, waits included) and had 764 B of stack free (3,044 B at its call).
+
+```
+surf 70cm 440.850 25k
+sel 440.8750 -115 -131    (8 of these to 06:41:37Z: the upload's own carrier, still on air,
+                           one channel up)
+sel 442.0000 -116 -131    sel 444.9500 -108 -131    sel 450.0000 -116 -131
+sel 433.9750 -111 -134
+bar 438.0000 1000k lens
+dededddfddcccdedcccddccaaaaaaaaa
+aaaaaaaadcbbbccccaaaaaaaaaaaaaa
+end sw=46
+```
+
+The lens scale, the wide bins' reads and the jumps run on the radio; each stop was 15-23 dB over
+the settled floor. The stack is tighter than the even scale's (run 2: 5,040 B free on the larger
+EXPLORE stack) but over the 512 B the emulator rule asks.
+
 ## The bargraph as the radio's main VFO? (Jeff's thought, 2026-11-08)
 
 It fits, and this module is the way to try it. Points for and against:
