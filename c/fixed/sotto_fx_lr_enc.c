@@ -122,7 +122,7 @@ static fx_acc b_best(const int32_t *base, const int32_t *target, int16_t *sb) {
   for (v = 0; v < n; v++) {
     const int16_t *y = FX_CB_VEC(LR_BST, v, cb_buf);
     fx_acc ry = 0, h;
-    for (k = 0; k < NC; k++) ry += (fx_acc)r[k] * (int16_t)FX_CB_VAL(y, k);
+    for (k = 0; k < NC; k++) ry += FX_P16(r[k], (int16_t)FX_CB_VAL(y, k));
     h = (fx_acc)e2[v] * 48 - ry;                       /* d = rr + 192 h */
     if (v == 0 || h < hb) hb = h, best = v;
   }

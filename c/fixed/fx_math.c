@@ -348,7 +348,7 @@ fx_acc fx_cb_resid(const int32_t *c, const int32_t *recon, int16_t *r, int n, in
     fx_acc t = ((fx_acc)(c[k] - recon[k]) * istep) >> 24;
     FX_ACC_CHECK((fx_acc)(c[k] - recon[k]) * istep);
     r[k] = (int16_t)(t > 32767 ? 32767 : t < -32767 ? -32767 : t);
-    rr += (fx_acc)r[k] * r[k];
+    rr += FX_P16(r[k], r[k]);
   }
   return rr;
 }
@@ -359,9 +359,9 @@ void fx_hfit_sums(const int16_t *sw, const int16_t *w, int nb, fx_acc out[3]) {
   int i;
   fx_acc nr = 0, ni = 0, den = 0;
   for (i = 0; i < nb; i++) {
-    nr += (fx_acc)sw[2 * i] * w[i];
-    ni += (fx_acc)sw[2 * i + 1] * w[i];
-    den += (fx_acc)w[i] * w[i];
+    nr += FX_P16(sw[2 * i], w[i]);
+    ni += FX_P16(sw[2 * i + 1], w[i]);
+    den += FX_P16(w[i], w[i]);
   }
   out[0] = nr, out[1] = ni, out[2] = den;
 }
@@ -377,7 +377,7 @@ fx_acc fx_hfit_err(const int16_t *sw, const int16_t *w, int nb, int32_t ar, int3
 fx_acc fx_hfit_pow(const int16_t *sw, int n) {
   int k;
   fx_acc s = 0;
-  for (k = 0; k < n; k++) s += (fx_acc)sw[k] * sw[k];
+  for (k = 0; k < n; k++) s += FX_P16(sw[k], sw[k]);
   return s;
 }
 #endif

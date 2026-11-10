@@ -162,7 +162,7 @@ static uint32_t recip48_(uint32_t x) {
 /* power of bin b (0..511) of frame f's 16-bit spectrum */
 static inline fx_acc pw(const spec_t *f, int b) {
   if (b > 256) b = 512 - b;
-  return (fx_acc)f->sw[2 * b] * f->sw[2 * b] + (fx_acc)f->sw[2 * b + 1] * f->sw[2 * b + 1];
+  return FX_P16(f->sw[2 * b], f->sw[2 * b]) + FX_P16(f->sw[2 * b + 1], f->sw[2 * b + 1]);
 }
 
 /* Codec 2's harmonic count: floor(pi / Wo), less one when the last harmonic is at 0.95 pi or above */
@@ -267,8 +267,8 @@ static void fx_nlp_dft(const int16_t *x, const int16_t *cos512, int32_t *rr, int
     fx_acc r = 0, q = 0;
     for (n = 0; n < 64; n++) {
       int i = (k * n) & 511;
-      r += (fx_acc)x[n] * cos512[i];
-      q += (fx_acc)x[n] * cos512[(i - 128) & 511];
+      r += FX_P16(x[n], cos512[i]);
+      q += FX_P16(x[n], cos512[(i - 128) & 511]);
     }
     FX_ACC_CHECK(r); FX_ACC_CHECK(q);
     rr[k] = fx_rshr(r, 15), qq[k] = fx_rshr(q, 15);
@@ -315,8 +315,8 @@ static int nlp_bin(struct sotto_enc *e) {
     for (i = 0; i < NSAMP; i++) {
       const int16_t *h = zh + i, *l = zl + i;
       fx_acc a = 0, al = 0;
-      for (j = 0; j < 48; j++) a += (fx_acc)h[j] * fx_nlp_fir[j];
-      for (j = 0; j < 48; j++) al += (fx_acc)l[j] * fx_nlp_fir[j];
+      for (j = 0; j < 48; j++) a += FX_P16(h[j], fx_nlp_fir[j]);
+      for (j = 0; j < 48; j++) al += FX_P16(l[j], fx_nlp_fir[j]);
       a = FX_JOIN(a, al);
       FX_ACC_CHECK(a);
       e->sq[MPITCH - NSAMP + i] = fx_rshr(a, 15);
@@ -798,7 +798,7 @@ int fx_msvq_paths(const int32_t *c, int nst, int16_t path[MBEST][5], int32_t rec
            low one cleared, the low byte shifted up (two operations a word, not five) */
         fx_acc a = 0;
         for (k = 0; k < FX_CBW; k++)
-          a += (fx_acc)r[2 * k] * (int16_t)(y[k] & -256) + (fx_acc)r[2 * k + 1] * (int16_t)((uint16_t)y[k] << 8);
+          a += FX_P16(r[2 * k], (int16_t)(y[k] & -256)) + FX_P16(r[2 * k + 1], (int16_t)((uint16_t)y[k] << 8));
         CB_CONSIDER(v, e2[v] * 32 - (int32_t)(a >> 8));      /* exact: a is a multiple of 256 */
       }
 #endif
